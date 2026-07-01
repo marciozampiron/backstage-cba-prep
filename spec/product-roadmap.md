@@ -48,9 +48,11 @@ Do not discard this engine when building the SaaS. The web product should reuse 
 | 1 | CBA Web MVP | Build the first web simulator around CBA only: dashboard, full mock, domain drill, results, study plan. | #11, #15, #16, #8 |
 | 2 | Accounts + Progress | Persist user attempts, progress, adaptive mastery, and product analytics. | #13, #17, #18 |
 | 3 | AI Coach | Serve a grounded study companion that uses learner progress and approved sources. | #12 |
-| 4 | Authoring Pipeline | Ingest official sources, draft questions with agents, review, version, approve, and publish. | #19, #20, #21, #7 |
+| 4 | Authoring Pipeline | Ingest official sources, draft questions with agents, review, version, approve, and publish. | #19, #20, #21 |
 | 5 | Generic Exam Engine | Generalize from CBA to multiple certifications after CBA web workflows are proven. | #10 |
 | 6 | SaaS Monetization | Add subscription and AI usage metering after retention and quality are proven. | #14 |
+
+> **#7 (review-bank) — Phase 0 (foundational); also unblocks Phase 4.** It is foundational quality work, but the same review workflow powers the Phase 4 authoring pipeline. The `Phase` board field is single-select, so on the board #7 lives in Phase 0.
 
 ## Recommended execution order
 
@@ -158,7 +160,7 @@ For the admin/reviewer surface:
 
 ## GitHub Project
 
-Project: https://github.com/users/marciozampiron/projects/3
+Project: <https://github.com/users/marciozampiron/projects/3>
 
 The project uses:
 

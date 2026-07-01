@@ -25,6 +25,7 @@
     "src",
     "questions",
     "spec",
+    "!spec/product-roadmap.md",
     "workflows",
     "AGENTS.md",
     "CLAUDE.md",
