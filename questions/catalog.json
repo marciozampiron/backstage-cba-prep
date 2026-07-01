@@ -218,5 +218,45 @@
       "annotations",
       "github"
     ]
+  },
+  {
+    "id": "cat-012",
+    "domain": "Backstage Catalog",
+    "competency": "Working with automated ingestion",
+    "difficulty": "hard",
+    "question": "How do entity providers differ from static catalog locations?",
+    "options": {
+      "A": "They must be listed in app-config.yaml like every other location",
+      "B": "They are React components rendered in the catalog page",
+      "C": "They are instantiated in backend code and update entities on their own schedule",
+      "D": "They require a manual YAML upload for each change"
+    },
+    "answer": "C",
+    "explanation": "Entity providers are created in backend code and passed to the catalog builder; they run on their own schedule (periodic or webhook), unlike static locations declared in config.",
+    "source": "https://backstage.io/docs/features/software-catalog/external-integrations",
+    "tags": [
+      "automated-ingestion",
+      "entity-provider"
+    ]
+  },
+  {
+    "id": "cat-013",
+    "domain": "Backstage Catalog",
+    "competency": "Populate Backstage Catalog",
+    "difficulty": "easy",
+    "question": "What is the apiVersion value for standard Backstage catalog entities such as Component?",
+    "options": {
+      "A": "v1",
+      "B": "catalog.backstage.io/v1",
+      "C": "apps/v1",
+      "D": "backstage.io/v1alpha1"
+    },
+    "answer": "D",
+    "explanation": "Core catalog entities use apiVersion backstage.io/v1alpha1 (a few kinds such as Template use a different version).",
+    "source": "https://backstage.io/docs/features/software-catalog/descriptor-format",
+    "tags": [
+      "descriptor",
+      "apiVersion"
+    ]
   }
 ]

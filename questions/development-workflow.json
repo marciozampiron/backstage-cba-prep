@@ -159,5 +159,127 @@
       "ports",
       "dev-server"
     ]
+  },
+  {
+    "id": "dw-009",
+    "domain": "Backstage Development Workflow",
+    "competency": "Download and install dependencies for a Backstage project with NPM/Yarn",
+    "difficulty": "medium",
+    "question": "Which command installs all dependencies for a freshly cloned Backstage repository?",
+    "options": {
+      "A": "yarn install",
+      "B": "npm run install-all",
+      "C": "yarn deps add",
+      "D": "pip install -r requirements.txt"
+    },
+    "answer": "A",
+    "explanation": "Backstage is a Yarn monorepo, so all dependencies are installed with `yarn install` from the repo root.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": [
+      "yarn",
+      "dependencies"
+    ]
+  },
+  {
+    "id": "dw-010",
+    "domain": "Backstage Development Workflow",
+    "competency": "Use Docker to build a container image of a Backstage project",
+    "difficulty": "medium",
+    "question": "When Docker-in-Docker is not available, which Docker build approach does Backstage recommend?",
+    "options": {
+      "A": "The host build, running Docker inside the container",
+      "B": "A multi-stage build with the Dockerfile at the repository root",
+      "C": "Building the image on the frontend host only",
+      "D": "Skipping Docker and shipping source directly"
+    },
+    "answer": "B",
+    "explanation": "Without Docker-in-Docker, Backstage recommends a multi-stage Dockerfile at the repo root that builds everything inside Docker.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": [
+      "docker",
+      "multi-stage"
+    ]
+  },
+  {
+    "id": "dw-011",
+    "domain": "Backstage Development Workflow",
+    "competency": "Use Docker to build a container image of a Backstage project",
+    "difficulty": "easy",
+    "question": "Which command runs the built Backstage backend image and maps its port?",
+    "options": {
+      "A": "docker run -p 3000:3000 backstage",
+      "B": "docker start backstage",
+      "C": "docker run -it -p 7007:7007 backstage",
+      "D": "yarn container:run"
+    },
+    "answer": "C",
+    "explanation": "The backend listens on 7007, so the image is run with `docker run -it -p 7007:7007 backstage`.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": [
+      "docker",
+      "run"
+    ]
+  },
+  {
+    "id": "dw-012",
+    "domain": "Backstage Development Workflow",
+    "competency": "Use Docker to build a container image of a Backstage project",
+    "difficulty": "medium",
+    "question": "Which flag forces Docker to rebuild the Backstage image without using cached layers?",
+    "options": {
+      "A": "--fresh",
+      "B": "--force",
+      "C": "--rebuild",
+      "D": "--no-cache"
+    },
+    "answer": "D",
+    "explanation": "`--no-cache` rebuilds all layers from scratch, which is useful when diagnosing a stale build.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": [
+      "docker",
+      "cache"
+    ]
+  },
+  {
+    "id": "dw-013",
+    "domain": "Backstage Development Workflow",
+    "competency": "Build and run Backstage projects locally",
+    "difficulty": "medium",
+    "question": "Which database backs a newly created Backstage app during local development?",
+    "options": {
+      "A": "An in-memory SQLite database",
+      "B": "A local PostgreSQL cluster",
+      "C": "A remote MySQL instance",
+      "D": "MongoDB Atlas"
+    },
+    "answer": "A",
+    "explanation": "A freshly scaffolded app uses an in-memory SQLite database for development; PostgreSQL is used in production.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": [
+      "sqlite",
+      "database",
+      "local"
+    ]
+  },
+  {
+    "id": "dw-014",
+    "domain": "Backstage Development Workflow",
+    "competency": "Compile a Backstage project with TypeScript",
+    "difficulty": "hard",
+    "question": "In the Docker host build, why must `yarn tsc` run before `yarn build:backend`?",
+    "options": {
+      "A": "It installs the project dependencies",
+      "B": "It generates the TypeScript type definitions the build depends on",
+      "C": "It starts the backend dev server",
+      "D": "It seeds the database with sample data"
+    },
+    "answer": "B",
+    "explanation": "`yarn tsc` performs the project-wide type check and emits the type definitions that the backend build then consumes.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": [
+      "typescript",
+      "tsc",
+      "build"
+    ]
   }
 ]

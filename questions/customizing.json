@@ -216,5 +216,186 @@
     "tags": [
       "standalone-plugin"
     ]
+  },
+  {
+    "id": "cust-012",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "medium",
+    "question": "What does a 'service backend plugin' typically do?",
+    "options": {
+      "A": "Makes API requests to your organization's backend microservices",
+      "B": "Renders the catalog page in the browser",
+      "C": "Stores the user's theme preference",
+      "D": "Runs entirely in the browser with no server"
+    },
+    "answer": "A",
+    "explanation": "Service backend plugins make API requests to organizational microservices; standalone plugins run only in the browser.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": [
+      "backend-plugin",
+      "service"
+    ]
+  },
+  {
+    "id": "cust-013",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "medium",
+    "question": "Which statement about Backstage backend plugins is correct?",
+    "options": {
+      "A": "They render React components in the browser",
+      "B": "They run server-side and communicate over HTTP rather than direct code imports",
+      "C": "They are configured only through app-config.yaml",
+      "D": "They execute inside the user's browser tab"
+    },
+    "answer": "B",
+    "explanation": "Backend plugins run on the server and talk to each other over HTTP, not through direct code dependencies.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": [
+      "backend-plugin",
+      "http"
+    ]
+  },
+  {
+    "id": "cust-014",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "medium",
+    "question": "In the current backend system, in which file is the backend assembled with createBackend() and backend.add()?",
+    "options": {
+      "A": "packages/app/src/App.tsx",
+      "B": "app-config.yaml",
+      "C": "packages/backend/src/index.ts",
+      "D": "packages/backend/Dockerfile"
+    },
+    "answer": "C",
+    "explanation": "The backend is created and wired in packages/backend/src/index.ts using createBackend() and backend.add(...).",
+    "source": "https://backstage.io/docs/backend-system/",
+    "tags": [
+      "backend-system",
+      "index"
+    ]
+  },
+  {
+    "id": "cust-015",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "medium",
+    "question": "How are Backstage plugins distributed?",
+    "options": {
+      "A": "As Docker images",
+      "B": "As Helm charts",
+      "C": "As browser extensions",
+      "D": "As npm packages (for example @backstage/plugin-...)"
+    },
+    "answer": "D",
+    "explanation": "Plugins are published and installed as npm packages, then wired into the app or backend.",
+    "source": "https://backstage.io/docs/plugins/",
+    "tags": [
+      "plugins",
+      "npm"
+    ]
+  },
+  {
+    "id": "cust-016",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "medium",
+    "question": "Which command scaffolds a brand-new plugin inside a Backstage repository?",
+    "options": {
+      "A": "yarn new",
+      "B": "yarn plugin:init",
+      "C": "npm run scaffold-plugin",
+      "D": "yarn generate plugin"
+    },
+    "answer": "A",
+    "explanation": "`yarn new` (the Backstage CLI 'new' command) scaffolds a new plugin package in the repo.",
+    "source": "https://backstage.io/docs/plugins/create-a-plugin",
+    "tags": [
+      "plugins",
+      "scaffold"
+    ]
+  },
+  {
+    "id": "cust-017",
+    "domain": "Customizing Backstage",
+    "competency": "Make changes to React code in Backstage App",
+    "difficulty": "medium",
+    "question": "The Backstage frontend app is built with which framework and language?",
+    "options": {
+      "A": "Angular with JavaScript",
+      "B": "React with TypeScript",
+      "C": "Vue with TypeScript",
+      "D": "Svelte with JavaScript"
+    },
+    "answer": "B",
+    "explanation": "The Backstage frontend is a React single-page application written in TypeScript.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": [
+      "react",
+      "typescript"
+    ]
+  },
+  {
+    "id": "cust-018",
+    "domain": "Customizing Backstage",
+    "competency": "Make changes to React code in Backstage App",
+    "difficulty": "medium",
+    "question": "To add a new page to the Backstage app, where do you add its React route?",
+    "options": {
+      "A": "In packages/backend/src/index.ts",
+      "B": "In app-config.yaml",
+      "C": "In packages/app/src/App.tsx",
+      "D": "In packages/app/public/index.html"
+    },
+    "answer": "C",
+    "explanation": "Frontend routes are declared in packages/app/src/App.tsx, where the app's Route elements live.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": [
+      "react",
+      "routes",
+      "packages-app"
+    ]
+  },
+  {
+    "id": "cust-019",
+    "domain": "Customizing Backstage",
+    "competency": "Using Material UI components",
+    "difficulty": "medium",
+    "question": "Customizing the Backstage app's colors and typography means customizing what?",
+    "options": {
+      "A": "A standalone CSS file in packages/app/public",
+      "B": "The backend app-config.yaml",
+      "C": "The Dockerfile build args",
+      "D": "The Material UI theme used by the app"
+    },
+    "answer": "D",
+    "explanation": "Backstage theming is done through a Material UI theme; you provide a custom theme to the app to change colors and typography.",
+    "source": "https://backstage.io/docs/getting-started/app-custom-theme",
+    "tags": [
+      "material-ui",
+      "theme"
+    ]
+  },
+  {
+    "id": "cust-020",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "medium",
+    "question": "What is the usual first step to install an existing community frontend plugin?",
+    "options": {
+      "A": "docker pull the plugin image",
+      "B": "Copy its source into packages/app by hand",
+      "C": "Enable it in app-config.yaml",
+      "D": "yarn add the plugin's npm package, then wire it into packages/app"
+    },
+    "answer": "D",
+    "explanation": "You add the plugin's npm package with `yarn add`, then import and mount it in packages/app.",
+    "source": "https://backstage.io/docs/plugins/",
+    "tags": [
+      "plugins",
+      "install"
+    ]
   }
 ]

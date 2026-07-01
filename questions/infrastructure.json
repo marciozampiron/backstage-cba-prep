@@ -181,5 +181,85 @@
       "knex",
       "plugins"
     ]
+  },
+  {
+    "id": "infra-010",
+    "domain": "Backstage Infrastructure",
+    "competency": "Configure Backstage",
+    "difficulty": "medium",
+    "question": "Which syntax substitutes an environment variable's value into app-config.yaml?",
+    "options": {
+      "A": "%MY_VAR%",
+      "B": "{{MY_VAR}}",
+      "C": "${MY_VAR}",
+      "D": "$(MY_VAR)"
+    },
+    "answer": "C",
+    "explanation": "Backstage config supports ${MY_VAR} substitution, with ${MY_VAR:-default} for defaults and $${...} to escape it.",
+    "source": "https://backstage.io/docs/conf/writing",
+    "tags": [
+      "configuration",
+      "env"
+    ]
+  },
+  {
+    "id": "infra-011",
+    "domain": "Backstage Infrastructure",
+    "competency": "Configure Backstage",
+    "difficulty": "medium",
+    "question": "In app-config.yaml, which special key reads a value directly from an environment variable?",
+    "options": {
+      "A": "$secret",
+      "B": "$ref",
+      "C": "$var",
+      "D": "$env"
+    },
+    "answer": "D",
+    "explanation": "The $env marker reads a string from an environment variable; $file reads a file and $include loads a JSON/YAML fragment.",
+    "source": "https://backstage.io/docs/conf/writing",
+    "tags": [
+      "configuration",
+      "env"
+    ]
+  },
+  {
+    "id": "infra-012",
+    "domain": "Backstage Infrastructure",
+    "competency": "Deploy Backstage to production",
+    "difficulty": "medium",
+    "question": "In a Backstage deployment, which part is the server responsible for wiring plugins together?",
+    "options": {
+      "A": "The backend",
+      "B": "The frontend single-page app",
+      "C": "The PostgreSQL database",
+      "D": "The reverse proxy"
+    },
+    "answer": "A",
+    "explanation": "The backend is the server-side part that wires things together and is deployed as one or more instances.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": [
+      "deployment",
+      "backend"
+    ]
+  },
+  {
+    "id": "infra-013",
+    "domain": "Backstage Infrastructure",
+    "competency": "Configure Backstage",
+    "difficulty": "medium",
+    "question": "Which environment variable overrides the config value app.baseUrl?",
+    "options": {
+      "A": "BACKSTAGE_app_baseUrl",
+      "B": "APP_CONFIG_app_baseUrl",
+      "C": "CONFIG_APP_BASE_URL",
+      "D": "BS_app__baseUrl"
+    },
+    "answer": "B",
+    "explanation": "APP_CONFIG_-prefixed variables override config values, replacing dots with underscores (e.g., APP_CONFIG_app_baseUrl).",
+    "source": "https://backstage.io/docs/conf/writing",
+    "tags": [
+      "configuration",
+      "env-override"
+    ]
   }
 ]
