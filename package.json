@@ -1,0 +1,25 @@
+{
+  "name": "backstage-cba-prep",
+  "version": "0.1.0",
+  "description": "Engine-neutral study kit for the Certified Backstage Associate (CBA) exam: timed mock simulator, multi-provider AI question generator, and a doc-grounded question bank. Works with Claude Code, OpenAI Codex, and Gemini CLI.",
+  "type": "module",
+  "bin": {
+    "backstage-cba-prep": "bin/cli.js",
+    "cba-prep": "bin/cli.js"
+  },
+  "scripts": {
+    "exam": "node bin/cli.js exam",
+    "generate": "node bin/cli.js generate",
+    "validate": "node bin/cli.js validate",
+    "stats": "node bin/cli.js stats",
+    "sync": "node bin/cli.js sync"
+  },
+  "engines": { "node": ">=18" },
+  "files": ["bin", "src", "questions", "spec", "AGENTS.md"],
+  "keywords": [
+    "backstage", "cba", "certification", "linux-foundation", "cncf",
+    "exam", "quiz", "developer-portal", "study", "codex", "gemini", "claude"
+  ],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,138 @@
+[
+  {
+    "id": "dw-001",
+    "domain": "Backstage Development Workflow",
+    "competency": "Build and run Backstage projects locally",
+    "difficulty": "easy",
+    "question": "Which command scaffolds a new standalone Backstage app?",
+    "options": {
+      "A": "npx @backstage/create-app@latest",
+      "B": "npm init backstage",
+      "C": "yarn create backstage-app",
+      "D": "npx backstage init"
+    },
+    "answer": "A",
+    "explanation": "The official way to create a standalone Backstage app is `npx @backstage/create-app@latest`, which generates the monorepo (packages/app and packages/backend). The other commands are not real Backstage entry points.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": ["create-app", "scaffold"]
+  },
+  {
+    "id": "dw-002",
+    "domain": "Backstage Development Workflow",
+    "competency": "Understand local development workflows",
+    "difficulty": "medium",
+    "question": "In a freshly scaffolded Backstage app, which command starts BOTH the frontend and the backend for local development?",
+    "options": {
+      "A": "yarn start",
+      "B": "yarn frontend",
+      "C": "npm run serve",
+      "D": "yarn build"
+    },
+    "answer": "A",
+    "explanation": "`yarn start` launches the frontend and backend as separate processes in one terminal. `yarn build` compiles output rather than running a dev server, and the other commands are not defined.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": ["yarn", "dev-server"]
+  },
+  {
+    "id": "dw-003",
+    "domain": "Backstage Development Workflow",
+    "competency": "Download and install dependencies for a Backstage project with NPM/Yarn",
+    "difficulty": "easy",
+    "question": "Which package manager does a standard Backstage app use by default to install dependencies and run scripts?",
+    "options": {
+      "A": "Yarn",
+      "B": "pnpm",
+      "C": "npm only",
+      "D": "Bun"
+    },
+    "answer": "A",
+    "explanation": "Backstage apps are set up as a Yarn monorepo; the getting-started flow pins a specific Yarn version. While Node/npm are prerequisites, day-to-day commands use Yarn.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": ["yarn", "dependencies"]
+  },
+  {
+    "id": "dw-004",
+    "domain": "Backstage Development Workflow",
+    "competency": "Compile a Backstage project with TypeScript",
+    "difficulty": "medium",
+    "question": "During a Backstage build, which command runs a full TypeScript type check and emits type definitions across the project?",
+    "options": {
+      "A": "yarn tsc",
+      "B": "yarn lint",
+      "C": "yarn test",
+      "D": "yarn clean"
+    },
+    "answer": "A",
+    "explanation": "`yarn tsc` performs the project-wide TypeScript compilation/type check and generates declaration files; it is a required step in the Docker host build. Linting and testing do not perform full type checking.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": ["typescript", "tsc", "build"]
+  },
+  {
+    "id": "dw-005",
+    "domain": "Backstage Development Workflow",
+    "competency": "Use Docker to build a container image of a Backstage project",
+    "difficulty": "hard",
+    "question": "Using the recommended 'host build' approach, which sequence must run from the repo root BEFORE building the backend image?",
+    "options": {
+      "A": "yarn install --immutable, then yarn tsc, then yarn build:backend",
+      "B": "yarn start, then yarn export, then yarn ship",
+      "C": "npm ci, then npm run build, then npm pack",
+      "D": "yarn docker, then yarn compile, then yarn deploy"
+    },
+    "answer": "A",
+    "explanation": "The host build installs dependencies (`yarn install --immutable`), generates type definitions (`yarn tsc`), and builds the backend package (`yarn build:backend`) before the Docker image is built. The other sequences use commands that don't exist for this purpose.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": ["docker", "host-build"]
+  },
+  {
+    "id": "dw-006",
+    "domain": "Backstage Development Workflow",
+    "competency": "Use Docker to build a container image of a Backstage project",
+    "difficulty": "medium",
+    "question": "In the host build approach, where is the backend Dockerfile located and what is the build context?",
+    "options": {
+      "A": "packages/backend/Dockerfile, built with the repository root as the context",
+      "B": "A Dockerfile at the repo root, with packages/backend as the context",
+      "C": "packages/app/Dockerfile, built from packages/app",
+      "D": ".backstage/Dockerfile, built from /tmp"
+    },
+    "answer": "A",
+    "explanation": "The Dockerfile lives at `packages/backend/Dockerfile` but must be built from the repository root (e.g., `docker image build . -f packages/backend/Dockerfile --tag backstage`) so the build has access to the whole workspace.",
+    "source": "https://backstage.io/docs/deployment/docker",
+    "tags": ["docker", "dockerfile"]
+  },
+  {
+    "id": "dw-007",
+    "domain": "Backstage Development Workflow",
+    "competency": "Build and run Backstage projects locally",
+    "difficulty": "easy",
+    "question": "Which Node.js releases does Backstage recommend for local development?",
+    "options": {
+      "A": "Active LTS releases (for example Node 22 or 24)",
+      "B": "Only Node 12",
+      "C": "Any odd-numbered current release",
+      "D": "Node 8 or Node 10"
+    },
+    "answer": "A",
+    "explanation": "Backstage targets active LTS versions of Node (such as 22 or 24). Odd/very old releases are unsupported.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": ["node", "prerequisites"]
+  },
+  {
+    "id": "dw-008",
+    "domain": "Backstage Development Workflow",
+    "competency": "Understand local development workflows",
+    "difficulty": "medium",
+    "question": "By default, on which ports do a local Backstage frontend and backend run?",
+    "options": {
+      "A": "Frontend on 3000, backend on 7007",
+      "B": "Frontend on 8080, backend on 8081",
+      "C": "Frontend on 7007, backend on 3000",
+      "D": "Frontend on 4200, backend on 5000"
+    },
+    "answer": "A",
+    "explanation": "Locally the frontend is served at http://localhost:3000 and the backend listens on 7007. The pairing in option C is reversed.",
+    "source": "https://backstage.io/docs/getting-started/",
+    "tags": ["ports", "dev-server"]
+  }
+]

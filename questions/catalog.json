@@ -1,0 +1,189 @@
+[
+  {
+    "id": "cat-001",
+    "domain": "Backstage Catalog",
+    "competency": "Populate Backstage Catalog",
+    "difficulty": "easy",
+    "question": "What is the default filename for a Backstage entity descriptor?",
+    "options": {
+      "A": "catalog-info.yaml",
+      "B": "entity.json",
+      "C": "backstage-entity.yml",
+      "D": "component.yaml"
+    },
+    "answer": "A",
+    "explanation": "Entities are described by `catalog-info.yaml` files that Backstage ingests into the Software Catalog. The other names are not recognized by the catalog.",
+    "source": "https://backstage.io/docs/features/software-catalog/descriptor-format",
+    "tags": ["catalog-info", "descriptor"]
+  },
+  {
+    "id": "cat-002",
+    "domain": "Backstage Catalog",
+    "competency": "Populate Backstage Catalog",
+    "difficulty": "medium",
+    "question": "Which top-level fields must a minimal catalog entity descriptor include?",
+    "options": {
+      "A": "apiVersion, kind, metadata, and spec",
+      "B": "version, type, and data",
+      "C": "name, url, and owner only",
+      "D": "apiVersion and body"
+    },
+    "answer": "A",
+    "explanation": "Every entity descriptor follows a Kubernetes-like shape with apiVersion, kind, metadata, and spec at the top level.",
+    "source": "https://backstage.io/docs/features/software-catalog/descriptor-format",
+    "tags": ["descriptor", "schema"]
+  },
+  {
+    "id": "cat-003",
+    "domain": "Backstage Catalog",
+    "competency": "Understand how/why to use Backstage Catalog",
+    "difficulty": "medium",
+    "question": "Which of the following is a valid built-in catalog entity kind?",
+    "options": {
+      "A": "Component",
+      "B": "Container",
+      "C": "Deployment",
+      "D": "Module"
+    },
+    "answer": "A",
+    "explanation": "Built-in kinds include Component, API, Resource, System, Domain, Group, User, Location, and Template. Container and Deployment are Kubernetes concepts, not catalog kinds.",
+    "source": "https://backstage.io/docs/features/software-catalog/descriptor-format",
+    "tags": ["entity-kinds", "component"]
+  },
+  {
+    "id": "cat-004",
+    "domain": "Backstage Catalog",
+    "competency": "Using annotations",
+    "difficulty": "medium",
+    "question": "Where are catalog annotations placed inside a catalog-info.yaml file?",
+    "options": {
+      "A": "Under metadata.annotations",
+      "B": "Under spec.labels",
+      "C": "At the document root as annotations",
+      "D": "Under status.annotations"
+    },
+    "answer": "A",
+    "explanation": "Annotations are key/value metadata set under metadata.annotations. There is no top-level or status annotations block, and labels live elsewhere with a different purpose.",
+    "source": "https://backstage.io/docs/features/software-catalog/well-known-annotations",
+    "tags": ["annotations", "metadata"]
+  },
+  {
+    "id": "cat-005",
+    "domain": "Backstage Catalog",
+    "competency": "Using annotations",
+    "difficulty": "medium",
+    "question": "What does the backstage.io/managed-by-location annotation indicate?",
+    "options": {
+      "A": "The source location the entity was ingested from, in the form <type>:<target>",
+      "B": "The user who currently owns the entity",
+      "C": "The Kubernetes namespace hosting the entity",
+      "D": "The plugin responsible for rendering the entity page"
+    },
+    "answer": "A",
+    "explanation": "This annotation is added automatically and points to the location the entity was read from, formatted as <type>:<target> (for example url:https://...). Ownership is expressed via spec.owner, not this annotation.",
+    "source": "https://backstage.io/docs/features/software-catalog/well-known-annotations",
+    "tags": ["annotations", "managed-by-location"]
+  },
+  {
+    "id": "cat-006",
+    "domain": "Backstage Catalog",
+    "competency": "Using annotations",
+    "difficulty": "medium",
+    "question": "Which annotation tells Backstage where an entity's TechDocs source content lives?",
+    "options": {
+      "A": "backstage.io/techdocs-ref",
+      "B": "backstage.io/docs-url",
+      "C": "techdocs.io/path",
+      "D": "backstage.io/managed-by-location"
+    },
+    "answer": "A",
+    "explanation": "`backstage.io/techdocs-ref` points to the TechDocs source (typically the directory containing mkdocs.yml). managed-by-location tracks ingestion source, not docs.",
+    "source": "https://backstage.io/docs/features/software-catalog/well-known-annotations",
+    "tags": ["annotations", "techdocs"]
+  },
+  {
+    "id": "cat-007",
+    "domain": "Backstage Catalog",
+    "competency": "Working with manually registered entity locations",
+    "difficulty": "medium",
+    "question": "How do you statically register a catalog location so it is ingested when Backstage starts?",
+    "options": {
+      "A": "Add it under catalog.locations in app-config.yaml",
+      "B": "Copy the file into packages/app/public",
+      "C": "Run 'yarn add location'",
+      "D": "Set an environment variable named LOCATION_URL"
+    },
+    "answer": "A",
+    "explanation": "Static locations are declared under catalog.locations in app-config.yaml, each with a type (e.g., url) and target. The other options are not how the catalog discovers locations.",
+    "source": "https://backstage.io/docs/features/software-catalog/configuration",
+    "tags": ["locations", "app-config"]
+  },
+  {
+    "id": "cat-008",
+    "domain": "Backstage Catalog",
+    "competency": "Working with manually registered entity locations",
+    "difficulty": "medium",
+    "question": "When you use 'Register an existing component' in the Backstage UI, what do you point it to?",
+    "options": {
+      "A": "A URL to a catalog-info.yaml descriptor file",
+      "B": "A Docker image tag",
+      "C": "A running container's IP address",
+      "D": "A Helm chart repository"
+    },
+    "answer": "A",
+    "explanation": "Manual UI registration creates a Location entity that points at the URL of a catalog-info.yaml file; Backstage then reads the entities it declares.",
+    "source": "https://backstage.io/docs/features/software-catalog/configuration",
+    "tags": ["locations", "register"]
+  },
+  {
+    "id": "cat-009",
+    "domain": "Backstage Catalog",
+    "competency": "Troubleshooting entity ingestion",
+    "difficulty": "hard",
+    "question": "An entity remains in the catalog even though the location that produced it was removed. Which annotation flags it for manual cleanup?",
+    "options": {
+      "A": "backstage.io/orphan set to \"true\"",
+      "B": "backstage.io/stale",
+      "C": "backstage.io/deleted",
+      "D": "backstage.io/expired"
+    },
+    "answer": "A",
+    "explanation": "When no active location references an entity, the catalog marks it with backstage.io/orphan = \"true\", signaling that it should be removed manually. The other keys are not real.",
+    "source": "https://backstage.io/docs/features/software-catalog/well-known-annotations",
+    "tags": ["troubleshooting", "orphan"]
+  },
+  {
+    "id": "cat-010",
+    "domain": "Backstage Catalog",
+    "competency": "Working with automated ingestion",
+    "difficulty": "hard",
+    "question": "Which mechanism automatically discovers and keeps catalog entities in sync from an external source such as GitHub?",
+    "options": {
+      "A": "An entity provider (for example, GitHub discovery)",
+      "B": "A one-time manual YAML upload",
+      "C": "The frontend catalog plugin rendering pages",
+      "D": "A cron job editing the SQLite file directly"
+    },
+    "answer": "A",
+    "explanation": "Automated ingestion uses entity providers that continuously discover and update entities from external systems. Manual uploads are one-off; editing the database directly is not supported.",
+    "source": "https://backstage.io/docs/features/software-catalog/external-integrations",
+    "tags": ["automated-ingestion", "entity-provider"]
+  },
+  {
+    "id": "cat-011",
+    "domain": "Backstage Catalog",
+    "competency": "Using annotations",
+    "difficulty": "easy",
+    "question": "The github.com/project-slug annotation uses which value format?",
+    "options": {
+      "A": "<organization>/<repository>",
+      "B": "https://github.com/<repository>.git",
+      "C": "<repository>@<branch>",
+      "D": "<username>:<token>"
+    },
+    "answer": "A",
+    "explanation": "github.com/project-slug identifies a repository as <organization>/<repository> (e.g., backstage/backstage). It is not a full URL, a branch ref, or credentials.",
+    "source": "https://backstage.io/docs/features/software-catalog/well-known-annotations",
+    "tags": ["annotations", "github"]
+  }
+]

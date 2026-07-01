@@ -1,0 +1,189 @@
+[
+  {
+    "id": "cust-001",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "easy",
+    "question": "A plugin that renders a new page at a dedicated route (for example /my-plugin) in the UI is which type of plugin?",
+    "options": {
+      "A": "A frontend plugin",
+      "B": "A backend plugin",
+      "C": "A database plugin",
+      "D": "A proxy-only plugin"
+    },
+    "answer": "A",
+    "explanation": "Frontend plugins contribute UI and render at dedicated routes in the browser (e.g., /catalog). Backend plugins run server-side and expose HTTP APIs rather than rendering pages.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["frontend-plugin", "routes"]
+  },
+  {
+    "id": "cust-002",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "medium",
+    "question": "Which responsibility belongs to a backend plugin rather than a frontend plugin?",
+    "options": {
+      "A": "Exposing an HTTP API and wiring server-side logic",
+      "B": "Rendering React components in the browser",
+      "C": "Styling pages with Material UI",
+      "D": "Declaring page routes in the SPA"
+    },
+    "answer": "A",
+    "explanation": "Backend plugins handle server-side concerns and expose HTTP endpoints the frontend calls. Rendering, styling, and route declarations are frontend responsibilities.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["backend-plugin"]
+  },
+  {
+    "id": "cust-003",
+    "domain": "Customizing Backstage",
+    "competency": "Using Material UI components",
+    "difficulty": "medium",
+    "question": "Backstage's frontend components are built primarily on top of which UI library?",
+    "options": {
+      "A": "Material UI (MUI)",
+      "B": "Bootstrap",
+      "C": "Ant Design",
+      "D": "Chakra UI"
+    },
+    "answer": "A",
+    "explanation": "Backstage's design system and components are built on Material UI, which is why customization and theming use MUI concepts.",
+    "source": "https://backstage.io/docs/getting-started/app-custom-theme",
+    "tags": ["material-ui", "theming"]
+  },
+  {
+    "id": "cust-004",
+    "domain": "Customizing Backstage",
+    "competency": "Make changes to React code in Backstage App",
+    "difficulty": "medium",
+    "question": "Which package provides Backstage's reusable UI building blocks such as Header, Page, and InfoCard?",
+    "options": {
+      "A": "@backstage/core-components",
+      "B": "@backstage/ui-kit",
+      "C": "react-backstage",
+      "D": "@material-ui/backstage"
+    },
+    "answer": "A",
+    "explanation": "@backstage/core-components exposes the standard building blocks used across Backstage UIs. The other package names do not exist.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["core-components", "react"]
+  },
+  {
+    "id": "cust-005",
+    "domain": "Customizing Backstage",
+    "competency": "Make changes to React code in Backstage App",
+    "difficulty": "medium",
+    "question": "In a scaffolded Backstage monorepo, where does the main frontend App code live?",
+    "options": {
+      "A": "packages/app",
+      "B": "packages/backend",
+      "C": "packages/ui",
+      "D": "src/frontend"
+    },
+    "answer": "A",
+    "explanation": "The frontend application (including App.tsx and routing) lives in packages/app; the server code lives in packages/backend.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["packages-app", "monorepo"]
+  },
+  {
+    "id": "cust-006",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "medium",
+    "question": "Where does the backend code live in a standard Backstage monorepo?",
+    "options": {
+      "A": "packages/backend",
+      "B": "packages/server",
+      "C": "apps/api",
+      "D": "services/core"
+    },
+    "answer": "A",
+    "explanation": "The backend package is packages/backend, which is also where the backend Dockerfile lives. The other paths are not part of the default layout.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["packages-backend", "monorepo"]
+  },
+  {
+    "id": "cust-007",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "medium",
+    "question": "After installing a frontend plugin, how is it typically surfaced in the app?",
+    "options": {
+      "A": "By adding its route/component in packages/app (for example in App.tsx)",
+      "B": "By editing app-config.yaml only",
+      "C": "By restarting the database",
+      "D": "By adding a Docker image label"
+    },
+    "answer": "A",
+    "explanation": "A frontend plugin is wired into the app by importing it and adding a route or component in packages/app (commonly App.tsx). Configuration files alone do not mount UI routes.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["install-plugin", "routes"]
+  },
+  {
+    "id": "cust-008",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "hard",
+    "question": "In the current Backstage backend system, how are backend plugins and features wired into the server?",
+    "options": {
+      "A": "With createBackend() and backend.add(...)",
+      "B": "By hand-editing Express routes in index.html",
+      "C": "Through a plugins array in app-config.yaml",
+      "D": "They cannot be added after scaffolding"
+    },
+    "answer": "A",
+    "explanation": "The new backend system creates a backend with createBackend() and registers features via backend.add(...). Backend wiring is code, not app-config, and index.html is a frontend artifact.",
+    "source": "https://backstage.io/docs/backend-system/",
+    "tags": ["backend-system", "createBackend"]
+  },
+  {
+    "id": "cust-009",
+    "domain": "Customizing Backstage",
+    "competency": "Using Material UI components",
+    "difficulty": "medium",
+    "question": "What is the recommended way to build a custom Backstage page that matches the app's look and feel?",
+    "options": {
+      "A": "Compose @backstage/core-components together with Material UI components",
+      "B": "Write raw HTML with inline styles",
+      "C": "Load Bootstrap from a CDN and use its grid",
+      "D": "Use jQuery UI widgets"
+    },
+    "answer": "A",
+    "explanation": "Custom pages are built by composing Backstage core-components (Header, Page, Content, etc.) with Material UI, keeping the UI consistent with the rest of the portal.",
+    "source": "https://backstage.io/docs/getting-started/app-custom-theme",
+    "tags": ["material-ui", "core-components"]
+  },
+  {
+    "id": "cust-010",
+    "domain": "Customizing Backstage",
+    "competency": "Customizing Backstage plugins",
+    "difficulty": "hard",
+    "question": "A plugin must call an external SaaS API that requires a secret token. What is the idiomatic Backstage approach?",
+    "options": {
+      "A": "Route the request through the backend proxy so the secret stays server-side",
+      "B": "Hard-code the token inside the React component",
+      "C": "Store the token in the browser's localStorage",
+      "D": "Disable CORS in the browser and call the API directly"
+    },
+    "answer": "A",
+    "explanation": "Third-party backend plugins/integrations reach external SaaS through a proxy layer, keeping secrets on the server rather than exposing them in the browser.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["proxy", "secrets"]
+  },
+  {
+    "id": "cust-011",
+    "domain": "Customizing Backstage",
+    "competency": "Understand frontend versus backend plugins",
+    "difficulty": "easy",
+    "question": "What characterizes a 'standalone' frontend plugin?",
+    "options": {
+      "A": "It runs entirely in the browser with no backend dependency",
+      "B": "It requires its own dedicated database",
+      "C": "It runs only as a scheduled backend job",
+      "D": "It must be written in Go"
+    },
+    "answer": "A",
+    "explanation": "Standalone plugins run fully in the browser and do not depend on a backend, unlike service backend plugins that call microservices or third-party plugins that use a proxy.",
+    "source": "https://backstage.io/docs/overview/architecture-overview",
+    "tags": ["standalone-plugin"]
+  }
+]

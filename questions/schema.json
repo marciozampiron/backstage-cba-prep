@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/backstage-cba-prep/questions/schema.json",
+  "title": "CBA question bank",
+  "description": "A JSON array of Certified Backstage Associate practice questions.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "domain", "competency", "difficulty", "question", "options", "answer", "explanation", "source"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^(dw|infra|cat|cust)-[0-9]{3}$",
+        "description": "Domain prefix + zero-padded sequence, e.g. cat-012."
+      },
+      "domain": {
+        "type": "string",
+        "enum": [
+          "Backstage Development Workflow",
+          "Backstage Infrastructure",
+          "Backstage Catalog",
+          "Customizing Backstage"
+        ]
+      },
+      "competency": { "type": "string", "minLength": 3 },
+      "difficulty": { "type": "string", "enum": ["easy", "medium", "hard"] },
+      "question": { "type": "string", "minLength": 10 },
+      "options": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["A", "B", "C", "D"],
+        "properties": {
+          "A": { "type": "string", "minLength": 1 },
+          "B": { "type": "string", "minLength": 1 },
+          "C": { "type": "string", "minLength": 1 },
+          "D": { "type": "string", "minLength": 1 }
+        }
+      },
+      "answer": { "type": "string", "enum": ["A", "B", "C", "D"] },
+      "explanation": { "type": "string", "minLength": 10 },
+      "source": { "type": "string", "format": "uri", "pattern": "^https?://" },
+      "tags": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}
