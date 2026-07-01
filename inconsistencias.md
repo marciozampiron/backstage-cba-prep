@@ -92,3 +92,17 @@ Esse comando poderia:
 
 - `node bin/cli.js validate`: 39 questoes validas, 0 erros.
 - `npm pack --dry-run`: pacote inclui 35 arquivos, incluindo integracoes de agentes e workflows.
+
+## Segundo ciclo — resolvido
+
+Todos os pendentes acima foram tratados:
+
+- **Banco completo**: 60 questoes (Dev 14, Infra 13, Catalog 13, Customizing 20) = 100% do budget. Respostas balanceadas 15/15/15/15. Dificuldade rebalanceada para 40/40/20 (24 easy / 24 medium / 12 hard).
+- **Feedback do tutor/CLI**: plano de estudo por competencia com links da doc ao final do mock; historico local opcional (comando `history`) com tendencia de progresso; sugestao do dominio mais fraco.
+- **Auditoria de fontes**: comando `audit-sources` (checa status HTTP, soft-fail sem rede, exit 2 em 4xx) + passo nao-bloqueante no CI (`quality.yml`).
+
+Validacoes do segundo ciclo:
+
+- `node bin/cli.js validate`: 60 questoes validas, 0 erros.
+- Checagem semantica (answer -> opcao correta): 60/60, sem ambiguidade.
+- `node bin/cli.js audit-sources`: 14 URLs unicas, 0 quebradas.
