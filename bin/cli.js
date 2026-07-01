@@ -51,6 +51,9 @@ const HELP = `
     history     Show your past exam attempts and progress
     help        Show this help
 
+  ${c.bold('general options:')}
+    --json        emit machine-readable JSON where supported
+
   ${c.bold('exam options:')}
     --count N       number of questions (default 60)
     --minutes N     time limit (default 90; --no-timer to disable)
@@ -113,19 +116,19 @@ async function main() {
       break;
     }
     case 'validate':
-      process.exit(runValidate());
+      process.exit(runValidate({ json: !!args.json }));
       break;
     case 'stats':
-      runStats();
+      runStats({ json: !!args.json });
       break;
     case 'sync':
       process.exit(await runSync({ write: !!args.write }));
       break;
     case 'history':
-      runHistory();
+      runHistory({ json: !!args.json });
       break;
     case 'audit-sources':
-      process.exit(await runAuditSources());
+      process.exit(await runAuditSources({ json: !!args.json }));
       break;
     case undefined:
     case 'help':

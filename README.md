@@ -34,6 +34,7 @@ One brain, three doors. Switch engines without rewriting anything.
 npx backstage-cba-prep exam                    # full 60-question, 90-min mock
 npx backstage-cba-prep exam --domain catalog   # drill one domain
 npx backstage-cba-prep stats                   # see bank coverage
+npx backstage-cba-prep history                 # review saved attempts
 ```
 
 Scores per domain against the real exam weights and lists every missed question with an explanation and
@@ -75,13 +76,13 @@ in the docs. For a fact-checked batch, run the Workflow at
 | ------- | ------------ |
 | `exam` | Timed mock with per-domain scoring. `--count`, `--minutes`, `--domain`, `--pass`, `--no-timer`, `--no-shuffle`, `--no-save` |
 | `generate` | Author questions via an LLM. `--provider anthropic\|openai\|google`, `--domain`, `--count`, `--model`, `--dry-run` |
-| `validate` | Check the whole bank against `questions/schema.json` (used in CI and by the agents) |
-| `stats` | Coverage per domain and competency vs. the 60-question budget |
+| `validate` | Check the whole bank against `questions/schema.json` (supports `--json`) |
+| `stats` | Coverage per domain and competency vs. the 60-question budget (supports `--json`) |
 | `sync` | Compare local blueprint weights with the live LF page; exits `3` on drift |
-| `audit-sources` | HTTP-check every question's `source` URL; exits `2` only on dead links (404/410), soft on 403/429/5xx/network |
-| `history` | Show your past exam attempts and progress over time |
+| `audit-sources` | HTTP-check every question's `source` URL; supports `--json`; exits `2` only on dead links (404/410), soft on 403/429/5xx/network |
+| `history` | Show your past exam attempts and progress over time (supports `--json`) |
 
-All commands run with zero runtime dependencies (Node built-ins only).
+All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run.
 
 ---
 
@@ -120,14 +121,15 @@ CLAUDE.md        Claude Code entry pointer
 .gemini/         Gemini CLI settings (reads AGENTS.md)
 bin/ + src/      the npx CLI (exam · generate · validate · stats · sync)
 workflows/       Claude Code Workflow for fact-checked bulk generation
-.github/         CI to keep the blueprint in sync
+test/            Node test runner coverage for core CLI behavior
+.github/         CI to validate quality and keep the blueprint in sync
 ```
 
 ## Contributing questions
 
 Every question must map to one domain + one competency from the blueprint, have exactly one correct
 answer, and cite an official doc in `source`. See [`spec/item-writing-rules.md`](spec/item-writing-rules.md),
-then run `node bin/cli.js validate` before opening a PR.
+then run `node bin/cli.js validate` and `npm test` before opening a PR.
 
 ## License
 

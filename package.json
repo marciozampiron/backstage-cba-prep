@@ -14,7 +14,8 @@
     "stats": "node bin/cli.js stats",
     "sync": "node bin/cli.js sync",
     "audit": "node bin/cli.js audit-sources",
-    "history": "node bin/cli.js history"
+    "history": "node bin/cli.js history",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
@@ -29,7 +30,11 @@
     "CLAUDE.md",
     ".claude",
     ".gemini",
-    ".github"
+    ".github",
+    "test",
+    "RELEASE.md",
+    "melhorias.md",
+    "inconsistencias.md"
   ],
   "keywords": [
     "backstage",
