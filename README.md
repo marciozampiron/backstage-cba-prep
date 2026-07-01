@@ -113,7 +113,7 @@ drift, so the bank never silently goes stale.
 ## Repo layout
 
 ```text
-spec/            engine-neutral brain (blueprint, docs-map, item rules, tutor guide)
+spec/            engine-neutral brain (blueprint, docs-map, item rules, tutor guide, product roadmap)
 questions/       the question bank (JSON) + schema
 AGENTS.md        agent brief (Codex native; Gemini via .gemini/settings.json)
 CLAUDE.md        Claude Code entry pointer
@@ -124,6 +124,10 @@ workflows/       Claude Code Workflow for fact-checked bulk generation
 test/            Node test runner coverage for core CLI behavior
 .github/         CI to validate quality and keep the blueprint in sync
 ```
+
+## Product direction
+
+The SaaS direction lives in [`spec/product-roadmap.md`](spec/product-roadmap.md). It defines the CBA-first web MVP, adaptive progress model, AI coach, authoring pipeline, content provenance, generic exam engine, and billing sequence.
 
 ## Contributing questions
 

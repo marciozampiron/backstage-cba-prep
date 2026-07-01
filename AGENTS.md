@@ -23,6 +23,7 @@ Generate questions that drop straight into `questions/<domain>.json`. Follow
 include a `source` URL, and validate against `questions/schema.json`.
 
 ## Non-negotiable rules
+- SaaS/product work follows [`spec/product-roadmap.md`](spec/product-roadmap.md). Do not bypass source-grounded review, provenance, or the CBA-first MVP sequence.
 - Facts come only from the official Backstage docs / LF blueprint. **Never invent** commands, ports,
   annotation keys, package names, or file names. If unsure, fetch the doc or say so.
 - Every question maps to **one domain + one competency** from `spec/exam-blueprint.md`.
@@ -35,6 +36,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `spec/backstage-docs-map.md`  | Which official doc proves which fact |
 | `spec/item-writing-rules.md`  | How to write exam-quality items + field rules |
 | `spec/tutor-guide.md`         | How to run a study session |
+| `spec/product-roadmap.md`     | SaaS product direction, phases, agent rules |
 | `questions/*.json`            | The question bank (study material) |
 | `questions/schema.json`       | JSON Schema every question must satisfy |
 
