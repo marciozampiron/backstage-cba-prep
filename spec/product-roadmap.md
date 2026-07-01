@@ -168,6 +168,11 @@ The project uses:
 - Phase: Phase 0 through Phase 6
 - Labels: shipped, roadmap, epic, saas
 
+Recommended views:
+
+- Roadmap planning: group by `Phase` and use it as the primary planning view.
+- Delivery tracking: group by `Status` and keep it for execution flow.
+
 When creating new roadmap issues, agents should:
 
 1. assign the correct phase;
