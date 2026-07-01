@@ -63,7 +63,7 @@
     "id": "cat-004",
     "domain": "Backstage Catalog",
     "competency": "Using annotations",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Where are catalog annotations placed inside a catalog-info.yaml file?",
     "options": {
       "A": "Under metadata.annotations",
@@ -103,7 +103,7 @@
     "id": "cat-006",
     "domain": "Backstage Catalog",
     "competency": "Using annotations",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which annotation tells Backstage where an entity's TechDocs source content lives?",
     "options": {
       "A": "techdocs.io/path",

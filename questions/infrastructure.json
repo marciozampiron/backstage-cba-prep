@@ -64,7 +64,7 @@
     "id": "infra-004",
     "domain": "Backstage Infrastructure",
     "competency": "Configure Backstage",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which file holds the primary static configuration for a Backstage instance?",
     "options": {
       "A": "settings.xml",
@@ -84,7 +84,7 @@
     "id": "infra-005",
     "domain": "Backstage Infrastructure",
     "competency": "Configure Backstage",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which file is intended to override configuration locally during development without committing it?",
     "options": {
       "A": "app-config.local.yaml",
@@ -186,7 +186,7 @@
     "id": "infra-010",
     "domain": "Backstage Infrastructure",
     "competency": "Configure Backstage",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which syntax substitutes an environment variable's value into app-config.yaml?",
     "options": {
       "A": "%MY_VAR%",
@@ -206,7 +206,7 @@
     "id": "infra-011",
     "domain": "Backstage Infrastructure",
     "competency": "Configure Backstage",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "In app-config.yaml, which special key reads a value directly from an environment variable?",
     "options": {
       "A": "$secret",
@@ -246,7 +246,7 @@
     "id": "infra-013",
     "domain": "Backstage Infrastructure",
     "competency": "Configure Backstage",
-    "difficulty": "medium",
+    "difficulty": "hard",
     "question": "Which environment variable overrides the config value app.baseUrl?",
     "options": {
       "A": "BACKSTAGE_app_baseUrl",

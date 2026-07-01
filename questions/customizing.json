@@ -42,7 +42,7 @@
     "id": "cust-003",
     "domain": "Customizing Backstage",
     "competency": "Using Material UI components",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Backstage's frontend components are built primarily on top of which UI library?",
     "options": {
       "A": "Ant Design",
@@ -62,7 +62,7 @@
     "id": "cust-004",
     "domain": "Customizing Backstage",
     "competency": "Make changes to React code in Backstage App",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which package provides Backstage's reusable UI building blocks such as Header, Page, and InfoCard?",
     "options": {
       "A": "@material-ui/backstage",
@@ -82,7 +82,7 @@
     "id": "cust-005",
     "domain": "Customizing Backstage",
     "competency": "Make changes to React code in Backstage App",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "In a scaffolded Backstage monorepo, where does the main frontend App code live?",
     "options": {
       "A": "packages/app",
@@ -102,7 +102,7 @@
     "id": "cust-006",
     "domain": "Customizing Backstage",
     "competency": "Understand frontend versus backend plugins",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Where does the backend code live in a standard Backstage monorepo?",
     "options": {
       "A": "packages/server",
@@ -241,7 +241,7 @@
     "id": "cust-013",
     "domain": "Customizing Backstage",
     "competency": "Understand frontend versus backend plugins",
-    "difficulty": "medium",
+    "difficulty": "hard",
     "question": "Which statement about Backstage backend plugins is correct?",
     "options": {
       "A": "They render React components in the browser",
@@ -261,7 +261,7 @@
     "id": "cust-014",
     "domain": "Customizing Backstage",
     "competency": "Customizing Backstage plugins",
-    "difficulty": "medium",
+    "difficulty": "hard",
     "question": "In the current backend system, in which file is the backend assembled with createBackend() and backend.add()?",
     "options": {
       "A": "packages/app/src/App.tsx",
@@ -281,7 +281,7 @@
     "id": "cust-015",
     "domain": "Customizing Backstage",
     "competency": "Customizing Backstage plugins",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "How are Backstage plugins distributed?",
     "options": {
       "A": "As Docker images",

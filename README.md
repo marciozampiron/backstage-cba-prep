@@ -78,6 +78,8 @@ in the docs. For a fact-checked batch, run the Workflow at
 | `validate` | Check the whole bank against `questions/schema.json` (used in CI and by the agents) |
 | `stats` | Coverage per domain and competency vs. the 60-question budget |
 | `sync` | Compare local blueprint weights with the live LF page; exits `3` on drift |
+| `audit-sources` | HTTP-check every question's `source` URL (soft-fail on network; exits `2` on 4xx) |
+| `history` | Show your past exam attempts and progress over time |
 
 All commands run with zero runtime dependencies (Node built-ins only).
 
@@ -109,7 +111,7 @@ drift, so the bank never silently goes stale.
 
 ## Repo layout
 
-```
+```text
 spec/            engine-neutral brain (blueprint, docs-map, item rules, tutor guide)
 questions/       the question bank (JSON) + schema
 AGENTS.md        agent brief (Codex native; Gemini via .gemini/settings.json)

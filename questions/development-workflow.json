@@ -164,7 +164,7 @@
     "id": "dw-009",
     "domain": "Backstage Development Workflow",
     "competency": "Download and install dependencies for a Backstage project with NPM/Yarn",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which command installs all dependencies for a freshly cloned Backstage repository?",
     "options": {
       "A": "yarn install",
@@ -184,7 +184,7 @@
     "id": "dw-010",
     "domain": "Backstage Development Workflow",
     "competency": "Use Docker to build a container image of a Backstage project",
-    "difficulty": "medium",
+    "difficulty": "hard",
     "question": "When Docker-in-Docker is not available, which Docker build approach does Backstage recommend?",
     "options": {
       "A": "The host build, running Docker inside the container",
@@ -244,7 +244,7 @@
     "id": "dw-013",
     "domain": "Backstage Development Workflow",
     "competency": "Build and run Backstage projects locally",
-    "difficulty": "medium",
+    "difficulty": "easy",
     "question": "Which database backs a newly created Backstage app during local development?",
     "options": {
       "A": "An in-memory SQLite database",

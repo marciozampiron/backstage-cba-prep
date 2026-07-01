@@ -2,6 +2,7 @@ import { EXAM, DOMAINS, domainByKey } from '../lib/blueprint.js';
 import { sample, shuffle } from '../lib/bank.js';
 import { summarize } from '../lib/score.js';
 import { c, hr, bar, ask, closeInput } from '../lib/ui.js';
+import { record } from '../lib/history.js';
 
 function fmtTime(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -87,7 +88,23 @@ export async function runExam(opts) {
   }
 
   closeInput();
-  report(results, passPct);
+  const summary = report(results, passPct);
+  if (opts.save !== false && results.length) {
+    const perDomain = {};
+    for (const d of DOMAINS) {
+      const p = summary.per[d.key];
+      if (p.total) perDomain[d.key] = { correct: p.correct, total: p.total };
+    }
+    const saved = record({
+      date: new Date().toISOString(),
+      domain: opts.domain || 'all',
+      count: summary.total,
+      correct: summary.correct,
+      pct: summary.pct,
+      perDomain,
+    });
+    if (saved) console.log(c.gray('  Saved to history — see: node bin/cli.js history\n'));
+  }
 }
 
 function report(results, passPct) {
@@ -122,11 +139,36 @@ function report(results, passPct) {
       console.log(`      ${c.cyan(r.q.source)}`);
     }
   }
+  // Study plan: weakest competencies first, each with a doc link to study next.
+  const comp = {};
+  for (const r of results) {
+    const name = r.q.competency;
+    if (!comp[name]) comp[name] = { correct: 0, total: 0, source: r.q.source, gapSource: null };
+    comp[name].total += 1;
+    if (r.correct) comp[name].correct += 1;
+    else if (!comp[name].gapSource) comp[name].gapSource = r.q.source;
+  }
+  const weakComps = Object.entries(comp)
+    .map(([name, v]) => ({ name, ...v, pct: v.total ? v.correct / v.total : 0 }))
+    .filter((v) => v.correct < v.total)
+    .sort((a, b) => a.pct - b.pct || b.total - a.total)
+    .slice(0, 6);
+  if (weakComps.length) {
+    console.log(`\n  ${c.bold('Study plan')} ${c.gray('(weakest competencies first)')}:`);
+    for (const w of weakComps) {
+      console.log(`    ${c.red(`${w.correct}/${w.total}`)}  ${w.name}`);
+      console.log(`      ${c.cyan(w.gapSource || w.source)}`);
+    }
+  }
+
   const weakest = DOMAINS
     .map((d) => ({ d, p: s.per[d.key] }))
     .filter((x) => x.p.total)
     .sort((a, b) => a.p.correct / a.p.total - b.p.correct / b.p.total)[0];
   console.log(`\n${hr()}`);
-  if (weakest) console.log(c.gray(`  Next: drill your weakest domain → node bin/cli.js exam --domain ${weakest.d.key}`));
+  if (weakest && weakest.p.correct < weakest.p.total) {
+    console.log(c.gray(`  Next: drill your weakest domain → node bin/cli.js exam --domain ${weakest.d.key}`));
+  }
   console.log('');
+  return s;
 }

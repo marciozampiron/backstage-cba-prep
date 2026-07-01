@@ -12,7 +12,9 @@
     "generate": "node bin/cli.js generate",
     "validate": "node bin/cli.js validate",
     "stats": "node bin/cli.js stats",
-    "sync": "node bin/cli.js sync"
+    "sync": "node bin/cli.js sync",
+    "audit": "node bin/cli.js audit-sources",
+    "history": "node bin/cli.js history"
   },
   "engines": {
     "node": ">=18"

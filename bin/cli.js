@@ -4,6 +4,8 @@ import { runValidate } from '../src/commands/validate.js';
 import { runStats } from '../src/commands/stats.js';
 import { runGenerate } from '../src/commands/generate.js';
 import { runSync } from '../src/commands/sync.js';
+import { runHistory } from '../src/commands/history.js';
+import { runAuditSources } from '../src/commands/audit-sources.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { c } from '../src/lib/ui.js';
 
@@ -45,6 +47,8 @@ const HELP = `
     validate    Check the question bank against the schema
     stats       Show bank coverage per domain and competency
     sync        Compare local blueprint weights with the live LF page
+    audit-sources  Check that every question's source URL is reachable
+    history     Show your past exam attempts and progress
     help        Show this help
 
   ${c.bold('exam options:')}
@@ -53,6 +57,7 @@ const HELP = `
     --domain KEY    one domain: development-workflow|infrastructure|catalog|customizing
     --pass N        target score % (default 75; not an official passing score)
     --no-shuffle    keep original option order
+    --no-save       don't record this attempt in local history
 
   ${c.bold('generate options:')}
     --provider NAME anthropic | openai | google  (default anthropic)
@@ -92,6 +97,7 @@ async function main() {
         domain: domainKey,
         timer: !(args['no-timer'] || args.untimed),
         shuffleOptions: !args['no-shuffle'],
+        save: !args['no-save'],
       });
       break;
     }
@@ -114,6 +120,12 @@ async function main() {
       break;
     case 'sync':
       process.exit(await runSync({ write: !!args.write }));
+      break;
+    case 'history':
+      runHistory();
+      break;
+    case 'audit-sources':
+      process.exit(await runAuditSources());
       break;
     case undefined:
     case 'help':
