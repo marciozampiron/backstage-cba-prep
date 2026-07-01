@@ -73,12 +73,12 @@ in the docs. For a fact-checked batch, run the Workflow at
 
 | Command | What it does |
 | ------- | ------------ |
-| `exam` | Timed mock with per-domain scoring. `--count`, `--minutes`, `--domain`, `--pass`, `--no-timer`, `--no-shuffle` |
+| `exam` | Timed mock with per-domain scoring. `--count`, `--minutes`, `--domain`, `--pass`, `--no-timer`, `--no-shuffle`, `--no-save` |
 | `generate` | Author questions via an LLM. `--provider anthropic\|openai\|google`, `--domain`, `--count`, `--model`, `--dry-run` |
 | `validate` | Check the whole bank against `questions/schema.json` (used in CI and by the agents) |
 | `stats` | Coverage per domain and competency vs. the 60-question budget |
 | `sync` | Compare local blueprint weights with the live LF page; exits `3` on drift |
-| `audit-sources` | HTTP-check every question's `source` URL (soft-fail on network; exits `2` on 4xx) |
+| `audit-sources` | HTTP-check every question's `source` URL; exits `2` only on dead links (404/410), soft on 403/429/5xx/network |
 | `history` | Show your past exam attempts and progress over time |
 
 All commands run with zero runtime dependencies (Node built-ins only).

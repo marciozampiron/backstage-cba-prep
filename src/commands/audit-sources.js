@@ -42,30 +42,34 @@ export async function runAuditSources() {
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));
 
+  // Only "definitively gone" statuses fail the build. A CI runner can be bot-blocked
+  // (403) or rate-limited (429) without the page being dead, so those — plus 5xx and
+  // network errors — are treated as soft (inconclusive), not failures.
+  const GONE = new Set([404, 410]);
   let ok = 0;
-  let broken = 0;
-  let unreachable = 0;
+  let dead = 0;
+  let soft = 0;
   for (const { url, r } of results) {
     if (r.ok) {
       ok += 1;
-    } else if (r.status >= 400 && r.status < 500) {
-      broken += 1;
-      console.log(`  ${c.red(`BROKEN ${r.status}`)}  ${url}`);
+    } else if (GONE.has(r.status)) {
+      dead += 1;
+      console.log(`  ${c.red(`DEAD ${r.status}`)}  ${url}`);
     } else {
-      unreachable += 1;
-      console.log(`  ${c.yellow('unreachable')}  ${c.gray(url)} ${c.gray(r.error || `status ${r.status}`)}`);
+      soft += 1;
+      console.log(`  ${c.yellow('skipped')}  ${c.gray(url)} ${c.gray(r.error || (r.status ? `status ${r.status}` : 'no response'))}`);
     }
   }
 
   console.log(hr());
-  console.log(`  ${c.green(`${ok} ok`)} · ${broken ? c.red(`${broken} broken`) : '0 broken'} · ${unreachable ? c.yellow(`${unreachable} unreachable`) : '0 unreachable'}`);
+  console.log(`  ${c.green(`${ok} ok`)} · ${dead ? c.red(`${dead} dead`) : '0 dead'} · ${soft ? c.yellow(`${soft} skipped`) : '0 skipped'}`);
 
-  if (broken > 0) {
-    console.log(c.red('\n  ✗ Some sources returned 4xx — fix or replace them.\n'));
+  if (dead > 0) {
+    console.log(c.red('\n  ✗ Some sources are dead (404/410) — fix or replace them.\n'));
     return 2;
   }
-  if (unreachable > 0) {
-    console.log(c.gray('\n  Network/5xx prevented some checks (soft-fail — not treated as an error).\n'));
+  if (soft > 0) {
+    console.log(c.gray('\n  Some checks were inconclusive (403/429/5xx/network) — soft, not a failure.\n'));
     return 0;
   }
   console.log(c.green('\n  ✓ All sources reachable.\n'));

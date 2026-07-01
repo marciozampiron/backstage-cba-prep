@@ -24,6 +24,5 @@ jobs:
         run: node bin/cli.js generate --domain catalog --count 1 --dry-run > /tmp/cba-generate-prompt.txt
       - name: Check npm package contents
         run: npm pack --dry-run
-      - name: Audit source links (warning only)
-        continue-on-error: true
+      - name: Audit source links
         run: node bin/cli.js audit-sources
