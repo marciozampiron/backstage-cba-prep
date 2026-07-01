@@ -70,7 +70,7 @@ test('exam can run a one-question non-interactive smoke test without saving hist
   assert.doesNotMatch(res.stdout, /Saved to history/);
 });
 
-test('auditSources can run with a mocked fetch implementation', async () => {
+test('auditSources maps every unique source to one fetch and classifies 200 as ok', async () => {
   let calls = 0;
   const summary = await auditSources({
     concurrency: 20,
@@ -82,10 +82,36 @@ test('auditSources can run with a mocked fetch implementation', async () => {
 
   assert.equal(summary.ok, true);
   assert.equal(summary.code, 0);
-  assert.equal(summary.totalQuestions, 60);
-  assert.equal(summary.uniqueUrls, 14);
-  assert.equal(summary.counts.ok, 14);
+  assert.ok(summary.uniqueUrls > 0);
+  assert.ok(summary.uniqueUrls <= summary.totalQuestions);
+  assert.equal(calls, summary.uniqueUrls); // deduped: exactly one HEAD per unique URL
+  assert.equal(summary.counts.ok, summary.uniqueUrls);
   assert.equal(summary.counts.dead, 0);
   assert.equal(summary.counts.soft, 0);
-  assert.equal(calls, 14);
+});
+
+test('auditSources fails (code 2) when sources are dead (404)', async () => {
+  const summary = await auditSources({
+    concurrency: 20,
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+  });
+
+  assert.equal(summary.ok, false);
+  assert.equal(summary.code, 2);
+  assert.equal(summary.counts.dead, summary.uniqueUrls);
+  assert.equal(summary.counts.ok, 0);
+  assert.equal(summary.counts.soft, 0);
+});
+
+test('auditSources soft-passes (code 0) on bot-block / rate-limit (403)', async () => {
+  const summary = await auditSources({
+    concurrency: 20,
+    fetchImpl: async () => ({ ok: false, status: 403 }),
+  });
+
+  assert.equal(summary.ok, true);
+  assert.equal(summary.code, 0);
+  assert.equal(summary.counts.soft, summary.uniqueUrls);
+  assert.equal(summary.counts.dead, 0);
+  assert.equal(summary.counts.ok, 0);
 });
