@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditSources } from '../src/commands/audit-sources.js';
+import { generateBlueprint } from '../src/commands/blueprint.js';
+import { DOMAINS } from '../src/lib/blueprint.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -114,4 +116,35 @@ test('auditSources soft-passes (code 0) on bot-block / rate-limit (403)', async 
   assert.equal(summary.counts.soft, summary.uniqueUrls);
   assert.equal(summary.counts.dead, 0);
   assert.equal(summary.counts.ok, 0);
+});
+
+const pageFetch = async () => ({ ok: true, status: 200, text: async () => '<html>blueprint page</html>' });
+const asExtracted = () => ({
+  exam: { name: 'Certified Backstage Associate (CBA)' },
+  domains: DOMAINS.map((d) => ({ name: d.name, weight: d.weight, competencies: [...d.competencies] })),
+});
+
+test('generateBlueprint reports no change when the page matches the local blueprint', async () => {
+  const r = await generateBlueprint({ from: 'https://x', fetchImpl: pageFetch, callImpl: async () => JSON.stringify(asExtracted()) });
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.changed, false);
+  assert.equal(r.next.domains.length, 4);
+});
+
+test('generateBlueprint detects a weight change as a diff, preserving prefixes', async () => {
+  const extracted = asExtracted();
+  extracted.domains[0].weight = 30; // dev 24 -> 30
+  extracted.domains[3].weight = 26; // cust 32 -> 26 (sum stays 100)
+  const r = await generateBlueprint({ from: 'https://x', fetchImpl: pageFetch, callImpl: async () => JSON.stringify(extracted) });
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.changed, true);
+  assert.ok(r.diff.some((l) => /weight 24% -> 30%/.test(l)));
+  assert.equal(r.next.domains[0].prefix, 'dw'); // prefix preserved via name match
+});
+
+test('generateBlueprint rejects a blueprint whose weights do not sum to ~100', async () => {
+  const extracted = asExtracted();
+  extracted.domains[0].weight = 5; // sum falls to 81
+  const r = await generateBlueprint({ from: 'https://x', fetchImpl: pageFetch, callImpl: async () => JSON.stringify(extracted) });
+  assert.ok(r.errors.some((e) => /weights sum/.test(e)), JSON.stringify(r.errors));
 });

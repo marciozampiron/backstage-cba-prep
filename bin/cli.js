@@ -6,6 +6,7 @@ import { runGenerate } from '../src/commands/generate.js';
 import { runSync } from '../src/commands/sync.js';
 import { runHistory } from '../src/commands/history.js';
 import { runAuditSources } from '../src/commands/audit-sources.js';
+import { runBlueprint } from '../src/commands/blueprint.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { c } from '../src/lib/ui.js';
 
@@ -47,6 +48,7 @@ const HELP = `
     validate    Check the question bank against the schema
     stats       Show bank coverage per domain and competency
     sync        Compare local blueprint weights with the live LF page
+    blueprint   Regenerate the domain (spec/blueprint.json) from a source URL via AI
     audit-sources  Check that every question's source URL is reachable
     history     Show your past exam attempts and progress
     help        Show this help
@@ -69,6 +71,12 @@ const HELP = `
     --model NAME    override the model id
     --dry-run       print the prompt and exit (no API key needed)
     ${c.gray('needs a key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY')}
+
+  ${c.bold('blueprint options:')}
+    --from URL      source page to extract the domain from (default: the exam URL)
+    --provider NAME anthropic | openai | google  (default anthropic)
+    --write         apply the regenerated domain to spec/blueprint.json
+    ${c.gray('needs an API key, same as generate')}
 
   ${c.bold('Examples:')}
     npx backstage-cba-prep exam
@@ -123,6 +131,17 @@ async function main() {
       break;
     case 'sync':
       process.exit(await runSync({ write: !!args.write }));
+      break;
+    case 'blueprint':
+      process.exit(
+        await runBlueprint({
+          from: typeof args.from === 'string' ? args.from : undefined,
+          provider: args.provider,
+          model: args.model,
+          write: !!args.write,
+          json: !!args.json,
+        })
+      );
       break;
     case 'history':
       runHistory({ json: !!args.json });

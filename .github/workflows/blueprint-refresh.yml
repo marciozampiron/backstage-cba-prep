@@ -1,0 +1,60 @@
+name: Refresh blueprint
+
+# Regenerates the exam domain (spec/blueprint.json) from the official source page using AI
+# and opens a PULL REQUEST when it changes — automatic, but a human reviews the diff before merge.
+# Requires an ANTHROPIC_API_KEY repo secret; skips gracefully if it is absent.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # Mondays 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Source URL to extract the domain from (defaults to the exam URL)
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Regenerate the domain from the source page
+        id: gen
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FROM_URL: ${{ github.event.inputs.url }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No ANTHROPIC_API_KEY secret set — skipping blueprint refresh."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$FROM_URL" ]; then
+            node bin/cli.js blueprint --from "$FROM_URL" --write
+          else
+            node bin/cli.js blueprint --write
+          fi
+      - name: Check the bank against the (possibly) new domain
+        if: steps.gen.outputs.skip != 'true'
+        run: node bin/cli.js validate || echo "::warning::bank no longer validates against the regenerated domain — review the PR carefully"
+      - name: Open a PR if the domain changed
+        if: steps.gen.outputs.skip != 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/blueprint-refresh
+          title: Refresh exam domain from the source page
+          commit-message: 'chore: refresh spec/blueprint.json from the source page'
+          labels: roadmap
+          body: |
+            Automated regeneration of the exam domain (`spec/blueprint.json`) from the official page.
+
+            Review the diff carefully: domains, weights, and competencies must match the source.
+            If a domain was **renamed**, existing question IDs/prefixes may need updating too — check
+            the `validate` output in the run logs before merging.

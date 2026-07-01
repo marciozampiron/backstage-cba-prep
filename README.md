@@ -79,6 +79,7 @@ in the docs. For a fact-checked batch, run the Workflow at
 | `validate` | Check the whole bank against `questions/schema.json` (supports `--json`) |
 | `stats` | Coverage per domain and competency vs. the 60-question budget (supports `--json`) |
 | `sync` | Compare local blueprint weights with the live LF page; exits `3` on drift |
+| `blueprint` | Regenerate the domain (`spec/blueprint.json`) from a source URL via AI. `--from`, `--provider`, `--write`; exits `3` when a change is proposed |
 | `audit-sources` | HTTP-check every question's `source` URL; supports `--json`; exits `2` only on dead links (404/410), soft on 403/429/5xx/network |
 | `history` | Show your past exam attempts and progress over time (supports `--json`) |
 
@@ -103,10 +104,15 @@ Full competencies live in [`spec/exam-blueprint.md`](spec/exam-blueprint.md).
 
 ## Keeping the domain fresh
 
-The exam blueprint is the source of truth for *what* is tested. `npx backstage-cba-prep sync` re-fetches
-the official LF page and flags any change in the domains/weights. The
-[`sync-domain`](.github/workflows/sync-domain.yml) GitHub Action runs it weekly and opens an issue on
-drift, so the bank never silently goes stale.
+The exam domain (domains, weights, competencies) lives as data in
+[`spec/blueprint.json`](spec/blueprint.json). Two layers of automation keep it current:
+
+- **`sync`** (no API key) re-fetches the official page and flags weight drift; the
+  [`sync-domain`](.github/workflows/sync-domain.yml) Action runs weekly and opens an issue on drift.
+- **`blueprint --from <url>`** regenerates the whole domain from a source page using AI, validates it,
+  and shows a diff (`--write` applies it). The
+  [`blueprint-refresh`](.github/workflows/blueprint-refresh.yml) Action runs weekly and opens a
+  **pull request** when the domain changes — automatic, but you review the diff before merging.
 
 ---
 

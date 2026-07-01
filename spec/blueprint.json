@@ -1,0 +1,66 @@
+{
+  "exam": {
+    "name": "Certified Backstage Associate (CBA)",
+    "totalQuestions": 60,
+    "minutes": 90,
+    "defaultPassPct": 75,
+    "blueprintUrl": "https://training.linuxfoundation.org/certification/certified-backstage-associate-cba/"
+  },
+  "domains": [
+    {
+      "key": "development-workflow",
+      "name": "Backstage Development Workflow",
+      "weight": 24,
+      "prefix": "dw",
+      "target": 14,
+      "competencies": [
+        "Build and run Backstage projects locally",
+        "Understand local development workflows",
+        "Compile a Backstage project with TypeScript",
+        "Download and install dependencies for a Backstage project with NPM/Yarn",
+        "Use Docker to build a container image of a Backstage project"
+      ]
+    },
+    {
+      "key": "infrastructure",
+      "name": "Backstage Infrastructure",
+      "weight": 22,
+      "prefix": "infra",
+      "target": 13,
+      "competencies": [
+        "Understand the Backstage framework",
+        "Configure Backstage",
+        "Deploy Backstage to production",
+        "Understand Backstage client-server architecture"
+      ]
+    },
+    {
+      "key": "catalog",
+      "name": "Backstage Catalog",
+      "weight": 22,
+      "prefix": "cat",
+      "target": 13,
+      "competencies": [
+        "Understand how/why to use Backstage Catalog",
+        "Populate Backstage Catalog",
+        "Using annotations",
+        "Working with manually registered entity locations",
+        "Troubleshooting entity ingestion",
+        "Working with automated ingestion"
+      ]
+    },
+    {
+      "key": "customizing",
+      "name": "Customizing Backstage",
+      "weight": 32,
+      "prefix": "cust",
+      "target": 20,
+      "competencies": [
+        "Understand frontend versus backend plugins",
+        "Customizing Backstage plugins",
+        "Make changes to React code in Backstage App",
+        "Using Material UI components"
+      ]
+    }
+  ]
+}

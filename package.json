@@ -15,6 +15,7 @@
     "sync": "node bin/cli.js sync",
     "audit": "node bin/cli.js audit-sources",
     "history": "node bin/cli.js history",
+    "blueprint": "node bin/cli.js blueprint",
     "test": "node --test"
   },
   "engines": {

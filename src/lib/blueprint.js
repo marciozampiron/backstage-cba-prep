@@ -1,72 +1,13 @@
-// The CBA exam blueprint as data. Keep in sync with spec/exam-blueprint.md
-// (the CLI `sync` command refreshes both from the official LF page).
+// The exam blueprint (domain model) is data, loaded from spec/blueprint.json.
+// Regenerate it from the official page with `node bin/cli.js blueprint --from <url>`.
+import fs from 'node:fs';
+import path from 'node:path';
+import { SPEC_DIR } from './paths.js';
 
-export const EXAM = {
-  name: 'Certified Backstage Associate (CBA)',
-  totalQuestions: 60,
-  minutes: 90,
-  defaultPassPct: 75, // NOT an official passing score; overridable with --pass.
-  blueprintUrl: 'https://training.linuxfoundation.org/certification/certified-backstage-associate-cba/',
-};
+const data = JSON.parse(fs.readFileSync(path.join(SPEC_DIR, 'blueprint.json'), 'utf8'));
 
-export const DOMAINS = [
-  {
-    key: 'development-workflow',
-    name: 'Backstage Development Workflow',
-    weight: 24,
-    prefix: 'dw',
-    target: 14,
-    competencies: [
-      'Build and run Backstage projects locally',
-      'Understand local development workflows',
-      'Compile a Backstage project with TypeScript',
-      'Download and install dependencies for a Backstage project with NPM/Yarn',
-      'Use Docker to build a container image of a Backstage project',
-    ],
-  },
-  {
-    key: 'infrastructure',
-    name: 'Backstage Infrastructure',
-    weight: 22,
-    prefix: 'infra',
-    target: 13,
-    competencies: [
-      'Understand the Backstage framework',
-      'Configure Backstage',
-      'Deploy Backstage to production',
-      'Understand Backstage client-server architecture',
-    ],
-  },
-  {
-    key: 'catalog',
-    name: 'Backstage Catalog',
-    weight: 22,
-    prefix: 'cat',
-    target: 13,
-    competencies: [
-      'Understand how/why to use Backstage Catalog',
-      'Populate Backstage Catalog',
-      'Using annotations',
-      'Working with manually registered entity locations',
-      'Troubleshooting entity ingestion',
-      'Working with automated ingestion',
-    ],
-  },
-  {
-    key: 'customizing',
-    name: 'Customizing Backstage',
-    weight: 32,
-    prefix: 'cust',
-    target: 20,
-    competencies: [
-      'Understand frontend versus backend plugins',
-      'Customizing Backstage plugins',
-      'Make changes to React code in Backstage App',
-      'Using Material UI components',
-    ],
-  },
-];
-
+export const EXAM = data.exam;
+export const DOMAINS = data.domains;
 export const PREFIXES = DOMAINS.map((d) => d.prefix);
 
 export function domainByKey(key) {

@@ -32,6 +32,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 ## Knowledge map
 | File | What it holds |
 | ---- | ------------- |
+| `spec/blueprint.json`         | The exam domain as data (domains/weights/competencies) — regenerable from a URL |
 | `spec/exam-blueprint.md`      | Domains, weights (24/22/22/32), competencies, 60-question budget |
 | `spec/backstage-docs-map.md`  | Which official doc proves which fact |
 | `spec/item-writing-rules.md`  | How to write exam-quality items + field rules |
@@ -44,6 +45,10 @@ include a `source` URL, and validate against `questions/schema.json`.
 The blueprint can change. Run `npx backstage-cba-prep sync` (or `node bin/cli.js sync`) to compare the
 official exam page with the local blueprint. With `--write`, it records `spec/last-sync.json`. CI runs
 this on a schedule and opens an issue on drift.
+
+To regenerate the whole domain from a URL, run `node bin/cli.js blueprint --from <url> --write` — AI
+extracts domains/weights/competencies from the page, validates them, and shows a diff. CI
+(`blueprint-refresh`) does this weekly and opens a PR when the domain changes.
 
 ## Optional tooling (engine-agnostic Node CLI)
 - `npx backstage-cba-prep exam` — timed 60-question mock with per-domain scoring.
