@@ -1,0 +1,26 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate question bank
+        run: node bin/cli.js validate
+      - name: Check bank coverage
+        run: node bin/cli.js stats
+      - name: Check generator prompt
+        run: node bin/cli.js generate --domain catalog --count 1 --dry-run > /tmp/cba-generate-prompt.txt
+      - name: Check npm package contents
+        run: npm pack --dry-run

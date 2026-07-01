@@ -14,11 +14,34 @@
     "stats": "node bin/cli.js stats",
     "sync": "node bin/cli.js sync"
   },
-  "engines": { "node": ">=18" },
-  "files": ["bin", "src", "questions", "spec", "AGENTS.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "src",
+    "questions",
+    "spec",
+    "workflows",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".claude",
+    ".gemini",
+    ".github"
+  ],
   "keywords": [
-    "backstage", "cba", "certification", "linux-foundation", "cncf",
-    "exam", "quiz", "developer-portal", "study", "codex", "gemini", "claude"
+    "backstage",
+    "cba",
+    "certification",
+    "linux-foundation",
+    "cncf",
+    "exam",
+    "quiz",
+    "developer-portal",
+    "study",
+    "codex",
+    "gemini",
+    "claude"
   ],
   "author": "",
   "license": "MIT"

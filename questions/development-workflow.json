@@ -14,7 +14,10 @@
     "answer": "A",
     "explanation": "The official way to create a standalone Backstage app is `npx @backstage/create-app@latest`, which generates the monorepo (packages/app and packages/backend). The other commands are not real Backstage entry points.",
     "source": "https://backstage.io/docs/getting-started/",
-    "tags": ["create-app", "scaffold"]
+    "tags": [
+      "create-app",
+      "scaffold"
+    ]
   },
   {
     "id": "dw-002",
@@ -23,15 +26,18 @@
     "difficulty": "medium",
     "question": "In a freshly scaffolded Backstage app, which command starts BOTH the frontend and the backend for local development?",
     "options": {
-      "A": "yarn start",
-      "B": "yarn frontend",
+      "A": "yarn frontend",
+      "B": "yarn start",
       "C": "npm run serve",
       "D": "yarn build"
     },
-    "answer": "A",
+    "answer": "B",
     "explanation": "`yarn start` launches the frontend and backend as separate processes in one terminal. `yarn build` compiles output rather than running a dev server, and the other commands are not defined.",
     "source": "https://backstage.io/docs/getting-started/",
-    "tags": ["yarn", "dev-server"]
+    "tags": [
+      "yarn",
+      "dev-server"
+    ]
   },
   {
     "id": "dw-003",
@@ -40,15 +46,18 @@
     "difficulty": "easy",
     "question": "Which package manager does a standard Backstage app use by default to install dependencies and run scripts?",
     "options": {
-      "A": "Yarn",
+      "A": "npm only",
       "B": "pnpm",
-      "C": "npm only",
+      "C": "Yarn",
       "D": "Bun"
     },
-    "answer": "A",
+    "answer": "C",
     "explanation": "Backstage apps are set up as a Yarn monorepo; the getting-started flow pins a specific Yarn version. While Node/npm are prerequisites, day-to-day commands use Yarn.",
     "source": "https://backstage.io/docs/getting-started/",
-    "tags": ["yarn", "dependencies"]
+    "tags": [
+      "yarn",
+      "dependencies"
+    ]
   },
   {
     "id": "dw-004",
@@ -57,15 +66,19 @@
     "difficulty": "medium",
     "question": "During a Backstage build, which command runs a full TypeScript type check and emits type definitions across the project?",
     "options": {
-      "A": "yarn tsc",
+      "A": "yarn clean",
       "B": "yarn lint",
       "C": "yarn test",
-      "D": "yarn clean"
+      "D": "yarn tsc"
     },
-    "answer": "A",
+    "answer": "D",
     "explanation": "`yarn tsc` performs the project-wide TypeScript compilation/type check and generates declaration files; it is a required step in the Docker host build. Linting and testing do not perform full type checking.",
     "source": "https://backstage.io/docs/deployment/docker",
-    "tags": ["typescript", "tsc", "build"]
+    "tags": [
+      "typescript",
+      "tsc",
+      "build"
+    ]
   },
   {
     "id": "dw-005",
@@ -82,7 +95,10 @@
     "answer": "A",
     "explanation": "The host build installs dependencies (`yarn install --immutable`), generates type definitions (`yarn tsc`), and builds the backend package (`yarn build:backend`) before the Docker image is built. The other sequences use commands that don't exist for this purpose.",
     "source": "https://backstage.io/docs/deployment/docker",
-    "tags": ["docker", "host-build"]
+    "tags": [
+      "docker",
+      "host-build"
+    ]
   },
   {
     "id": "dw-006",
@@ -91,15 +107,18 @@
     "difficulty": "medium",
     "question": "In the host build approach, where is the backend Dockerfile located and what is the build context?",
     "options": {
-      "A": "packages/backend/Dockerfile, built with the repository root as the context",
-      "B": "A Dockerfile at the repo root, with packages/backend as the context",
+      "A": "A Dockerfile at the repo root, with packages/backend as the context",
+      "B": "packages/backend/Dockerfile, built with the repository root as the context",
       "C": "packages/app/Dockerfile, built from packages/app",
       "D": ".backstage/Dockerfile, built from /tmp"
     },
-    "answer": "A",
+    "answer": "B",
     "explanation": "The Dockerfile lives at `packages/backend/Dockerfile` but must be built from the repository root (e.g., `docker image build . -f packages/backend/Dockerfile --tag backstage`) so the build has access to the whole workspace.",
     "source": "https://backstage.io/docs/deployment/docker",
-    "tags": ["docker", "dockerfile"]
+    "tags": [
+      "docker",
+      "dockerfile"
+    ]
   },
   {
     "id": "dw-007",
@@ -108,15 +127,18 @@
     "difficulty": "easy",
     "question": "Which Node.js releases does Backstage recommend for local development?",
     "options": {
-      "A": "Active LTS releases (for example Node 22 or 24)",
+      "A": "Any odd-numbered current release",
       "B": "Only Node 12",
-      "C": "Any odd-numbered current release",
+      "C": "Active LTS releases (for example Node 22 or 24)",
       "D": "Node 8 or Node 10"
     },
-    "answer": "A",
+    "answer": "C",
     "explanation": "Backstage targets active LTS versions of Node (such as 22 or 24). Odd/very old releases are unsupported.",
     "source": "https://backstage.io/docs/getting-started/",
-    "tags": ["node", "prerequisites"]
+    "tags": [
+      "node",
+      "prerequisites"
+    ]
   },
   {
     "id": "dw-008",
@@ -125,14 +147,17 @@
     "difficulty": "medium",
     "question": "By default, on which ports do a local Backstage frontend and backend run?",
     "options": {
-      "A": "Frontend on 3000, backend on 7007",
+      "A": "Frontend on 4200, backend on 5000",
       "B": "Frontend on 8080, backend on 8081",
       "C": "Frontend on 7007, backend on 3000",
-      "D": "Frontend on 4200, backend on 5000"
+      "D": "Frontend on 3000, backend on 7007"
     },
-    "answer": "A",
+    "answer": "D",
     "explanation": "Locally the frontend is served at http://localhost:3000 and the backend listens on 7007. The pairing in option C is reversed.",
     "source": "https://backstage.io/docs/getting-started/",
-    "tags": ["ports", "dev-server"]
+    "tags": [
+      "ports",
+      "dev-server"
+    ]
   }
 ]

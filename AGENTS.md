@@ -39,8 +39,9 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `questions/schema.json`       | JSON Schema every question must satisfy |
 
 ## Keeping the domain fresh
-The blueprint can change. Run `npx backstage-cba-prep sync` (or `node bin/cli.js sync`) to re-fetch the
-official exam page and update `spec/exam-blueprint.md`. CI runs this on a schedule and opens a PR on change.
+The blueprint can change. Run `npx backstage-cba-prep sync` (or `node bin/cli.js sync`) to compare the
+official exam page with the local blueprint. With `--write`, it records `spec/last-sync.json`. CI runs
+this on a schedule and opens an issue on drift.
 
 ## Optional tooling (engine-agnostic Node CLI)
 - `npx backstage-cba-prep exam` — timed 60-question mock with per-domain scoring.

@@ -14,7 +14,10 @@
     "answer": "A",
     "explanation": "Backstage is an open source framework for building developer portals, unifying tooling, services, and docs. It is not an orchestrator, CI/CD service, or hosting provider.",
     "source": "https://backstage.io/docs/overview/what-is-backstage",
-    "tags": ["framework", "definition"]
+    "tags": [
+      "framework",
+      "definition"
+    ]
   },
   {
     "id": "infra-002",
@@ -23,15 +26,18 @@
     "difficulty": "easy",
     "question": "Which company originally created Backstage, and which foundation stewards it today?",
     "options": {
-      "A": "Created by Spotify; now a CNCF project",
-      "B": "Created by Google; now an Apache Software Foundation project",
+      "A": "Created by Google; now an Apache Software Foundation project",
+      "B": "Created by Spotify; now a CNCF project",
       "C": "Created by Netflix; now an OpenJS Foundation project",
       "D": "Created by Microsoft; now a Cloud Foundry project"
     },
-    "answer": "A",
+    "answer": "B",
     "explanation": "Backstage was created by Spotify and donated to the Cloud Native Computing Foundation (CNCF), where it is an incubating project.",
     "source": "https://backstage.io/docs/overview/what-is-backstage",
-    "tags": ["spotify", "cncf"]
+    "tags": [
+      "spotify",
+      "cncf"
+    ]
   },
   {
     "id": "infra-003",
@@ -40,15 +46,19 @@
     "difficulty": "medium",
     "question": "Which three capabilities are highlighted as the core features of Backstage?",
     "options": {
-      "A": "Software Catalog, Software Templates, and TechDocs",
+      "A": "Pipelines, Runners, and Artifacts",
       "B": "Pods, Services, and Ingresses",
-      "C": "Pipelines, Runners, and Artifacts",
+      "C": "Software Catalog, Software Templates, and TechDocs",
       "D": "Dashboards, Alerts, and Log streams"
     },
-    "answer": "A",
+    "answer": "C",
     "explanation": "The Software Catalog, Software Templates (Scaffolder), and TechDocs are the three core features, extended by a plugin ecosystem. The other options are Kubernetes/CI/observability concepts.",
     "source": "https://backstage.io/docs/overview/what-is-backstage",
-    "tags": ["catalog", "templates", "techdocs"]
+    "tags": [
+      "catalog",
+      "templates",
+      "techdocs"
+    ]
   },
   {
     "id": "infra-004",
@@ -57,15 +67,18 @@
     "difficulty": "medium",
     "question": "Which file holds the primary static configuration for a Backstage instance?",
     "options": {
-      "A": "app-config.yaml",
+      "A": "settings.xml",
       "B": "backstage.json",
       "C": "config.toml",
-      "D": "settings.xml"
+      "D": "app-config.yaml"
     },
-    "answer": "A",
+    "answer": "D",
     "explanation": "Backstage reads configuration from `app-config.yaml` (with environment-specific overrides like app-config.production.yaml). The other filenames are not used.",
     "source": "https://backstage.io/docs/conf/",
-    "tags": ["configuration", "app-config"]
+    "tags": [
+      "configuration",
+      "app-config"
+    ]
   },
   {
     "id": "infra-005",
@@ -82,7 +95,10 @@
     "answer": "A",
     "explanation": "`app-config.local.yaml` is git-ignored by default and layered on top of app-config.yaml for local development, making it the place for local secrets/overrides.",
     "source": "https://backstage.io/docs/conf/",
-    "tags": ["configuration", "local-override"]
+    "tags": [
+      "configuration",
+      "local-override"
+    ]
   },
   {
     "id": "infra-006",
@@ -91,15 +107,19 @@
     "difficulty": "medium",
     "question": "Which databases does Backstage typically use for development and for production, respectively?",
     "options": {
-      "A": "SQLite for development and PostgreSQL for production",
-      "B": "MySQL for development and Oracle for production",
+      "A": "MySQL for development and Oracle for production",
+      "B": "SQLite for development and PostgreSQL for production",
       "C": "MongoDB for both development and production",
       "D": "PostgreSQL for development and SQLite for production"
     },
-    "answer": "A",
+    "answer": "B",
     "explanation": "Development defaults to an in-memory SQLite database, while PostgreSQL is the preferred production database. Option D reverses the two.",
     "source": "https://backstage.io/docs/overview/architecture-overview",
-    "tags": ["database", "postgres", "sqlite"]
+    "tags": [
+      "database",
+      "postgres",
+      "sqlite"
+    ]
   },
   {
     "id": "infra-007",
@@ -108,15 +128,18 @@
     "difficulty": "medium",
     "question": "How do the Backstage frontend and backend primarily communicate?",
     "options": {
-      "A": "The React frontend calls the backend over HTTP APIs",
+      "A": "Only through a shared message queue",
       "B": "Through direct in-process function calls",
-      "C": "Only through a shared message queue",
+      "C": "The React frontend calls the backend over HTTP APIs",
       "D": "Over a custom binary protocol on raw TCP sockets"
     },
-    "answer": "A",
+    "answer": "C",
     "explanation": "Backstage follows a client-server model: the frontend single-page app makes HTTP API requests to backend plugins. Plugins communicate 'over the wire' rather than via direct code dependencies.",
     "source": "https://backstage.io/docs/overview/architecture-overview",
-    "tags": ["client-server", "http"]
+    "tags": [
+      "client-server",
+      "http"
+    ]
   },
   {
     "id": "infra-008",
@@ -125,15 +148,18 @@
     "difficulty": "medium",
     "question": "The Backstage architecture overview divides a deployment into which three parts?",
     "options": {
-      "A": "Core, App, and Plugins",
+      "A": "Ingress, Service, and Pod",
       "B": "Client, Server, and Cache",
       "C": "Model, View, and Controller",
-      "D": "Ingress, Service, and Pod"
+      "D": "Core, App, and Plugins"
     },
-    "answer": "A",
+    "answer": "D",
     "explanation": "Backstage is described in terms of the Core (base functionality), the App (a deployed, customized instance), and Plugins (added functionality). The others are unrelated patterns/objects.",
     "source": "https://backstage.io/docs/overview/architecture-overview",
-    "tags": ["architecture", "core-app-plugins"]
+    "tags": [
+      "architecture",
+      "core-app-plugins"
+    ]
   },
   {
     "id": "infra-009",
@@ -150,6 +176,10 @@
     "answer": "A",
     "explanation": "Using the Knex library, the backend sets up a separate logical database per plugin, isolating plugin data while still targeting one database engine (e.g., PostgreSQL).",
     "source": "https://backstage.io/docs/overview/architecture-overview",
-    "tags": ["database", "knex", "plugins"]
+    "tags": [
+      "database",
+      "knex",
+      "plugins"
+    ]
   }
 ]
