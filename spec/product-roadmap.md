@@ -40,6 +40,7 @@ Do not discard this engine when building the SaaS. The web product should reuse 
 6. Multi-cert generalization comes after the CBA web MVP proves the learner loop.
 7. Billing comes after quality, retention, and learner value are measurable.
 8. Agentic inside, study product outside. Learner-facing surfaces should feel like a study platform, while agentic automation stays in internal services and admin/authoring workflows.
+9. Domain first, providers second. SaaS architecture should follow the DDD posture in [`spec/domain-driven-design.md`](domain-driven-design.md); Bedrock, Strands, and other AI providers belong behind application ports/adapters.
 
 ## Product posture
 
@@ -48,6 +49,12 @@ For learners, the product is a certification practice and progress platform: moc
 For admins and authors, the product can expose agentic workflows: source ingestion, domain mapping, draft generation, validation, provenance checks, and human review queues.
 
 Do not make the learner UI center prompts, agents, workflow traces, or generic automation. Those are implementation details unless they directly help the learner understand a study recommendation or cited answer.
+
+## Architecture posture
+
+Use pragmatic Domain-Driven Design for new SaaS work. The core domain is certification practice and progress, with authoring and provenance as supporting domains. External AI frameworks and cloud services must not define domain entities or business rules.
+
+Canonical architecture guidance lives in [`spec/domain-driven-design.md`](domain-driven-design.md).
 
 ## Phases
 

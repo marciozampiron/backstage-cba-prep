@@ -27,6 +27,7 @@
     "questions",
     "spec",
     "!spec/product-roadmap.md",
+    "!spec/domain-driven-design.md",
     "workflows",
     "AGENTS.md",
     "CLAUDE.md",
