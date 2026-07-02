@@ -24,6 +24,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 
 ## Non-negotiable rules
 - SaaS/product work follows [`spec/product-roadmap.md`](spec/product-roadmap.md). Do not bypass source-grounded review, provenance, or the CBA-first MVP sequence.
+- Agentic automation is an internal/admin capability; learner-facing product work should feel like a study platform, not an agent dashboard.
 - Facts come only from the official Backstage docs / LF blueprint. **Never invent** commands, ports,
   annotation keys, package names, or file names. If unsure, fetch the doc or say so.
 - Every question maps to **one domain + one competency** from `spec/exam-blueprint.md`.

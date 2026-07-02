@@ -39,6 +39,15 @@ Do not discard this engine when building the SaaS. The web product should reuse 
 5. Learner progress should be computed deterministically first; AI can explain and personalize later.
 6. Multi-cert generalization comes after the CBA web MVP proves the learner loop.
 7. Billing comes after quality, retention, and learner value are measurable.
+8. Agentic inside, study product outside. Learner-facing surfaces should feel like a study platform, while agentic automation stays in internal services and admin/authoring workflows.
+
+## Product posture
+
+For learners, the product is a certification practice and progress platform: mock exams, domain drills, missed-question review, competency progress, study plans, and grounded coaching.
+
+For admins and authors, the product can expose agentic workflows: source ingestion, domain mapping, draft generation, validation, provenance checks, and human review queues.
+
+Do not make the learner UI center prompts, agents, workflow traces, or generic automation. Those are implementation details unless they directly help the learner understand a study recommendation or cited answer.
 
 ## Phases
 
@@ -139,7 +148,7 @@ Rules:
 
 ## UX direction
 
-The product should start as a usable study application, not a marketing page.
+The product should start as a usable study application, not a marketing page. It should also avoid looking like an agent control panel for learners.
 
 For the learner surface:
 
