@@ -137,7 +137,7 @@ test/            Node test runner coverage for core CLI behavior
 
 ## Product direction
 
-The SaaS direction lives in [`spec/product-roadmap.md`](spec/product-roadmap.md). It defines the CBA-first web MVP, adaptive progress model, AI coach, authoring pipeline, content provenance, generic exam engine, and billing sequence. Product posture: agentic inside, study product outside. Learners should see certification practice and progress workflows; agentic automation belongs mainly to internal services and admin/authoring surfaces. Architecture posture lives in [`spec/domain-driven-design.md`](spec/domain-driven-design.md): domain/use cases first, providers behind adapters.
+The SaaS direction lives in [`spec/product-roadmap.md`](spec/product-roadmap.md). It defines the CBA-first web MVP, adaptive progress model, AI coach, authoring pipeline, content provenance, generic exam engine, and billing sequence. Product posture: agentic inside, study product outside. Learners should see certification practice and progress workflows; agentic automation belongs mainly to internal services and admin/authoring surfaces. Architecture posture lives in [`spec/domain-driven-design.md`](spec/domain-driven-design.md): domain/use cases first, providers behind adapters. AWS MCP setup for Bedrock/Strands implementation research lives in [`spec/aws-mcp.md`](spec/aws-mcp.md).
 
 ## Contributing questions
 

@@ -26,6 +26,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 - SaaS/product work follows [`spec/product-roadmap.md`](spec/product-roadmap.md). Do not bypass source-grounded review, provenance, or the CBA-first MVP sequence.
 - Agentic automation is an internal/admin capability; learner-facing product work should feel like a study platform, not an agent dashboard.
 - SaaS architecture follows pragmatic DDD in [`spec/domain-driven-design.md`](spec/domain-driven-design.md): domain/use cases first, Bedrock/Strands/providers behind adapters.
+- AWS MCP usage follows [`spec/aws-mcp.md`](spec/aws-mcp.md): implementation research only, never CBA exam fact validation.
 - Facts come only from the official Backstage docs / LF blueprint. **Never invent** commands, ports,
   annotation keys, package names, or file names. If unsure, fetch the doc or say so.
 - Every question maps to **one domain + one competency** from `spec/exam-blueprint.md`.
@@ -41,6 +42,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `spec/tutor-guide.md`         | How to run a study session |
 | `spec/product-roadmap.md`     | SaaS product direction, phases, agent rules |
 | `spec/domain-driven-design.md` | DDD contexts, dependency rules, provider boundaries |
+| `spec/aws-mcp.md`             | AWS Knowledge MCP setup and guardrails for Bedrock/Strands research |
 | `questions/*.json`            | The question bank (study material) |
 | `questions/schema.json`       | JSON Schema every question must satisfy |
 
