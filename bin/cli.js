@@ -7,6 +7,7 @@ import { runSync } from '../src/commands/sync.js';
 import { runHistory } from '../src/commands/history.js';
 import { runAuditSources } from '../src/commands/audit-sources.js';
 import { runBlueprint } from '../src/commands/blueprint.js';
+import { runReviewBank } from '../src/commands/review-bank.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { c } from '../src/lib/ui.js';
 
@@ -50,11 +51,16 @@ const HELP = `
     sync        Compare local blueprint weights with the live LF page
     blueprint   Regenerate the domain (spec/blueprint.json) from a source URL via AI
     audit-sources  Check that every question's source URL is reachable
+    review-bank    Review semantic answer correctness against cited sources
     history     Show your past exam attempts and progress
     help        Show this help
 
   ${c.bold('general options:')}
     --json        emit machine-readable JSON where supported
+
+  ${c.bold('review-bank options:')}
+    next           show the next review item and record a human decision
+    --domain KEY   limit report/next to one domain
 
   ${c.bold('exam options:')}
     --count N       number of questions (default 60)
@@ -142,6 +148,9 @@ async function main() {
           json: !!args.json,
         })
       );
+      break;
+    case 'review-bank':
+      process.exit(await runReviewBank({ subcommand: args._[0], domain: args.domain, json: !!args.json }));
       break;
     case 'history':
       runHistory({ json: !!args.json });

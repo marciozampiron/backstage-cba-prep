@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditSources } from '../src/commands/audit-sources.js';
 import { generateBlueprint } from '../src/commands/blueprint.js';
+import { recordReviewDecision, reviewStateForQuestion } from '../src/domain/authoring-review/review-ledger.js';
 import { validateQuestion as validateDomainQuestion } from '../src/domain/exam-content/question-validation.js';
 import { summarizeResults } from '../src/domain/simulation/scoring.js';
 import { DOMAINS } from '../src/lib/blueprint.js';
@@ -19,7 +20,7 @@ function runCli(args, opts = {}) {
     cwd: ROOT,
     input: opts.input,
     encoding: 'utf8',
-    env: { ...process.env, NO_COLOR: '1', HOME: home },
+    env: { ...process.env, NO_COLOR: '1', HOME: home, ...(opts.env || {}) },
   });
 }
 
@@ -63,6 +64,50 @@ test('domain scoring summarizes results with injected exam domains', () => {
     pct: 50,
     per: { catalog: { name: 'Backstage Catalog', weight: 22, correct: 1, total: 2 } },
   });
+});
+
+test('review ledger marks changed reviewed content as stale', () => {
+  const domain = DOMAINS.find((d) => d.key === 'catalog');
+  const question = {
+    id: 'cat-999',
+    _domainKey: 'catalog',
+    domain: domain.name,
+    competency: domain.competencies[0],
+    difficulty: 'easy',
+    question: 'Which Backstage feature helps organize software components?',
+    options: { A: 'Software Catalog', B: 'TechDocs only', C: 'Scaffolder template', D: 'Search plugin only' },
+    answer: 'A',
+    explanation: 'The Software Catalog is the Backstage system for organizing software components.',
+    source: 'https://backstage.io/docs/features/software-catalog/',
+    tags: ['domain-unit'],
+  };
+  const ledger = recordReviewDecision({ version: 1, reviews: {} }, question, 'verified', { reviewedAt: '2026-07-02T00:00:00.000Z' });
+
+  assert.equal(reviewStateForQuestion(question, ledger).status, 'verified');
+  assert.equal(reviewStateForQuestion({ ...question, answer: 'B' }, ledger).status, 'stale');
+});
+
+test('review-bank --json reports unreviewed coverage using an isolated ledger', () => {
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cba-review-ledger-')), 'review-ledger.json');
+  const res = runCli(['review-bank', '--json'], { env: { CBA_REVIEW_LEDGER_FILE: ledgerPath } });
+  assert.equal(res.status, 0, res.stderr);
+  const data = parseJson(res.stdout);
+  assert.equal(data.total, 60);
+  assert.deepEqual(data.counts, { verified: 0, unreviewed: 60, stale: 0, flagged: 0 });
+});
+
+test('review-bank next records a human verified decision', () => {
+  const ledgerPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cba-review-ledger-')), 'review-ledger.json');
+  const res = runCli(['review-bank', 'next', '--domain', 'catalog'], {
+    input: 'v\n',
+    env: { CBA_REVIEW_LEDGER_FILE: ledgerPath },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /Marked cat-001 as verified/);
+
+  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));
+  assert.equal(ledger.reviews['cat-001'].status, 'verified');
+  assert.equal(typeof ledger.reviews['cat-001'].hash, 'string');
 });
 
 test('validate --json reports a valid 60-question bank', () => {

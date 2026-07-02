@@ -81,9 +81,10 @@ in the docs. For a fact-checked batch, run the Workflow at
 | `sync` | Compare local blueprint weights with the live LF page; exits `3` on drift |
 | `blueprint` | Regenerate the domain (`spec/blueprint.json`) from a source URL via AI. `--from`, `--provider`, `--write`; exits `3` when a change is proposed |
 | `audit-sources` | HTTP-check every question's `source` URL; supports `--json`; exits `2` only on dead links (404/410), soft on 403/429/5xx/network |
+| `review-bank` | Human semantic review queue for answer/source correctness. `next`, `--domain`, `--json` |
 | `history` | Show your past exam attempts and progress over time (supports `--json`) |
 
-All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run.
+All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run. Review state is stored in `spec/review-ledger.json`; set `CBA_REVIEW_LEDGER_FILE` to use another ledger path for local experiments/tests.
 
 ---
 
