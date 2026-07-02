@@ -25,8 +25,8 @@ export function validateQuestion(q, domain, seen, { domainKey = domain?.key } = 
   const extraQuestionKeys = Object.keys(q).filter((k) => !QUESTION_KEYS.includes(k) && !k.startsWith('_'));
   if (extraQuestionKeys.length) errs.push(label + ': unexpected question keys: ' + extraQuestionKeys.join(', '));
 
-  if (typeof id !== 'string' || !/^(dw|infra|cat|cust)-\d{3}$/.test(id)) {
-    errs.push(label + ': id must match <prefix>-NNN (dw|infra|cat|cust)');
+  if (typeof id !== 'string' || !/^[a-z]+-\d{3}$/.test(id)) {
+    errs.push(label + ': id must match <prefix>-NNN (e.g. ' + (domain?.prefix || 'dw') + '-001)');
   } else {
     if (domain && !id.startsWith(domain.prefix + '-')) errs.push(id + ': id prefix should be "' + domain.prefix + '" in ' + domainKey + '.json');
     if (seen) {
