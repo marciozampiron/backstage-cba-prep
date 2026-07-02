@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { auditSources } from '../src/commands/audit-sources.js';
 import { generateBlueprint } from '../src/commands/blueprint.js';
+import { validateQuestion as validateDomainQuestion } from '../src/domain/exam-content/question-validation.js';
+import { summarizeResults } from '../src/domain/simulation/scoring.js';
 import { DOMAINS } from '../src/lib/blueprint.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -28,6 +30,40 @@ function parseJson(stdout) {
     assert.fail('stdout was not JSON: ' + stdout + '\n' + err.message);
   }
 }
+
+test('domain question validation runs without the file-backed bank adapter', () => {
+  const domain = DOMAINS.find((d) => d.key === 'catalog');
+  const errors = validateDomainQuestion({
+    id: 'cat-999',
+    domain: domain.name,
+    competency: domain.competencies[0],
+    difficulty: 'easy',
+    question: 'Which Backstage feature helps organize software components?',
+    options: { A: 'Software Catalog', B: 'TechDocs only', C: 'Scaffolder template', D: 'Search plugin only' },
+    answer: 'A',
+    explanation: 'The Software Catalog is the Backstage system for organizing software components.',
+    source: 'https://backstage.io/docs/features/software-catalog/',
+    tags: ['domain-unit'],
+  }, domain);
+
+  assert.deepEqual(errors, []);
+});
+
+test('domain scoring summarizes results with injected exam domains', () => {
+  const domains = [{ key: 'catalog', name: 'Backstage Catalog', weight: 22 }];
+  const summary = summarizeResults([
+    { domainKey: 'catalog', correct: true, skipped: false },
+    { domainKey: 'catalog', correct: false, skipped: true },
+  ], domains);
+
+  assert.deepEqual(summary, {
+    correct: 1,
+    total: 2,
+    answered: 1,
+    pct: 50,
+    per: { catalog: { name: 'Backstage Catalog', weight: 22, correct: 1, total: 2 } },
+  });
+});
 
 test('validate --json reports a valid 60-question bank', () => {
   const res = runCli(['validate', '--json']);

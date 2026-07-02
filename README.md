@@ -125,7 +125,10 @@ AGENTS.md        agent brief (Codex native; Gemini via .gemini/settings.json)
 CLAUDE.md        Claude Code entry pointer
 .claude/         Claude skill, cba-coach agent, /cba-* commands
 .gemini/         Gemini CLI settings (reads AGENTS.md)
-bin/ + src/      the npx CLI (exam · generate · validate · stats · sync)
+bin/            the npx CLI entrypoint
+src/lib/        CLI-facing adapters and compatibility facades
+src/domain/     pure domain rules for exam content and simulation
+src/application/ application-level question bank use cases
 workflows/       Claude Code Workflow for fact-checked bulk generation
 test/            Node test runner coverage for core CLI behavior
 .github/         CI to validate quality and keep the blueprint in sync

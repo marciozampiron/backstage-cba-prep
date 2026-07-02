@@ -175,7 +175,9 @@ src/interfaces/
   web/
 ```
 
-The current CLI does not need to be reshaped immediately. Apply this structure when adding persistence, web/API flows, or production agent orchestration.
+The initial CLI refactor has started with pure question validation in `src/domain/exam-content/`, scoring in `src/domain/simulation/`, and question-bank use cases in `src/application/`. Keep `src/lib/` as the compatibility/facade layer for the existing CLI while future web/API flows move toward explicit interfaces and infrastructure adapters.
+
+Apply the rest of this structure incrementally when adding persistence, web/API flows, or production agent orchestration.
 
 ## Provider stance
 
