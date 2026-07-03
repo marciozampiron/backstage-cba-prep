@@ -56,6 +56,8 @@ Use pragmatic Domain-Driven Design for new SaaS work. The core domain is certifi
 
 Canonical architecture guidance lives in [`spec/domain-driven-design.md`](domain-driven-design.md).
 
+Current Phase 3 AI decision: adopt AWS SDK v3 and Strands now, but only as infrastructure adapters behind application ports. Bedrock model access should use configurable model tiers/inference profiles through a `ModelProvider` port; Strands should implement an `AgentOrchestrator` port for tool-capable workflows. The domain must remain provider-free. The existing AWS CLI `bedrock-check` path is a local validation/smoke utility, not the production transport.
+
 ## Phases
 
 | Phase | Name | Goal | Primary GitHub issues |
@@ -63,7 +65,7 @@ Canonical architecture guidance lives in [`spec/domain-driven-design.md`](domain
 | 0 | CLI Core | Keep the CBA engine reliable, validated, source-grounded, and publishable through CLI/npm. | #1-#7, #9 |
 | 1 | CBA Web MVP | Build the first web simulator around CBA only: dashboard, full mock, domain drill, results, study plan. | #11, #15, #16, #8 |
 | 2 | Accounts + Progress | Persist user attempts, progress, adaptive mastery, and product analytics. | #13, #17, #18 |
-| 3 | AI Coach | Serve a grounded study companion that uses learner progress and approved sources. | #12 |
+| 3 | AI Coach | Serve a grounded study companion that uses learner progress and approved sources, backed by Bedrock/Strands infrastructure adapters. | #12, #23, #25, #26 |
 | 4 | Authoring Pipeline | Ingest official sources, draft questions with agents, review, version, approve, and publish. | #19, #20, #21 |
 | 5 | Generic Exam Engine | Generalize from CBA to multiple certifications after CBA web workflows are proven. | #10 |
 | 6 | SaaS Monetization | Add subscription and AI usage metering after retention and quality are proven. | #14 |
@@ -78,10 +80,11 @@ Canonical architecture guidance lives in [`spec/domain-driven-design.md`](domain
 4. Build the thin web simulator on the existing JSON engine: #11.
 5. Add accounts and per-user progress: #13.
 6. Add the adaptive study model and analytics: #17, #18.
-7. Add AI coach on top of measured progress: #12.
-8. Build authoring/review/provenance: #19, #20, #21.
-9. Generalize to multiple exams: #10.
-10. Add billing and metering: #14.
+7. Build the Bedrock/Strands adapter foundation: #23, using #25 for AWS docs/MCP guidance and #26 for Bedrock model-profile config.
+8. Add AI coach on top of measured progress: #12.
+9. Build authoring/review/provenance: #19, #20, #21.
+10. Generalize to multiple exams: #10.
+11. Add billing and metering: #14.
 
 ## SaaS data model direction
 
@@ -199,6 +202,6 @@ When creating new roadmap issues, agents should:
 
 ## Next decision point
 
-The next strategic decision is whether to start with #7 review-bank or #15 CBA Web MVP scope.
+The current Phase 3 implementation decision is set: use AWS SDK v3 for production Bedrock transport and adopt Strands now as an infrastructure adapter behind application-owned ports. The next implementation step for #23 is to define `ModelProvider`, `AgentOrchestrator`, and `ToolRegistry`, then implement `BedrockModelProvider` and `StrandsAgentOrchestrator` without importing AWS/Strands into `src/domain/`.
 
-Recommended path: finish #7 first if the goal is trust and content quality; start #15 first if the goal is product validation with users. In both cases, do not start #14 billing or #10 multi-cert generalization yet.
+Do not start #14 billing or #10 multi-cert generalization until the CBA learner loop, grounded coach path, and authoring/review quality gates are working.

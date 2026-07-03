@@ -183,6 +183,15 @@ Apply the rest of this structure incrementally when adding persistence, web/API 
 
 AWS Bedrock and Strands are good candidates for production agent capabilities, especially authoring and review automation. They should remain replaceable adapters.
 
+Current Phase 3 decision:
+
+- production Bedrock calls should use AWS SDK v3, not shelling out to the AWS CLI;
+- Strands should be adopted now, but only as an infrastructure adapter;
+- `ModelProvider`, `AgentOrchestrator`, and `ToolRegistry` belong in the application layer as provider-neutral ports;
+- `BedrockModelProvider` belongs under infrastructure and resolves provider-specific model IDs from config/env;
+- `StrandsAgentOrchestrator` belongs under infrastructure and implements the application orchestration port;
+- no `src/domain/` module may import AWS SDK, Bedrock, Strands, or provider-specific model IDs.
+
 Use them for:
 
 - source ingestion and extraction;
