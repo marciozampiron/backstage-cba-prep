@@ -10,6 +10,7 @@ import { runBlueprint } from '../src/commands/blueprint.js';
 import { runReviewBank } from '../src/commands/review-bank.js';
 import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
+import { loadEnv } from '../src/lib/env.js';
 import { c } from '../src/lib/ui.js';
 
 function parseArgs(argv) {
@@ -100,6 +101,7 @@ const HELP = `
 `;
 
 async function main() {
+  loadEnv(); // load .env (if present) before dispatch; real env vars always win
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1));

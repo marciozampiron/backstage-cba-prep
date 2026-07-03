@@ -85,7 +85,7 @@ in the docs. For a fact-checked batch, run the Workflow at
 | `bedrock-check` | Validate the model-tier config (`LLM_BACKEND`, tier→id) offline; `--smoke` does a paid live `bedrock-runtime converse` call |
 | `history` | Show your past exam attempts and progress over time (supports `--json`) |
 
-All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run. Review state is stored in `spec/review-ledger.json`; set `CBA_REVIEW_LEDGER_FILE` to use another ledger path for local experiments/tests. AI model selection is provider-neutral by tier (`fast` / `standard` / `critical`) and set via env — copy [`.env.example`](.env.example) to `.env` (gitignored) and run `bedrock-check` to validate it without spending tokens.
+All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run. Review state is stored in `spec/review-ledger.json`; set `CBA_REVIEW_LEDGER_FILE` to use another ledger path for local experiments/tests. AI model selection is provider-neutral by tier (`fast` / `standard` / `critical`) and set via env — copy [`.env.example`](.env.example) to `.env` (gitignored; the CLI auto-loads it from the working directory, and any real exported variable wins over the file) and run `bedrock-check` to validate it without spending tokens.
 
 ---
 

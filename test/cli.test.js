@@ -12,6 +12,7 @@ import { validateQuestion as validateDomainQuestion } from '../src/domain/exam-c
 import { summarizeResults } from '../src/domain/simulation/scoring.js';
 import { resolveModelConfig, validateModelConfig } from '../src/lib/model-config.js';
 import { runBedrockCheck } from '../src/commands/bedrock-check.js';
+import { loadEnv } from '../src/lib/env.js';
 import { DOMAINS } from '../src/lib/blueprint.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,7 +23,7 @@ function runCli(args, opts = {}) {
     cwd: ROOT,
     input: opts.input,
     encoding: 'utf8',
-    env: { ...process.env, NO_COLOR: '1', HOME: home, ...(opts.env || {}) },
+    env: { ...process.env, NO_COLOR: '1', CBA_NO_DOTENV: '1', HOME: home, ...(opts.env || {}) },
   });
 }
 
@@ -290,6 +291,7 @@ test('bedrock-check --smoke invokes via an injected runner and reports success',
     smoke: true,
     yes: true,
     tier: 'fast',
+    log: () => {},
     invokeImpl: (a) => {
       called = a;
       return { code: 0, stdout: '{"output":{}}', stderr: '' };
@@ -306,7 +308,25 @@ test('bedrock-check --smoke surfaces an invoke failure without throwing', async 
     smoke: true,
     yes: true,
     tier: 'fast',
+    log: () => {},
     invokeImpl: () => ({ code: 255, stdout: '', stderr: 'AccessDeniedException: no model access' }),
   });
   assert.equal(code, 2);
+});
+
+test('loadEnv fills only unset keys, strips quotes, and ignores comments', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-env-'));
+  fs.writeFileSync(path.join(dir, '.env'), '# comment\nLLM_BACKEND=bedrock\nAWS_REGION="us-east-1"\nMODEL_STANDARD=fromfile\n');
+  const env = { MODEL_STANDARD: 'preset' };
+  loadEnv(path.join(dir, '.env'), env);
+  assert.equal(env.LLM_BACKEND, 'bedrock');
+  assert.equal(env.AWS_REGION, 'us-east-1'); // surrounding quotes stripped
+  assert.equal(env.MODEL_STANDARD, 'preset'); // real env wins over the file
+});
+
+test('loadEnv is a no-op when the .env file is absent', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-env-'));
+  const env = { A: '1' };
+  loadEnv(path.join(dir, '.env'), env); // no file written
+  assert.deepEqual(env, { A: '1' });
 });
