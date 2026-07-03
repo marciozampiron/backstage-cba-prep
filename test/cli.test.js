@@ -10,6 +10,8 @@ import { generateBlueprint } from '../src/commands/blueprint.js';
 import { recordReviewDecision, reviewStateForQuestion } from '../src/domain/authoring-review/review-ledger.js';
 import { validateQuestion as validateDomainQuestion } from '../src/domain/exam-content/question-validation.js';
 import { summarizeResults } from '../src/domain/simulation/scoring.js';
+import { resolveModelConfig, validateModelConfig } from '../src/lib/model-config.js';
+import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { DOMAINS } from '../src/lib/blueprint.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -228,4 +230,83 @@ test('generateBlueprint rejects a blueprint whose weights do not sum to ~100', a
   extracted.domains[0].weight = 5; // sum falls to 81
   const r = await generateBlueprint({ from: 'https://x', fetchImpl: pageFetch, callImpl: async () => JSON.stringify(extracted) });
   assert.ok(r.errors.some((e) => /weights sum/.test(e)), JSON.stringify(r.errors));
+});
+
+test('resolveModelConfig defaults to first-party Anthropic tiers', () => {
+  const cfg = resolveModelConfig({});
+  assert.equal(cfg.backend, 'anthropic');
+  assert.equal(cfg.models.fast, 'claude-haiku-4-5');
+  assert.equal(cfg.models.standard, 'claude-sonnet-5');
+  assert.equal(cfg.models.critical, 'claude-opus-4-8');
+});
+
+test('resolveModelConfig uses Bedrock inference-profile ids with env overrides', () => {
+  const cfg = resolveModelConfig({
+    LLM_BACKEND: 'bedrock',
+    AWS_REGION: 'us-east-1',
+    AWS_PROFILE: 'p',
+    BEDROCK_MODEL_STANDARD: 'us.anthropic.claude-sonnet-5-20260101-v1:0',
+  });
+  assert.equal(cfg.backend, 'bedrock');
+  assert.equal(cfg.region, 'us-east-1');
+  assert.equal(cfg.models.standard, 'us.anthropic.claude-sonnet-5-20260101-v1:0');
+  assert.match(cfg.models.fast, /^us\.anthropic\.claude-haiku/);
+});
+
+test('validateModelConfig passes for the default anthropic backend', () => {
+  const v = validateModelConfig(resolveModelConfig({}), {});
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.errors, []);
+});
+
+test('validateModelConfig flags bedrock without region and non-profile ids', () => {
+  const env = { LLM_BACKEND: 'bedrock', BEDROCK_MODEL_STANDARD: 'anthropic.claude-sonnet-5' };
+  const v = validateModelConfig(resolveModelConfig(env), env);
+  assert.equal(v.ok, false);
+  assert.ok(v.errors.some((e) => /AWS_REGION/.test(e)));
+  assert.ok(v.warnings.some((w) => /cross-region inference profile/.test(w)));
+});
+
+test('validateModelConfig accepts us.* inference-profile ids with no warnings', () => {
+  const env = { LLM_BACKEND: 'bedrock', AWS_REGION: 'us-east-1', AWS_PROFILE: 'p' };
+  const v = validateModelConfig(resolveModelConfig(env), env);
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.warnings, []);
+});
+
+test('bedrock-check --json dry-run is offline-safe and reports valid anthropic config', () => {
+  const res = runCli(['bedrock-check', '--json'], { env: { LLM_BACKEND: 'anthropic' } });
+  assert.equal(res.status, 0, res.stderr);
+  const data = parseJson(res.stdout);
+  assert.equal(data.config.backend, 'anthropic');
+  assert.equal(data.check.ok, true);
+  assert.equal(data.config.models.standard, 'claude-sonnet-5');
+});
+
+test('bedrock-check --smoke invokes via an injected runner and reports success', async () => {
+  let called = null;
+  const code = await runBedrockCheck({
+    env: { LLM_BACKEND: 'bedrock', AWS_REGION: 'us-east-1', AWS_PROFILE: 'p', BEDROCK_MODEL_FAST: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' },
+    smoke: true,
+    yes: true,
+    tier: 'fast',
+    invokeImpl: (a) => {
+      called = a;
+      return { code: 0, stdout: '{"output":{}}', stderr: '' };
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(called.modelId, 'us.anthropic.claude-haiku-4-5-20251001-v1:0');
+  assert.equal(called.region, 'us-east-1');
+});
+
+test('bedrock-check --smoke surfaces an invoke failure without throwing', async () => {
+  const code = await runBedrockCheck({
+    env: { LLM_BACKEND: 'bedrock', AWS_REGION: 'us-east-1', AWS_PROFILE: 'p', BEDROCK_MODEL_FAST: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' },
+    smoke: true,
+    yes: true,
+    tier: 'fast',
+    invokeImpl: () => ({ code: 255, stdout: '', stderr: 'AccessDeniedException: no model access' }),
+  });
+  assert.equal(code, 2);
 });

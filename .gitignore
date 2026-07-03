@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 .env
 .env.*
+!.env.example
 .mcp.json
 .mcp.local.json
 spec/last-sync.json

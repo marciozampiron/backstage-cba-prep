@@ -17,6 +17,7 @@
     "review": "node bin/cli.js review-bank",
     "history": "node bin/cli.js history",
     "blueprint": "node bin/cli.js blueprint",
+    "bedrock-check": "node bin/cli.js bedrock-check",
     "test": "node --test"
   },
   "engines": {
@@ -29,6 +30,7 @@
     "spec",
     "!spec/product-roadmap.md",
     "!spec/domain-driven-design.md",
+    ".env.example",
     "workflows",
     "AGENTS.md",
     "CLAUDE.md",

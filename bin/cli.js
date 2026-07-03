@@ -8,6 +8,7 @@ import { runHistory } from '../src/commands/history.js';
 import { runAuditSources } from '../src/commands/audit-sources.js';
 import { runBlueprint } from '../src/commands/blueprint.js';
 import { runReviewBank } from '../src/commands/review-bank.js';
+import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { c } from '../src/lib/ui.js';
 
@@ -52,6 +53,7 @@ const HELP = `
     blueprint   Regenerate the domain (spec/blueprint.json) from a source URL via AI
     audit-sources  Check that every question's source URL is reachable
     review-bank    Review semantic answer correctness against cited sources
+    bedrock-check  Validate model-tier config (dry-run); --smoke for a paid live test
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -83,6 +85,12 @@ const HELP = `
     --provider NAME anthropic | openai | google  (default anthropic)
     --write         apply the regenerated domain to spec/blueprint.json
     ${c.gray('needs an API key, same as generate')}
+
+  ${c.bold('bedrock-check options:')}
+    ${c.gray('(dry-run by default: validates config shape offline, no tokens spent)')}
+    --smoke         do a LIVE bedrock-runtime call (COSTS TOKENS; bedrock backend)
+    --tier NAME     fast | standard | critical  (smoke target; default fast)
+    --yes           skip the smoke confirmation prompt
 
   ${c.bold('Examples:')}
     npx backstage-cba-prep exam
@@ -151,6 +159,16 @@ async function main() {
       break;
     case 'review-bank':
       process.exit(await runReviewBank({ subcommand: args._[0], domain: args.domain, json: !!args.json }));
+      break;
+    case 'bedrock-check':
+      process.exit(
+        await runBedrockCheck({
+          smoke: !!args.smoke,
+          tier: typeof args.tier === 'string' ? args.tier : undefined,
+          yes: !!args.yes,
+          json: !!args.json,
+        })
+      );
       break;
     case 'history':
       runHistory({ json: !!args.json });
