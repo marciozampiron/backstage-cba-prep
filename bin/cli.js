@@ -9,6 +9,7 @@ import { runAuditSources } from '../src/commands/audit-sources.js';
 import { runBlueprint } from '../src/commands/blueprint.js';
 import { runReviewBank } from '../src/commands/review-bank.js';
 import { runBedrockCheck } from '../src/commands/bedrock-check.js';
+import { runAgentCheck } from '../src/commands/agent-check.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { loadEnv } from '../src/lib/env.js';
 import { c } from '../src/lib/ui.js';
@@ -55,6 +56,7 @@ const HELP = `
     audit-sources  Check that every question's source URL is reachable
     review-bank    Review semantic answer correctness against cited sources
     bedrock-check  Validate model-tier config (dry-run); --smoke for a paid live test
+    agent-check    Check AI orchestration readiness (dry-run); --smoke for a paid live run
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -91,6 +93,11 @@ const HELP = `
     ${c.gray('(dry-run by default: validates config shape offline, no tokens spent)')}
     --smoke         do a LIVE bedrock-runtime call (COSTS TOKENS; bedrock backend)
     --tier NAME     fast | standard | critical  (smoke target; default fast)
+    --yes           skip the smoke confirmation prompt
+
+  ${c.bold('agent-check options:')}
+    ${c.gray('(dry-run by default: constructs provider + orchestrator from env, no spend)')}
+    --smoke         do a LIVE orchestrator run (COSTS TOKENS)
     --yes           skip the smoke confirmation prompt
 
   ${c.bold('Examples:')}
@@ -171,6 +178,9 @@ async function main() {
           json: !!args.json,
         })
       );
+      break;
+    case 'agent-check':
+      process.exit(await runAgentCheck({ smoke: !!args.smoke, yes: !!args.yes, json: !!args.json }));
       break;
     case 'history':
       runHistory({ json: !!args.json });

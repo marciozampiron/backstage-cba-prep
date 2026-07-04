@@ -18,6 +18,7 @@
     "history": "node bin/cli.js history",
     "blueprint": "node bin/cli.js blueprint",
     "bedrock-check": "node bin/cli.js bedrock-check",
+    "agent-check": "node bin/cli.js agent-check",
     "test": "node --test"
   },
   "engines": {
