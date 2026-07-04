@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 
-// Minimal .env loader (zero-dependency, Node 18+ safe — no reliance on --env-file).
+// Minimal .env loader (zero-dependency; no reliance on node --env-file).
 // Existing process.env values always win, so a real exported variable is never
 // overridden by the file. Not a full dotenv spec: supports `KEY=VALUE`, `#`
 // comments, blank lines, and optional matching surrounding quotes.

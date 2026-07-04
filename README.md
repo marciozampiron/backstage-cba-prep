@@ -28,7 +28,7 @@ One brain, three doors. Switch engines without rewriting anything.
 
 ## Quickstart
 
-### 1. Practice — timed mock exam (no AI, no install beyond Node ≥ 18)
+### 1. Practice — timed mock exam (no AI, no install beyond Node ≥ 20)
 
 ```bash
 npx backstage-cba-prep exam                    # full 60-question, 90-min mock
@@ -85,7 +85,9 @@ in the docs. For a fact-checked batch, run the Workflow at
 | `bedrock-check` | Validate the model-tier config (`LLM_BACKEND`, tier→id) offline; `--smoke` does a paid live `bedrock-runtime converse` call |
 | `history` | Show your past exam attempts and progress over time (supports `--json`) |
 
-All commands run with zero runtime dependencies (Node built-ins only). Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run. Review state is stored in `spec/review-ledger.json`; set `CBA_REVIEW_LEDGER_FILE` to use another ledger path for local experiments/tests. AI model selection is provider-neutral by tier (`fast` / `standard` / `critical`) and set via env — copy [`.env.example`](.env.example) to `.env` (gitignored; the CLI auto-loads it from the working directory, and any real exported variable wins over the file) and run `bedrock-check` to validate it without spending tokens.
+The core CLI runs with zero required runtime dependencies (Node built-ins only); the optional AWS Bedrock / Strands adapters pull in `@aws-sdk/client-bedrock-runtime` and `@strands-agents/sdk`, and only when you actually use them. Exam attempts are saved by default to `~/.backstage-cba-prep/history.json`; pass `--no-save` to disable that for a run. Review state is stored in `spec/review-ledger.json`; set `CBA_REVIEW_LEDGER_FILE` to use another ledger path for local experiments/tests. AI model selection is provider-neutral by tier (`fast` / `standard` / `critical`) and set via env — copy [`.env.example`](.env.example) to `.env` (gitignored; the CLI auto-loads it from the working directory, and any real exported variable wins over the file) and run `bedrock-check` to validate it without spending tokens.
+
+Server-side agent work follows the DDD boundary: the domain/application layers depend on the `ModelProvider` and `AgentOrchestrator` ports in [`src/application/ports/`](src/application/ports/), and the AWS Bedrock + Strands code lives in [`src/infrastructure/`](src/infrastructure/) behind those ports (no domain module imports an SDK). Pick the orchestrator with `ORCHESTRATOR=direct` (zero-dep single model turn, default) or `ORCHESTRATOR=strands` (`@strands-agents/sdk`).
 
 ---
 
