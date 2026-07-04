@@ -24,6 +24,25 @@ Idea -> issue -> Phase/Status -> implementation -> tests -> commit -> push -> CI
 - Add tests in proportion to risk.
 - Keep provider SDKs out of domain/application.
 - Do not push without explicit user approval.
+- When an AI agent materially contributed to the work, add a `Co-authored-by:` trailer to the commit message.
+
+## Commit Attribution
+
+Use commit trailers to keep the GitHub history honest about human and agent collaboration.
+
+Standard Codex trailer:
+
+```text
+Co-authored-by: OpenAI Codex <codex@openai.com>
+```
+
+Known Claude trailer already used in this repository:
+
+```text
+Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+```
+
+GitHub only shows a contributor avatar when the email is associated with a GitHub account. Even when that mapping is unavailable, the trailer remains useful provenance in the commit history.
 
 ## Validation Checklist
 
