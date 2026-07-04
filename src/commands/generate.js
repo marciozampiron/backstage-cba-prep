@@ -4,6 +4,7 @@ import { resolveDomain } from '../lib/blueprint.js';
 import { validateQuestion, appendQuestions, loadBank } from '../lib/bank.js';
 import { SPEC_DIR } from '../lib/paths.js';
 import { c } from '../lib/ui.js';
+import { createModelProvider } from '../infrastructure/ai/index.js';
 
 const PROVIDERS = {
   anthropic: { env: ['ANTHROPIC_API_KEY'], model: 'claude-sonnet-5', call: callAnthropic },
@@ -124,8 +125,21 @@ export async function runGenerate(opts) {
 
   console.log(c.gray(`  Generating ${count} question(s) for "${domain.name}" via ${providerName}/${model}...`));
   let text;
+  let usage = null;
   try {
-    text = await provider.call(key, model, prompt);
+    if (providerName === 'anthropic') {
+      // Route Anthropic through the ModelProvider port. --model is passed as a
+      // transient MODEL_STANDARD override so the port stays tier-based and no
+      // concrete model id leaks into the port contract.
+      const modelProvider =
+        opts.modelProvider ||
+        createModelProvider({ env: { ...process.env, LLM_BACKEND: 'anthropic', MODEL_STANDARD: model, ANTHROPIC_API_KEY: key } });
+      const out = await modelProvider.invoke({ prompt, tier: 'standard', options: { maxTokens: 4096 } });
+      text = out.text;
+      usage = out.usage;
+    } else {
+      text = await provider.call(key, model, prompt);
+    }
   } catch (err) {
     console.log(c.red(`  API error: ${err.message}`));
     return 1;
@@ -156,9 +170,11 @@ export async function runGenerate(opts) {
     return 1;
   }
 
-  const added = appendQuestions(domain.key, good);
+  const append = opts.appendImpl || appendQuestions;
+  const added = append(domain.key, good);
   console.log(c.green(`  ✓ Added ${added.length} question(s) to questions/${domain.key}.json`));
   console.log(c.gray(`    ${added.map((a) => a.id).join(', ')}`));
+  if (usage) console.log(c.gray(`  ~${usage.inputTokens} in / ${usage.outputTokens} out tokens (${usage.provider}/${usage.model})`));
   console.log(c.gray('  Run `node bin/cli.js validate` to double-check.'));
   return 0;
 }

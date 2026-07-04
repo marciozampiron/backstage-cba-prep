@@ -10,6 +10,7 @@ import { assertModelProvider } from '../src/application/ports/model-provider.js'
 import { assertAgentOrchestrator } from '../src/application/ports/agent-orchestrator.js';
 import { createToolRegistry } from '../src/application/ports/tool-registry.js';
 import { createBedrockModelProvider, mapBedrockError } from '../src/infrastructure/bedrock/model-provider.js';
+import { createAnthropicModelProvider } from '../src/infrastructure/anthropic/model-provider.js';
 import { createDirectOrchestrator } from '../src/infrastructure/orchestrator/direct.js';
 import { createStrandsOrchestrator } from '../src/infrastructure/strands/orchestrator.js';
 import { createAgentOrchestrator, createModelProvider } from '../src/infrastructure/ai/index.js';
@@ -190,14 +191,56 @@ test('bedrock-backed adapters fail early when LLM_BACKEND is not bedrock', () =>
     (e) => e instanceof ModelNotConfiguredError && /LLM_BACKEND=bedrock/.test(e.message)
   );
   assert.throws(() => createStrandsOrchestrator({ env: { LLM_BACKEND: 'anthropic' } }), (e) => e instanceof ModelNotConfiguredError);
-  assert.throws(() => createModelProvider({ env: {} }), (e) => e instanceof ModelNotConfiguredError);
-  assert.throws(() => createAgentOrchestrator({ env: {} }), (e) => e instanceof ModelNotConfiguredError);
 });
 
 test('bedrock adapter requires AWS_REGION even on the bedrock backend', () => {
   assert.throws(
     () => createBedrockModelProvider({ env: { LLM_BACKEND: 'bedrock' } }),
     (e) => e instanceof ModelNotConfiguredError && /AWS_REGION/.test(e.message)
+  );
+});
+
+// --- Anthropic adapter (injectable fetch, no network) ---
+
+test('anthropic ModelProvider calls the Messages API and returns text + usage', async () => {
+  let sent = null;
+  const provider = createAnthropicModelProvider({
+    env: { LLM_BACKEND: 'anthropic' },
+    apiKey: 'test-key',
+    fetchImpl: async (url, init) => {
+      sent = { url, body: JSON.parse(init.body), headers: init.headers };
+      return { ok: true, status: 200, json: async () => ({ content: [{ text: 'hi ' }, { text: 'there' }], usage: { input_tokens: 8, output_tokens: 2 }, stop_reason: 'end_turn' }) };
+    },
+  });
+
+  const r = await provider.invoke({ prompt: 'q', tier: 'standard', systemPrompt: 'sys' });
+  assert.equal(sent.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(sent.headers['x-api-key'], 'test-key');
+  assert.equal(sent.body.model, 'claude-sonnet-5'); // standard tier, anthropic backend
+  assert.equal(sent.body.system, 'sys');
+  assert.equal(r.text, 'hi there');
+  assert.equal(r.usage.provider, 'anthropic');
+  assert.equal(r.usage.totalTokens, 10);
+});
+
+test('anthropic ModelProvider requires an API key and maps auth failures', async () => {
+  const noKey = createAnthropicModelProvider({ env: { LLM_BACKEND: 'anthropic' } });
+  await assert.rejects(() => noKey.invoke({ prompt: 'q' }), (e) => e instanceof ModelNotConfiguredError);
+
+  const badKey = createAnthropicModelProvider({ env: { LLM_BACKEND: 'anthropic' }, apiKey: 'bad', fetchImpl: async () => ({ ok: false, status: 401, text: async () => 'unauthorized' }) });
+  await assert.rejects(() => badKey.invoke({ prompt: 'q' }), (e) => e instanceof ModelAccessError);
+});
+
+test('createModelProvider selects the adapter by LLM_BACKEND', () => {
+  assertModelProvider(createModelProvider({ env: { LLM_BACKEND: 'anthropic' } }));
+  assertModelProvider(createModelProvider({ env: BEDROCK_ENV }));
+  assert.throws(() => createModelProvider({ env: { LLM_BACKEND: 'nope' } }), /unknown LLM_BACKEND/);
+});
+
+test('anthropic adapter rejects a non-anthropic backend when used directly', () => {
+  assert.throws(
+    () => createAnthropicModelProvider({ env: { LLM_BACKEND: 'bedrock' } }),
+    (e) => e instanceof ModelNotConfiguredError && /LLM_BACKEND=anthropic/.test(e.message)
   );
 });
 
