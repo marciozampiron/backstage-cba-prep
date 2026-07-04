@@ -4,6 +4,7 @@
 // core CLI never loads Strands unless this orchestrator is actually selected.
 
 import { requireBedrockConfig } from '../bedrock/config.js';
+import { toStrandsTools } from './tools.js';
 import { aiUsageEvent } from '../../domain/ai-orchestration/usage.js';
 import { OrchestratorError, ModelNotConfiguredError } from '../../domain/ai-orchestration/errors.js';
 
@@ -20,10 +21,11 @@ async function defaultAgentFactory({ region, modelId, maxTokens, temperature, sy
     );
   }
   const model = new mod.BedrockModel({ region, modelId, maxTokens, temperature });
+  const strandsTools = tools && tools.length ? await toStrandsTools(tools, { strands: mod }) : undefined;
   return new mod.Agent({
     model,
     systemPrompt: systemPrompt || undefined,
-    tools: tools && tools.length ? tools : undefined,
+    tools: strandsTools,
   });
 }
 

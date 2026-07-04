@@ -60,6 +60,7 @@
   "license": "MIT",
   "optionalDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1079.0",
-    "@strands-agents/sdk": "^1.7.0"
+    "@strands-agents/sdk": "^1.7.0",
+    "zod": "^4.4.3"
   }
 }

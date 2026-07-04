@@ -13,6 +13,7 @@ import { createBedrockModelProvider, mapBedrockError } from '../src/infrastructu
 import { createAnthropicModelProvider } from '../src/infrastructure/anthropic/model-provider.js';
 import { createDirectOrchestrator } from '../src/infrastructure/orchestrator/direct.js';
 import { createStrandsOrchestrator } from '../src/infrastructure/strands/orchestrator.js';
+import { toStrandsTools } from '../src/infrastructure/strands/tools.js';
 import { createAgentOrchestrator, createModelProvider } from '../src/infrastructure/ai/index.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -174,6 +175,46 @@ test('strands orchestrator builds an agent by tier and extracts text + usage', a
 test('strands orchestrator wraps agent failures as OrchestratorError', async () => {
   const orch = createStrandsOrchestrator({ env: BEDROCK_ENV, agentFactory: async () => ({ invoke: async () => { throw new Error('strands boom'); } }) });
   await assert.rejects(() => orch.run({ prompt: 'x' }), (e) => e instanceof OrchestratorError && e.provider === 'strands');
+});
+
+test('strands orchestrator threads tool definitions to the agent factory', async () => {
+  let built = null;
+  const toolDefs = [{ name: 'ping', description: 'p', handler: () => 'pong' }];
+  const orch = createStrandsOrchestrator({
+    env: BEDROCK_ENV,
+    agentFactory: async (cfg) => {
+      built = cfg;
+      return { invoke: async () => ({ lastMessage: { content: [{ text: 'ok' }] }, stopReason: 'end_turn', metrics: {} }) };
+    },
+  });
+  await orch.run({ prompt: 'q', tools: toolDefs });
+  assert.equal(built.tools, toolDefs); // raw neutral defs threaded; the real factory translates via toStrandsTools
+});
+
+test('toStrandsTools maps ToolRegistry entries into Strands tool() configs (Zod)', async (t) => {
+  let z;
+  try {
+    ({ z } = await import('zod'));
+  } catch {
+    return t.skip('zod not installed (optional dep)');
+  }
+  const captured = [];
+  await toStrandsTools(
+    [
+      {
+        name: 'get_weather',
+        description: 'weather',
+        inputSchema: { type: 'object', properties: { location: { type: 'string', description: 'city' } }, required: ['location'] },
+        handler: (i) => `72F in ${i.location}`,
+      },
+    ],
+    { strands: { tool: (cfg) => { captured.push(cfg); return cfg; } }, zod: { z } }
+  );
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0].name, 'get_weather');
+  assert.equal(captured[0].inputSchema.safeParse({ location: 'SF' }).success, true);
+  assert.equal(captured[0].inputSchema.safeParse({}).success, false); // location is required
+  assert.equal(await captured[0].callback({ location: 'SF' }), '72F in SF');
 });
 
 // --- composition root ---
