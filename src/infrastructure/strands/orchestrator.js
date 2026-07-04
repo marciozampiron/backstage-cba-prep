@@ -3,9 +3,11 @@
 // lazily and the agent factory is injectable, so unit tests stay offline and the
 // core CLI never loads Strands unless this orchestrator is actually selected.
 
+import { randomUUID } from 'node:crypto';
 import { requireBedrockConfig } from '../bedrock/config.js';
 import { toStrandsTools } from './tools.js';
 import { aiUsageEvent } from '../../domain/ai-orchestration/usage.js';
+import { agentRun } from '../../domain/ai-orchestration/agent-run.js';
 import { OrchestratorError, ModelNotConfiguredError } from '../../domain/ai-orchestration/errors.js';
 
 // Builds a real Strands Agent (new Agent({ model: new BedrockModel({...}) })).
@@ -34,10 +36,18 @@ export function createStrandsOrchestrator(opts = {}) {
   const env = opts.env || process.env;
   const cfg = requireBedrockConfig(env, 'strands');
   const agentFactory = opts.agentFactory || defaultAgentFactory;
+  const repository = opts.repository || null;
+  const now = opts.now || (() => new Date().toISOString());
+  const newId = opts.newId || randomUUID;
 
   return {
     async run({ prompt, systemPrompt = null, tier = 'standard', tools = null, options = {} } = {}) {
       const modelId = cfg.models[tier] || cfg.models.standard;
+      const id = repository ? newId() : null;
+      const startedAt = repository ? now() : null;
+      const record = async (fields) => {
+        if (repository) await repository.save(agentRun({ id, orchestrator: 'strands', prompt, startedAt, finishedAt: now(), ...fields }));
+      };
 
       let agent;
       try {
@@ -50,15 +60,19 @@ export function createStrandsOrchestrator(opts = {}) {
           tools,
         });
       } catch (err) {
-        if (err && err.code) throw err; // ModelNotConfiguredError, etc. (already domain-safe)
-        throw new OrchestratorError(`could not build Strands agent: ${(err && err.message) || err}`, { provider: 'strands', cause: err });
+        // ModelNotConfiguredError etc. are already domain-safe; otherwise wrap.
+        const e = err && err.code ? err : new OrchestratorError(`could not build Strands agent: ${(err && err.message) || err}`, { provider: 'strands', cause: err });
+        await record({ status: 'error', error: e.message });
+        throw e;
       }
 
       let result;
       try {
         result = await agent.invoke(prompt);
       } catch (err) {
-        throw new OrchestratorError(`Strands agent run failed: ${(err && err.message) || err}`, { provider: 'strands', cause: err });
+        const e = new OrchestratorError(`Strands agent run failed: ${(err && err.message) || err}`, { provider: 'strands', cause: err });
+        await record({ status: 'error', error: e.message });
+        throw e;
       }
 
       const text = (result?.lastMessage?.content || []).map((b) => b.text || '').join('');
@@ -71,6 +85,7 @@ export function createStrandsOrchestrator(opts = {}) {
         outputTokens: u.outputTokens || 0,
         stopReason: result?.stopReason || null,
       });
+      await record({ status: 'ok', backend: 'strands+bedrock', usage });
       return { text, usage, stopReason: result?.stopReason || null };
     },
   };
