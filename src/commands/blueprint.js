@@ -4,6 +4,7 @@ import { EXAM, DOMAINS } from '../lib/blueprint.js';
 import { SPEC_DIR } from '../lib/paths.js';
 import { callLLM, extractJson, stripHtml } from '../lib/llm.js';
 import { c, hr } from '../lib/ui.js';
+import { createModelProvider } from '../infrastructure/ai/index.js';
 
 const BLUEPRINT_FILE = path.join(SPEC_DIR, 'blueprint.json');
 
@@ -132,19 +133,34 @@ function diffBlueprint(current, next) {
 }
 
 // Core (injectable): fetch page -> LLM extract -> merge -> validate -> diff.
-export async function generateBlueprint({ from, provider = 'anthropic', model, apiKey, fetchImpl = fetch, callImpl } = {}) {
+export async function generateBlueprint({ from, provider = 'anthropic', model, apiKey, fetchImpl = fetch, callImpl, modelProvider } = {}) {
   if (!from) throw new Error('missing source url');
   const current = { exam: EXAM, domains: DOMAINS };
   const res = await fetchImpl(from, { headers: { 'user-agent': 'backstage-cba-prep/blueprint' } });
   if (!res.ok) throw new Error(`fetch ${from} -> HTTP ${res.status}`);
   const pageText = stripHtml(await res.text());
   const prompt = buildPrompt(pageText, current.exam.name);
-  const raw = callImpl ? await callImpl(prompt) : await callLLM({ provider, model, prompt, apiKey, fetchImpl });
+  let raw;
+  let usage = null;
+  if (callImpl) {
+    raw = await callImpl(prompt);
+  } else if (provider === 'anthropic') {
+    // Same pattern as generate: route Anthropic through the ModelProvider port,
+    // passing --model as a transient MODEL_STANDARD override (port stays tier-based).
+    const env = { ...process.env, LLM_BACKEND: 'anthropic', ANTHROPIC_API_KEY: apiKey || process.env.ANTHROPIC_API_KEY };
+    if (model) env.MODEL_STANDARD = model;
+    const mp = modelProvider || createModelProvider({ env });
+    const out = await mp.invoke({ prompt, tier: 'standard', options: { maxTokens: 4096 } });
+    raw = out.text;
+    usage = out.usage;
+  } else {
+    raw = await callLLM({ provider, model, prompt, apiKey, fetchImpl });
+  }
   const extracted = extractJson(raw);
   const next = mergeBlueprint(extracted, current);
   const errors = validateBlueprint(next);
   const diff = diffBlueprint(current, next);
-  return { current, next, errors, diff, changed: diff.length > 0 };
+  return { current, next, errors, diff, changed: diff.length > 0, usage };
 }
 
 export async function runBlueprint(opts = {}) {
@@ -154,18 +170,19 @@ export async function runBlueprint(opts = {}) {
     result = await generateBlueprint({ ...opts, from });
   } catch (err) {
     console.log(c.red(`  ${err.message}`));
-    if (/API key/i.test(err.message)) console.log(c.gray('  Set ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY, or pass --provider.'));
+    if (/API[ _-]?key/i.test(err.message)) console.log(c.gray('  Set ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY, or pass --provider.'));
     return 1;
   }
-  const { errors, diff, changed, next } = result;
+  const { errors, diff, changed, next, usage } = result;
 
   if (opts.json) {
-    console.log(JSON.stringify({ from, changed, errors, diff, next }, null, 2));
+    console.log(JSON.stringify({ from, changed, errors, diff, next, usage }, null, 2));
     return errors.length ? 2 : changed && !opts.write ? 3 : 0;
   }
 
   console.log(`\n  ${c.bold('Blueprint from source')} ${c.gray(from)}`);
   console.log(hr());
+  if (usage) console.log(c.gray(`  ~${usage.inputTokens} in / ${usage.outputTokens} out tokens (${usage.provider}/${usage.model})`));
   if (errors.length) {
     console.log(c.red('  ✗ Extracted blueprint failed validation:'));
     for (const e of errors) console.log(`    - ${e}`);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runGenerate } from '../src/commands/generate.js';
+import { generateBlueprint } from '../src/commands/blueprint.js';
 import { DOMAINS } from '../src/lib/blueprint.js';
 
 // Offline: inject a fake ModelProvider (no network) and a capturing append (no
@@ -54,4 +55,30 @@ test('generate --provider anthropic routes through the ModelProvider port', asyn
     if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = prev;
   }
+});
+
+const pageFetch = async () => ({ ok: true, status: 200, text: async () => '<html>blueprint page</html>' });
+const asExtracted = () => ({
+  exam: { name: 'Certified Backstage Associate (CBA)' },
+  domains: DOMAINS.map((d) => ({ name: d.name, weight: d.weight, competencies: [...d.competencies] })),
+});
+
+test('blueprint --provider anthropic routes through the ModelProvider port', async () => {
+  let invoked = null;
+  const r = await generateBlueprint({
+    from: 'https://x',
+    fetchImpl: pageFetch,
+    modelProvider: {
+      invoke: async (inv) => {
+        invoked = inv;
+        return { text: JSON.stringify(asExtracted()), usage: { provider: 'anthropic', model: 'claude-sonnet-5', tier: 'standard', inputTokens: 4, outputTokens: 6, totalTokens: 10, stopReason: 'end_turn' } };
+      },
+    },
+  });
+
+  assert.equal(invoked.tier, 'standard');
+  assert.equal(invoked.options.maxTokens, 4096);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.changed, false); // extracted == current blueprint
+  assert.equal(r.usage.totalTokens, 10);
 });
