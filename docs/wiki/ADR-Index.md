@@ -5,6 +5,7 @@ Architecture Decision Records live in `docs/adr/`.
 ## Accepted
 
 - `0001-docs-and-wiki-governance.md` - Repository docs are canonical; GitHub Wiki is a navigation portal.
+- `0002-cloudflare-nextjs-aws-bff.md` - Pilot runtime split: Cloudflare-hosted Next.js frontend + AWS-hosted BFF/backend/AI control plane; the AI Orchestration Service is separate from the Web BFF.
 
 ## Candidate Future ADRs
 

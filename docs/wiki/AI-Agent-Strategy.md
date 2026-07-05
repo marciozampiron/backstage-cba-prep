@@ -57,3 +57,7 @@ Concrete model IDs belong in configuration, not in the domain.
 ## AWS MCP Rule
 
 AWS Knowledge MCP is for implementation research around AWS, Bedrock, Strands, and agent infrastructure. It is not a CBA fact source.
+
+## Runtime (pilot)
+
+In the SaaS pilot these ports are hosted by a dedicated AWS **AI Orchestration Service**, separate from the Web BFF and never reachable directly from the browser. See `docs/adr/0002-cloudflare-nextjs-aws-bff.md`.
