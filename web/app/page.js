@@ -1,8 +1,17 @@
 'use client';
-// Learner Dashboard — first screen (screen map #1). Slice 1 focuses on the first-run state;
-// after attempts exist it shows the naive readiness the stub computes.
+// Learner Dashboard — parity with learner_dashboard_desktop/mobile: stat tiles, domain readiness
+// with status colors, recommended actions, recent activity. First-run keeps the warm-up behavior.
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Shell from './components/Shell.js';
+import { ChevronIcon, TrendIcon, TargetIcon, BookIcon, ClockIcon } from './components/icons.js';
+
+function pctClass(p) {
+  if (p === null || p === undefined) return 'none';
+  if (p >= 75) return 'good';
+  if (p >= 55) return 'warn';
+  return 'bad';
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -16,8 +25,18 @@ export default function DashboardPage() {
       .catch(() => setError('Could not load your dashboard.'));
   }, []);
 
-  if (error) return <p className="error-box">{error}</p>;
-  if (!data) return <p className="muted">Loading your study state…</p>;
+  if (error)
+    return (
+      <Shell>
+        <p className="error-box">{error}</p>
+      </Shell>
+    );
+  if (!data)
+    return (
+      <Shell>
+        <p className="muted">Loading your study state…</p>
+      </Shell>
+    );
 
   const startRecommended = () => {
     const params = new URLSearchParams();
@@ -26,60 +45,150 @@ export default function DashboardPage() {
     router.push(`/practice/setup?${params.toString()}`);
   };
 
+  const drills = data.recentAttempts.length;
+
   return (
-    <main>
-      <h1>{data.firstRun ? 'Welcome — let’s get you exam-ready' : 'Welcome back'}</h1>
-      <p className="sub">
-        {data.firstRun
-          ? 'Take a quick warm-up drill to get your first readiness signal.'
-          : `Overall readiness ${data.readiness.percent}% vs a ${data.readiness.targetPercent}% target (not an official pass score).`}
-      </p>
+    <Shell>
+      <h1>Overview</h1>
+      <p className="sub">Your progress towards Certified Backstage Associate readiness.</p>
 
-      <div className="card">
-        <h2>{data.firstRun ? 'What the CBA covers' : 'Readiness by domain'}</h2>
-        {data.domains.map((d) => (
-          <div key={d.domainId} className="domain-row" style={{ display: 'block' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{d.name}</span>
-              <span className="weight">
-                {d.weightPercent}%{d.readinessPercent !== null ? ` · ready ${d.readinessPercent}%` : ''}
-              </span>
-            </div>
-            {d.readinessPercent !== null && (
-              <div className="bar">
-                <span style={{ width: `${d.readinessPercent}%` }} />
-              </div>
-            )}
+      <div className="tiles">
+        <div className="tile">
+          <div className="t-label">
+            Readiness score
+            <span className="t-icon good">
+              <TrendIcon width={13} height={13} />
+            </span>
           </div>
-        ))}
-      </div>
-
-      <div className="card">
-        <h2>Coach</h2>
-        <p style={{ margin: 0 }}>{data.coachNudge.text}</p>
-        <div className="actions">
-          <button className="btn" onClick={startRecommended}>
-            {data.firstRun ? 'Start 5-question warm-up' : 'Start recommended drill'}
-          </button>
-          <a className="btn btn-secondary" href="/practice/setup">
-            Configure a drill
-          </a>
+          <div className="t-value">{data.readiness.percent !== null ? `${data.readiness.percent}%` : '—'}</div>
+          <div className="t-sub">
+            {data.firstRun ? 'Take a warm-up to unlock' : 'Deterministic, from your drills'}
+          </div>
+        </div>
+        <div className="tile">
+          <div className="t-label">
+            Target score
+            <span className="t-icon info">
+              <TargetIcon width={13} height={13} />
+            </span>
+          </div>
+          <div className="t-value">{data.readiness.targetPercent}%</div>
+          <div className="t-sub">Not an official pass score</div>
+        </div>
+        <div className="tile">
+          <div className="t-label">
+            Drills completed
+            <span className="t-icon warn">
+              <BookIcon width={13} height={13} />
+            </span>
+          </div>
+          <div className="t-value">{drills}</div>
+          <div className="t-sub">{drills === 0 ? 'Your loop starts here' : 'Recent sessions'}</div>
+        </div>
+        <div className="tile">
+          <div className="t-label">
+            Exam format
+            <span className="t-icon info">
+              <ClockIcon width={13} height={13} />
+            </span>
+          </div>
+          <div className="t-value">60</div>
+          <div className="t-sub">questions · 90 minutes</div>
         </div>
       </div>
 
-      {data.recentAttempts.length > 0 && (
-        <div className="card">
-          <h2>Recent attempts</h2>
-          {data.recentAttempts.map((a) => (
-            <div key={a.attemptId} className="domain-row">
-              <span>
-                {a.kind === 'practice' ? 'Drill' : 'Mock'} · {a.scorePercent}%
-              </span>
-              <a href={`/practice/results/${a.attemptId}`}>View results</a>
+      <div className="dash-grid">
+        <div>
+          <div className="card">
+            <div className="card-head">
+              <h2>Domain Readiness</h2>
             </div>
-          ))}
+            <div className="card-body">
+              {data.domains.map((d) => (
+                <div key={d.domainId} className="domain-row">
+                  <div className="d-top">
+                    <div>
+                      <div className="d-name">{d.name}</div>
+                      <div className="d-weight">Weight: {d.weightPercent}%</div>
+                    </div>
+                    <span className={`d-pct ${pctClass(d.readinessPercent)}`}>
+                      {d.readinessPercent !== null ? `${d.readinessPercent}%` : 'no data yet'}
+                    </span>
+                  </div>
+                  <div className="bar">
+                    <span
+                      className={pctClass(d.readinessPercent)}
+                      style={{ width: `${d.readinessPercent ?? 0}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-      )}
-    </main>
+
+        <div>
+          <div className="card">
+            <div className="card-head">
+              <h2>Recommended Actions</h2>
+            </div>
+            <div className="card-body">
+              <button className="action-row primary" onClick={startRecommended}>
+                <div>
+                  <div className="a-title">
+                    {data.firstRun ? 'Start 5-question warm-up' : 'Start adaptive practice'}
+                  </div>
+                  <div className="a-sub">{data.coachNudge.text}</div>
+                </div>
+                <span className="chev">
+                  <ChevronIcon />
+                </span>
+              </button>
+              <span className="action-row disabled" aria-disabled="true">
+                <div>
+                  <div className="a-title">Review missed questions</div>
+                  <div className="a-sub">Arrives with the review slice</div>
+                </div>
+                <span className="soon">SOON</span>
+              </span>
+              <span className="action-row disabled" aria-disabled="true">
+                <div>
+                  <div className="a-title">Take a mock exam</div>
+                  <div className="a-sub">60 questions · 90 minutes · arrives next</div>
+                </div>
+                <span className="soon">SOON</span>
+              </span>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
+              <h2>Recent Activity</h2>
+            </div>
+            <div className="card-body">
+              {data.recentAttempts.length === 0 && (
+                <p className="muted" style={{ margin: 0 }}>
+                  No sessions yet — your activity will show up here.
+                </p>
+              )}
+              {data.recentAttempts.map((a) => (
+                <div key={a.attemptId} className="activity-row">
+                  <span className="t-icon info">
+                    <BookIcon width={13} height={13} />
+                  </span>
+                  <div>
+                    Practiced: drill scored {a.scorePercent}%
+                    <span className="time">{new Date(a.completedAt).toLocaleString()}</span>
+                  </div>
+                  <a style={{ marginLeft: 'auto', fontSize: 13 }} href={`/practice/results/${a.attemptId}`}>
+                    View
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Shell>
   );
 }

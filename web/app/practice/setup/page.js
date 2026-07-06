@@ -1,7 +1,10 @@
 'use client';
-// Practice Setup (screen map #2): configure a focused drill without friction.
+// Practice Setup — parity with practice_setup_desktop/mobile: Configure Your Session card, domain
+// select, segmented difficulty/count, practice-mode cards, weak-areas-style toggle, Start Practice →.
+// API values come from GET /api/practice/options (contract §7); POST /api/practice-sessions (§8).
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Shell from '../../components/Shell.js';
 
 function SetupForm() {
   const router = useRouter();
@@ -22,7 +25,8 @@ function SetupForm() {
       .catch(() => setError('Could not load practice options.'));
   }, []);
 
-  if (!options) return <p className="muted">Loading options…</p>;
+  if (!options)
+    return <p className="muted">{error ?? 'Loading options…'}</p>;
 
   const domain = options.domains.find((d) => d.domainId === domainId) ?? null;
 
@@ -54,103 +58,147 @@ function SetupForm() {
   };
 
   return (
-    <main>
-      <h1>Set up your drill</h1>
-      <p className="sub">Every question is grounded in the official Backstage docs.</p>
+    <>
+      <h1>Practice Setup</h1>
+      <p className="sub">Customize your practice to focus on what matters most.</p>
 
       <div className="card">
-        <label className="label-caps" htmlFor="domain">
-          Domain
-        </label>
-        <select
-          id="domain"
-          value={domainId}
-          onChange={(e) => {
-            setDomainId(e.target.value);
-            setCompetencyId('');
-          }}
-        >
-          <option value="">All domains</option>
-          {options.domains.map((d) => (
-            <option key={d.domainId} value={d.domainId}>
-              {d.name} ({d.weightPercent}%)
-            </option>
-          ))}
-        </select>
-
-        {domain && (
-          <>
-            <label className="label-caps" htmlFor="competency">
-              Competency (optional)
-            </label>
-            <select
-              id="competency"
-              value={competencyId}
-              onChange={(e) => setCompetencyId(e.target.value)}
-            >
-              <option value="">All competencies</option>
-              {domain.competencies.map((c) => (
-                <option key={c.competencyId} value={c.competencyId}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
-
-        <span className="label-caps">Questions</span>
-        <div className="segmented" role="group" aria-label="Question count">
-          {options.questionCounts.map((n) => (
-            <button
-              key={n}
-              type="button"
-              aria-pressed={questionCount === n}
-              onClick={() => setQuestionCount(n)}
-            >
-              {n}
-            </button>
-          ))}
+        <div className="card-head">
+          <h2>Configure Your Session</h2>
         </div>
+        <div className="card-body">
+          <label className="label-caps" style={{ marginTop: 4 }} htmlFor="domain">
+            Domain
+          </label>
+          <select
+            id="domain"
+            value={domainId}
+            onChange={(e) => {
+              setDomainId(e.target.value);
+              setCompetencyId('');
+            }}
+          >
+            <option value="">All Domains</option>
+            {options.domains.map((d) => (
+              <option key={d.domainId} value={d.domainId}>
+                {d.name} ({d.weightPercent}%)
+              </option>
+            ))}
+          </select>
 
-        <span className="label-caps">Difficulty</span>
-        <div className="segmented" role="group" aria-label="Difficulty">
-          {options.difficulties.map((d) => (
-            <button
-              key={d}
-              type="button"
-              aria-pressed={difficulty === d}
-              onClick={() => setDifficulty(d)}
-            >
-              {d}
+          {domain && (
+            <>
+              <label className="label-caps" htmlFor="competency">
+                Competency (optional)
+              </label>
+              <select
+                id="competency"
+                value={competencyId}
+                onChange={(e) => setCompetencyId(e.target.value)}
+              >
+                <option value="">All competencies</option>
+                {domain.competencies.map((c) => (
+                  <option key={c.competencyId} value={c.competencyId}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+
+          <div className="setup-grid">
+            <div>
+              <span className="label-caps">Difficulty level</span>
+              <div className="segmented" role="group" aria-label="Difficulty">
+                {options.difficulties.map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    aria-pressed={difficulty === d}
+                    onClick={() => setDifficulty(d)}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span className="label-caps">Number of questions</span>
+              <div className="segmented" role="group" aria-label="Question count">
+                {options.questionCounts.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    aria-pressed={questionCount === n}
+                    onClick={() => setQuestionCount(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <span className="label-caps">Practice mode</span>
+          <div className="mode-grid">
+            <button type="button" className="mode-card" aria-pressed="true">
+              <span className="radio" />
+              <span>
+                <span className="m-name">Review Mode</span>
+                <br />
+                <span className="m-desc">
+                  Get instant feedback after each question to learn as you go.
+                </span>
+              </span>
             </button>
-          ))}
-        </div>
+            <span className="mode-card disabled" aria-disabled="true">
+              <span className="radio" />
+              <span>
+                <span className="m-name">
+                  Timed Mode <span className="soon">SOON</span>
+                </span>
+                <br />
+                <span className="m-desc">
+                  Simulate test conditions — arrives with the mock exam slice.
+                </span>
+              </span>
+            </span>
+          </div>
 
-        <label className="toggle-row">
-          <input
-            type="checkbox"
-            checked={onlyMissed}
-            onChange={(e) => setOnlyMissed(e.target.checked)}
-          />
-          Only questions I missed before
-        </label>
+          <div className="toggle-row">
+            <div className="t-text">
+              <div className="t-name">Only questions I missed before</div>
+              <div className="t-desc">Rebuild weak spots by replaying questions you got wrong.</div>
+            </div>
+            <button
+              type="button"
+              className="switch"
+              role="switch"
+              aria-checked={onlyMissed}
+              aria-label="Only questions I missed before"
+              onClick={() => setOnlyMissed((v) => !v)}
+            />
+          </div>
 
-        {error && <p className="error-box">{error}</p>}
+          {error && <p className="error-box">{error}</p>}
 
-        <div className="actions">
-          <button className="btn" onClick={start} disabled={starting}>
-            {starting ? 'Starting…' : 'Start drill'}
-          </button>
+          <div className="setup-footer">
+            <button className="btn" onClick={start} disabled={starting}>
+              {starting ? 'Starting…' : 'Start Practice →'}
+            </button>
+          </div>
         </div>
       </div>
-    </main>
+    </>
   );
 }
 
 export default function PracticeSetupPage() {
   return (
-    <Suspense fallback={<p className="muted">Loading options…</p>}>
-      <SetupForm />
-    </Suspense>
+    <Shell>
+      <Suspense fallback={<p className="muted">Loading options…</p>}>
+        <SetupForm />
+      </Suspense>
+    </Shell>
   );
 }
