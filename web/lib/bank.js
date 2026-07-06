@@ -34,6 +34,8 @@ function loadExamContent() {
     examId: exam.examId,
     name: d.name,
     weightPercent: d.weight,
+    // blueprint-weighted question count for a full mock (sums to exam.questionCount)
+    mockTarget: d.target,
     order,
     competencies: d.competencies.map((name) => ({
       competencyId: slugify(name),
@@ -119,26 +121,29 @@ export function getVersion(questionVersionId) {
   return content.versions.find((v) => v.questionVersionId === questionVersionId) ?? null;
 }
 
-// Published versions honoring drill filters. Deterministic shuffle keyed by seed so a session's
-// assembly is reproducible in dev.
-export function pickPublishedVersions({ domainId, competencyId, difficulty, excludeIds, seed }) {
-  let pool = content.versions.filter((v) => v.status === 'published');
-  if (domainId) pool = pool.filter((v) => v.domainId === domainId);
-  if (competencyId) pool = pool.filter((v) => v.competencyId === competencyId);
-  if (difficulty && difficulty !== 'mixed') pool = pool.filter((v) => v.difficulty === difficulty);
-  if (excludeIds?.size) pool = pool.filter((v) => !excludeIds.has(v.questionVersionId));
-
+// Deterministic (seeded) shuffle so session assembly is reproducible in dev.
+export function seededShuffle(items, seed) {
   let state = 2166136261;
   for (const ch of String(seed)) {
     state = Math.imul(state ^ ch.charCodeAt(0), 16777619) >>> 0;
   }
-  const shuffled = [...pool];
+  const shuffled = [...items];
   for (let i = shuffled.length - 1; i > 0; i--) {
     state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
     const j = state % (i + 1);
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled;
+}
+
+// Published versions honoring drill filters.
+export function pickPublishedVersions({ domainId, competencyId, difficulty, excludeIds, seed }) {
+  let pool = content.versions.filter((v) => v.status === 'published');
+  if (domainId) pool = pool.filter((v) => v.domainId === domainId);
+  if (competencyId) pool = pool.filter((v) => v.competencyId === competencyId);
+  if (difficulty && difficulty !== 'mixed') pool = pool.filter((v) => v.difficulty === difficulty);
+  if (excludeIds?.size) pool = pool.filter((v) => !excludeIds.has(v.questionVersionId));
+  return seededShuffle(pool, seed);
 }
 
 // Public (pre-answer) projection: NO correctOption, NO explanation.

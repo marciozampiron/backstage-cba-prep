@@ -42,7 +42,7 @@ export default function PracticeSessionPage() {
       return;
     }
     if (body.done) {
-      router.push(`/practice/results/${body.attemptId}`);
+      router.push(`/results/${body.attemptId}`);
       return;
     }
     setCurrent(body);

@@ -1,4 +1,4 @@
-// GET /api/attempts/:id/results — contract §3 (practice attempts in slice 1; mock arrives later).
+// GET /api/attempts/:id/results — contract §3 (practice and mock attempts; kind-aware payload).
 import { attemptResults } from '../../../../../lib/store.js';
 import { handle, json } from '../../../../../lib/api.js';
 

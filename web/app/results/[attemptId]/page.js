@@ -1,10 +1,10 @@
 'use client';
-// Drill mini-results — parity with mock_results_desktop's visual language (score ring, readiness
-// pill, recommended focus area, colored domain breakdown), scoped down for practice attempts.
+// Attempt results — kind-aware (mock vs drill), parity with mock_results_desktop/mobile: score
+// ring, readiness pill, Recommended Study Plan focus area, colored Domain Breakdown.
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Shell from '../../../components/Shell.js';
-import { TargetIcon } from '../../../components/icons.js';
+import Shell from '../../components/Shell.js';
+import { TargetIcon } from '../../components/icons.js';
 
 function pctClass(p) {
   if (p >= 75) return 'good';
@@ -35,11 +35,12 @@ function ScoreRing({ percent }) {
   );
 }
 
-export default function PracticeResultsPage() {
+export default function AttemptResultsPage() {
   const { attemptId } = useParams();
   const router = useRouter();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     fetch(`/api/attempts/${attemptId}/results`)
@@ -61,10 +62,11 @@ export default function PracticeResultsPage() {
   if (!data)
     return (
       <Shell>
-        <p className="muted">Scoring your drill…</p>
+        <p className="muted">Scoring your attempt…</p>
       </Shell>
     );
 
+  const isMock = data.kind === 'mock';
   const delta = data.score.percent - data.target.percent;
   const readinessPill =
     delta >= 0
@@ -77,15 +79,26 @@ export default function PracticeResultsPage() {
   const weakestDomain = drillWeakest
     ? data.domains.find((d) => d.domainId === drillWeakest.domainId)
     : null;
+  const minutes = Math.round(data.timeUsedSeconds / 60);
+
+  const retakeMock = async () => {
+    setBusy(true);
+    const res = await fetch('/api/mock-exams', { method: 'POST' });
+    const body = await res.json();
+    if (res.status === 201) router.push(`/mock/${body.mockExamId}`);
+    else if (res.status === 409) router.push(`/mock/${body.error.details.mockExamId}`);
+    else setBusy(false);
+  };
 
   return (
     <Shell>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <h1>Drill Results</h1>
+          <h1>{isMock ? 'Mock Exam Results' : 'Drill Results'}</h1>
           <p className="sub" style={{ marginBottom: 0 }}>
-            {data.score.correct} of {data.score.total} correct · {data.timeUsedSeconds}s · target{' '}
-            {data.target.percent}% (not an official pass score)
+            {data.score.correct} of {data.score.total} correct ·{' '}
+            {isMock ? `${minutes} min` : `${data.timeUsedSeconds}s`} · target {data.target.percent}%
+            (not an official pass score)
           </p>
         </div>
         {drillWeakest && (
@@ -100,9 +113,15 @@ export default function PracticeResultsPage() {
             Start Targeted Practice
           </button>
         )}
-        <a className="btn" href="/practice/setup">
-          New Drill
-        </a>
+        {isMock ? (
+          <button className="btn" onClick={retakeMock} disabled={busy}>
+            {busy ? 'Preparing…' : 'Retake Mock'}
+          </button>
+        ) : (
+          <a className="btn" href="/practice/setup">
+            New Drill
+          </a>
+        )}
       </div>
 
       <div className="results-grid" style={{ marginTop: 18 }}>
@@ -113,6 +132,9 @@ export default function PracticeResultsPage() {
           <div className="ring-wrap">
             <ScoreRing percent={data.score.percent} />
             <span className={`pill ${readinessPill.cls}`}>{readinessPill.text}</span>
+            {isMock && data.missed.count > 0 && (
+              <span className="muted">{data.missed.count} missed (unanswered count as incorrect)</span>
+            )}
           </div>
         </div>
 
@@ -130,7 +152,7 @@ export default function PracticeResultsPage() {
                   <strong>
                     {weakestDomain
                       ? `Focus area identified: ${weakestDomain.name}`
-                      : 'No weak area detected in this drill'}
+                      : 'No weak area detected in this attempt'}
                   </strong>
                   <p className="muted" style={{ margin: '4px 0 0' }}>
                     {data.coachSummary.text}
@@ -151,7 +173,7 @@ export default function PracticeResultsPage() {
                     <div>
                       <div className="d-name">{d.name}</div>
                       <div className="d-weight">
-                        {d.correct}/{d.total} correct
+                        {d.correct}/{d.total} correct{isMock ? ` · weight ${d.weightPercent}%` : ''}
                       </div>
                     </div>
                     <span className={`d-pct ${pctClass(d.percent)}`}>{d.percent}%</span>

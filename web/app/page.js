@@ -151,13 +151,21 @@ export default function DashboardPage() {
                 </div>
                 <span className="soon">SOON</span>
               </span>
-              <span className="action-row disabled" aria-disabled="true">
+              <a className="action-row" href="/mock">
                 <div>
-                  <div className="a-title">Take a mock exam</div>
-                  <div className="a-sub">60 questions · 90 minutes · arrives next</div>
+                  <div className="a-title">
+                    {data.resume?.kind === 'mock' ? 'Resume mock exam' : 'Take a mock exam'}
+                  </div>
+                  <div className="a-sub">
+                    {data.resume?.kind === 'mock'
+                      ? `${data.resume.answered}/${data.resume.total} answered — timer is running`
+                      : '60 questions · 90 minutes · blueprint-weighted'}
+                  </div>
                 </div>
-                <span className="soon">SOON</span>
-              </span>
+                <span className="chev">
+                  <ChevronIcon />
+                </span>
+              </a>
             </div>
           </div>
 
@@ -180,7 +188,7 @@ export default function DashboardPage() {
                     Practiced: drill scored {a.scorePercent}%
                     <span className="time">{new Date(a.completedAt).toLocaleString()}</span>
                   </div>
-                  <a style={{ marginLeft: 'auto', fontSize: 13 }} href={`/practice/results/${a.attemptId}`}>
+                  <a style={{ marginLeft: 'auto', fontSize: 13 }} href={`/results/${a.attemptId}`}>
                     View
                   </a>
                 </div>

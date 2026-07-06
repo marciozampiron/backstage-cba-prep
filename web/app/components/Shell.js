@@ -15,18 +15,18 @@ import {
 } from './icons.js';
 
 const NAV = [
-  { label: 'Dashboard', href: '/', icon: GridIcon },
-  { label: 'Practice', href: '/practice/setup', icon: BookIcon },
-  { label: 'Mock Exam', icon: ClockIcon },
+  { label: 'Dashboard', href: '/', prefix: null, icon: GridIcon },
+  { label: 'Practice', href: '/practice/setup', prefix: '/practice', icon: BookIcon },
+  { label: 'Mock Exam', href: '/mock', prefix: '/mock', icon: ClockIcon },
   { label: 'Review', icon: RefreshIcon },
   { label: 'Coach', icon: ChatIcon },
   { label: 'Progress', icon: TrendIcon },
 ];
 
-function isActive(pathname, href) {
+function isActive(pathname, href, prefix) {
   if (!href) return false;
   if (href === '/') return pathname === '/';
-  return pathname.startsWith('/practice');
+  return prefix ? pathname.startsWith(prefix) : pathname === href;
 }
 
 export default function Shell({ children }) {
@@ -43,9 +43,13 @@ export default function Shell({ children }) {
           </div>
         </div>
         <nav className="nav" aria-label="Primary">
-          {NAV.map(({ label, href, icon: Icon }) =>
+          {NAV.map(({ label, href, prefix, icon: Icon }) =>
             href ? (
-              <a key={label} className={`nav-item ${isActive(pathname, href) ? 'active' : ''}`} href={href}>
+              <a
+                key={label}
+                className={`nav-item ${isActive(pathname, href, prefix) ? 'active' : ''}`}
+                href={href}
+              >
                 <Icon /> {label}
               </a>
             ) : (
@@ -74,7 +78,9 @@ export default function Shell({ children }) {
             >
               Practice
             </a>
-            <span className="top-tab disabled">Mock Exam</span>
+            <a className={`top-tab ${pathname.startsWith('/mock') ? 'active' : ''}`} href="/mock">
+              Mock Exam
+            </a>
           </nav>
           <div className="top-right">
             <BellIcon />
@@ -103,9 +109,9 @@ export default function Shell({ children }) {
         <a className={`b-tab ${pathname.startsWith('/practice') ? 'active' : ''}`} href="/practice/setup">
           <BookIcon width={20} height={20} /> Practice
         </a>
-        <span className="b-tab" aria-disabled="true">
+        <a className={`b-tab ${pathname.startsWith('/mock') ? 'active' : ''}`} href="/mock">
           <ClockIcon width={20} height={20} /> Mock
-        </span>
+        </a>
         <span className="b-tab" aria-disabled="true">
           <RefreshIcon width={20} height={20} /> Review
         </span>

@@ -1,7 +1,7 @@
 // GET /api/dashboard — contract §1 (web-bff-contracts.md). Slice 1: first-run aware; readiness is
 // a naive deterministic rollup of in-memory attempts (ProgressSnapshot arrives with persistence).
 import { exam, domains } from '../../../lib/bank.js';
-import { learnerAttemptStats } from '../../../lib/store.js';
+import { learnerAttemptStats, currentMockResume } from '../../../lib/store.js';
 import { handle, json } from '../../../lib/api.js';
 
 export const GET = handle(() => {
@@ -28,9 +28,11 @@ export const GET = handle(() => {
       : null;
   const weakest = rated.length > 0 ? [...rated].sort((a, b) => a.readinessPercent - b.readinessPercent)[0] : null;
 
-  const recommendedDrill = firstRun
-    ? { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' }
-    : { domainId: weakest?.domainId ?? null, competencyId: null, questionCount: 10, reason: 'weakest_domain' };
+  // Deterministic fallback: without a rated weakest domain (edge cases), recommend a warm-up.
+  const recommendedDrill =
+    firstRun || !weakest
+      ? { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' }
+      : { domainId: weakest.domainId, competencyId: null, questionCount: 10, reason: 'weakest_domain' };
 
   return json({
     exam: { examId: exam.examId, name: exam.name },
@@ -38,7 +40,7 @@ export const GET = handle(() => {
     readiness: { percent: overall, targetPercent: exam.targetPercent, official: false },
     domains: domainRows,
     weakestCompetency: null, // competency-level readiness arrives with ProgressSnapshot (later slice)
-    resume: null, // sessions are short-lived in slice 1; resume lands with persistence
+    resume: currentMockResume(), // in-progress mock exam, if any (§1 resume shape)
     recommendedDrill,
     recentAttempts: attempts.slice(0, 3).map((a) => ({
       attemptId: a.attemptId,
@@ -49,7 +51,9 @@ export const GET = handle(() => {
     coachNudge: {
       text: firstRun
         ? `The CBA covers ${domains.length} domains. Take a 5-question warm-up to get your first readiness signal.`
-        : `${weakest.name} is your weakest area — a focused 10-question drill will help.`,
+        : weakest
+          ? `${weakest.name} is your weakest area — a focused 10-question drill will help.`
+          : 'Take a quick 5-question warm-up to refresh your readiness signal.',
       action: recommendedDrill.domainId
         ? { type: 'start_drill', domainId: recommendedDrill.domainId, questionCount: 10 }
         : { type: 'start_drill', questionCount: 5 },
