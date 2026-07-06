@@ -1,0 +1,344 @@
+/* Academic Precision tokens — from the versioned Stitch design system
+   (docs/product/prototypes/stitch-cba-study-coach/ DESIGN.md). Slate Navy + Inter,
+   flat tonal layering, soft geometry. */
+:root {
+  --surface: #faf9fc;
+  --surface-card: #ffffff;
+  --border: #e2e8f0;
+  --on-surface: #1b1b1e;
+  --on-surface-variant: #44474e;
+  --muted: #74777f;
+  --primary: #152c4c;
+  --primary-container: #2d4263;
+  --on-primary: #ffffff;
+  --secondary: #505f76;
+  --success: #15803d;
+  --success-bg: #e9f6ee;
+  --error: #ba1a1a;
+  --error-bg: #ffdad6;
+  --amber: #b45309;
+  --chip-bg: #eef2f7;
+  --radius-sm: 4px;
+  --radius-lg: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--primary-container);
+}
+
+.shell {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 16px 64px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.topbar .brand {
+  font-weight: 700;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 18px;
+}
+
+.topbar .exam-chip {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.card {
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.sub {
+  color: var(--on-surface-variant);
+  margin: 0 0 20px;
+}
+
+.label-caps {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--secondary);
+  display: block;
+  margin: 16px 0 6px;
+}
+
+.btn {
+  display: inline-block;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: var(--on-primary);
+  font: inherit;
+  font-weight: 600;
+  padding: 12px 20px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:hover {
+  background: var(--primary-container);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--secondary);
+}
+
+.btn-secondary:hover {
+  background: var(--chip-bg);
+}
+
+.domain-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.domain-row:last-child {
+  border-bottom: 0;
+}
+
+.weight {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--success);
+}
+
+select,
+input[type='number'] {
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--on-surface);
+  width: 100%;
+}
+
+select:focus {
+  outline: 2px solid var(--primary-container);
+}
+
+.segmented {
+  display: flex;
+  gap: 8px;
+}
+
+.segmented button {
+  flex: 1;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--on-surface-variant);
+  cursor: pointer;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  color: var(--on-surface-variant);
+}
+
+.progress-tag {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.stem {
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 12px 0 20px;
+}
+
+.option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  cursor: pointer;
+}
+
+.option:hover {
+  border-color: var(--primary-container);
+}
+
+.option[aria-pressed='true'] {
+  border: 2px solid var(--primary);
+  padding: 13px;
+}
+
+.option .key {
+  font-weight: 700;
+  color: var(--secondary);
+}
+
+.option.correct {
+  border: 2px solid var(--success);
+  background: var(--success-bg);
+  padding: 13px;
+}
+
+.option.incorrect {
+  border: 2px solid var(--error);
+  background: var(--error-bg);
+  padding: 13px;
+}
+
+.feedback {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.feedback .verdict {
+  font-weight: 700;
+}
+
+.feedback .verdict.ok {
+  color: var(--success);
+}
+
+.feedback .verdict.bad {
+  color: var(--error);
+}
+
+.source-chip {
+  display: inline-block;
+  font-size: 13px;
+  color: var(--secondary);
+  background: var(--chip-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  margin-top: 10px;
+  text-decoration: none;
+}
+
+.source-chip:hover {
+  border-color: var(--primary-container);
+}
+
+.score-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.score-hero .big {
+  font-size: 44px;
+  font-weight: 700;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
+.error-box {
+  border: 1px solid var(--error);
+  background: var(--error-bg);
+  color: var(--error);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  margin-top: 12px;
+}
