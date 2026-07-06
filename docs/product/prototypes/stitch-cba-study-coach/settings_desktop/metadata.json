@@ -1,0 +1,18 @@
+{
+  "label": "Settings",
+  "slug": "settings_desktop",
+  "screenId": "df6e74cc9bce4fefa417574f64522f7b",
+  "resourceName": "projects/15695885461367912017/screens/df6e74cc9bce4fefa417574f64522f7b",
+  "title": "Settings & Goals",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2254",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 20677,
+    "screenshot": 51891
+  }
+}

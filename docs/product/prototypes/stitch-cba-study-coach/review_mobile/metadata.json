@@ -1,0 +1,18 @@
+{
+  "label": "Review mobile",
+  "slug": "review_mobile",
+  "screenId": "0b49bc35fa434e30b021404aaac734bd",
+  "resourceName": "projects/15695885461367912017/screens/0b49bc35fa434e30b021404aaac734bd",
+  "title": "Review Missed Questions Mobile - CBA Source Review",
+  "deviceType": "MOBILE",
+  "width": "780",
+  "height": "1768",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 18272,
+    "screenshot": 45996
+  }
+}

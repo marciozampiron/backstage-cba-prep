@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Review Missed Questions - CBA Prep</title>
+<!-- Google Fonts: Inter -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        /* Hide scrollbar for horizontal scrolling */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-secondary-fixed": "#0b1c30",
+                      "secondary": "#505f76",
+                      "on-primary-fixed": "#021b3b",
+                      "background": "#faf9fc",
+                      "primary-fixed-dim": "#b2c7ef",
+                      "tertiary": "#3a2800",
+                      "primary-fixed": "#d6e3ff",
+                      "on-secondary-container": "#54647a",
+                      "surface-tint": "#4a5f82",
+                      "surface-container-highest": "#e3e2e5",
+                      "outline": "#74777f",
+                      "on-secondary": "#ffffff",
+                      "error-container": "#ffdad6",
+                      "on-tertiary": "#ffffff",
+                      "on-secondary-fixed-variant": "#38485d",
+                      "on-primary-fixed-variant": "#324769",
+                      "surface": "#faf9fc",
+                      "on-tertiary-fixed-variant": "#5a4311",
+                      "surface-container-low": "#f5f3f6",
+                      "inverse-on-surface": "#f2f0f3",
+                      "surface-container-lowest": "#ffffff",
+                      "tertiary-fixed-dim": "#e3c284",
+                      "on-error-container": "#93000a",
+                      "outline-variant": "#c4c6cf",
+                      "on-surface-variant": "#44474e",
+                      "surface-variant": "#e3e2e5",
+                      "primary-container": "#2d4263",
+                      "primary": "#152c4c",
+                      "tertiary-container": "#543e0c",
+                      "tertiary-fixed": "#ffdea3",
+                      "on-tertiary-fixed": "#261900",
+                      "surface-bright": "#faf9fc",
+                      "secondary-fixed": "#d3e4fe",
+                      "on-surface": "#1b1b1e",
+                      "secondary-fixed-dim": "#b7c8e1",
+                      "secondary-container": "#d0e1fb",
+                      "on-primary-container": "#9aafd5",
+                      "inverse-primary": "#b2c7ef",
+                      "on-tertiary-container": "#c9aa6e",
+                      "surface-dim": "#dbd9dd",
+                      "error": "#ba1a1a",
+                      "on-background": "#1b1b1e",
+                      "surface-container-high": "#e9e7eb",
+                      "inverse-surface": "#303033",
+                      "on-error": "#ffffff",
+                      "on-primary": "#ffffff",
+                      "surface-container": "#efedf0"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "container-max": "1440px",
+                      "gutter": "24px",
+                      "stack-xs": "4px",
+                      "stack-md": "16px",
+                      "stack-lg": "24px",
+                      "stack-sm": "8px",
+                      "margin-desktop": "32px",
+                      "margin-mobile": "16px",
+                      "sidebar-width": "260px"
+              },
+              "fontFamily": {
+                      "display-lg-mobile": ["Inter"],
+                      "body-sm": ["Inter"],
+                      "body-md": ["Inter"],
+                      "display-lg": ["Inter"],
+                      "title-sm": ["Inter"],
+                      "headline-md": ["Inter"],
+                      "label-caps": ["Inter"],
+                      "data-tabular": ["Inter"]
+              },
+              "fontSize": {
+                      "display-lg-mobile": ["28px", {"lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "700"}],
+                      "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                      "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                      "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                      "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                      "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                      "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                      "data-tabular": ["14px", {"lineHeight": "20px", "fontWeight": "500"}]
+              }
+            }
+          }
+        }
+    </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-surface font-body-md antialiased h-screen flex flex-col overflow-hidden">
+<!-- Top App Bar (Task-Focused / Transactional) -->
+<header class="bg-surface border-b border-outline-variant w-full top-0 sticky z-40 flex justify-between items-center px-margin-mobile py-stack-sm h-14">
+<button class="text-on-surface-variant hover:bg-surface-container-low transition-colors rounded-full p-2 -ml-2 active:opacity-80 transition-opacity flex items-center justify-center">
+<span class="material-symbols-outlined text-[24px]">arrow_back</span>
+</button>
+<h1 class="font-title-sm text-title-sm text-primary absolute left-1/2 -translate-x-1/2">Review Missed</h1>
+<button class="text-on-surface-variant hover:bg-surface-container-low transition-colors rounded-full p-2 -mr-2 active:opacity-80 transition-opacity flex items-center justify-center">
+<span class="material-symbols-outlined text-[24px]">tune</span>
+</button>
+</header>
+<!-- Scrollable Content Area -->
+<main class="flex-1 overflow-y-auto pb-[90px]"> <!-- padding bottom for fixed footer -->
+<!-- Header & Filters -->
+<div class="px-margin-mobile pt-stack-md pb-stack-sm bg-surface">
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-stack-md">
+                Focus on concepts that cost you points.
+            </p>
+<!-- Horizontal Filter Chips -->
+<div class="flex gap-stack-sm overflow-x-auto no-scrollbar pb-1">
+<button class="whitespace-nowrap flex items-center gap-1 bg-surface-container-highest text-on-surface px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors">
+<span class="font-body-sm text-body-sm font-medium">Domain</span>
+<span class="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+</button>
+<button class="whitespace-nowrap flex items-center gap-1 bg-surface-container-highest text-on-surface px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors">
+<span class="font-body-sm text-body-sm font-medium">Difficulty</span>
+<span class="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+</button>
+<button class="whitespace-nowrap flex items-center gap-1 bg-surface-container-highest text-on-surface px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors">
+<span class="font-body-sm text-body-sm font-medium">Status</span>
+<span class="material-symbols-outlined text-[16px]">arrow_drop_down</span>
+</button>
+<button class="whitespace-nowrap flex items-center gap-1 bg-surface-container-lowest text-primary px-3 py-1.5 rounded-lg border-2 border-primary hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-[16px]">check</span>
+<span class="font-body-sm text-body-sm font-medium">Source reviewed</span>
+</button>
+</div>
+</div>
+<!-- Question Cards List -->
+<div class="px-margin-mobile py-stack-md flex flex-col gap-stack-md">
+<!-- Card 1 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md flex flex-col gap-stack-sm">
+<!-- Meta Row -->
+<div class="flex justify-between items-start w-full">
+<div class="flex gap-stack-xs flex-wrap">
+<span class="bg-surface-container-low text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT border border-outline-variant">Backstage Catalog</span>
+<span class="bg-tertiary-fixed text-on-tertiary-fixed font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT">Medium</span>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap ml-2">2h ago</span>
+</div>
+<!-- Title -->
+<h2 class="font-title-sm text-title-sm text-primary mt-1">Software Catalog entity metadata</h2>
+<!-- Source Chip -->
+<a class="inline-flex items-center gap-1 bg-surface-container text-on-surface-variant font-data-tabular text-data-tabular px-2 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors mt-1 w-fit max-w-full" href="#">
+<span class="material-symbols-outlined text-[14px] shrink-0">link</span>
+<span class="truncate">Source: backstage.io/docs/features/software-catalog/</span>
+</a>
+<hr class="border-outline-variant my-2"/>
+<!-- Actions -->
+<div class="flex gap-stack-sm w-full mt-1">
+<button class="flex-1 bg-primary text-on-primary font-body-sm text-body-sm font-medium py-2 rounded-lg hover:opacity-90 active:scale-95 transition-all text-center">
+                        Review
+                    </button>
+<button class="flex-1 bg-transparent text-primary border border-outline font-body-sm text-body-sm font-medium py-2 rounded-lg hover:bg-surface-container-low active:scale-95 transition-all text-center">
+                        Practice again
+                    </button>
+</div>
+</div>
+<!-- Card 2 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md flex flex-col gap-stack-sm">
+<div class="flex justify-between items-start w-full">
+<div class="flex gap-stack-xs flex-wrap">
+<span class="bg-surface-container-low text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT border border-outline-variant">Software Templates</span>
+<span class="bg-error-container text-on-error-container font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT">Hard</span>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap ml-2">5h ago</span>
+</div>
+<h2 class="font-title-sm text-title-sm text-primary mt-1">Scaffolder template input parameters</h2>
+<a class="inline-flex items-center gap-1 bg-surface-container text-on-surface-variant font-data-tabular text-data-tabular px-2 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors mt-1 w-fit max-w-full" href="#">
+<span class="material-symbols-outlined text-[14px] shrink-0">link</span>
+<span class="truncate">Source: backstage.io/docs/features/software-templates/</span>
+</a>
+<hr class="border-outline-variant my-2"/>
+<div class="flex gap-stack-sm w-full mt-1">
+<button class="flex-1 bg-primary text-on-primary font-body-sm text-body-sm font-medium py-2 rounded-lg hover:opacity-90 active:scale-95 transition-all text-center">
+                        Review
+                    </button>
+<button class="flex-1 bg-transparent text-primary border border-outline font-body-sm text-body-sm font-medium py-2 rounded-lg hover:bg-surface-container-low active:scale-95 transition-all text-center">
+                        Practice again
+                    </button>
+</div>
+</div>
+<!-- Card 3 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md flex flex-col gap-stack-sm">
+<div class="flex justify-between items-start w-full">
+<div class="flex gap-stack-xs flex-wrap">
+<span class="bg-surface-container-low text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT border border-outline-variant">TechDocs</span>
+<span class="bg-tertiary-fixed text-on-tertiary-fixed font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT">Medium</span>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap ml-2">1d ago</span>
+</div>
+<h2 class="font-title-sm text-title-sm text-primary mt-1">Configuring TechDocs publisher and storage settings</h2>
+<a class="inline-flex items-center gap-1 bg-surface-container text-on-surface-variant font-data-tabular text-data-tabular px-2 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors mt-1 w-fit max-w-full" href="#">
+<span class="material-symbols-outlined text-[14px] shrink-0">link</span>
+<span class="truncate">Source: backstage.io/docs/features/techdocs/</span>
+</a>
+<hr class="border-outline-variant my-2"/>
+<div class="flex gap-stack-sm w-full mt-1">
+<button class="flex-1 bg-primary text-on-primary font-body-sm text-body-sm font-medium py-2 rounded-lg hover:opacity-90 active:scale-95 transition-all text-center">
+                        Review
+                    </button>
+<button class="flex-1 bg-transparent text-primary border border-outline font-body-sm text-body-sm font-medium py-2 rounded-lg hover:bg-surface-container-low active:scale-95 transition-all text-center">
+                        Practice again
+                    </button>
+</div>
+</div>
+<!-- Card 4 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md flex flex-col gap-stack-sm">
+<div class="flex justify-between items-start w-full">
+<div class="flex gap-stack-xs flex-wrap">
+<span class="bg-surface-container-low text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT border border-outline-variant">Core Configuration</span>
+<span class="bg-secondary-container text-on-secondary-container font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT">Easy</span>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap ml-2">2d ago</span>
+</div>
+<h2 class="font-title-sm text-title-sm text-primary mt-1">Backstage app configuration</h2>
+<a class="inline-flex items-center gap-1 bg-surface-container text-on-surface-variant font-data-tabular text-data-tabular px-2 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors mt-1 w-fit max-w-full" href="#">
+<span class="material-symbols-outlined text-[14px] shrink-0">link</span>
+<span class="truncate">Source: backstage.io/docs/conf/</span>
+</a>
+<hr class="border-outline-variant my-2"/>
+<div class="flex gap-stack-sm w-full mt-1">
+<button class="flex-1 bg-primary text-on-primary font-body-sm text-body-sm font-medium py-2 rounded-lg hover:opacity-90 active:scale-95 transition-all text-center">
+                        Review
+                    </button>
+<button class="flex-1 bg-transparent text-primary border border-outline font-body-sm text-body-sm font-medium py-2 rounded-lg hover:bg-surface-container-low active:scale-95 transition-all text-center">
+                        Practice again
+                    </button>
+</div>
+</div>
+<!-- Card 5 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md flex flex-col gap-stack-sm">
+<div class="flex justify-between items-start w-full">
+<div class="flex gap-stack-xs flex-wrap">
+<span class="bg-surface-container-low text-on-surface-variant font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT border border-outline-variant">Plugins</span>
+<span class="bg-tertiary-fixed text-on-tertiary-fixed font-label-caps text-label-caps px-2 py-1 rounded-DEFAULT">Medium</span>
+</div>
+<span class="font-body-sm text-body-sm text-on-surface-variant whitespace-nowrap ml-2">3d ago</span>
+</div>
+<h2 class="font-title-sm text-title-sm text-primary mt-1">Installing and configuring a plugin</h2>
+<a class="inline-flex items-center gap-1 bg-surface-container text-on-surface-variant font-data-tabular text-data-tabular px-2 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-variant transition-colors mt-1 w-fit max-w-full" href="#">
+<span class="material-symbols-outlined text-[14px] shrink-0">link</span>
+<span class="truncate">Source: backstage.io/docs/plugins/</span>
+</a>
+<hr class="border-outline-variant my-2"/>
+<div class="flex gap-stack-sm w-full mt-1">
+<button class="flex-1 bg-primary text-on-primary font-body-sm text-body-sm font-medium py-2 rounded-lg hover:opacity-90 active:scale-95 transition-all text-center">
+                        Review
+                    </button>
+<button class="flex-1 bg-transparent text-primary border border-outline font-body-sm text-body-sm font-medium py-2 rounded-lg hover:bg-surface-container-low active:scale-95 transition-all text-center">
+                        Practice again
+                    </button>
+</div>
+</div>
+</div>
+</main>
+<!-- Sticky Bottom Action Strip -->
+<div class="fixed bottom-0 w-full bg-surface-container-lowest border-t border-outline-variant p-margin-mobile z-50 safe-area-bottom">
+<button class="w-full bg-primary text-on-primary font-title-sm text-title-sm py-3 px-4 rounded-xl shadow-sm hover:opacity-90 active:scale-[0.98] transition-all flex justify-center items-center gap-2">
+<span class="material-symbols-outlined text-[20px]">play_arrow</span>
+            Start review block
+        </button>
+</div>
+</body></html>

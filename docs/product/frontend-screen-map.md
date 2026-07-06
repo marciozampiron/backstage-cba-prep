@@ -8,6 +8,11 @@ study platform. It is the input for UI generation (Google Stitch); see
 - **Runtime base:** [`ADR-0002`](../adr/0002-cloudflare-nextjs-aws-bff.md) — Cloudflare/Next.js frontend,
   AWS Web BFF, AI Orchestration behind the BFF.
 - **Not in scope:** real frontend code, backend/BFF, AI orchestration changes, admin/authoring screens.
+- **Generated prototype:** the Stitch-generated, CBA-aligned learner screens are versioned at
+  [`prototypes/stitch-cba-study-coach/`](prototypes/stitch-cba-study-coach/). Its
+  [`manifest.json`](prototypes/stitch-cba-study-coach/manifest.json) is the authoritative index — 15
+  screens (desktop + mobile) with Stitch screen IDs and per-screen `code.html` / `screen.png` /
+  `metadata.json`. Older Stitch screens outside that folder are stale and must be ignored.
 
 ## Product principles (non-negotiable for these screens)
 

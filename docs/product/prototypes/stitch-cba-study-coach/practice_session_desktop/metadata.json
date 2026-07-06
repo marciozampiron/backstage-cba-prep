@@ -1,0 +1,18 @@
+{
+  "label": "Practice Session desktop",
+  "slug": "practice_session_desktop",
+  "screenId": "4c7c28211dcd460aa2c503d6f195df27",
+  "resourceName": "projects/15695885461367912017/screens/4c7c28211dcd460aa2c503d6f195df27",
+  "title": "Practice Session",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2048",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 15635,
+    "screenshot": 27852
+  }
+}

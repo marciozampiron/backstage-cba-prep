@@ -1,0 +1,18 @@
+{
+  "label": "Learner Dashboard desktop",
+  "slug": "learner_dashboard_desktop",
+  "screenId": "3c3b35f850914af395c588166d4ba81d",
+  "resourceName": "projects/15695885461367912017/screens/3c3b35f850914af395c588166d4ba81d",
+  "title": "Learner Dashboard",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2530",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 24330,
+    "screenshot": 65039
+  }
+}

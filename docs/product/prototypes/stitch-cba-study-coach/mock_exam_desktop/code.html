@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CBA Mock Exam</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary-fixed": "#d6e3ff",
+                        "surface-dim": "#dbd9dd",
+                        "on-tertiary-container": "#c9aa6e",
+                        "on-background": "#1b1b1e",
+                        "on-primary-fixed-variant": "#324769",
+                        "error": "#ba1a1a",
+                        "on-surface": "#1b1b1e",
+                        "surface-container-high": "#e9e7eb",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-tint": "#4a5f82",
+                        "on-secondary-container": "#54647a",
+                        "inverse-on-surface": "#f2f0f3",
+                        "surface-container-highest": "#e3e2e5",
+                        "background": "#faf9fc",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "inverse-surface": "#303033",
+                        "surface": "#faf9fc",
+                        "surface-bright": "#faf9fc",
+                        "primary": "#152c4c",
+                        "on-error-container": "#93000a",
+                        "secondary-fixed": "#d3e4fe",
+                        "inverse-primary": "#b2c7ef",
+                        "primary-container": "#2d4263",
+                        "error-container": "#ffdad6",
+                        "secondary-container": "#d0e1fb",
+                        "secondary": "#505f76",
+                        "on-primary-fixed": "#021b3b",
+                        "on-tertiary-fixed-variant": "#5a4311",
+                        "surface-container-low": "#f5f3f6",
+                        "on-secondary-fixed": "#0b1c30",
+                        "tertiary-fixed-dim": "#e3c284",
+                        "surface-variant": "#e3e2e5",
+                        "on-primary-container": "#9aafd5",
+                        "tertiary": "#3a2800",
+                        "outline-variant": "#c4c6cf",
+                        "surface-container": "#efedf0",
+                        "tertiary-container": "#543e0c",
+                        "on-secondary-fixed-variant": "#38485d",
+                        "primary-fixed-dim": "#b2c7ef",
+                        "on-surface-variant": "#44474e",
+                        "on-error": "#ffffff",
+                        "tertiary-fixed": "#ffdea3",
+                        "on-tertiary-fixed": "#261900",
+                        "on-primary": "#ffffff",
+                        "outline": "#74777f",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "stack-sm": "8px",
+                        "gutter": "24px",
+                        "sidebar-width": "260px",
+                        "margin-desktop": "32px",
+                        "stack-lg": "24px",
+                        "container-max": "1440px",
+                        "stack-md": "16px",
+                        "stack-xs": "4px",
+                        "margin-mobile": "16px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter"],
+                        "data-tabular": ["Inter"],
+                        "title-sm": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "display-lg-mobile": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-caps": ["Inter"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "data-tabular": ["14px", { "lineHeight": "20px", "fontWeight": "500" }],
+                        "title-sm": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "headline-md": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "display-lg-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "700" }],
+                        "body-sm": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-md": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "label-caps": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-surface text-on-surface h-screen flex flex-col overflow-hidden">
+<!-- TopAppBar -->
+<header class="bg-surface docked full-width top-0 border-b border-outline-variant flex justify-between items-center h-16 px-margin-desktop z-50">
+<div class="flex items-center gap-4">
+<span class="font-display-lg text-display-lg font-bold text-primary">CBA Mock Exam</span>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2 font-data-tabular text-data-tabular bg-error-container text-on-error-container px-4 py-2 rounded-lg">
+<span class="material-symbols-outlined">timer</span>
+<span>55:00</span>
+</div>
+<button class="bg-primary hover:bg-primary-container text-on-primary font-title-sm text-title-sm px-6 py-2 rounded-lg transition-colors duration-200">
+                Submit Exam
+            </button>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- Side Navigation Grid (Questions) -->
+<aside class="w-[320px] bg-surface-container-lowest border-r border-outline-variant flex flex-col h-full z-40">
+<div class="p-6 border-b border-outline-variant">
+<h2 class="font-title-sm text-title-sm text-on-surface mb-4">Question Overview</h2>
+<div class="flex flex-col gap-2 font-body-sm text-body-sm text-on-surface-variant">
+<div class="flex items-center justify-between">
+<span class="flex items-center gap-2"><div class="w-3 h-3 rounded-sm bg-primary"></div> Answered</span>
+<span class="font-data-tabular text-data-tabular">42</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="flex items-center gap-2"><div class="w-3 h-3 rounded-sm bg-surface-variant border border-outline"></div> Unanswered</span>
+<span class="font-data-tabular text-data-tabular">15</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="flex items-center gap-2"><span class="material-symbols-outlined text-tertiary-fixed-dim text-[16px]" style="font-variation-settings: 'FILL' 1;">flag</span> Flagged</span>
+<span class="font-data-tabular text-data-tabular">3</span>
+</div>
+</div>
+</div>
+<div class="flex-1 overflow-y-auto p-6">
+<div class="grid grid-cols-5 gap-2">
+<!-- Generate 60 squares with mixed states -->
+<script>
+                        for(let i=1; i<=60; i++) {
+                            let stateClass = "bg-surface-variant border-outline text-on-surface-variant";
+                            let content = i;
+                            let isFlagged = [12, 28, 45].includes(i);
+                            let isAnswered = i < 45 && !isFlagged;
+                            let isCurrent = i === 12;
+
+                            if (isCurrent) {
+                                stateClass = "bg-primary-container text-on-primary-container border-primary ring-2 ring-primary ring-offset-2";
+                            } else if (isFlagged) {
+                                stateClass = "bg-surface-container text-on-surface border-tertiary-fixed-dim relative";
+                                content = `<span class="absolute top-0 right-0 -mt-1 -mr-1 material-symbols-outlined text-tertiary-container text-[12px]" style="font-variation-settings: 'FILL' 1;">flag</span>${i}`;
+                            } else if (isAnswered) {
+                                stateClass = "bg-primary text-on-primary border-primary";
+                            }
+
+                            document.write(`
+                                <button class="w-10 h-10 rounded border flex items-center justify-center font-data-tabular text-data-tabular transition-colors hover:opacity-80 ${stateClass}">
+                                    ${content}
+                                </button>
+                            `);
+                        }
+                    </script>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 bg-background overflow-y-auto p-12 flex justify-center">
+<div class="max-w-[800px] w-full flex flex-col h-full">
+<!-- Question Header -->
+<div class="flex justify-between items-center mb-8 border-b border-outline-variant pb-4">
+<span class="font-label-caps text-label-caps text-primary tracking-widest uppercase">Question 12 of 60</span>
+<button class="flex items-center gap-2 font-body-sm text-body-sm text-secondary hover:text-on-surface transition-colors">
+<span class="material-symbols-outlined text-[20px]">flag</span>
+                        Mark for Review
+                    </button>
+</div>
+<!-- Question Body -->
+<div class="flex-1">
+<h1 class="font-headline-md text-headline-md text-on-surface mb-8 leading-relaxed">
+                        Which of the following describes the relationship between an Entity and its Location in the Backstage Catalog?
+                    </h1>
+<!-- Options -->
+<div class="flex flex-col gap-4">
+<label class="relative flex p-6 border border-outline-variant rounded-lg cursor-pointer hover:bg-surface-container transition-colors group">
+<input class="mt-1 w-5 h-5 border-outline text-primary focus:ring-primary focus:ring-offset-0 bg-surface" name="q12" type="radio"/>
+<div class="ml-4 font-body-md text-body-md text-on-surface">
+                                An Entity must always have exactly one Location defining where its source code resides.
+                            </div>
+</label>
+<label class="relative flex p-6 border-2 border-primary bg-primary-fixed-dim bg-opacity-20 rounded-lg cursor-pointer group">
+<input checked="" class="mt-1 w-5 h-5 border-outline text-primary focus:ring-primary focus:ring-offset-0 bg-surface" name="q12" type="radio"/>
+<div class="ml-4 font-body-md text-body-md text-on-surface font-medium">
+                                A Location can spawn multiple Entities, and an Entity is tied to the Location that originally registered it.
+                            </div>
+</label>
+<label class="relative flex p-6 border border-outline-variant rounded-lg cursor-pointer hover:bg-surface-container transition-colors group">
+<input class="mt-1 w-5 h-5 border-outline text-primary focus:ring-primary focus:ring-offset-0 bg-surface" name="q12" type="radio"/>
+<div class="ml-4 font-body-md text-body-md text-on-surface">
+                                Entities and Locations are completely independent constructs used for different metadata schemas.
+                            </div>
+</label>
+<label class="relative flex p-6 border border-outline-variant rounded-lg cursor-pointer hover:bg-surface-container transition-colors group">
+<input class="mt-1 w-5 h-5 border-outline text-primary focus:ring-primary focus:ring-offset-0 bg-surface" name="q12" type="radio"/>
+<div class="ml-4 font-body-md text-body-md text-on-surface">
+                                Locations are only required for Component entities, while API entities are registered manually without them.
+                            </div>
+</label>
+</div>
+</div>
+<!-- Action Bar -->
+<div class="mt-12 pt-6 border-t border-outline-variant flex justify-between items-center bg-surface p-4 rounded-xl border">
+<button class="flex items-center gap-2 px-6 py-2 border border-outline text-on-surface font-title-sm text-title-sm rounded-lg hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined">chevron_left</span>
+                        Previous
+                    </button>
+<button class="flex items-center gap-2 px-8 py-3 bg-primary text-on-primary font-title-sm text-title-sm rounded-lg hover:bg-primary-container transition-colors shadow-sm">
+                        Next
+                        <span class="material-symbols-outlined">chevron_right</span>
+</button>
+</div>
+</div>
+</main>
+</div>
+</body></html>

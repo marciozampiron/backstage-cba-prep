@@ -1,0 +1,18 @@
+{
+  "label": "Practice Setup desktop",
+  "slug": "practice_setup_desktop",
+  "screenId": "5105ad6cf26c4bd18a0ba36a47b87ddd",
+  "resourceName": "projects/15695885461367912017/screens/5105ad6cf26c4bd18a0ba36a47b87ddd",
+  "title": "Practice Setup",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2048",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 16652,
+    "screenshot": 35274
+  }
+}

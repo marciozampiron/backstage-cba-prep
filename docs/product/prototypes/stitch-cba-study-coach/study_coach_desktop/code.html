@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Study Coach - CBA Study Platform</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-fixed-variant": "#38485d",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-low": "#f5f3f6",
+                        "inverse-on-surface": "#f2f0f3",
+                        "on-primary-fixed-variant": "#324769",
+                        "surface": "#faf9fc",
+                        "on-tertiary-fixed-variant": "#5a4311",
+                        "surface-container-lowest": "#ffffff",
+                        "secondary": "#505f76",
+                        "on-primary-fixed": "#021b3b",
+                        "background": "#faf9fc",
+                        "on-secondary-fixed": "#0b1c30",
+                        "primary-fixed": "#d6e3ff",
+                        "on-secondary-container": "#54647a",
+                        "primary-fixed-dim": "#b2c7ef",
+                        "tertiary": "#3a2800",
+                        "error-container": "#ffdad6",
+                        "surface-tint": "#4a5f82",
+                        "surface-container-highest": "#e3e2e5",
+                        "outline": "#74777f",
+                        "on-secondary": "#ffffff",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "secondary-container": "#d0e1fb",
+                        "on-primary-container": "#9aafd5",
+                        "inverse-primary": "#b2c7ef",
+                        "secondary-fixed": "#d3e4fe",
+                        "on-surface": "#1b1b1e",
+                        "surface-dim": "#dbd9dd",
+                        "error": "#ba1a1a",
+                        "on-background": "#1b1b1e",
+                        "on-tertiary-container": "#c9aa6e",
+                        "surface-container-high": "#e9e7eb",
+                        "inverse-surface": "#303033",
+                        "surface-container": "#efedf0",
+                        "on-error": "#ffffff",
+                        "on-primary": "#ffffff",
+                        "outline-variant": "#c4c6cf",
+                        "on-surface-variant": "#44474e",
+                        "tertiary-fixed-dim": "#e3c284",
+                        "on-error-container": "#93000a",
+                        "surface-variant": "#e3e2e5",
+                        "primary-container": "#2d4263",
+                        "primary": "#152c4c",
+                        "tertiary-fixed": "#ffdea3",
+                        "tertiary-container": "#543e0c",
+                        "surface-bright": "#faf9fc",
+                        "on-tertiary-fixed": "#261900"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "stack-sm": "8px",
+                        "stack-lg": "24px",
+                        "stack-xs": "4px",
+                        "stack-md": "16px",
+                        "gutter": "24px",
+                        "container-max": "1440px",
+                        "sidebar-width": "260px",
+                        "margin-mobile": "16px",
+                        "margin-desktop": "32px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter"],
+                        "title-sm": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "label-caps": ["Inter"],
+                        "data-tabular": ["Inter"],
+                        "display-lg-mobile": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "body-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "title-sm": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "headline-md": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "label-caps": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "data-tabular": ["14px", { "lineHeight": "20px", "fontWeight": "500" }],
+                        "display-lg-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "700" }],
+                        "body-sm": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-md": ["16px", { "lineHeight": "24px", "fontWeight": "400" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="h-full bg-background text-on-surface flex overflow-hidden">
+<!-- SideNavBar -->
+<aside class="w-sidebar-width h-screen fixed left-0 top-0 bg-surface border-r border-outline-variant flex flex-col py-stack-lg z-20 hidden md:flex">
+<div class="px-gutter mb-stack-lg flex items-center gap-stack-md">
+<img class="w-10 h-10 rounded-lg object-cover" data-alt="A clean, minimalist logo icon for a professional study platform, featuring abstract geometric shapes in navy and light blue, set against a pristine white background. High contrast, sharp edges, modern corporate aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuD1GmcVDc-ulrBcYRGk4gBc4TFFEUCt-J633ViVYdcAEwPDY79gAu-7-a4uEciwAqtQoHb1Nfnr22L9gdgDOmO_Xyk0cETLF4sYEfnSK3FMMrXhISbWssb1VstItwXxFCbKB7T6J8cyhOLW8EWCnlu7ULTvsXS3_VzS7k9vJ85NiVAphFAG-Uaf7FuG24qAD5hnFinoLREs36W1tqhgQ3C6hVr1-crarnPlWOmp-AwTg88C44CYb18WQCWnl5zGr7DaaIdik9f6l1hV"/>
+<div>
+<h1 class="font-display-lg text-title-sm font-bold text-primary">CBA Coach</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Exam Prep</p>
+</div>
+</div>
+<nav class="flex-1 overflow-y-auto px-stack-md flex flex-col gap-stack-xs">
+<!-- Navigation Items -->
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+                Dashboard
+            </a>
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="menu_book">menu_book</span>
+                Practice
+            </a>
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="assignment">assignment</span>
+                Mock Exam
+            </a>
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="history_edu">history_edu</span>
+                Review
+            </a>
+<!-- Active Item -->
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-primary font-bold border-l-4 border-primary bg-surface-container-low transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="psychology" data-weight="fill">psychology</span>
+                Coach
+            </a>
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="monitoring">monitoring</span>
+                Progress
+            </a>
+<a class="flex items-center gap-stack-sm px-stack-md py-stack-sm rounded-xl text-on-surface-variant hover:bg-surface-container transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+                Settings
+            </a>
+</nav>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 ml-0 md:ml-sidebar-width h-full flex flex-col bg-surface-container-low relative">
+<!-- Header -->
+<header class="h-20 px-margin-desktop border-b border-outline-variant bg-surface flex items-center justify-between shrink-0 z-10">
+<div>
+<h2 class="font-headline-md text-headline-md text-primary">Study Coach</h2>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-1">Your study coach, grounded in your progress.</p>
+</div>
+<div class="md:hidden">
+<button class="p-2 text-on-surface-variant hover:bg-surface-container rounded-lg">
+<span class="material-symbols-outlined" data-icon="menu">menu</span>
+</button>
+</div>
+</header>
+<!-- Workspace Layout -->
+<div class="flex-1 flex overflow-hidden">
+<!-- Chat Area -->
+<section class="flex-1 flex flex-col max-w-4xl mx-auto w-full relative">
+<!-- Message List -->
+<div class="flex-1 overflow-y-auto p-margin-desktop flex flex-col gap-stack-lg scroll-smooth">
+<!-- Learner Message -->
+<div class="flex gap-stack-md self-end max-w-[80%]">
+<div class="bg-primary text-on-primary p-stack-md rounded-2xl rounded-tr-none shadow-sm">
+<p class="font-body-md text-body-md">How do I configure TechDocs publisher and storage settings in Backstage?</p>
+</div>
+<img class="w-10 h-10 rounded-full object-cover shrink-0 mt-1" data-alt="A small, circular avatar portrait of a young professional student with glasses, smiling slightly, set against a neutral gray background. Crisp lighting, corporate profile style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBefdDATU36TsCH4SiMbQ3KgxJxlrhexKjOs0cMnTpAhsUUoHyGf9akz7tSMu-xgxSUWo29mOQmGCtEsoAkg6ODbZ082Tzda7duB8T7DzaJ3NBKiKp-WVBnyNylGRdFvtm_PWC999YMEI1UT72wnIii15b9WJ8MQx2UZaOrqVqoFb9erivbTskPUfHaXqrApHM-wmHReZbxNEWtnyLVc38-3QyFuf0rBQzZk6isHKSkVXoT5kLVEVYYIOQWHGC_JEGdpPva6LsQDRE2"/>
+</div>
+<!-- Coach Message -->
+<div class="flex gap-stack-md self-start max-w-[85%]">
+<div class="w-10 h-10 rounded-full bg-surface-variant border border-outline-variant flex items-center justify-center shrink-0 mt-1">
+<span class="material-symbols-outlined text-primary" data-icon="psychology">psychology</span>
+</div>
+<div class="bg-surface border border-outline-variant p-stack-md rounded-2xl rounded-tl-none shadow-sm flex flex-col gap-stack-sm">
+<div class="font-body-md text-body-md text-on-surface leading-relaxed">
+<p class="mb-2">To configure TechDocs publisher and storage settings, you typically modify the <code>app-config.yaml</code> file. The core settings involve defining the publisher type (e.g., local, awsS3, googleGcs, azureBlobStorage) and its specific credentials.</p>
+<p>For a local setup, you would use:</p>
+<pre class="bg-surface-container-high p-stack-sm rounded-lg text-sm font-data-tabular overflow-x-auto mt-2 mb-2 text-on-surface">techdocs:
+  publisher:
+    type: 'local'</pre>
+<p>For cloud storage, you must configure the respective provider credentials securely, often referencing environment variables rather than hardcoding secrets.</p>
+</div>
+<!-- Source Citation Chip -->
+<div class="flex mt-2">
+<span class="inline-flex items-center gap-1 px-3 py-1 bg-surface-container rounded-full border border-outline-variant font-label-caps text-label-caps text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]" data-icon="link">link</span>
+                                    Source: backstage.io/docs/features/techdocs/configuration
+                                </span>
+</div>
+</div>
+</div>
+<!-- Learner Message -->
+<div class="flex gap-stack-md self-end max-w-[80%]">
+<div class="bg-primary text-on-primary p-stack-md rounded-2xl rounded-tr-none shadow-sm">
+<p class="font-body-md text-body-md">Can you explain Software Catalog entity metadata?</p>
+</div>
+<img class="w-10 h-10 rounded-full object-cover shrink-0 mt-1" data-alt="A small, circular avatar portrait of a young professional student with glasses, smiling slightly, set against a neutral gray background. Crisp lighting, corporate profile style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAZ3kPhDYOMyzQc9bNQ_UqI771b5R2_nhCQDTzpi_KwnVjys-tCp2pfso-dAyXPqqXXi7NPbyXakaMQNyKNyPNuk4eN40SviR0mcX-Hs1u69JKcrHYTyDWUOmZ6fq35af41wOnqN7pOVMBsCxdRS_pjNN5MQV2ZyLa-GdJRfGlfzS0K01tn_3dwmE_TYGbGKgoPs5VxS1Y8HiIfeeufD1jMK5hen4BZibF2zR7ttsPLlBC4IIWmJDqvUenst8y-YoKsnlpPfJyyOBhr"/>
+</div>
+<!-- Coach Message -->
+<div class="flex gap-stack-md self-start max-w-[85%]">
+<div class="w-10 h-10 rounded-full bg-surface-variant border border-outline-variant flex items-center justify-center shrink-0 mt-1">
+<span class="material-symbols-outlined text-primary" data-icon="psychology">psychology</span>
+</div>
+<div class="bg-surface border border-outline-variant p-stack-md rounded-2xl rounded-tl-none shadow-sm flex flex-col gap-stack-sm">
+<div class="font-body-md text-body-md text-on-surface leading-relaxed">
+<p class="mb-2">Software Catalog entity metadata in Backstage is defined in YAML files (often named <code>catalog-info.yaml</code>). Every entity must have a core set of metadata that identifies it within the catalog.</p>
+<p>The most critical fields are:</p>
+<ul class="list-disc pl-5 mt-2 space-y-1">
+<li><strong>name:</strong> The unique identifier for the entity (e.g., <code>my-backend-service</code>).</li>
+<li><strong>namespace:</strong> (Optional) Used to group related entities or avoid naming collisions. Defaults to <code>default</code>.</li>
+<li><strong>description:</strong> A human-readable summary of the entity's purpose.</li>
+<li><strong>annotations:</strong> Key-value pairs used for integrating with plugins (e.g., linking a GitHub repository or PagerDuty service).</li>
+<li><strong>tags:</strong> A list of strings used for filtering and categorizing in the UI.</li>
+</ul>
+</div>
+<!-- Source Citation Chip -->
+<div class="flex mt-2">
+<span class="inline-flex items-center gap-1 px-3 py-1 bg-surface-container rounded-full border border-outline-variant font-label-caps text-label-caps text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]" data-icon="link">link</span>
+                                    Source: backstage.io/docs/features/software-catalog/
+                                </span>
+</div>
+</div>
+</div>
+<!-- Spacer for input area -->
+<div class="h-8"></div>
+</div>
+<!-- Input Area -->
+<div class="p-margin-desktop pt-4 bg-surface-container-low border-t border-transparent shrink-0">
+<div class="relative max-w-4xl mx-auto">
+<div class="flex items-center bg-surface border-2 border-outline-variant rounded-xl focus-within:border-primary focus-within:ring-1 focus-within:ring-primary transition-colors shadow-sm">
+<input class="w-full bg-transparent border-none py-4 pl-4 pr-12 font-body-md text-body-md text-on-surface focus:ring-0 placeholder:text-outline outline-none rounded-xl" placeholder="Ask about a CBA topic..." type="text"/>
+<button class="absolute right-2 p-2 bg-primary text-on-primary rounded-lg hover:bg-primary-container transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined" data-icon="send">send</span>
+</button>
+</div>
+<p class="text-center font-label-caps text-label-caps text-on-surface-variant mt-2">Study Coach responses are based on your module progress and syllabus.</p>
+</div>
+</div>
+</section>
+<!-- Right Context Panel -->
+<aside class="w-80 bg-surface border-l border-outline-variant hidden lg:flex flex-col shrink-0 overflow-y-auto">
+<div class="p-gutter flex-1 flex flex-col gap-stack-lg">
+<!-- Focus Weak Areas -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md shadow-sm">
+<h3 class="font-title-sm text-title-sm text-on-surface mb-stack-md flex items-center gap-2">
+<span class="material-symbols-outlined text-error" data-icon="trending_down">trending_down</span>
+                            Focus Weak Areas
+                        </h3>
+<div class="flex flex-col gap-stack-md">
+<div>
+<div class="flex justify-between items-center mb-1">
+<span class="font-data-tabular text-data-tabular text-on-surface-variant">Backstage Infrastructure</span>
+<span class="font-data-tabular text-data-tabular font-bold text-error">62%</span>
+</div>
+<div class="h-2 w-full bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-error rounded-full" style="width: 62%;"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between items-center mb-1">
+<span class="font-data-tabular text-data-tabular text-on-surface-variant">Customizing Backstage</span>
+<span class="font-data-tabular text-data-tabular font-bold text-error">58%</span>
+</div>
+<div class="h-2 w-full bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-error rounded-full" style="width: 58%;"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Recommended Practice -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-stack-md shadow-sm">
+<h3 class="font-title-sm text-title-sm text-on-surface mb-stack-sm flex items-center gap-2">
+<span class="material-symbols-outlined text-primary" data-icon="assignment_turned_in">assignment_turned_in</span>
+                            Recommended Practice
+                        </h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-stack-md">Review configuration syntax and metadata structures based on your recent queries.</p>
+<button class="w-full bg-surface-variant border border-outline-variant text-on-surface font-title-sm text-title-sm py-2 rounded-lg hover:bg-surface-container transition-colors flex items-center justify-center gap-2">
+                            Start Quiz
+                            <span class="material-symbols-outlined text-[18px]" data-icon="arrow_forward">arrow_forward</span>
+</button>
+</div>
+</div>
+<!-- Grounding Note -->
+<div class="p-gutter border-t border-outline-variant bg-surface-container-low mt-auto">
+<div class="flex items-start gap-2">
+<span class="material-symbols-outlined text-outline mt-0.5 text-[18px]" data-icon="info">info</span>
+<p class="font-label-caps text-label-caps text-on-surface-variant leading-relaxed">
+                            Source Grounding: Explanations cite backstage.io/docs sources to ensure accuracy for the CBA exam.
+                        </p>
+</div>
+</div>
+</aside>
+</div>
+</main>
+</body></html>

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CBA Study Coach - Practice Session</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "primary-fixed": "#d6e3ff",
+                      "surface-dim": "#dbd9dd",
+                      "on-tertiary-container": "#c9aa6e",
+                      "on-background": "#1b1b1e",
+                      "on-primary-fixed-variant": "#324769",
+                      "error": "#ba1a1a",
+                      "on-surface": "#1b1b1e",
+                      "surface-container-high": "#e9e7eb",
+                      "on-tertiary": "#ffffff",
+                      "on-secondary": "#ffffff",
+                      "surface-tint": "#4a5f82",
+                      "on-secondary-container": "#54647a",
+                      "inverse-on-surface": "#f2f0f3",
+                      "surface-container-highest": "#e3e2e5",
+                      "background": "#faf9fc",
+                      "secondary-fixed-dim": "#b7c8e1",
+                      "inverse-surface": "#303033",
+                      "surface": "#faf9fc",
+                      "surface-bright": "#faf9fc",
+                      "primary": "#152c4c",
+                      "on-error-container": "#93000a",
+                      "secondary-fixed": "#d3e4fe",
+                      "inverse-primary": "#b2c7ef",
+                      "primary-container": "#2d4263",
+                      "error-container": "#ffdad6",
+                      "secondary-container": "#d0e1fb",
+                      "secondary": "#505f76",
+                      "on-primary-fixed": "#021b3b",
+                      "on-tertiary-fixed-variant": "#5a4311",
+                      "surface-container-low": "#f5f3f6",
+                      "on-secondary-fixed": "#0b1c30",
+                      "tertiary-fixed-dim": "#e3c284",
+                      "surface-variant": "#e3e2e5",
+                      "on-primary-container": "#9aafd5",
+                      "tertiary": "#3a2800",
+                      "outline-variant": "#c4c6cf",
+                      "surface-container": "#efedf0",
+                      "tertiary-container": "#543e0c",
+                      "on-secondary-fixed-variant": "#38485d",
+                      "primary-fixed-dim": "#b2c7ef",
+                      "on-surface-variant": "#44474e",
+                      "on-error": "#ffffff",
+                      "tertiary-fixed": "#ffdea3",
+                      "on-tertiary-fixed": "#261900",
+                      "on-primary": "#ffffff",
+                      "outline": "#74777f",
+                      "surface-container-lowest": "#ffffff"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "stack-sm": "8px",
+                      "gutter": "24px",
+                      "sidebar-width": "260px",
+                      "margin-desktop": "32px",
+                      "stack-lg": "24px",
+                      "container-max": "1440px",
+                      "stack-md": "16px",
+                      "stack-xs": "4px",
+                      "margin-mobile": "16px"
+              },
+              "fontFamily": {
+                      "display-lg": [
+                              "Inter"
+                      ],
+                      "data-tabular": [
+                              "Inter"
+                      ],
+                      "title-sm": [
+                              "Inter"
+                      ],
+                      "headline-md": [
+                              "Inter"
+                      ],
+                      "display-lg-mobile": [
+                              "Inter"
+                      ],
+                      "body-sm": [
+                              "Inter"
+                      ],
+                      "body-md": [
+                              "Inter"
+                      ],
+                      "label-caps": [
+                              "Inter"
+                      ]
+              },
+              "fontSize": {
+                      "display-lg": [
+                              "36px",
+                              {
+                                      "lineHeight": "44px",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "data-tabular": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "title-sm": [
+                              "18px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "headline-md": [
+                              "24px",
+                              {
+                                      "lineHeight": "32px",
+                                      "letterSpacing": "-0.01em",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "display-lg-mobile": [
+                              "28px",
+                              {
+                                      "lineHeight": "36px",
+                                      "letterSpacing": "-0.01em",
+                                      "fontWeight": "700"
+                              }
+                      ],
+                      "body-sm": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "body-md": [
+                              "16px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "label-caps": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "letterSpacing": "0.05em",
+                                      "fontWeight": "600"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-family: 'Material Symbols Outlined';
+            font-weight: normal;
+            font-style: normal;
+            font-size: 24px;
+            line-height: 1;
+            letter-spacing: normal;
+            text-transform: none;
+            display: inline-block;
+            white-space: nowrap;
+            word-wrap: normal;
+            direction: ltr;
+            font-feature-settings: 'liga';
+            -webkit-font-feature-settings: 'liga';
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        /* Custom scrollbar for a cleaner look */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #e2e8f0;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #cbd5e1;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background h-full font-sans antialiased overflow-hidden">
+<!-- TopAppBar -->
+<header class="bg-surface docked full-width top-0 border-b border-outline-variant flat no shadows flex justify-between items-center h-16 px-margin-desktop fixed w-full z-20">
+<div class="flex items-center gap-4">
+<span class="font-display-lg text-display-lg font-bold text-primary">CBA Study Coach</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant bg-surface-container-high px-2 py-1 rounded">PRACTICE SESSION</span>
+</div>
+<!-- Progress and Timer Area -->
+<div class="flex flex-col items-center justify-center flex-1 mx-8 max-w-xl">
+<div class="flex justify-between w-full mb-1">
+<span class="font-data-tabular text-data-tabular text-on-surface">Question 5 of 20</span>
+<div class="flex items-center gap-1 text-on-surface">
+<span class="material-symbols-outlined text-[18px]">timer</span>
+<span class="font-data-tabular text-data-tabular">12:45</span>
+</div>
+</div>
+<!-- Progress Bar Track -->
+<div class="w-full bg-surface-container-high h-2 rounded-full overflow-hidden">
+<!-- Progress Fill -->
+<div class="bg-primary h-full rounded-full transition-all duration-300" style="width: 25%;"></div>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+</header>
+<!-- Main Content Canvas (Single Column Centered Layout for Focus Mode) -->
+<main class="h-full pt-16 flex justify-center bg-background overflow-y-auto pb-32">
+<div class="w-full max-w-[800px] px-margin-mobile md:px-margin-desktop pt-12 flex flex-col gap-8">
+<!-- Context Header -->
+<div class="flex justify-between items-start">
+<div class="flex gap-2">
+<span class="bg-primary-fixed-dim text-on-primary-container px-3 py-1 rounded-full font-label-caps text-label-caps uppercase">Backstage Catalog</span>
+</div>
+</div>
+<!-- Question Area -->
+<div>
+<h1 class="font-headline-md text-headline-md text-on-surface">Which Backstage component is responsible for managing the metadata about software components and their relations?</h1>
+</div>
+<!-- Multiple Choice Options -->
+<div class="flex flex-col gap-4">
+<!-- Option A -->
+<label class="relative flex items-center p-4 cursor-pointer rounded-lg border border-outline-variant bg-surface hover:border-primary hover:bg-surface-container-low transition-all duration-200 group">
+<input class="peer sr-only" name="answer" type="radio" value="A"/>
+<div class="w-6 h-6 rounded-full border-2 border-outline peer-checked:border-primary peer-checked:bg-primary flex items-center justify-center mr-4 transition-colors">
+<div class="w-2.5 h-2.5 rounded-full bg-on-primary opacity-0 peer-checked:opacity-100 transition-opacity"></div>
+</div>
+<div class="flex-1">
+<span class="font-body-md text-body-md text-on-surface">A) Scaffolder</span>
+</div>
+</label>
+<!-- Option B -->
+<label class="relative flex items-center p-4 cursor-pointer rounded-lg border border-outline-variant bg-surface hover:border-primary hover:bg-surface-container-low transition-all duration-200 group">
+<input class="peer sr-only" name="answer" type="radio" value="B"/>
+<div class="w-6 h-6 rounded-full border-2 border-outline peer-checked:border-primary peer-checked:bg-primary flex items-center justify-center mr-4 transition-colors">
+<div class="w-2.5 h-2.5 rounded-full bg-on-primary opacity-0 peer-checked:opacity-100 transition-opacity"></div>
+</div>
+<div class="flex-1">
+<span class="font-body-md text-body-md text-on-surface">B) Software Catalog</span>
+</div>
+</label>
+<!-- Option C -->
+<label class="relative flex items-center p-4 cursor-pointer rounded-lg border border-outline-variant bg-surface hover:border-primary hover:bg-surface-container-low transition-all duration-200 group">
+<input class="peer sr-only" name="answer" type="radio" value="C"/>
+<div class="w-6 h-6 rounded-full border-2 border-outline peer-checked:border-primary peer-checked:bg-primary flex items-center justify-center mr-4 transition-colors">
+<div class="w-2.5 h-2.5 rounded-full bg-on-primary opacity-0 peer-checked:opacity-100 transition-opacity"></div>
+</div>
+<div class="flex-1">
+<span class="font-body-md text-body-md text-on-surface">C) TechDocs</span>
+</div>
+</label>
+<!-- Option D -->
+<label class="relative flex items-center p-4 cursor-pointer rounded-lg border border-outline-variant bg-surface hover:border-primary hover:bg-surface-container-low transition-all duration-200 group">
+<input class="peer sr-only" name="answer" type="radio" value="D"/>
+<div class="w-6 h-6 rounded-full border-2 border-outline peer-checked:border-primary peer-checked:bg-primary flex items-center justify-center mr-4 transition-colors">
+<div class="w-2.5 h-2.5 rounded-full bg-on-primary opacity-0 peer-checked:opacity-100 transition-opacity"></div>
+</div>
+<div class="flex-1">
+<span class="font-body-md text-body-md text-on-surface">D) Search Service</span>
+</div>
+</label>
+</div>
+<hr class="border-outline-variant my-4"/>
+<!-- Confidence Selector -->
+<div>
+<p class="font-label-caps text-label-caps text-on-surface-variant mb-4 uppercase">How confident are you?</p>
+<div class="flex gap-4">
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="confidence" type="radio" value="low"/>
+<div class="py-2 text-center rounded border border-outline-variant font-data-tabular text-data-tabular text-on-surface hover:bg-surface-container transition-colors peer-checked:bg-error-container peer-checked:text-on-error-container peer-checked:border-error peer-checked:font-semibold">
+                            Low
+                        </div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="confidence" type="radio" value="medium"/>
+<div class="py-2 text-center rounded border border-outline-variant font-data-tabular text-data-tabular text-on-surface hover:bg-surface-container transition-colors peer-checked:bg-tertiary-fixed peer-checked:text-on-tertiary-fixed peer-checked:border-tertiary peer-checked:font-semibold">
+                            Medium
+                        </div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="confidence" type="radio" value="high"/>
+<div class="py-2 text-center rounded border border-outline-variant font-data-tabular text-data-tabular text-on-surface hover:bg-surface-container transition-colors peer-checked:bg-primary-fixed peer-checked:text-on-primary-fixed peer-checked:border-primary peer-checked:font-semibold">
+                            High
+                        </div>
+</label>
+</div>
+</div>
+</div>
+</main>
+<!-- Fixed Footer Action -->
+<div class="fixed bottom-0 left-0 w-full bg-surface border-t border-outline-variant p-4 flex justify-center z-20 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
+<div class="w-full max-w-[800px] flex justify-end">
+<button class="bg-primary text-on-primary font-title-sm text-title-sm px-8 py-3 rounded hover:bg-primary-container transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                Submit Answer
+            </button>
+</div>
+</div>
+</body></html>

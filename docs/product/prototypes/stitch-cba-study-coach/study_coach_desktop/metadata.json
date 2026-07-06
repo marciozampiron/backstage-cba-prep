@@ -1,0 +1,18 @@
+{
+  "label": "Study Coach",
+  "slug": "study_coach_desktop",
+  "screenId": "1a8f6db72d6243e1a8b3584372345199",
+  "resourceName": "projects/15695885461367912017/screens/1a8f6db72d6243e1a8b3584372345199",
+  "title": "Study Coach - CBA",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2048",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 19484,
+    "screenshot": 76099
+  }
+}

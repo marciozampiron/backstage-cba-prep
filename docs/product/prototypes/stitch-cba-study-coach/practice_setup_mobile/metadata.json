@@ -1,0 +1,18 @@
+{
+  "label": "Practice Setup mobile",
+  "slug": "practice_setup_mobile",
+  "screenId": "9316872314674500adbe60f95abe08eb",
+  "resourceName": "projects/15695885461367912017/screens/9316872314674500adbe60f95abe08eb",
+  "title": "Practice Setup Mobile - CBA Clean",
+  "deviceType": "MOBILE",
+  "width": "780",
+  "height": "2906",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 27202,
+    "screenshot": 28216
+  }
+}

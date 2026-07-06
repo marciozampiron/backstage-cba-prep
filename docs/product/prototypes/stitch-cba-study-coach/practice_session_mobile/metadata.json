@@ -1,0 +1,18 @@
+{
+  "label": "Practice Session mobile",
+  "slug": "practice_session_mobile",
+  "screenId": "084bb37604f945baaae6d517691b1d5d",
+  "resourceName": "projects/15695885461367912017/screens/084bb37604f945baaae6d517691b1d5d",
+  "title": "Practice Session (Mobile)",
+  "deviceType": "MOBILE",
+  "width": "780",
+  "height": "1768",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 15637,
+    "screenshot": 37291
+  }
+}

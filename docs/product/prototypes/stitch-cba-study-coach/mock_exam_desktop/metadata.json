@@ -1,0 +1,18 @@
+{
+  "label": "Mock Exam",
+  "slug": "mock_exam_desktop",
+  "screenId": "bc0bb156db27480384bc100a3b731f2d",
+  "resourceName": "projects/15695885461367912017/screens/bc0bb156db27480384bc100a3b731f2d",
+  "title": "Mock Exam",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2048",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 13217,
+    "screenshot": 57076
+  }
+}

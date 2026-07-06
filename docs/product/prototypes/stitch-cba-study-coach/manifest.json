@@ -1,0 +1,278 @@
+{
+  "projectId": "15695885461367912017",
+  "projectUrl": "https://stitch.withgoogle.com/projects/15695885461367912017",
+  "exportedAt": "2026-07-06T04:30:25Z",
+  "note": "Recommended clean CBA learner-facing prototype screens. Older Stitch screens remain in project history and should be ignored.",
+  "screens": [
+    {
+      "label": "Learner Dashboard desktop",
+      "slug": "learner_dashboard_desktop",
+      "screenId": "3c3b35f850914af395c588166d4ba81d",
+      "resourceName": "projects/15695885461367912017/screens/3c3b35f850914af395c588166d4ba81d",
+      "title": "Learner Dashboard",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2530",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 24330,
+        "screenshot": 65039
+      }
+    },
+    {
+      "label": "Learner Dashboard mobile",
+      "slug": "learner_dashboard_mobile",
+      "screenId": "17f04789aedd4250983f12d311ded5fa",
+      "resourceName": "projects/15695885461367912017/screens/17f04789aedd4250983f12d311ded5fa",
+      "title": "Learner Dashboard Mobile - CBA",
+      "deviceType": "MOBILE",
+      "width": "890",
+      "height": "3342",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 18722,
+        "screenshot": 30807
+      }
+    },
+    {
+      "label": "Practice Setup desktop",
+      "slug": "practice_setup_desktop",
+      "screenId": "5105ad6cf26c4bd18a0ba36a47b87ddd",
+      "resourceName": "projects/15695885461367912017/screens/5105ad6cf26c4bd18a0ba36a47b87ddd",
+      "title": "Practice Setup",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2048",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 16652,
+        "screenshot": 35274
+      }
+    },
+    {
+      "label": "Practice Setup mobile",
+      "slug": "practice_setup_mobile",
+      "screenId": "9316872314674500adbe60f95abe08eb",
+      "resourceName": "projects/15695885461367912017/screens/9316872314674500adbe60f95abe08eb",
+      "title": "Practice Setup Mobile - CBA Clean",
+      "deviceType": "MOBILE",
+      "width": "780",
+      "height": "2906",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 27202,
+        "screenshot": 28216
+      }
+    },
+    {
+      "label": "Practice Session desktop",
+      "slug": "practice_session_desktop",
+      "screenId": "4c7c28211dcd460aa2c503d6f195df27",
+      "resourceName": "projects/15695885461367912017/screens/4c7c28211dcd460aa2c503d6f195df27",
+      "title": "Practice Session",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2048",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 15635,
+        "screenshot": 27852
+      }
+    },
+    {
+      "label": "Practice Session mobile",
+      "slug": "practice_session_mobile",
+      "screenId": "084bb37604f945baaae6d517691b1d5d",
+      "resourceName": "projects/15695885461367912017/screens/084bb37604f945baaae6d517691b1d5d",
+      "title": "Practice Session (Mobile)",
+      "deviceType": "MOBILE",
+      "width": "780",
+      "height": "1768",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 15637,
+        "screenshot": 37291
+      }
+    },
+    {
+      "label": "Mock Exam",
+      "slug": "mock_exam_desktop",
+      "screenId": "bc0bb156db27480384bc100a3b731f2d",
+      "resourceName": "projects/15695885461367912017/screens/bc0bb156db27480384bc100a3b731f2d",
+      "title": "Mock Exam",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2048",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 13217,
+        "screenshot": 57076
+      }
+    },
+    {
+      "label": "Mock Results desktop",
+      "slug": "mock_results_desktop",
+      "screenId": "8339df5bb55a4bd4a9114431be07e0df",
+      "resourceName": "projects/15695885461367912017/screens/8339df5bb55a4bd4a9114431be07e0df",
+      "title": "Mock Exam Results",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2082",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 20045,
+        "screenshot": 55609
+      }
+    },
+    {
+      "label": "Mock Results mobile",
+      "slug": "mock_results_mobile",
+      "screenId": "2602987aadca4e17bb6a4f2bc0ae87fb",
+      "resourceName": "projects/15695885461367912017/screens/2602987aadca4e17bb6a4f2bc0ae87fb",
+      "title": "Mock Exam Results (Mobile)",
+      "deviceType": "MOBILE",
+      "width": "780",
+      "height": "3684",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 20499,
+        "screenshot": 31263
+      }
+    },
+    {
+      "label": "Result Explanation",
+      "slug": "result_explanation_desktop",
+      "screenId": "ac55b1e6c4d942899d16d12c0d3be6eb",
+      "resourceName": "projects/15695885461367912017/screens/ac55b1e6c4d942899d16d12c0d3be6eb",
+      "title": "Result Explanation",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2806",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 15888,
+        "screenshot": 61939
+      }
+    },
+    {
+      "label": "Review desktop",
+      "slug": "review_desktop",
+      "screenId": "d285e8726cf64eebb83c009c44a3f943",
+      "resourceName": "projects/15695885461367912017/screens/d285e8726cf64eebb83c009c44a3f943",
+      "title": "Review Missed Questions - CBA",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2048",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 19904,
+        "screenshot": 55042
+      }
+    },
+    {
+      "label": "Review mobile",
+      "slug": "review_mobile",
+      "screenId": "0b49bc35fa434e30b021404aaac734bd",
+      "resourceName": "projects/15695885461367912017/screens/0b49bc35fa434e30b021404aaac734bd",
+      "title": "Review Missed Questions Mobile - CBA Source Review",
+      "deviceType": "MOBILE",
+      "width": "780",
+      "height": "1768",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 18272,
+        "screenshot": 45996
+      }
+    },
+    {
+      "label": "Progress desktop",
+      "slug": "progress_desktop",
+      "screenId": "a2cd84683ee146299344b639e6841c6e",
+      "resourceName": "projects/15695885461367912017/screens/a2cd84683ee146299344b639e6841c6e",
+      "title": "Detailed Progress Analysis",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2186",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 20340,
+        "screenshot": 55860
+      }
+    },
+    {
+      "label": "Study Coach",
+      "slug": "study_coach_desktop",
+      "screenId": "1a8f6db72d6243e1a8b3584372345199",
+      "resourceName": "projects/15695885461367912017/screens/1a8f6db72d6243e1a8b3584372345199",
+      "title": "Study Coach - CBA",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2048",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 19484,
+        "screenshot": 76099
+      }
+    },
+    {
+      "label": "Settings",
+      "slug": "settings_desktop",
+      "screenId": "df6e74cc9bce4fefa417574f64522f7b",
+      "resourceName": "projects/15695885461367912017/screens/df6e74cc9bce4fefa417574f64522f7b",
+      "title": "Settings & Goals",
+      "deviceType": "DESKTOP",
+      "width": "2560",
+      "height": "2254",
+      "files": {
+        "html": "code.html",
+        "screenshot": "screen.png"
+      },
+      "bytes": {
+        "html": 20677,
+        "screenshot": 51891
+      }
+    }
+  ]
+}

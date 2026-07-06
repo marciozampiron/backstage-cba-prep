@@ -1,0 +1,18 @@
+{
+  "label": "Progress desktop",
+  "slug": "progress_desktop",
+  "screenId": "a2cd84683ee146299344b639e6841c6e",
+  "resourceName": "projects/15695885461367912017/screens/a2cd84683ee146299344b639e6841c6e",
+  "title": "Detailed Progress Analysis",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2186",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 20340,
+    "screenshot": 55860
+  }
+}

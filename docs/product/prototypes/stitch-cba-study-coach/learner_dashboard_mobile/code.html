@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>CBA Study Coach - Learner Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-container": "#543e0c",
+                        "tertiary": "#3a2800",
+                        "primary-fixed-dim": "#b2c7ef",
+                        "on-surface-variant": "#44474e",
+                        "inverse-on-surface": "#f2f0f3",
+                        "on-primary": "#ffffff",
+                        "outline": "#74777f",
+                        "on-tertiary-fixed-variant": "#5a4311",
+                        "primary": "#152c4c",
+                        "surface-tint": "#4a5f82",
+                        "error": "#ba1a1a",
+                        "on-tertiary-fixed": "#261900",
+                        "surface-dim": "#dbd9dd",
+                        "primary-fixed": "#d6e3ff",
+                        "inverse-primary": "#b2c7ef",
+                        "error-container": "#ffdad6",
+                        "background": "#faf9fc",
+                        "surface-variant": "#e3e2e5",
+                        "on-tertiary": "#ffffff",
+                        "surface-container-low": "#f5f3f6",
+                        "outline-variant": "#c4c6cf",
+                        "surface-container-lowest": "#ffffff",
+                        "surface": "#faf9fc",
+                        "on-secondary-container": "#54647a",
+                        "on-error-container": "#93000a",
+                        "on-primary-fixed-variant": "#324769",
+                        "on-secondary": "#ffffff",
+                        "surface-container-high": "#e9e7eb",
+                        "secondary": "#505f76",
+                        "secondary-fixed": "#d3e4fe",
+                        "on-secondary-fixed": "#0b1c30",
+                        "on-surface": "#1b1b1e",
+                        "inverse-surface": "#303033",
+                        "surface-container": "#efedf0",
+                        "secondary-container": "#d0e1fb",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "on-error": "#ffffff",
+                        "on-primary-container": "#9aafd5",
+                        "tertiary-fixed": "#ffdea3",
+                        "surface-bright": "#faf9fc",
+                        "primary-container": "#2d4263",
+                        "on-secondary-fixed-variant": "#38485d",
+                        "tertiary-fixed-dim": "#e3c284",
+                        "surface-container-highest": "#e3e2e5",
+                        "on-tertiary-container": "#c9aa6e",
+                        "on-primary-fixed": "#021b3b",
+                        "on-background": "#1b1b1e",
+                        
+                        // Custom palette overrides for "calm slate/navy/teal" academic look based on base tokens
+                        "accent-teal": "#2E8B57", // Soft teal/green for positive indicators
+                        "accent-warning": "#F5A623"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "stack-xs": "4px",
+                        "stack-sm": "8px",
+                        "container-max": "1440px",
+                        "sidebar-width": "260px",
+                        "margin-desktop": "32px",
+                        "gutter": "24px",
+                        "stack-lg": "24px",
+                        "stack-md": "16px",
+                        "margin-mobile": "16px"
+                    },
+                    "fontFamily": {
+                        "title-sm": ["Inter", "sans-serif"],
+                        "body-md": ["Inter", "sans-serif"],
+                        "label-caps": ["Inter", "sans-serif"],
+                        "display-lg": ["Inter", "sans-serif"],
+                        "headline-md": ["Inter", "sans-serif"],
+                        "body-sm": ["Inter", "sans-serif"],
+                        "display-lg-mobile": ["Inter", "sans-serif"],
+                        "data-tabular": ["Inter", "sans-serif"]
+                    },
+                    "fontSize": {
+                        "title-sm": ["18px", {"lineHeight": "24px", "fontWeight": "600"}],
+                        "body-md": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "label-caps": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                        "display-lg": ["36px", {"lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "body-sm": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "display-lg-mobile": ["28px", {"lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "700"}],
+                        "data-tabular": ["14px", {"lineHeight": "20px", "fontWeight": "500"}]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; background-color: #faf9fc; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background min-h-screen pb-[80px]">
+<!-- TopAppBar -->
+<header class="w-full top-0 sticky z-40 bg-surface flex justify-between items-center px-margin-mobile py-stack-sm border-b border-outline-variant">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center font-title-sm">
+                A
+            </div>
+<div>
+<h1 class="font-display-lg-mobile text-display-lg-mobile text-primary tracking-tight">CBA Study Coach</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Hello, Alex</p>
+</div>
+</div>
+<button aria-label="Settings" class="p-2 rounded-full hover:bg-surface-container-low transition-colors text-on-surface-variant">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</header>
+<main class="px-margin-mobile py-stack-lg space-y-stack-lg max-w-lg mx-auto">
+<!-- KPI Stack (Bento Grid Style) -->
+<section aria-label="Key Performance Indicators" class="grid grid-cols-2 gap-stack-sm">
+<!-- Readiness Score -->
+<div class="bg-surface-container-lowest border border-outline-variant p-stack-md rounded-lg flex flex-col justify-between">
+<div class="flex justify-between items-start mb-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Readiness</span>
+<span class="material-symbols-outlined text-primary text-xl">analytics</span>
+</div>
+<div>
+<div class="font-display-lg-mobile text-display-lg-mobile text-primary">78%</div>
+<div class="font-body-sm text-body-sm text-accent-teal flex items-center gap-1 mt-1">
+<span class="material-symbols-outlined text-[16px]">trending_up</span> +3% this week
+                    </div>
+</div>
+</div>
+<!-- Target Exam Window -->
+<div class="bg-surface-container-lowest border border-outline-variant p-stack-md rounded-lg flex flex-col justify-between">
+<div class="flex justify-between items-start mb-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Target Exam Window</span>
+<span class="material-symbols-outlined text-primary text-xl">event</span>
+</div>
+<div class="mt-auto">
+<button class="w-full text-left font-body-sm text-body-sm text-primary underline decoration-primary/50 hover:decoration-primary transition-all">Set target date</button>
+</div>
+</div>
+<!-- Study Streak -->
+<div class="bg-surface-container-lowest border border-outline-variant p-stack-md rounded-lg flex flex-col justify-between">
+<div class="flex justify-between items-start mb-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Study Streak</span>
+<span class="material-symbols-outlined text-accent-warning text-xl">local_fire_department</span>
+</div>
+<div>
+<div class="font-title-sm text-title-sm text-on-surface">12 Days</div>
+</div>
+</div>
+<!-- Questions Reviewed -->
+<div class="bg-surface-container-lowest border border-outline-variant p-stack-md rounded-lg flex flex-col justify-between">
+<div class="flex justify-between items-start mb-2">
+<span class="font-label-caps text-label-caps text-on-surface-variant uppercase">Qs Reviewed</span>
+<span class="material-symbols-outlined text-primary text-xl">fact_check</span>
+</div>
+<div>
+<div class="font-data-tabular text-data-tabular text-on-surface">412 / 850</div>
+<div class="w-full h-2 bg-surface-variant rounded-full mt-2 overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 48%;"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Domain Readiness Section -->
+<section aria-labelledby="domain-readiness-heading" class="bg-surface-container-lowest border border-outline-variant rounded-lg overflow-hidden">
+<div class="p-stack-md border-b border-outline-variant bg-surface-container-low">
+<h2 class="font-title-sm text-title-sm text-on-surface" id="domain-readiness-heading">Domain Readiness</h2>
+</div>
+<div class="p-stack-md space-y-4">
+<!-- Domain 1 -->
+<div>
+<div class="flex justify-between items-end mb-1">
+<div>
+<div class="font-body-md text-body-md text-on-surface">Backstage Development Workflow</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">24% weight</div>
+</div>
+<div class="font-data-tabular text-data-tabular text-accent-teal">85% ready</div>
+</div>
+<div class="w-full h-[8px] bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-accent-teal rounded-full" style="width: 85%;"></div>
+</div>
+</div>
+<!-- Domain 2 -->
+<div>
+<div class="flex justify-between items-end mb-1">
+<div>
+<div class="font-body-md text-body-md text-on-surface">Backstage Infrastructure</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">22% weight</div>
+</div>
+<div class="font-data-tabular text-data-tabular text-primary">62% ready</div>
+</div>
+<div class="w-full h-[8px] bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 62%;"></div>
+</div>
+</div>
+<!-- Domain 3 -->
+<div>
+<div class="flex justify-between items-end mb-1">
+<div>
+<div class="font-body-md text-body-md text-on-surface">Backstage Catalog</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">22% weight</div>
+</div>
+<div class="font-data-tabular text-data-tabular text-primary">75% ready</div>
+</div>
+<div class="w-full h-[8px] bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 75%;"></div>
+</div>
+</div>
+<!-- Domain 4 -->
+<div>
+<div class="flex justify-between items-end mb-1">
+<div>
+<div class="font-body-md text-body-md text-on-surface">Customizing Backstage</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">32% weight</div>
+</div>
+<div class="font-data-tabular text-data-tabular text-accent-warning">58% ready</div>
+</div>
+<div class="w-full h-[8px] bg-surface-variant rounded-full overflow-hidden">
+<div class="h-full bg-accent-warning rounded-full" style="width: 58%;"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Recommended Actions -->
+<section aria-labelledby="recommended-actions-heading">
+<h2 class="font-title-sm text-title-sm text-on-surface mb-stack-sm px-1" id="recommended-actions-heading">Recommended Actions</h2>
+<div class="space-y-stack-sm">
+<button class="w-full flex items-center justify-between p-stack-md bg-primary text-on-primary rounded-lg shadow-sm hover:opacity-90 transition-opacity text-left">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-on-primary/10 rounded-full">
+<span class="material-symbols-outlined text-on-primary">psychology</span>
+</div>
+<div>
+<div class="font-title-sm text-title-sm">Start Adaptive Practice</div>
+<div class="font-body-sm text-body-sm text-on-primary/80">Focus on weak areas</div>
+</div>
+</div>
+<span class="material-symbols-outlined">chevron_right</span>
+</button>
+<button class="w-full flex items-center justify-between p-stack-md bg-surface-container-lowest border border-outline-variant rounded-lg hover:border-primary transition-colors text-left">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-surface-container-low text-primary rounded-full">
+<span class="material-symbols-outlined">rule</span>
+</div>
+<div>
+<div class="font-title-sm text-title-sm text-on-surface">Review Missed Questions</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">Based on recent performance</div>
+</div>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant">chevron_right</span>
+</button>
+<button class="w-full flex items-center justify-between p-stack-md bg-surface-container-lowest border border-outline-variant rounded-lg hover:border-primary transition-colors text-left">
+<div class="flex items-center gap-3">
+<div class="p-2 bg-surface-container-low text-primary rounded-full">
+<span class="material-symbols-outlined">timer</span>
+</div>
+<div>
+<div class="font-title-sm text-title-sm text-on-surface">Continue Mock Exam</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant">Resume session: 45 mins left</div>
+</div>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant">chevron_right</span>
+</button>
+</div>
+</section>
+<!-- Recent Activity -->
+<section aria-labelledby="recent-activity-heading">
+<h2 class="font-title-sm text-title-sm text-on-surface mb-stack-sm px-1" id="recent-activity-heading">Recent Activity</h2>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-lg overflow-hidden divide-y divide-outline-variant">
+<div class="p-stack-md flex items-start gap-3 hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-primary mt-0.5">menu_book</span>
+<div>
+<div class="font-body-md text-body-md text-on-surface">Practiced: Software Catalog entity metadata</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">2 hours ago</div>
+</div>
+</div>
+<div class="p-stack-md flex items-start gap-3 hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-primary mt-0.5">history_edu</span>
+<div>
+<div class="font-body-md text-body-md text-on-surface">Reviewed: Scaffolder template inputs</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Yesterday</div>
+</div>
+</div>
+<div class="p-stack-md flex items-start gap-3 hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-primary mt-0.5">lightbulb</span>
+<div>
+<div class="font-body-md text-body-md text-on-surface">Explanation: TechDocs publisher settings</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">Yesterday</div>
+</div>
+</div>
+<div class="p-stack-md flex items-start gap-3 hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-primary mt-0.5">assignment</span>
+<div>
+<div class="font-body-md text-body-md text-on-surface">Quiz: Backstage app configuration</div>
+<div class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">3 days ago</div>
+</div>
+</div>
+</div>
+</section>
+<footer class="pt-stack-md pb-stack-lg text-center">
+<p class="font-body-sm text-body-sm text-on-surface-variant/70 italic">Review explanations cite backstage.io/docs sources.</p>
+</footer>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 bg-surface-container-lowest border-t border-outline-variant flex justify-around items-center px-2 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.03)] md:hidden">
+<!-- Active Tab: Dashboard -->
+<button aria-current="page" aria-label="Dashboard" class="flex flex-col items-center justify-center text-primary active:scale-95 transition-transform">
+<div class="bg-secondary-container text-on-secondary-container rounded-full px-4 py-1 mb-1 flex items-center justify-center">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+</div>
+<span class="font-label-caps text-label-caps">Dashboard</span>
+</button>
+<button aria-label="Practice" class="flex flex-col items-center justify-center text-on-surface-variant px-4 py-1 active:scale-95 transition-transform hover:text-primary group">
+<span class="material-symbols-outlined mb-1 group-hover:bg-surface-container-high rounded-full px-4 py-1 transition-colors">menu_book</span>
+<span class="font-label-caps text-label-caps">Practice</span>
+</button>
+<button aria-label="Mock Exam" class="flex flex-col items-center justify-center text-on-surface-variant px-4 py-1 active:scale-95 transition-transform hover:text-primary group">
+<span class="material-symbols-outlined mb-1 group-hover:bg-surface-container-high rounded-full px-4 py-1 transition-colors">assignment</span>
+<span class="font-label-caps text-label-caps whitespace-nowrap">Mock Exam</span>
+</button>
+<button aria-label="Review" class="flex flex-col items-center justify-center text-on-surface-variant px-4 py-1 active:scale-95 transition-transform hover:text-primary group">
+<span class="material-symbols-outlined mb-1 group-hover:bg-surface-container-high rounded-full px-4 py-1 transition-colors">history_edu</span>
+<span class="font-label-caps text-label-caps">Review</span>
+</button>
+<button aria-label="Coach" class="flex flex-col items-center justify-center text-on-surface-variant px-4 py-1 active:scale-95 transition-transform hover:text-primary group">
+<span class="material-symbols-outlined mb-1 group-hover:bg-surface-container-high rounded-full px-4 py-1 transition-colors">psychology</span>
+<span class="font-label-caps text-label-caps">Coach</span>
+</button>
+</nav>
+</body></html>

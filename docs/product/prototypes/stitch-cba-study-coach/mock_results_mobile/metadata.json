@@ -1,0 +1,18 @@
+{
+  "label": "Mock Results mobile",
+  "slug": "mock_results_mobile",
+  "screenId": "2602987aadca4e17bb6a4f2bc0ae87fb",
+  "resourceName": "projects/15695885461367912017/screens/2602987aadca4e17bb6a4f2bc0ae87fb",
+  "title": "Mock Exam Results (Mobile)",
+  "deviceType": "MOBILE",
+  "width": "780",
+  "height": "3684",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 20499,
+    "screenshot": 31263
+  }
+}

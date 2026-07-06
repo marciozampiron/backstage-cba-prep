@@ -1,0 +1,18 @@
+{
+  "label": "Result Explanation",
+  "slug": "result_explanation_desktop",
+  "screenId": "ac55b1e6c4d942899d16d12c0d3be6eb",
+  "resourceName": "projects/15695885461367912017/screens/ac55b1e6c4d942899d16d12c0d3be6eb",
+  "title": "Result Explanation",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2806",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 15888,
+    "screenshot": 61939
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "label": "Review desktop",
+  "slug": "review_desktop",
+  "screenId": "d285e8726cf64eebb83c009c44a3f943",
+  "resourceName": "projects/15695885461367912017/screens/d285e8726cf64eebb83c009c44a3f943",
+  "title": "Review Missed Questions - CBA",
+  "deviceType": "DESKTOP",
+  "width": "2560",
+  "height": "2048",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 19904,
+    "screenshot": 55042
+  }
+}

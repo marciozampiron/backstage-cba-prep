@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Settings - CBA Study Coach</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "primary-fixed": "#d6e3ff",
+                        "surface-dim": "#dbd9dd",
+                        "on-tertiary-container": "#c9aa6e",
+                        "on-background": "#1b1b1e",
+                        "on-primary-fixed-variant": "#324769",
+                        "error": "#ba1a1a",
+                        "on-surface": "#1b1b1e",
+                        "surface-container-high": "#e9e7eb",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "surface-tint": "#4a5f82",
+                        "on-secondary-container": "#54647a",
+                        "inverse-on-surface": "#f2f0f3",
+                        "surface-container-highest": "#e3e2e5",
+                        "background": "#faf9fc",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "inverse-surface": "#303033",
+                        "surface": "#faf9fc",
+                        "surface-bright": "#faf9fc",
+                        "primary": "#152c4c",
+                        "on-error-container": "#93000a",
+                        "secondary-fixed": "#d3e4fe",
+                        "inverse-primary": "#b2c7ef",
+                        "primary-container": "#2d4263",
+                        "error-container": "#ffdad6",
+                        "secondary-container": "#d0e1fb",
+                        "secondary": "#505f76",
+                        "on-primary-fixed": "#021b3b",
+                        "on-tertiary-fixed-variant": "#5a4311",
+                        "surface-container-low": "#f5f3f6",
+                        "on-secondary-fixed": "#0b1c30",
+                        "tertiary-fixed-dim": "#e3c284",
+                        "surface-variant": "#e3e2e5",
+                        "on-primary-container": "#9aafd5",
+                        "tertiary": "#3a2800",
+                        "outline-variant": "#c4c6cf",
+                        "surface-container": "#efedf0",
+                        "tertiary-container": "#543e0c",
+                        "on-secondary-fixed-variant": "#38485d",
+                        "primary-fixed-dim": "#b2c7ef",
+                        "on-surface-variant": "#44474e",
+                        "on-error": "#ffffff",
+                        "tertiary-fixed": "#ffdea3",
+                        "on-tertiary-fixed": "#261900",
+                        "on-primary": "#ffffff",
+                        "outline": "#74777f",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "stack-sm": "8px",
+                        "gutter": "24px",
+                        "sidebar-width": "260px",
+                        "margin-desktop": "32px",
+                        "stack-lg": "24px",
+                        "container-max": "1440px",
+                        "stack-md": "16px",
+                        "stack-xs": "4px",
+                        "margin-mobile": "16px"
+                    },
+                    "fontFamily": {
+                        "display-lg": ["Inter"],
+                        "data-tabular": ["Inter"],
+                        "title-sm": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "display-lg-mobile": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-caps": ["Inter"]
+                    },
+                    "fontSize": {
+                        "display-lg": ["36px", { "lineHeight": "44px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "data-tabular": ["14px", { "lineHeight": "20px", "fontWeight": "500" }],
+                        "title-sm": ["18px", { "lineHeight": "24px", "fontWeight": "600" }],
+                        "headline-md": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+                        "display-lg-mobile": ["28px", { "lineHeight": "36px", "letterSpacing": "-0.01em", "fontWeight": "700" }],
+                        "body-sm": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-md": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "label-caps": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body { background-color: theme('colors.background'); color: theme('colors.on-background'); }
+        /* Custom toggle switch styling */
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: theme('colors.primary');
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: theme('colors.primary');
+        }
+    </style>
+</head>
+<body class="flex bg-background font-body-md text-on-background">
+<!-- SideNavBar (Predicted Component) -->
+<nav class="w-sidebar-width h-screen fixed left-0 top-0 border-r border-outline-variant dark:border-outline bg-surface dark:bg-inverse-surface flex flex-col py-stack-lg z-20 hidden md:flex">
+<div class="px-margin-desktop mb-stack-lg">
+<h1 class="font-display-lg text-display-lg font-bold text-primary dark:text-inverse-primary">CBA Coach</h1>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Exam Prep</p>
+</div>
+<ul class="flex flex-col gap-1 w-full flex-grow px-4">
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+                    Dashboard
+                </a>
+</li>
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="quiz">quiz</span>
+                    Practice
+                </a>
+</li>
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="assignment">assignment</span>
+                    Mock Exam
+                </a>
+</li>
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="history_edu">history_edu</span>
+                    Review
+                </a>
+</li>
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="psychology">psychology</span>
+                    Coach
+                </a>
+</li>
+<li>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-on-surface-variant dark:text-surface-variant hover:bg-surface-container dark:hover:bg-surface-variant transition-colors duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="analytics">analytics</span>
+                    Progress
+                </a>
+</li>
+<li class="mt-auto">
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-primary dark:text-inverse-primary font-bold border-l-4 border-primary dark:border-inverse-primary bg-surface-container-low duration-200 ease-in-out font-body-md text-body-md" href="#">
+<span class="material-symbols-outlined" data-icon="settings" data-weight="fill" style="font-variation-settings: 'FILL' 1;">settings</span>
+                    Settings
+                </a>
+</li>
+</ul>
+<div class="px-margin-desktop mt-4 flex items-center gap-3">
+<img alt="User Profile" class="w-10 h-10 rounded-full border border-outline-variant object-cover" data-alt="A small, professional headshot avatar of a student in a modern light-mode setting. Neutral background, sharp focus, corporate minimalistic style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB7NzWXO8g-Bb66mHYZFmDqk8VDMHPKPrYbGxcf77RxbLOlqC8jKU15hYKR7UiAwlKk1j7xw0dYO-XjDJ4uUUXPWBRL22vpGAPal6-xRql80a46yXyHxSo_BfGbEvkxT1nRYvSlOYB5yY5CdpbEyAwmxWOdQwwben4eJFii2pkfkBdJ4U-FZiO5mXXBHZW4OdDJXGcd0XH7VeYSCXwgwj3koKxfyjqLifcSjqnQSfeFNN94bl9S28MrqQ"/>
+<div class="flex flex-col">
+<span class="font-data-tabular text-data-tabular text-on-surface">Alex Carter</span>
+<span class="font-label-caps text-label-caps text-on-surface-variant">Pro Plan</span>
+</div>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 ml-0 md:ml-sidebar-width min-h-screen bg-background pb-12">
+<!-- Mobile Top Nav Bar -->
+<header class="md:hidden flex items-center justify-between px-margin-mobile h-16 border-b border-outline-variant bg-surface sticky top-0 z-20">
+<h1 class="font-display-lg-mobile text-display-lg-mobile font-bold text-primary">CBA Coach</h1>
+<button class="p-2 text-on-surface-variant">
+<span class="material-symbols-outlined">menu</span>
+</button>
+</header>
+<div class="max-w-4xl mx-auto px-margin-mobile md:px-margin-desktop pt-8 md:pt-12">
+<div class="mb-8">
+<h2 class="font-headline-md text-headline-md text-on-surface mb-2">Settings</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">Manage your study preferences, notifications, and account details.</p>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-12 gap-gutter">
+<!-- Main Settings Column -->
+<div class="col-span-1 md:col-span-8 flex flex-col gap-6">
+<!-- Study Goals Card -->
+<section class="bg-surface rounded-xl border border-outline-variant p-6">
+<div class="flex items-center gap-2 border-b border-outline-variant pb-4 mb-4">
+<span class="material-symbols-outlined text-primary">flag</span>
+<h3 class="font-title-sm text-title-sm text-on-surface">Study Goals</h3>
+</div>
+<div class="flex flex-col gap-5">
+<div>
+<label class="block font-label-caps text-label-caps text-on-surface-variant mb-1 uppercase tracking-wider">Target Exam Date</label>
+<input class="w-full h-10 px-3 rounded-lg border border-outline-variant bg-surface focus:border-primary focus:ring-1 focus:ring-primary font-body-md text-on-surface transition-colors" type="date"/>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div>
+<label class="block font-label-caps text-label-caps text-on-surface-variant mb-1 uppercase tracking-wider">Daily Goal (Minutes)</label>
+<select class="w-full h-10 px-3 rounded-lg border border-outline-variant bg-surface focus:border-primary focus:ring-1 focus:ring-primary font-body-md text-on-surface transition-colors">
+<option value="30">30 min</option>
+<option selected="" value="60">60 min</option>
+<option value="90">90 min</option>
+<option value="120">120 min</option>
+</select>
+</div>
+<div>
+<label class="block font-label-caps text-label-caps text-on-surface-variant mb-1 uppercase tracking-wider">Session Length</label>
+<select class="w-full h-10 px-3 rounded-lg border border-outline-variant bg-surface focus:border-primary focus:ring-1 focus:ring-primary font-body-md text-on-surface transition-colors">
+<option value="pomodoro">25 min (Pomodoro)</option>
+<option selected="" value="deep">50 min (Deep Work)</option>
+<option value="marathon">90 min (Marathon)</option>
+</select>
+</div>
+</div>
+</div>
+</section>
+<!-- Notifications Card -->
+<section class="bg-surface rounded-xl border border-outline-variant p-6">
+<div class="flex items-center gap-2 border-b border-outline-variant pb-4 mb-4">
+<span class="material-symbols-outlined text-primary">notifications</span>
+<h3 class="font-title-sm text-title-sm text-on-surface">Notifications</h3>
+</div>
+<div class="flex flex-col gap-4">
+<div class="flex items-center justify-between">
+<div>
+<h4 class="font-data-tabular text-data-tabular text-on-surface">Email Alerts</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Weekly progress reports and milestones.</p>
+</div>
+<div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+<input checked="" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer border-primary translate-x-5 z-10 transition-transform" id="toggle1" name="toggle1" type="checkbox"/>
+<label class="toggle-label block overflow-hidden h-5 rounded-full bg-primary cursor-pointer transition-colors" for="toggle1"></label>
+</div>
+</div>
+<hr class="border-outline-variant opacity-50"/>
+<div class="flex items-center justify-between">
+<div>
+<h4 class="font-data-tabular text-data-tabular text-on-surface">Study Reminders</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Daily nudges based on your goals.</p>
+</div>
+<div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+<input class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer border-outline-variant z-10 transition-transform" id="toggle2" name="toggle2" type="checkbox"/>
+<label class="toggle-label block overflow-hidden h-5 rounded-full bg-surface-container-high cursor-pointer transition-colors" for="toggle2"></label>
+</div>
+</div>
+</div>
+</section>
+<!-- Coach Preferences Card -->
+<section class="bg-surface rounded-xl border border-outline-variant p-6">
+<div class="flex items-center gap-2 border-b border-outline-variant pb-4 mb-4">
+<span class="material-symbols-outlined text-primary">smart_toy</span>
+<h3 class="font-title-sm text-title-sm text-on-surface">Coach Preferences</h3>
+</div>
+<div class="flex flex-col gap-5">
+<div>
+<label class="block font-label-caps text-label-caps text-on-surface-variant mb-2 uppercase tracking-wider">Coach Tone</label>
+<div class="flex gap-4">
+<label class="flex-1 cursor-pointer">
+<input checked="" class="peer sr-only" name="ai_tone" type="radio" value="academic"/>
+<div class="p-3 rounded-lg border border-outline-variant text-center peer-checked:border-primary peer-checked:bg-primary-fixed peer-checked:text-primary transition-all">
+<span class="font-data-tabular text-data-tabular">Academic</span>
+</div>
+</label>
+<label class="flex-1 cursor-pointer">
+<input class="peer sr-only" name="ai_tone" type="radio" value="conversational"/>
+<div class="p-3 rounded-lg border border-outline-variant text-center peer-checked:border-primary peer-checked:bg-primary-fixed peer-checked:text-primary transition-all">
+<span class="font-data-tabular text-data-tabular">Conversational</span>
+</div>
+</label>
+</div>
+</div>
+<div class="flex items-center justify-between pt-2">
+<div>
+<h4 class="font-data-tabular text-data-tabular text-on-surface">Study Recommendation Mode</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Coach recommends focus topics after mock exams.</p>
+</div>
+<div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+<input checked="" class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer border-primary translate-x-5 z-10 transition-transform" id="toggle3" name="toggle3" type="checkbox"/>
+<label class="toggle-label block overflow-hidden h-5 rounded-full bg-primary cursor-pointer transition-colors" for="toggle3"></label>
+</div>
+</div>
+</div>
+</section>
+<!-- Data Management Card -->
+<section class="bg-surface rounded-xl border border-outline-variant p-6">
+<div class="flex items-center gap-2 border-b border-outline-variant pb-4 mb-4">
+<span class="material-symbols-outlined text-primary">database</span>
+<h3 class="font-title-sm text-title-sm text-on-surface">Data Management</h3>
+</div>
+<div class="flex items-center justify-between">
+<div>
+<h4 class="font-data-tabular text-data-tabular text-on-surface">Export Study Progress</h4>
+<p class="font-body-sm text-body-sm text-on-surface-variant">Download your performance data (PDF/CSV).</p>
+</div>
+<button class="h-8 px-4 bg-primary text-on-primary font-data-tabular text-data-tabular rounded hover:bg-primary-container transition-colors flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">download</span> Export
+                            </button>
+</div>
+</section>
+</div>
+<!-- Side Column (e.g., Profile Overview) -->
+<div class="col-span-1 md:col-span-4 flex flex-col gap-6">
+<div class="bg-surface-container-low rounded-xl border border-outline-variant p-6 text-center">
+<div class="relative inline-block mb-4">
+<img alt="User Profile Details" class="w-24 h-24 rounded-full border-2 border-surface shadow-sm object-cover mx-auto" data-alt="A larger, detailed headshot avatar of a student in a modern corporate light-mode setting. Smiling slightly, professional attire, soft focused background, minimalistic style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCQxF7E6f2CKHs3NrXYpL-MNVAiAEtg3MoXpvNKWu8KIKNGQmUFP_Sxfvby2sQIlgLpWzgvOkvOsaUPmoKk0DwFVz7Ho2mNqhIKCUp2nQGWHSyCTA6UgPG68Y5Gk9XS2gASv5Hu9t-pUQy694yCx_0BpK0kdcWq2P_7jKsWxWU1ibB_FSZuDxGqURP3CqNr_D49zUbkdW11hilhbGLQ0PyACCNmOY-0UPan38vS2xPZGDWVhwy5xNXrEQ"/>
+<button class="absolute bottom-0 right-0 bg-primary text-on-primary p-1.5 rounded-full hover:bg-primary-container transition-colors" title="Edit Avatar">
+<span class="material-symbols-outlined text-[16px]">edit</span>
+</button>
+</div>
+<h3 class="font-title-sm text-title-sm text-on-surface">Alex Carter</h3>
+<p class="font-body-sm text-body-sm text-on-surface-variant mb-4">alex.carter@example.com</p>
+<div class="inline-block px-3 py-1 rounded-full bg-secondary-fixed text-on-secondary-fixed text-xs font-semibold tracking-wide mb-6">
+                            PRO PLAN
+                        </div>
+<button class="w-full h-10 border border-outline text-on-surface font-data-tabular text-data-tabular rounded-lg hover:bg-surface-variant transition-colors mb-3">
+                            Manage Subscription
+                        </button>
+<button class="w-full h-10 border border-error text-error font-data-tabular text-data-tabular rounded-lg hover:bg-error-container transition-colors">
+                            Sign Out
+                        </button>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Simple toggle logic for the custom switches (purely visual for demo)
+        document.querySelectorAll('.toggle-checkbox').forEach(toggle => {
+            toggle.addEventListener('change', function() {
+                if(this.checked) {
+                    this.classList.add('translate-x-5', 'border-primary');
+                    this.classList.remove('border-outline-variant');
+                    this.nextElementSibling.classList.add('bg-primary');
+                    this.nextElementSibling.classList.remove('bg-surface-container-high');
+                } else {
+                    this.classList.remove('translate-x-5', 'border-primary');
+                    this.classList.add('border-outline-variant');
+                    this.nextElementSibling.classList.remove('bg-primary');
+                    this.nextElementSibling.classList.add('bg-surface-container-high');
+                }
+            });
+        });
+    </script>
+</body></html>

@@ -1,0 +1,18 @@
+{
+  "label": "Learner Dashboard mobile",
+  "slug": "learner_dashboard_mobile",
+  "screenId": "17f04789aedd4250983f12d311ded5fa",
+  "resourceName": "projects/15695885461367912017/screens/17f04789aedd4250983f12d311ded5fa",
+  "title": "Learner Dashboard Mobile - CBA",
+  "deviceType": "MOBILE",
+  "width": "890",
+  "height": "3342",
+  "files": {
+    "html": "code.html",
+    "screenshot": "screen.png"
+  },
+  "bytes": {
+    "html": 18722,
+    "screenshot": 30807
+  }
+}

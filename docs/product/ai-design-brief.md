@@ -7,6 +7,12 @@ defines each screen's goal, content, and states.
 - **Issue:** #35 (part of #33, related to #11). **Runtime base:** [`ADR-0002`](../adr/0002-cloudflare-nextjs-aws-bff.md).
 - **Output wanted:** high-fidelity **prototype screens / a design mockup** (not production code, not a
   landing page).
+- **Generated (delivered):** Google Stitch produced the clean, CBA-aligned prototype package, now
+  versioned at [`prototypes/stitch-cba-study-coach/`](prototypes/stitch-cba-study-coach/) — 15 screens
+  (desktop + mobile), indexed in [`manifest.json`](prototypes/stitch-cba-study-coach/manifest.json). It
+  applies all four CBA domains with weights, visible source chips (`Source: backstage.io/docs/...`), and
+  Coach / Study-Recommendation language; it carries no non-CBA exam content and no AI/infra exposure.
+  Older Stitch screens outside that folder are stale and must be ignored.
 
 ## Product in one line
 
