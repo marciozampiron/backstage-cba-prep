@@ -8,3 +8,4 @@ node_modules/
 .mcp.local.json
 spec/last-sync.json
 sync-output.txt
+.vscode/mcp.json

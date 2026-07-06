@@ -15,14 +15,24 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Active priority
 
-- Handoff protocol + agent-refresh + #34 are pushed; `main` is in sync with `origin/main` (ahead 0).
-- Then move toward #35 frontend screen map / prototype brief and #36 Web BFF contracts after confirming the board state.
+- Phase 1 design track (#37/#34/#35/#36/#16/#15/#38) and the #11 Web MVP slices 1–4b
+  (#39/#40/#41/#42/#43) are pushed with CI green and issues closed. `main` should be in sync with
+  `origin/main` (ahead 0).
+- The web app lives in `web/` (self-contained Next.js; not a root workspace) with committed
+  regression smokes under `web/scripts/`.
+- Next candidates (await architect assignment): real Cognito identity adapter + `/api/me` (§16) +
+  sign-in surface; §15 progress screen (ProgressSnapshot/trends); Phase 4 admin review actions.
+- Housekeeping: duplicate issue #45 (executor-opened; canonical is #42) is flagged for human closure.
 
 ## Do not touch without explicit assignment
 
 - CBA question facts or explanations without official Backstage/LF source evidence.
 - Architecture diagrams already accepted for #34.
 - Provider/runtime boundaries delivered by #23/#27/#29/#30/#31 unless the task explicitly targets them.
+- `docs/product/` contracts/data-model/scope docs and the canonical Stitch prototype
+  (`docs/product/prototypes/stitch-cba-study-coach/`) — amend only via an assigned task.
+- `web/` BFF-shaped contracts and exam-mode rules (no correctness pre-submit; deterministic-only
+  coach) delivered by #39–#43.
 
 ## Required behavior
 
