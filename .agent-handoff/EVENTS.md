@@ -2,6 +2,32 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-06T02:06:36Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main
+- Unpublished commits: none
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-06 — Claude
+
+- Reconciled stale `CURRENT.md` after push: updated the `origin/main` baseline `962300e` -> `7d69262`.
+- Removed stale text implying unpublished local handoff/agent-refresh work; `main` is in sync with `origin/main` (ahead 0).
+- Kept the prior `agent-refresh --record` blocked event below as valid history.
+- No push performed.
+
+## 2026-07-06T02:04:39Z — agent-refresh --record
+
+- Status: blocked
+- Git: ## main...origin/main
+- Unpublished commits: none
+- Active handoffs: none
+- Warnings: none
+- Errors:
+  - CURRENT.md origin/main baseline is stale: 962300e != 7d69262
+
 ## 2026-07-06T01:41:29Z — agent-refresh --record
 
 - Status: ok
