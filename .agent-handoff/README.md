@@ -65,7 +65,7 @@ Manual refresh means:
 
 After any meaningful state change, update `CURRENT.md` and append an entry to `EVENTS.md`. Use `--record` sparingly when a human wants an explicit refresh audit entry even if state did not change.
 
-Do not hardcode unpublished/amendable commit SHAs in `CURRENT.md`; use `git log --oneline origin/main..HEAD` for exact local commits.
+Do not hardcode published (`origin/main`) **or** unpublished/amendable local commit SHAs in `CURRENT.md` — a pinned SHA goes stale on the next push. Use `git rev-parse --short origin/main` for the current published baseline and `git log --oneline origin/main..HEAD` for exact local commits.
 
 ## Push gate
 

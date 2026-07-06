@@ -43,7 +43,7 @@ test('agent-refresh reports ok handoff state with unpublished local commits', ()
   assert.equal(report.handoff.activeFiles.length, 0);
 });
 
-test('agent-refresh blocks when CURRENT.md origin/main baseline is stale', () => {
+test('agent-refresh warns (does not block) when CURRENT.md pins a stale origin/main SHA', () => {
   const root = tempRepo(current);
   const report = collectAgentRefresh({
     cwd: root,
@@ -54,8 +54,29 @@ test('agent-refresh blocks when CURRENT.md origin/main baseline is stale', () =>
     }),
   });
 
-  assert.equal(report.ok, false);
-  assert.ok(report.errors.some((error) => /origin\/main baseline is stale/.test(error)));
+  assert.equal(report.ok, true); // a stale published baseline is a warning, not a blocker
+  assert.deepEqual(report.errors, []);
+  assert.ok(report.warnings.some((w) => /pins an origin\/main baseline SHA/.test(w)));
+});
+
+test('agent-refresh passes cleanly when CURRENT.md does not pin an origin/main SHA', () => {
+  const noSha =
+    '# Current Agent Coordination State\n\n## Current baseline\n\n' +
+    '- `origin/main` is the published baseline. Use `git rev-parse --short origin/main` for the exact SHA.\n' +
+    '- Local `main` should match `origin/main`. Run `git log --oneline origin/main..HEAD` to confirm.\n';
+  const root = tempRepo(noSha);
+  const report = collectAgentRefresh({
+    cwd: root,
+    runGit: fakeGit({
+      'status --short --branch': '## main...origin/main',
+      'log --oneline origin/main..HEAD': '',
+      'rev-parse --short origin/main': 'abc1234',
+    }),
+  });
+
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.errors, []);
+  assert.ok(!report.warnings.some((w) => /origin\/main baseline/.test(w)));
 });
 
 test('agent-refresh blocks hardcoded unpublished local commit SHAs in CURRENT.md', () => {

@@ -125,9 +125,14 @@ export function collectAgentRefresh({ cwd = process.cwd(), fsImpl = fs, runGit =
   const unpublishedCommits = logResult.ok && logResult.value ? logResult.value.split('\n').filter(Boolean) : [];
   const originMain = originResult.ok ? originResult.value : null;
 
+  // A published origin/main baseline SHA should NOT be pinned in CURRENT.md — it
+  // goes stale on every push. If one is present and no longer matches, warn (do
+  // not block); the source of truth is `git rev-parse --short origin/main`.
   const currentOrigin = parseOriginMainSha(currentText);
   if (currentOrigin && originMain && !shortShaMatches(currentOrigin, originMain)) {
-    errors.push(`CURRENT.md origin/main baseline is stale: ${currentOrigin} != ${originMain}`);
+    warnings.push(
+      `CURRENT.md pins an origin/main baseline SHA (${currentOrigin}) that no longer matches origin/main (${originMain}); do not hardcode a published baseline — use \`git rev-parse --short origin/main\` for the current SHA`
+    );
   }
 
   const hardcodedLocal = parseLocalMainHardcodedSha(currentText);

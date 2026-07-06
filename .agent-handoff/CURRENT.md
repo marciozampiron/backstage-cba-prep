@@ -8,7 +8,7 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Current baseline
 
-- `origin/main` includes `7d69262 feat: add agent-refresh handoff state check` (agent handoff protocol + agent-refresh CLI + the #34 architecture diagrams are pushed).
+- `origin/main` is the published baseline. Use `git rev-parse --short origin/main` or `git log -1 --oneline origin/main` for the exact current SHA. Do not pin a specific origin/main SHA here — it goes stale on every push.
 - Local `main` should match `origin/main` (no unpublished commits). Run `git log --oneline origin/main..HEAD` to confirm; do not rely on `CURRENT.md` for mutable unpublished commit SHAs.
 - #34 architecture diagrams are the accepted AWS roadmap diagram version unless a new handoff explicitly reopens them.
 - Do not rework architecture diagrams from older commits such as `06f1141`; that context is stale.
