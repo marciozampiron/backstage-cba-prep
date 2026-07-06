@@ -34,11 +34,11 @@ artifacts — no new design decisions should be needed:
 | MVP flow (issue #15) | Screen (#35 / prototype) | BFF contract (#36) | Entities (#16) | Phase 0 CLI concept |
 | --- | --- | --- | --- | --- |
 | Dashboard after login (first screen) | Learner Dashboard (desktop + mobile) | `GET /api/dashboard` | Exam, Domain, ProgressSnapshot, Attempt, Learner | blueprint + `stats` |
-| Configure and start a domain drill | Practice Setup | `GET /api/practice/options`, `POST /api/practice-sessions` *(2nd contract pass)* | Exam, Domain, Competency, Attempt | bank + blueprint |
-| Answer one question at a time (drill: instant feedback + source) | Question/Practice Session | `GET .../next`, `POST .../answers` *(2nd contract pass)* | Attempt, AttemptAnswer, QuestionVersion, Source | bank + `validate`d items |
-| Full mock exam (60Q / 90min, no per-question feedback) | Mock Exam | `POST /api/mock-exams` (+ session flow, 2nd pass) | Exam, Domain, QuestionVersion, Attempt | blueprint + simulator |
+| Configure and start a domain drill | Practice Setup | `GET /api/practice/options`, `POST /api/practice-sessions` (#38) | Exam, Domain, Competency, Attempt | bank + blueprint |
+| Answer one question at a time (drill: instant feedback + source) | Question/Practice Session | `GET .../next`, `POST .../answers` (#38) | Attempt, AttemptAnswer, QuestionVersion, Source | bank + `validate`d items |
+| Full mock exam (60Q / 90min, no per-question feedback) | Mock Exam | `POST /api/mock-exams` + session flow `GET /:id`, `POST .../answers`, `POST .../submit` (#38) | Exam, Domain, QuestionVersion, Attempt | blueprint + simulator |
 | Score by domain/competency | Results / Mock Exam Results | `GET /api/attempts/:id/results` | Attempt, AttemptAnswer, Domain, Competency | deterministic `score` |
-| Review missed with explanation + official source | Review Missed Questions (+ Result Explanation) | `GET /api/attempts/:id/missed` *(2nd contract pass)* | AttemptAnswer, QuestionVersion, Source | bank explanations + sources |
+| Review missed with explanation + official source | Review Missed Questions (+ Result Explanation) | `GET /api/attempts/:id/missed` (#38) | AttemptAnswer, QuestionVersion, Source | bank explanations + sources |
 | Study guidance at the end | Dashboard `recommendedDrill` + Results next actions + Study Coach panel | `POST /api/coach/message` (deterministic mode) | ProgressSnapshot, Source | `stats` weak-domain output |
 | Save attempts per learner | (implicit — powers dashboard/progress) | session identity on every call | Learner, Attempt, AttemptAnswer, ProgressSnapshot | local attempt history → per-user |
 
@@ -103,8 +103,9 @@ signals the 90-minute simulation is mis-paced for the audience.
 4. **Real sessions + persistence** — Cognito-mediated auth, per-learner attempts, readiness snapshot,
    progress screen; metrics instrumentation (the five above).
 
-Prerequisite for slices 1/3: the **second BFF contract pass** (practice sessions, answers/submit,
-missed review, progress, preferences — already listed as deferred in #36).
+Prerequisite for slices 1/3 — **satisfied**: the second BFF contract pass (#38) specifies practice
+sessions, answers/submit, missed review, progress, and preferences in
+[`web-bff-contracts.md`](web-bff-contracts.md) (§7–§17).
 
 ## Acceptance criteria from issue #15 — status
 
@@ -117,5 +118,6 @@ missed review, progress, preferences — already listed as deferred in #36).
 ## Out of scope for this document
 
 - Implementation (#11), infrastructure sizing, and the physical DB choice (deferred in #16).
-- The second BFF contract pass itself (flagged as the next design task).
+- The second BFF contract pass itself — delivered by #38 in
+  [`web-bff-contracts.md`](web-bff-contracts.md).
 - Any change to prototype, contracts, or data model — this document consolidates; it does not amend.

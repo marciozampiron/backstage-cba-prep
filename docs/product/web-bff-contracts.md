@@ -1,10 +1,11 @@
-# Web BFF Contracts — CBA SaaS Pilot (#36)
+# Web BFF Contracts — CBA SaaS Pilot (#36, #38)
 
-Design-time contracts for the first **Web BFF** endpoints of the CBA study platform. This is
+Design-time contracts for the **Web BFF** endpoints of the CBA study platform. This is
 documentation only: no backend, framework, auth, database, or AI-orchestration code is implemented
 here.
 
-- **Issue:** #36 (part of #33; related to #16 — generic exam SaaS model).
+- **Issues:** #36 (first pass — §1–§6) and #38 (second pass — §7–§17), part of #33; related to #16
+  (data model) and #15 (MVP scope; the second pass unblocks the #11 build slices).
 - **Runtime base:** [`ADR-0002`](../adr/0002-cloudflare-nextjs-aws-bff.md) — Cloudflare/Next.js
   frontend; the AWS-hosted Web BFF is the **only browser-reachable backend surface**.
 - **Screens served:** [`frontend-screen-map.md`](frontend-screen-map.md) and the versioned prototype
@@ -174,8 +175,8 @@ CBA is the pilot configuration of this model, not a special case: every contract
   generic reads them per exam. `questions[].domainId` supports the navigator UI in both.
 - **Errors:** `401`; `409 MOCK_EXAM_IN_PROGRESS` with `details.mockExamId` (resume, don't fork);
   `400 VALIDATION_FAILED` for an unknown `examId`.
-- **Exam-mode rule:** no correctness feedback surfaces until submission (answers/submit/navigator
-  endpoints are deferred — see "Deferred endpoints").
+- **Exam-mode rule:** no correctness feedback surfaces until submission. The session flow —
+  resume/navigator, silent answer saves, and idempotent submit — is specified in §11–§13.
 
 ## 3. `GET /api/attempts/:id/results`
 
@@ -198,7 +199,7 @@ CBA is the pilot configuration of this model, not a special case: every contract
     // ... one entry per domain
   ],
   "timeUsedSeconds": 4980,
-  "missed": { "count": 19 },               // review list itself = deferred GET /api/attempts/:id/missed
+  "missed": { "count": 19 },               // review list: GET /api/attempts/:id/missed (§14)
   "nextActions": [
     { "type": "review_missed", "attemptId": "att_b44" },
     { "type": "start_drill", "domainId": "catalog", "questionCount": 10 }
@@ -359,15 +360,292 @@ CBA is the pilot configuration of this model, not a special case: every contract
 
 ---
 
+## Second contract pass (#38) — sessions, review, progress, preferences
+
+Completes the learner MVP surface so #11 can be built without guessing an endpoint. Everything in
+this pass is **fully deterministic**: feedback and explanations come from published
+`QuestionVersion` content and `Source` refs, progress from `ProgressSnapshot` — **no endpoint here
+may trigger paid AI work**, so the no-spend rules are trivially satisfied. All conventions above
+(auth, error envelope, pagination, ownership) apply unchanged.
+
+## 7. `GET /api/practice/options`
+
+- **UX goal:** populate Practice Setup in one call — domain/competency pickers, counts, difficulty,
+  and a smart prefill.
+- **Auth:** learner session.
+- **Request:** optional `?examId=` (pilot default `"cba"`).
+- **Response sketch (200):**
+
+```jsonc
+{
+  "exam": { "examId": "cba" },
+  "domains": [
+    { "domainId": "catalog", "name": "Backstage Catalog", "weightPercent": 22,
+      "competencies": [ { "competencyId": "catalog-relations", "name": "Catalog entities & relationships" } ] }
+    // ... all four domains
+  ],
+  "questionCounts": [5, 10, 20],
+  "difficulties": ["mixed", "easy", "medium", "hard"],
+  "toggles": { "onlyMissed": true },       // supported filters
+  "recommended": { "domainId": "catalog", "competencyId": "catalog-relations",
+                   "questionCount": 10, "reason": "weakest_competency" }
+}
+```
+
+- **Delegates to:** Exam Content reads; `recommended` comes from the learner's `ProgressSnapshot`.
+- **Pilot vs generic:** CBA's seeded structure; generic serves any `examId`. Same shape.
+- **Errors:** `401`; `400` unknown exam.
+
+## 8. `POST /api/practice-sessions`
+
+- **UX goal:** start a focused drill from Practice Setup (or "add missed to a drill" from Review).
+- **Auth:** learner session.
+- **Request sketch:**
+
+```jsonc
+{
+  "examId": "cba",                          // optional, defaults to "cba"
+  "domainId": "catalog",                    // optional (absent = all domains)
+  "competencyId": "catalog-relations",      // optional, requires domainId
+  "questionCount": 10,                      // 5 | 10 | 20
+  "difficulty": "mixed",                    // optional, default "mixed"
+  "onlyMissed": false                       // true = only questions the learner missed before
+}
+```
+
+- **Response sketch (201):** `{ "practiceSessionId": "ps_31a", "attemptId": "att_c02",
+  "kind": "practice", "config": { ...echo... }, "questionCount": 10,
+  "startedAt": "2026-07-06T18:00:00Z" }` — questions come one at a time via `/next`.
+- **Delegates to:** Simulation use case *StartDrill* — assembles from **published**
+  `QuestionVersion`s honoring the filters; `onlyMissed` reads the learner's `AttemptAnswer` history.
+- **Pilot vs generic:** identical; filters already bind to `domainId`/`competencyId`.
+- **Errors:** `401`; `400 VALIDATION_FAILED` (unknown domain/competency, bad count);
+  `400 INSUFFICIENT_QUESTIONS` with `details.available` when the filter can't fill the count
+  (frontend offers the lower count).
+
+## 9. `GET /api/practice-sessions/:id/next`
+
+- **UX goal:** fetch the current question of a drill (Question Session screen).
+- **Auth:** learner session; caller owns the session.
+- **Response sketch (200):**
+
+```jsonc
+{
+  "done": false,                            // true when the session is finished (then see summary)
+  "index": 3, "total": 10,
+  "question": {
+    "questionVersionId": "qv_812_v1",
+    "stem": "A team registers a component but its API dependency does not appear...",
+    "options": [ { "key": "A", "text": "..." }, { "key": "B", "text": "..." },
+                 { "key": "C", "text": "..." }, { "key": "D", "text": "..." } ],
+    "domain": { "domainId": "catalog", "name": "Backstage Catalog" },
+    "competency": { "competencyId": "catalog-relations", "name": "Catalog entities & relationships" }
+  }
+}
+```
+
+  When finished: `{ "done": true, "attemptId": "att_c02", "resultsUrl": "/api/attempts/att_c02/results" }`.
+  **No `correctOption` in this payload, ever.**
+
+- **Delegates to:** Simulation session read (pinned `questionOrder`).
+- **Errors:** `401`; `403 NOT_RESOURCE_OWNER`; `404`.
+
+## 10. `POST /api/practice-sessions/:id/answers`
+
+- **UX goal:** submit an answer and get **instant grounded feedback** (drill mode).
+- **Auth:** learner session; caller owns the session.
+- **Request sketch:** `{ "index": 3, "questionVersionId": "qv_812_v1", "selectedOption": "B",
+  "timeSpentSeconds": 42 }` — the version id is echoed back as a pin-check.
+- **Response sketch (200):**
+
+```jsonc
+{
+  "correct": false,
+  "correctOption": "C",
+  "explanation": "Backstage resolves catalog relations from entity descriptor references...",
+  "whyOthersWrong": null,                   // optional, when the item provides it
+  "sourceRefs": [ { "title": "Software Catalog", "url": "https://backstage.io/docs/features/software-catalog/" } ],
+  "progress": { "answered": 3, "total": 10 },
+  "nextIndex": 4                            // null when this was the last question
+}
+```
+
+- **Deterministic by contract:** feedback comes from the published `QuestionVersion` (explanation +
+  sources) — this endpoint never calls the AI path. "Ask the coach about this" goes through
+  `POST /api/coach/message` (§4) separately.
+- **Delegates to:** Simulation use case *AnswerDrillQuestion* (writes `AttemptAnswer`).
+- **Errors:** `401`; `403`; `404`; `400 VALIDATION_FAILED` (bad index/option);
+  `409 VERSION_MISMATCH` (`questionVersionId` differs from the pinned one);
+  `409 ALREADY_ANSWERED` (re-post with a *different* selection; an identical re-post returns `200`
+  with the same payload — safe retry).
+
+## 11. `GET /api/mock-exams/:id`
+
+- **UX goal:** load/resume the Mock Exam screen — timer, navigator grid, and one question view.
+- **Auth:** learner session; caller owns the mock.
+- **Request:** optional `?index=` (defaults to the first unanswered question).
+- **Response sketch (200):**
+
+```jsonc
+{
+  "mockExamId": "mock_7c1", "attemptId": "att_b44",
+  "status": "in_progress",                  // in_progress | submitted | expired
+  "remainingSeconds": 3120, "expiresAt": "2026-07-06T15:30:00Z",
+  "navigator": [ { "index": 1, "answered": true, "flagged": false }
+                 // ... 60 entries, no correctness info
+               ],
+  "question": {
+    "index": 7, "questionVersionId": "qv_231_v2",
+    "stem": "...", "options": [ { "key": "A", "text": "..." } /* ... */ ],
+    "selectedOption": null, "flagged": false
+  }
+}
+```
+
+- **Exam-mode rule:** no correctness anywhere in this payload — only answered/flagged state.
+- **Delegates to:** Simulation session read.
+- **Errors:** `401`; `403`; `404`. An expired-but-unsubmitted mock returns `200` with
+  `status: "expired"` and the auto-submitted results reference once processed.
+
+## 12. `POST /api/mock-exams/:id/answers`
+
+- **UX goal:** save (or replace/clear) an answer and flag state during the mock — silent, no feedback.
+- **Auth:** learner session; caller owns the mock.
+- **Request sketch:** `{ "index": 7, "questionVersionId": "qv_231_v2", "selectedOption": "B",
+  "flagged": false }` — `selectedOption: null` clears; answers are replaceable until submit
+  (unlike practice).
+- **Response sketch (200):** `{ "saved": true, "answeredCount": 41, "flaggedCount": 3,
+  "remainingSeconds": 3050 }` — **no correctness**.
+- **Delegates to:** Simulation use case *SaveMockAnswer* (upserts `AttemptAnswer`; correctness is
+  computed only at submit).
+- **Errors:** `401`; `403`; `404`; `400`; `409 ATTEMPT_NOT_IN_PROGRESS` (already submitted/expired);
+  `409 VERSION_MISMATCH`.
+
+## 13. `POST /api/mock-exams/:id/submit`
+
+- **UX goal:** submit the mock (confirm dialog) — or the server auto-submits at `expiresAt`.
+- **Auth:** learner session; caller owns the mock.
+- **Request:** empty body. **Idempotent:** re-submitting returns the same result.
+- **Response sketch (200):** `{ "attemptId": "att_b44", "status": "submitted",
+  "submittedAt": "2026-07-06T15:23:00Z", "autoSubmitted": false,
+  "resultsUrl": "/api/attempts/att_b44/results" }` — the frontend then loads §3 for the Results
+  screen.
+- **Delegates to:** Simulation use case *SubmitMockExam* — deterministic scoring of all
+  `AttemptAnswer`s, per-domain rollup, then folds into `ProgressSnapshot`.
+- **Errors:** `401`; `403`; `404`. Submitting an expired mock returns `200` with
+  `autoSubmitted: true` (unanswered items score as incorrect — matches the real exam).
+
+## 14. `GET /api/attempts/:id/missed`
+
+- **UX goal:** the Review Missed Questions screen — dense, grounded review of every missed item.
+- **Auth:** learner session; caller owns the attempt; attempt must be completed.
+- **Request:** `?cursor=` + `?limit=` (default 20).
+- **Response sketch (200):**
+
+```jsonc
+{
+  "attemptId": "att_b44",
+  "items": [
+    {
+      "index": 7,
+      "questionVersionId": "qv_231_v2",
+      "stem": "...",
+      "options": [ { "key": "A", "text": "..." } /* ... */ ],
+      "selectedOption": "B",
+      "correctOption": "C",
+      "explanation": "...",
+      "whyOthersWrong": null,
+      "sourceRefs": [ { "title": "TechDocs", "url": "https://backstage.io/docs/features/techdocs/" } ],
+      "domain": { "domainId": "infrastructure", "name": "Backstage Infrastructure" },
+      "competency": { "competencyId": "techdocs-config", "name": "TechDocs configuration" }
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+  "Add to a focused drill" is not a separate endpoint: the frontend calls
+  `POST /api/practice-sessions` with `onlyMissed: true` (+ optional `domainId`). "Ask the coach"
+  uses §4 with the item's refs.
+
+- **Delegates to:** Simulation read (incorrect `AttemptAnswer`s joined with their pinned versions).
+- **Errors:** `401`; `403`; `404`; `409 ATTEMPT_NOT_COMPLETED`. No misses → `200` with `items: []`
+  (frontend celebrates and suggests a harder mock).
+
+## 15. `GET /api/progress`
+
+- **UX goal:** the Progress screen — readiness trend, per-domain/competency mastery, attempt
+  history, focus areas.
+- **Auth:** learner session.
+- **Request:** optional `?examId=`; `?cursor=`/`?limit=` page the attempt history.
+- **Response sketch (200):**
+
+```jsonc
+{
+  "exam": { "examId": "cba", "name": "Certified Backstage Associate" },
+  "current": {
+    "overall": { "readinessPercent": 68, "targetPercent": 75 },
+    "perDomain": [ { "domainId": "catalog", "name": "Backstage Catalog",
+                     "weightPercent": 22, "readinessPercent": 55, "answered": 34, "correct": 19 } ],
+    "perCompetency": [ { "competencyId": "catalog-relations", "domainId": "catalog",
+                         "readinessPercent": 41, "answered": 12, "correct": 5 } ]
+  },
+  "trend": [ { "asOf": "2026-07-01T00:00:00Z", "readinessPercent": 52 } ],   // [] while cold-start
+  "trendUnlockAfterAttempts": 3,            // frontend shows "take more practice to unlock trends"
+  "streak": { "current": 4, "lastStudyDate": "2026-07-06" },
+  "focusAreas": [ { "competencyId": "catalog-relations", "name": "Catalog entities & relationships",
+                    "domainId": "catalog", "readinessPercent": 41,
+                    "drill": { "questionCount": 10 } } ],
+  "attempts": { "items": [ { "attemptId": "att_b44", "kind": "mock", "scorePercent": 68,
+                             "completedAt": "2026-07-06T15:23:00Z" } ], "nextCursor": null }
+}
+```
+
+- **Delegates to:** Learner Progress reads (`ProgressSnapshot` history + attempts). Deterministic.
+- **Pilot vs generic:** identical; multi-exam later selects by `examId`.
+- **Errors:** `401`. Cold-start is `200` with empty trend, not an error.
+
+## 16. `GET /api/me` · `PUT /api/me`
+
+- **UX goal:** Settings — profile and active exam.
+- **Auth:** learner session (identity from the session; no ids in the URL).
+- **GET response (200):** `{ "displayName": "Marcio", "email": "m@example.com",
+  "activeExam": { "examId": "cba", "name": "Certified Backstage Associate" },
+  "createdAt": "2026-06-01T12:00:00Z" }`.
+- **PUT request:** partial — `{ "displayName"?, "activeExamId"? }` → `200` with the updated GET
+  shape. Email changes go through the identity provider flow, not this endpoint.
+- **Delegates to:** Learner profile use cases.
+- **Pilot vs generic:** pilot exposes the single seeded exam in `activeExam` (switcher disabled);
+  generic validates `activeExamId` against the learner's available exams.
+- **Errors:** `401`; `400 VALIDATION_FAILED` (empty name, unknown exam).
+
+## 17. `GET /api/preferences` · `PUT /api/preferences`
+
+- **UX goal:** Settings — study reminders, appearance, accessibility.
+- **Auth:** learner session.
+- **GET response (200):**
+
+```jsonc
+{
+  "reminders": { "enabled": true, "timeOfDay": "08:00", "days": ["mon","tue","wed","thu","fri"] },
+  "appearance": { "theme": "system" },      // system | light | dark
+  "accessibility": { "textScale": 1.0, "reduceMotion": false }
+}
+```
+
+- **PUT request:** partial merge of the same shape → `200` with the full updated object.
+- **Delegates to:** Learner preferences use cases. Deterministic; preferences never affect scoring.
+- **Errors:** `401`; `400 VALIDATION_FAILED` (unknown theme, out-of-range scale).
+
+---
+
 ## Deferred endpoints (same conventions, later contract passes)
 
-Already sketched per screen in [`frontend-screen-map.md`](frontend-screen-map.md): practice sessions
-(`/api/practice-sessions*`, `/api/practice/options`), mock-exam session flow
-(`GET /api/mock-exams/:id`, `.../answers`, `.../submit`), missed review (`/api/attempts/:id/missed`),
-progress (`/api/progress`), profile/preferences (`/api/me`, `/api/preferences`), and admin review
-actions (approve/reject/change). They inherit every rule in this document.
+Only the **admin review actions** remain unspecified: approve / reject / request-changes on a draft
+`QuestionVersion` (completing a `ReviewTask`, #16 §11). They ship with the Phase 4 authoring
+pipeline and inherit every rule in this document. Learner-surface contracts are complete as of #38.
 
-## Out of scope (#36)
+## Out of scope (#36, #38)
 
 - Any implementation (Next.js/BFF/auth/persistence/AI orchestration) — this file is the contract.
 - OpenAPI generation — a possible follow-up once the shapes stabilize.
