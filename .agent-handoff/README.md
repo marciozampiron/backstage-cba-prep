@@ -14,7 +14,8 @@ Every agent must read, in order:
 1. `AGENTS.md`;
 2. `.agent-handoff/README.md`;
 3. `.agent-handoff/CURRENT.md`;
-4. any relevant task file under `.agent-handoff/inbox/` or `.agent-handoff/active/`.
+4. `.agent-handoff/COMMANDS.md`;
+5. any relevant task file under `.agent-handoff/inbox/` or `.agent-handoff/active/`.
 
 If those files disagree with local git state or the GitHub issue, stop and report the mismatch
 before editing.
@@ -25,6 +26,7 @@ before editing.
 | --- | --- |
 | `CURRENT.md` | Short repo coordination state for agents entering cold. |
 | `EVENTS.md` | Append-only log of meaningful state changes. |
+| `COMMANDS.md` | Operational command checklist for boot, validation, commit, and push gate. |
 | `inbox/` | Tasks prepared for an agent to pick up. |
 | `active/` | Tasks currently owned by an agent. Do not duplicate ownership. |
 | `done/` | Completed handoffs with final validation, commit SHA, and follow-ups. |
