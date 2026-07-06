@@ -1,6 +1,7 @@
-// In-memory Simulation adapter for slice 1 (#39): practice sessions, attempts, answers, results.
-// One stub learner (no real auth yet); state lives for the process lifetime — the persistence
-// slice replaces this behind the same shapes.
+// Simulation application layer: practice sessions, mock exams, missed review, deterministic coach.
+// All state lives behind the SimulationRepository port (lib/repository.js) — records are plain
+// JSON-serializable objects (answers keyed by question index), scoped by learnerId, written through
+// on every mutation. Routes call these functions; neither routes nor pages touch the repository.
 import {
   exam,
   domains,
@@ -11,20 +12,11 @@ import {
   seededShuffle,
   toQuestionPayload,
 } from './bank.js';
+import { getRepository } from './repository.js';
 
 export const STUB_LEARNER_ID = 'learner-stub';
 
-const globalKey = Symbol.for('cba.simulationStore');
-if (!globalThis[globalKey]) {
-  globalThis[globalKey] = { sessions: new Map(), attempts: new Map(), mocks: new Map(), counter: 0 };
-}
-const store = globalThis[globalKey];
-store.mocks ??= new Map();
-
-function nextId(prefix) {
-  store.counter += 1;
-  return `${prefix}_${store.counter.toString(36)}${Date.now().toString(36).slice(-4)}`;
-}
+const repo = getRepository();
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -34,6 +26,12 @@ export class ApiError extends Error {
     this.details = details;
   }
 }
+
+function answeredEntries(attempt) {
+  return Object.values(attempt.answers);
+}
+
+/* ---------------- practice drills (slice 1, contracts §8–§10) ---------------- */
 
 export function startDrill({ domainId, competencyId, questionCount, difficulty, onlyMissed }) {
   if (![5, 10, 20].includes(questionCount)) {
@@ -56,16 +54,16 @@ export function startDrill({ domainId, competencyId, questionCount, difficulty, 
   let missedSet = null;
   if (onlyMissed) {
     missedSet = new Set();
-    for (const attempt of store.attempts.values()) {
-      if (attempt.learnerId !== STUB_LEARNER_ID || attempt.status !== 'submitted') continue;
+    for (const attempt of repo.listAttempts(STUB_LEARNER_ID)) {
+      if (attempt.status !== 'submitted') continue;
       for (const slot of attempt.questionOrder) {
-        const answer = attempt.answers.get(slot.index);
+        const answer = attempt.answers[slot.index];
         if (answer?.isCorrect !== true) missedSet.add(slot.questionVersionId);
       }
     }
   }
 
-  const sessionId = nextId('ps');
+  const sessionId = repo.nextId('ps');
   let pool = pickPublishedVersions({ domainId, competencyId, difficulty, seed: sessionId });
   if (missedSet) pool = pool.filter((v) => missedSet.has(v.questionVersionId));
 
@@ -75,7 +73,7 @@ export function startDrill({ domainId, competencyId, questionCount, difficulty, 
     });
   }
 
-  const attemptId = nextId('att');
+  const attemptId = repo.nextId('att');
   const questionOrder = pool
     .slice(0, questionCount)
     .map((v, i) => ({ index: i + 1, questionVersionId: v.questionVersionId }));
@@ -86,16 +84,22 @@ export function startDrill({ domainId, competencyId, questionCount, difficulty, 
     examId: exam.examId,
     kind: 'practice',
     status: 'in_progress',
-    config: { domainId: domainId ?? null, competencyId: competencyId ?? null, questionCount, difficulty: difficulty ?? 'mixed', onlyMissed: Boolean(onlyMissed) },
+    config: {
+      domainId: domainId ?? null,
+      competencyId: competencyId ?? null,
+      questionCount,
+      difficulty: difficulty ?? 'mixed',
+      onlyMissed: Boolean(onlyMissed),
+    },
     questionOrder,
     startedAt: new Date().toISOString(),
     submittedAt: null,
-    answers: new Map(), // index -> { questionVersionId, selectedOption, isCorrect, answeredAt, timeSpentSeconds }
+    answers: {}, // index -> { questionVersionId, selectedOption, isCorrect, answeredAt, timeSpentSeconds }
   };
   const session = { practiceSessionId: sessionId, attemptId, learnerId: STUB_LEARNER_ID };
 
-  store.attempts.set(attemptId, attempt);
-  store.sessions.set(sessionId, session);
+  repo.saveAttempt(attempt);
+  repo.saveSession(session);
 
   return {
     practiceSessionId: sessionId,
@@ -108,18 +112,22 @@ export function startDrill({ domainId, competencyId, questionCount, difficulty, 
 }
 
 function requireSession(sessionId) {
-  const session = store.sessions.get(sessionId);
+  const session = repo.getSession(sessionId);
   if (!session) throw new ApiError(404, 'NOT_FOUND', 'Practice session not found.');
-  const attempt = store.attempts.get(session.attemptId);
+  const attempt = repo.getAttempt(session.attemptId);
   return { session, attempt };
 }
 
 export function nextQuestion(sessionId) {
   const { attempt } = requireSession(sessionId);
-  const pending = attempt.questionOrder.find((q) => !attempt.answers.has(q.index));
+  const pending = attempt.questionOrder.find((q) => !attempt.answers[q.index]);
   if (!pending) {
-    finalizeAttempt(attempt);
-    return { done: true, attemptId: attempt.attemptId, resultsUrl: `/api/attempts/${attempt.attemptId}/results` };
+    if (finalizeAttempt(attempt)) repo.saveAttempt(attempt);
+    return {
+      done: true,
+      attemptId: attempt.attemptId,
+      resultsUrl: `/api/attempts/${attempt.attemptId}/results`,
+    };
   }
   return {
     done: false,
@@ -144,23 +152,24 @@ export function answerQuestion(sessionId, { index, questionVersionId, selectedOp
     throw new ApiError(400, 'VALIDATION_FAILED', `Invalid option "${selectedOption}".`);
   }
 
-  const existing = attempt.answers.get(index);
+  const existing = attempt.answers[index];
   if (existing && existing.selectedOption !== selectedOption) {
     throw new ApiError(409, 'ALREADY_ANSWERED', 'This question was already answered with a different selection.');
   }
   if (!existing) {
-    attempt.answers.set(index, {
+    attempt.answers[index] = {
       questionVersionId: version.questionVersionId,
       selectedOption,
       isCorrect: selectedOption === version.correctOption,
       answeredAt: new Date().toISOString(),
       timeSpentSeconds: timeSpentSeconds ?? null,
-    });
+    };
   }
-  const answer = attempt.answers.get(index);
-  const answered = attempt.answers.size;
+  const answer = attempt.answers[index];
+  const answered = Object.keys(attempt.answers).length;
   const total = attempt.questionOrder.length;
   if (answered === total) finalizeAttempt(attempt);
+  repo.saveAttempt(attempt);
 
   return {
     correct: answer.isCorrect,
@@ -174,20 +183,20 @@ export function answerQuestion(sessionId, { index, questionVersionId, selectedOp
 }
 
 function finalizeAttempt(attempt) {
-  if (attempt.status !== 'in_progress') return;
+  if (attempt.status !== 'in_progress') return false;
   attempt.status = 'submitted';
   attempt.submittedAt = new Date().toISOString();
-  const answers = [...attempt.answers.values()];
-  const correct = answers.filter((a) => a.isCorrect).length;
+  const correct = answeredEntries(attempt).filter((a) => a.isCorrect).length;
   attempt.score = {
     correct,
     total: attempt.questionOrder.length,
     percent: Math.round((correct / attempt.questionOrder.length) * 100),
   };
+  return true;
 }
 
 export function attemptResults(attemptId) {
-  const attempt = store.attempts.get(attemptId);
+  const attempt = repo.getAttempt(attemptId);
   if (!attempt) throw new ApiError(404, 'NOT_FOUND', 'Attempt not found.');
   if (attempt.status === 'in_progress') {
     throw new ApiError(409, 'ATTEMPT_NOT_COMPLETED', 'Results are available after the attempt is completed.', {
@@ -211,7 +220,7 @@ export function attemptResults(attemptId) {
     }
     const row = perDomain.get(domain.domainId);
     row.total += 1;
-    if (attempt.answers.get(slot.index)?.isCorrect) row.correct += 1;
+    if (attempt.answers[slot.index]?.isCorrect) row.correct += 1;
   }
   for (const row of perDomain.values()) {
     row.percent = Math.round((row.correct / row.total) * 100);
@@ -235,9 +244,7 @@ export function attemptResults(attemptId) {
     missed: { count: missedCount },
     nextActions: [
       ...(missedCount > 0 ? [{ type: 'review_missed', attemptId }] : []),
-      ...(weakest
-        ? [{ type: 'start_drill', domainId: weakest.domainId, questionCount: 10 }]
-        : []),
+      ...(weakest ? [{ type: 'start_drill', domainId: weakest.domainId, questionCount: 10 }] : []),
     ],
     coachSummary: {
       text:
@@ -259,9 +266,9 @@ function remainingSeconds(attempt) {
 
 // Exam-mode invariant: answers are stored WITHOUT correctness until submit.
 function finalizeMock(mock, attempt, { autoSubmitted }) {
-  if (attempt.status !== 'in_progress') return;
+  if (attempt.status !== 'in_progress') return false;
   for (const slot of attempt.questionOrder) {
-    const entry = attempt.answers.get(slot.index);
+    const entry = attempt.answers[slot.index];
     if (entry) {
       entry.isCorrect =
         entry.selectedOption !== null &&
@@ -271,24 +278,27 @@ function finalizeMock(mock, attempt, { autoSubmitted }) {
   attempt.status = 'submitted';
   attempt.submittedAt = autoSubmitted ? attempt.expiresAt : new Date().toISOString();
   mock.autoSubmitted = autoSubmitted;
-  const correct = [...attempt.answers.values()].filter((a) => a.isCorrect).length;
+  const correct = answeredEntries(attempt).filter((a) => a.isCorrect).length;
   attempt.score = {
     correct,
     total: attempt.questionOrder.length,
     percent: Math.round((correct / attempt.questionOrder.length) * 100),
   };
+  return true;
 }
 
 function ensureMockCurrent(mock, attempt) {
   if (attempt.status === 'in_progress' && remainingSeconds(attempt) === 0) {
-    finalizeMock(mock, attempt, { autoSubmitted: true });
+    if (finalizeMock(mock, attempt, { autoSubmitted: true })) {
+      repo.saveAttempt(attempt);
+      repo.saveMock(mock);
+    }
   }
 }
 
 export function startMockExam() {
-  for (const mock of store.mocks.values()) {
-    if (mock.learnerId !== STUB_LEARNER_ID) continue;
-    const attempt = store.attempts.get(mock.attemptId);
+  for (const mock of repo.listMocks(STUB_LEARNER_ID)) {
+    const attempt = repo.getAttempt(mock.attemptId);
     ensureMockCurrent(mock, attempt);
     if (attempt.status === 'in_progress') {
       throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {
@@ -297,7 +307,7 @@ export function startMockExam() {
     }
   }
 
-  const mockExamId = nextId('mock');
+  const mockExamId = repo.nextId('mock');
   // Blueprint-weighted assembly: each domain contributes its mock target, then interleave.
   const picked = [];
   for (const d of domains) {
@@ -314,7 +324,7 @@ export function startMockExam() {
     questionVersionId: v.questionVersionId,
   }));
 
-  const attemptId = nextId('att');
+  const attemptId = repo.nextId('att');
   const startedAt = new Date();
   const attempt = {
     attemptId,
@@ -327,11 +337,11 @@ export function startMockExam() {
     startedAt: startedAt.toISOString(),
     expiresAt: new Date(startedAt.getTime() + exam.timeLimitSeconds * 1000).toISOString(),
     submittedAt: null,
-    answers: new Map(), // index -> { questionVersionId, selectedOption|null, flagged, answeredAt } — isCorrect only at submit
+    answers: {}, // index -> { questionVersionId, selectedOption|null, flagged, answeredAt } — isCorrect only at submit
   };
   const mock = { mockExamId, attemptId, learnerId: STUB_LEARNER_ID, autoSubmitted: false };
-  store.attempts.set(attemptId, attempt);
-  store.mocks.set(mockExamId, mock);
+  repo.saveAttempt(attempt);
+  repo.saveMock(mock);
 
   return {
     mockExamId,
@@ -351,15 +361,15 @@ export function startMockExam() {
 }
 
 function requireMock(mockExamId) {
-  const mock = store.mocks.get(mockExamId);
+  const mock = repo.getMock(mockExamId);
   if (!mock) throw new ApiError(404, 'NOT_FOUND', 'Mock exam not found.');
-  const attempt = store.attempts.get(mock.attemptId);
+  const attempt = repo.getAttempt(mock.attemptId);
   ensureMockCurrent(mock, attempt);
   return { mock, attempt };
 }
 
 function mockCounts(attempt) {
-  const entries = [...attempt.answers.values()];
+  const entries = answeredEntries(attempt);
   return {
     answeredCount: entries.filter((a) => a.selectedOption !== null).length,
     flaggedCount: entries.filter((a) => a.flagged).length,
@@ -372,7 +382,7 @@ export function getMockExam(mockExamId, requestedIndex) {
   const total = attempt.questionOrder.length;
 
   const navigator = attempt.questionOrder.map((slot) => {
-    const entry = attempt.answers.get(slot.index);
+    const entry = attempt.answers[slot.index];
     return {
       index: slot.index,
       answered: Boolean(entry && entry.selectedOption !== null),
@@ -386,7 +396,7 @@ export function getMockExam(mockExamId, requestedIndex) {
   }
   const slot = attempt.questionOrder.find((q) => q.index === index);
   const version = getVersion(slot.questionVersionId);
-  const entry = attempt.answers.get(index);
+  const entry = attempt.answers[index];
 
   const status =
     attempt.status === 'in_progress' ? 'in_progress' : mock.autoSubmitted ? 'expired' : 'submitted';
@@ -434,7 +444,7 @@ export function saveMockAnswer(mockExamId, { index, questionVersionId, selectedO
     throw new ApiError(400, 'VALIDATION_FAILED', `Invalid option "${selectedOption}".`);
   }
 
-  const existing = attempt.answers.get(index) ?? {
+  const existing = attempt.answers[index] ?? {
     questionVersionId: slot.questionVersionId,
     selectedOption: null,
     flagged: false,
@@ -445,7 +455,8 @@ export function saveMockAnswer(mockExamId, { index, questionVersionId, selectedO
     existing.answeredAt = selectedOption === null ? null : new Date().toISOString();
   }
   if (flagged !== undefined) existing.flagged = Boolean(flagged);
-  attempt.answers.set(index, existing);
+  attempt.answers[index] = existing;
+  repo.saveAttempt(attempt);
 
   return { saved: true, ...mockCounts(attempt), remainingSeconds: remainingSeconds(attempt) };
 }
@@ -454,7 +465,10 @@ export function saveMockAnswer(mockExamId, { index, questionVersionId, selectedO
 export function submitMockExam(mockExamId) {
   const { mock, attempt } = requireMock(mockExamId);
   if (attempt.status === 'in_progress') {
-    finalizeMock(mock, attempt, { autoSubmitted: false });
+    if (finalizeMock(mock, attempt, { autoSubmitted: false })) {
+      repo.saveAttempt(attempt);
+      repo.saveMock(mock);
+    }
   }
   return {
     attemptId: attempt.attemptId,
@@ -470,7 +484,7 @@ export function submitMockExam(mockExamId) {
 // §14 — grounded review of missed items. Post-submit only: correctness/explanations exist here
 // precisely because the attempt is completed, so the exam-mode rule stays intact.
 export function missedForAttempt(attemptId, { cursor, limit } = {}) {
-  const attempt = store.attempts.get(attemptId);
+  const attempt = repo.getAttempt(attemptId);
   if (!attempt) throw new ApiError(404, 'NOT_FOUND', 'Attempt not found.');
   if (attempt.status === 'in_progress') {
     throw new ApiError(409, 'ATTEMPT_NOT_COMPLETED', 'Missed review is available after the attempt is submitted.', {
@@ -480,7 +494,7 @@ export function missedForAttempt(attemptId, { cursor, limit } = {}) {
 
   const missed = [];
   for (const slot of attempt.questionOrder) {
-    const entry = attempt.answers.get(slot.index);
+    const entry = attempt.answers[slot.index];
     if (entry?.isCorrect) continue; // unanswered mock questions count as missed
     const version = getVersion(slot.questionVersionId);
     const domain = getDomain(version.domainId);
@@ -525,11 +539,11 @@ function versionForCoach(context) {
 
 function learnerAnswerFor(context, version) {
   if (!context?.attemptId) return null;
-  const attempt = store.attempts.get(context.attemptId);
+  const attempt = repo.getAttempt(context.attemptId);
   if (!attempt || attempt.status === 'in_progress') return null;
   for (const slot of attempt.questionOrder) {
     if (slot.questionVersionId === version.questionVersionId) {
-      return attempt.answers.get(slot.index) ?? null;
+      return attempt.answers[slot.index] ?? null;
     }
   }
   return null;
@@ -563,7 +577,7 @@ export function coachMessage({ action, context }) {
           ? `You answered ${version.correctOption}) correctly. `
           : `The correct answer is ${version.correctOption}). `;
     return {
-      messageId: nextId('cm'),
+      messageId: repo.nextId('cm'),
       text: `${picked}${version.explanation}`,
       sourceRefs: version.sourceRefs,
       relatedCompetency: { domainId: domain.domainId, competencyId: competency.competencyId },
@@ -581,7 +595,7 @@ export function coachMessage({ action, context }) {
     const weakest = weakestRatedDomain();
     if (!weakest) {
       return {
-        messageId: nextId('cm'),
+        messageId: repo.nextId('cm'),
         text: 'Take a 5-question warm-up first — it gives you a readiness signal I can turn into a targeted recommendation.',
         sourceRefs: [],
         relatedCompetency: null,
@@ -591,7 +605,7 @@ export function coachMessage({ action, context }) {
     }
     const { domain, pct } = weakest;
     return {
-      messageId: nextId('cm'),
+      messageId: repo.nextId('cm'),
       text: `${domain.name} is your weakest area right now (${Math.round(pct * 100)}% of scored questions correct, exam weight ${domain.weightPercent}%). A focused 10-question drill there yields the highest score improvement.`,
       sourceRefs: pickPublishedVersions({ domainId: domain.domainId, seed: 'coach' })
         .slice(0, 2)
@@ -613,7 +627,7 @@ export function coachMessage({ action, context }) {
     }
     const competencies = domain.competencies.map((c) => c.name).join('; ');
     return {
-      messageId: nextId('cm'),
+      messageId: repo.nextId('cm'),
       text: `${domain.name} is ${domain.weightPercent}% of the CBA exam. It covers: ${competencies}. Drill it in focused sets and read the cited docs for anything you miss.`,
       sourceRefs: pickPublishedVersions({ domainId: domain.domainId, seed: 'coach' })
         .slice(0, 2)
@@ -627,11 +641,12 @@ export function coachMessage({ action, context }) {
   throw new ApiError(400, 'VALIDATION_FAILED', `Unknown coach action "${action}".`);
 }
 
+/* ---------------- dashboard/readiness inputs ---------------- */
+
 // Dashboard resume support (§1 resume shape). Sweeps expiry lazily.
 export function currentMockResume() {
-  for (const mock of store.mocks.values()) {
-    if (mock.learnerId !== STUB_LEARNER_ID) continue;
-    const attempt = store.attempts.get(mock.attemptId);
+  for (const mock of repo.listMocks(STUB_LEARNER_ID)) {
+    const attempt = repo.getAttempt(mock.attemptId);
     ensureMockCurrent(mock, attempt);
     if (attempt.status === 'in_progress') {
       return {
@@ -646,15 +661,16 @@ export function currentMockResume() {
 }
 
 export function learnerAttemptStats() {
-  const attempts = [...store.attempts.values()]
-    .filter((a) => a.learnerId === STUB_LEARNER_ID && a.status === 'submitted')
+  const attempts = repo
+    .listAttempts(STUB_LEARNER_ID)
+    .filter((a) => a.status === 'submitted')
     .sort((a, b) => (a.submittedAt < b.submittedAt ? 1 : -1));
 
   const perDomain = new Map();
   for (const attempt of attempts) {
     for (const slot of attempt.questionOrder) {
       const version = getVersion(slot.questionVersionId);
-      const answer = attempt.answers.get(slot.index);
+      const answer = attempt.answers[slot.index];
       const row = perDomain.get(version.domainId) ?? { answered: 0, correct: 0 };
       // Submitted attempts scored every slot: an unanswered mock question counted as incorrect
       // at submit, so it counts against domain readiness here too.
