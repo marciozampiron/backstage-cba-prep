@@ -51,14 +51,16 @@ export function startDrill({ domainId, competencyId, questionCount, difficulty, 
     }
   }
 
-  // onlyMissed: restrict to versions this learner answered incorrectly before.
+  // onlyMissed: every slot of a SUBMITTED attempt the learner did not get right — wrong answers
+  // and unanswered mock questions alike (unanswered has no answers entry but scored incorrect).
   let missedSet = null;
   if (onlyMissed) {
     missedSet = new Set();
     for (const attempt of store.attempts.values()) {
-      if (attempt.learnerId !== STUB_LEARNER_ID) continue;
-      for (const a of attempt.answers.values()) {
-        if (a.isCorrect === false) missedSet.add(a.questionVersionId);
+      if (attempt.learnerId !== STUB_LEARNER_ID || attempt.status !== 'submitted') continue;
+      for (const slot of attempt.questionOrder) {
+        const answer = attempt.answers.get(slot.index);
+        if (answer?.isCorrect !== true) missedSet.add(slot.questionVersionId);
       }
     }
   }
@@ -461,6 +463,168 @@ export function submitMockExam(mockExamId) {
     autoSubmitted: mock.autoSubmitted,
     resultsUrl: `/api/attempts/${attempt.attemptId}/results`,
   };
+}
+
+/* ---------------- missed review + deterministic coach (slice 3, §14 / §4) ---------------- */
+
+// §14 — grounded review of missed items. Post-submit only: correctness/explanations exist here
+// precisely because the attempt is completed, so the exam-mode rule stays intact.
+export function missedForAttempt(attemptId, { cursor, limit } = {}) {
+  const attempt = store.attempts.get(attemptId);
+  if (!attempt) throw new ApiError(404, 'NOT_FOUND', 'Attempt not found.');
+  if (attempt.status === 'in_progress') {
+    throw new ApiError(409, 'ATTEMPT_NOT_COMPLETED', 'Missed review is available after the attempt is submitted.', {
+      attemptId,
+    });
+  }
+
+  const missed = [];
+  for (const slot of attempt.questionOrder) {
+    const entry = attempt.answers.get(slot.index);
+    if (entry?.isCorrect) continue; // unanswered mock questions count as missed
+    const version = getVersion(slot.questionVersionId);
+    const domain = getDomain(version.domainId);
+    const competency = getCompetency(version.domainId, version.competencyId);
+    missed.push({
+      index: slot.index,
+      questionVersionId: version.questionVersionId,
+      stem: version.stem,
+      options: version.options,
+      selectedOption: entry?.selectedOption ?? null,
+      correctOption: version.correctOption,
+      explanation: version.explanation,
+      whyOthersWrong: version.whyOthersWrong,
+      difficulty: version.difficulty,
+      sourceRefs: version.sourceRefs,
+      domain: { domainId: domain.domainId, name: domain.name },
+      competency: { competencyId: competency.competencyId, name: competency.name },
+    });
+  }
+
+  const pageSize = Math.min(Math.max(Number(limit) || 20, 1), 60);
+  const start = Math.max(Number(cursor) || 0, 0);
+  const items = missed.slice(start, start + pageSize);
+  const next = start + pageSize < missed.length ? String(start + pageSize) : null;
+  return { attemptId, kind: attempt.kind, totalMissed: missed.length, items, nextCursor: next };
+}
+
+function versionForCoach(context) {
+  if (context?.questionVersionId) {
+    const v = getVersion(context.questionVersionId);
+    if (!v) throw new ApiError(404, 'NOT_FOUND', 'Unknown question version.');
+    return v;
+  }
+  if (context?.questionId) {
+    // contract §4 accepts questionId — resolve to the published version
+    const v = pickPublishedVersions({ seed: 'coach' }).find((x) => x.questionId === context.questionId);
+    if (!v) throw new ApiError(404, 'NOT_FOUND', 'Unknown question.');
+    return v;
+  }
+  throw new ApiError(400, 'VALIDATION_FAILED', 'explain_question requires context.questionId or context.questionVersionId.');
+}
+
+function learnerAnswerFor(context, version) {
+  if (!context?.attemptId) return null;
+  const attempt = store.attempts.get(context.attemptId);
+  if (!attempt || attempt.status === 'in_progress') return null;
+  for (const slot of attempt.questionOrder) {
+    if (slot.questionVersionId === version.questionVersionId) {
+      return attempt.answers.get(slot.index) ?? null;
+    }
+  }
+  return null;
+}
+
+function weakestRatedDomain() {
+  const { perDomain } = learnerAttemptStats();
+  let weakest = null;
+  for (const d of domains) {
+    const stat = perDomain.get(d.domainId);
+    if (!stat || stat.answered === 0) continue;
+    const pct = stat.correct / stat.answered;
+    if (!weakest || pct < weakest.pct) weakest = { domain: d, pct };
+  }
+  return weakest;
+}
+
+// §4 — deterministic mode only. Text is composed from published item/blueprint data and always
+// carries sourceRefs + a recommended action. No model call anywhere on this path (Phase 3 seam:
+// the grounded mode swaps in behind the same shape via `mode`).
+export function coachMessage({ action, context }) {
+  if (action === 'explain_question') {
+    const version = versionForCoach(context);
+    const domain = getDomain(version.domainId);
+    const competency = getCompetency(version.domainId, version.competencyId);
+    const answer = learnerAnswerFor(context, version);
+    const picked =
+      answer && answer.selectedOption && answer.selectedOption !== version.correctOption
+        ? `You picked ${answer.selectedOption}) — the correct answer is ${version.correctOption}). `
+        : answer && answer.selectedOption === version.correctOption
+          ? `You answered ${version.correctOption}) correctly. `
+          : `The correct answer is ${version.correctOption}). `;
+    return {
+      messageId: nextId('cm'),
+      text: `${picked}${version.explanation}`,
+      sourceRefs: version.sourceRefs,
+      relatedCompetency: { domainId: domain.domainId, competencyId: competency.competencyId },
+      recommendedAction: {
+        type: 'start_drill',
+        domainId: domain.domainId,
+        competencyId: competency.competencyId,
+        questionCount: 10,
+      },
+      mode: 'deterministic',
+    };
+  }
+
+  if (action === 'recommend_next') {
+    const weakest = weakestRatedDomain();
+    if (!weakest) {
+      return {
+        messageId: nextId('cm'),
+        text: 'Take a 5-question warm-up first — it gives you a readiness signal I can turn into a targeted recommendation.',
+        sourceRefs: [],
+        relatedCompetency: null,
+        recommendedAction: { type: 'start_drill', questionCount: 5 },
+        mode: 'deterministic',
+      };
+    }
+    const { domain, pct } = weakest;
+    return {
+      messageId: nextId('cm'),
+      text: `${domain.name} is your weakest area right now (${Math.round(pct * 100)}% of scored questions correct, exam weight ${domain.weightPercent}%). A focused 10-question drill there yields the highest score improvement.`,
+      sourceRefs: pickPublishedVersions({ domainId: domain.domainId, seed: 'coach' })
+        .slice(0, 2)
+        .flatMap((v) => v.sourceRefs),
+      relatedCompetency: null,
+      recommendedAction: { type: 'start_drill', domainId: domain.domainId, questionCount: 10 },
+      mode: 'deterministic',
+    };
+  }
+
+  if (action === 'explain_domain') {
+    const domain = context?.domainId ? getDomain(context.domainId) : null;
+    if (!domain) {
+      throw new ApiError(
+        context?.domainId ? 404 : 400,
+        context?.domainId ? 'NOT_FOUND' : 'VALIDATION_FAILED',
+        context?.domainId ? 'Unknown domain.' : 'explain_domain requires context.domainId.',
+      );
+    }
+    const competencies = domain.competencies.map((c) => c.name).join('; ');
+    return {
+      messageId: nextId('cm'),
+      text: `${domain.name} is ${domain.weightPercent}% of the CBA exam. It covers: ${competencies}. Drill it in focused sets and read the cited docs for anything you miss.`,
+      sourceRefs: pickPublishedVersions({ domainId: domain.domainId, seed: 'coach' })
+        .slice(0, 2)
+        .flatMap((v) => v.sourceRefs),
+      relatedCompetency: null,
+      recommendedAction: { type: 'start_drill', domainId: domain.domainId, questionCount: 10 },
+      mode: 'deterministic',
+    };
+  }
+
+  throw new ApiError(400, 'VALIDATION_FAILED', `Unknown coach action "${action}".`);
 }
 
 // Dashboard resume support (§1 resume shape). Sweeps expiry lazily.

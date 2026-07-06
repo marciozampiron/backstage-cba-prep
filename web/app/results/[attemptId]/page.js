@@ -101,6 +101,11 @@ export default function AttemptResultsPage() {
             (not an official pass score)
           </p>
         </div>
+        {data.missed.count > 0 && (
+          <a className="btn btn-secondary" href={`/review/${attemptId}`}>
+            Review Missed Questions
+          </a>
+        )}
         {drillWeakest && (
           <button
             className="btn btn-secondary"

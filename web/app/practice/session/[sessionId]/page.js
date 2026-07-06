@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { BulbIcon } from '../../../components/icons.js';
+import CoachPanel from '../../../components/CoachPanel.js';
 
 function useElapsed(resetKey) {
   const [seconds, setSeconds] = useState(0);
@@ -222,19 +223,10 @@ export default function PracticeSessionPage() {
             </div>
 
             <div className="next-grid">
-              <div className="coach-teaser">
-                <strong>Ask CBA Coach</strong>
-                <p className="muted" style={{ margin: '4px 0 0' }}>
-                  Grounded coaching over this question arrives with the coach slice.
-                </p>
-                <div className="chips">
-                  <span>Explain this concept, simply</span>
-                  <span>Give me an analogy</span>
-                  <span className="soon" style={{ alignSelf: 'center' }}>
-                    SOON
-                  </span>
-                </div>
-              </div>
+              <CoachPanel
+                context={{ questionVersionId: current.question.questionVersionId }}
+                actions={['explain_question', 'recommend_next']}
+              />
               <div className="card move-on" style={{ margin: 0, padding: '16px 18px' }}>
                 <strong>Ready to move on?</strong>
                 <span className="muted">Your progress is saved automatically.</span>

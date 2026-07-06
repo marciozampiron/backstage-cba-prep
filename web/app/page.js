@@ -144,13 +144,15 @@ export default function DashboardPage() {
                   <ChevronIcon />
                 </span>
               </button>
-              <span className="action-row disabled" aria-disabled="true">
+              <a className="action-row" href="/review">
                 <div>
                   <div className="a-title">Review missed questions</div>
-                  <div className="a-sub">Arrives with the review slice</div>
+                  <div className="a-sub">Grounded explanations with official sources</div>
                 </div>
-                <span className="soon">SOON</span>
-              </span>
+                <span className="chev">
+                  <ChevronIcon />
+                </span>
+              </a>
               <a className="action-row" href="/mock">
                 <div>
                   <div className="a-title">

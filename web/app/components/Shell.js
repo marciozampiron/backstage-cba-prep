@@ -18,7 +18,7 @@ const NAV = [
   { label: 'Dashboard', href: '/', prefix: null, icon: GridIcon },
   { label: 'Practice', href: '/practice/setup', prefix: '/practice', icon: BookIcon },
   { label: 'Mock Exam', href: '/mock', prefix: '/mock', icon: ClockIcon },
-  { label: 'Review', icon: RefreshIcon },
+  { label: 'Review', href: '/review', prefix: '/review', icon: RefreshIcon },
   { label: 'Coach', icon: ChatIcon },
   { label: 'Progress', icon: TrendIcon },
 ];
@@ -112,9 +112,9 @@ export default function Shell({ children }) {
         <a className={`b-tab ${pathname.startsWith('/mock') ? 'active' : ''}`} href="/mock">
           <ClockIcon width={20} height={20} /> Mock
         </a>
-        <span className="b-tab" aria-disabled="true">
+        <a className={`b-tab ${pathname.startsWith('/review') ? 'active' : ''}`} href="/review">
           <RefreshIcon width={20} height={20} /> Review
-        </span>
+        </a>
         <span className="b-tab" aria-disabled="true">
           <ChatIcon width={20} height={20} /> Coach
         </span>

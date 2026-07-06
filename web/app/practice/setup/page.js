@@ -14,7 +14,7 @@ function SetupForm() {
   const [competencyId, setCompetencyId] = useState('');
   const [questionCount, setQuestionCount] = useState(Number(search.get('questionCount')) || 5);
   const [difficulty, setDifficulty] = useState('mixed');
-  const [onlyMissed, setOnlyMissed] = useState(false);
+  const [onlyMissed, setOnlyMissed] = useState(search.get('onlyMissed') === '1');
   const [error, setError] = useState(null);
   const [starting, setStarting] = useState(false);
 
