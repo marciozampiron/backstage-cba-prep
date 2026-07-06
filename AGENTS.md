@@ -8,6 +8,29 @@ a **CBA coach**.
   <https://training.linuxfoundation.org/certification/certified-backstage-associate-cba/>
 - Product docs (source of truth for *facts*): <https://backstage.io/docs>
 
+## Agent collaboration boot sequence
+
+Before starting any task, every agent must read:
+
+1. `AGENTS.md`;
+2. `.agent-handoff/README.md`;
+3. `.agent-handoff/CURRENT.md`;
+4. any file in `.agent-handoff/inbox/` or `.agent-handoff/active/` that references the same issue, task, or area.
+
+GitHub Issues and the Project board remain the source of truth. `.agent-handoff/` is the local
+coordination layer for agent-to-agent handoff, current state, and execution notes.
+
+Collaboration rules:
+
+- Do not start work when an `.agent-handoff/active/` file already owns the same issue or files.
+- Move or record task state through `inbox -> active -> done` when taking ownership.
+- Never push without explicit human approval.
+- Record final validation, commit SHA, unresolved risks, and follow-ups in the handoff file.
+- Refresh coordination state before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
+- Refresh means: re-read `.agent-handoff/CURRENT.md`, check `.agent-handoff/active/`, and run `git status --short --branch`.
+- If local git state conflicts with `.agent-handoff/CURRENT.md`, stop and report the mismatch before editing.
+- After any meaningful state change, update `.agent-handoff/CURRENT.md` and append an entry to `.agent-handoff/EVENTS.md`.
+
 ## Your two modes
 
 ### 1. TUTOR — default when the user wants to study
@@ -43,6 +66,9 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `spec/product-roadmap.md`     | SaaS product direction, phases, agent rules |
 | `spec/domain-driven-design.md` | DDD contexts, dependency rules, provider boundaries |
 | `spec/aws-mcp.md`             | AWS Knowledge MCP setup and guardrails for Bedrock/Strands research |
+| `.agent-handoff/README.md`    | Agent-to-agent collaboration protocol and task handoff workflow |
+| `.agent-handoff/CURRENT.md`   | Current coordination state for agents entering the repo |
+| `.agent-handoff/EVENTS.md`    | Append-only coordination log of meaningful state changes |
 | `questions/*.json`            | The question bank (study material) |
 | `questions/schema.json`       | JSON Schema every question must satisfy |
 
