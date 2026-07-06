@@ -43,16 +43,41 @@ Agents must refresh coordination state:
 - after any command that changes git state;
 - every 5 minutes during long-running work.
 
-Refresh means:
+Preferred refresh command:
+
+```bash
+npm run agent-refresh
+# or, for machine-readable output:
+node bin/cli.js agent-refresh --json
+# to intentionally write an audit event even when nothing changed:
+npm run agent-refresh -- --record
+```
+
+Manual refresh means:
 
 1. re-read `.agent-handoff/CURRENT.md`;
 2. check `.agent-handoff/active/`;
 3. run `git status --short --branch`;
-4. stop if state conflicts with local work.
+4. run `git log --oneline origin/main..HEAD`;
+5. stop if state conflicts with local work.
 
-After any meaningful state change, update `CURRENT.md` and append an entry to `EVENTS.md`.
+After any meaningful state change, update `CURRENT.md` and append an entry to `EVENTS.md`. Use `--record` sparingly when a human wants an explicit refresh audit entry even if state did not change.
 
-Do not hardcode unpublished or amendable commit SHAs in `CURRENT.md`; use `git status` / `git log --oneline origin/main..HEAD` for the exact local SHA.
+Do not hardcode unpublished/amendable commit SHAs in `CURRENT.md`; use `git log --oneline origin/main..HEAD` for exact local commits.
+
+## Push gate
+
+`agent-refresh` and `agent-refresh --record` check technical state only. They do **not** authorize a push. Push permission is a human decision.
+
+Before any push:
+
+1. The human must explicitly approve push in chat.
+2. The agent must append a `Human gate` event to `EVENTS.md` listing the approved commits or scope.
+3. The agent must run `npm run agent-refresh -- --record` immediately before push.
+4. The agent may push only the approved commits/scope.
+5. After push, the agent must record push and CI status in `EVENTS.md`.
+
+If any step is missing, do not push.
 
 ## Task lifecycle
 

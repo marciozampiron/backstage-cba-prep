@@ -25,9 +25,12 @@ Collaboration rules:
 - Do not start work when an `.agent-handoff/active/` file already owns the same issue or files.
 - Move or record task state through `inbox -> active -> done` when taking ownership.
 - Never push without explicit human approval.
+- `agent-refresh --record` is only a technical checkpoint; it never grants push permission.
+- Before pushing, append a `Human gate` event to `.agent-handoff/EVENTS.md`, run `npm run agent-refresh -- --record`, and push only the approved commits.
 - Record final validation, commit SHA, unresolved risks, and follow-ups in the handoff file.
 - Refresh coordination state before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
-- Refresh means: re-read `.agent-handoff/CURRENT.md`, check `.agent-handoff/active/`, and run `git status --short --branch`.
+- Preferred refresh command: `npm run agent-refresh` (or `node bin/cli.js agent-refresh --json` for machine-readable output); use `npm run agent-refresh -- --record` only when an explicit audit event is required.
+- Manual refresh means: re-read `.agent-handoff/CURRENT.md`, check `.agent-handoff/active/`, run `git status --short --branch`, and run `git log --oneline origin/main..HEAD`.
 - If local git state conflicts with `.agent-handoff/CURRENT.md`, stop and report the mismatch before editing.
 - After any meaningful state change, update `.agent-handoff/CURRENT.md` and append an entry to `.agent-handoff/EVENTS.md`.
 

@@ -10,6 +10,7 @@ import { runBlueprint } from '../src/commands/blueprint.js';
 import { runReviewBank } from '../src/commands/review-bank.js';
 import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { runAgentCheck } from '../src/commands/agent-check.js';
+import { runAgentRefresh } from '../src/commands/agent-refresh.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { loadEnv } from '../src/lib/env.js';
 import { c } from '../src/lib/ui.js';
@@ -57,6 +58,7 @@ const HELP = `
     review-bank    Review semantic answer correctness against cited sources
     bedrock-check  Validate model-tier config (dry-run); --smoke for a paid live test
     agent-check    Check AI orchestration readiness (dry-run); --smoke for a paid live run
+    agent-refresh  Check agent handoff state before edit/commit/push (no network)
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -94,6 +96,11 @@ const HELP = `
     --smoke         do a LIVE bedrock-runtime call (COSTS TOKENS; bedrock backend)
     --tier NAME     fast | standard | critical  (smoke target; default fast)
     --yes           skip the smoke confirmation prompt
+
+  ${c.bold('agent-refresh options:')}
+    ${c.gray('(no network: reads .agent-handoff and local git state)')}
+    --json          emit machine-readable coordination state
+    --record        append an explicit audit event to .agent-handoff/EVENTS.md
 
   ${c.bold('agent-check options:')}
     ${c.gray('(dry-run by default: constructs provider + orchestrator from env, no spend)')}
@@ -181,6 +188,9 @@ async function main() {
       break;
     case 'agent-check':
       process.exit(await runAgentCheck({ smoke: !!args.smoke, yes: !!args.yes, json: !!args.json }));
+      break;
+    case 'agent-refresh':
+      process.exit(await runAgentRefresh({ json: !!args.json, record: !!args.record }));
       break;
     case 'history':
       runHistory({ json: !!args.json });

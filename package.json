@@ -19,6 +19,7 @@
     "blueprint": "node bin/cli.js blueprint",
     "bedrock-check": "node bin/cli.js bedrock-check",
     "agent-check": "node bin/cli.js agent-check",
+    "agent-refresh": "node bin/cli.js agent-refresh",
     "test": "node --test"
   },
   "engines": {

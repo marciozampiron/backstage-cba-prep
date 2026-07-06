@@ -1,7 +1,7 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-05
-Updated by: Claude
+Last updated: 2026-07-06
+Updated by: Codex
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
 Project board remain the source of truth; this file summarizes local coordination state.
@@ -15,7 +15,7 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Active priority
 
-- Push the agent handoff protocol commit only after explicit human approval.
+- Push unpublished handoff/agent-refresh work only after explicit human approval.
 - Then move toward #35 frontend screen map / prototype brief and #36 Web BFF contracts after confirming the board state.
 
 ## Do not touch without explicit assignment
@@ -26,7 +26,7 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Required behavior
 
-- Refresh state before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
+- Run `npm run agent-refresh` before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
 - Check `.agent-handoff/active/` before starting work.
 - Record any delegated task in `inbox/`, `active/`, or `done/`.
 - Update `CURRENT.md` and append to `EVENTS.md` after meaningful state changes.

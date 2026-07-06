@@ -2,6 +2,76 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-06T01:41:29Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - 9f225d3 feat: add agent-refresh handoff state check
+  - 6062f68 docs: add agent handoff protocol
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-06T01:41:02Z — Human gate
+
+- Human approved push in chat with: `pode pushar`.
+- Approved scope: agent handoff protocol plus agent-refresh handoff state check.
+- Current unpublished commits at approval checkpoint:
+  - `6062f68 docs: add agent handoff protocol`
+  - `b41ce1b feat: add agent-refresh handoff state check`
+- Agent must run `npm run agent-refresh -- --record` immediately before push and push only this approved governance scope.
+
+## 2026-07-06 — Codex
+
+- Completed Push gate protocol documentation locally.
+- Moved `.agent-handoff/active/push-gate-protocol.md` to `.agent-handoff/done/push-gate-protocol.md`.
+- No push performed.
+
+## 2026-07-06 — Codex
+
+- Documented Push gate semantics.
+- `agent-refresh --record` is a technical checkpoint only; it does not authorize push.
+- Push requires explicit human approval plus a `Human gate` event in `EVENTS.md`, then `npm run agent-refresh -- --record` immediately before push.
+- No push performed.
+
+## 2026-07-06T01:30:00Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - 632a4c1 feat: add agent-refresh handoff state check
+  - 6062f68 docs: add agent handoff protocol
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-06 — Codex
+
+- Completed `agent-refresh --record` support locally.
+- Moved `.agent-handoff/active/agent-refresh-record.md` to `.agent-handoff/done/agent-refresh-record.md`.
+- Validation: `node --check`, `node bin/cli.js agent-refresh --json`, `git diff --check`, and `npm test` passed (67/67).
+- No push performed.
+
+## 2026-07-06 — Codex
+
+- Implemented explicit `agent-refresh --record` support after user tried the flag and it was ignored.
+- `--record` appends an audit entry to `.agent-handoff/EVENTS.md`; normal `agent-refresh` remains read-only.
+- No push performed.
+
+## 2026-07-06 — Codex
+
+- Completed `agent-refresh` CLI automation locally.
+- Moved `.agent-handoff/active/agent-refresh-cli.md` to `.agent-handoff/done/agent-refresh-cli.md`.
+- Validation: `node bin/cli.js agent-refresh --json`, `node --check`, `git diff --check`, and `npm test` passed (66/66).
+- No push performed.
+
+## 2026-07-05 — Codex
+
+- Started `agent-refresh` CLI automation for the handoff protocol.
+- Added `.agent-handoff/active/agent-refresh-cli.md` to mark task ownership while editing.
+- No push performed.
+
 ## 2026-07-05 — Claude
 
 - Removed stale unpublished commit SHA from `CURRENT.md`.
