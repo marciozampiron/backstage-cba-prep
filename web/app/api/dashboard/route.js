@@ -2,10 +2,12 @@
 // a naive deterministic rollup of in-memory attempts (ProgressSnapshot arrives with persistence).
 import { exam, domains } from '../../../lib/bank.js';
 import { learnerAttemptStats, currentMockResume } from '../../../lib/store.js';
+import { resolveLearner } from '../../../lib/identity.js';
 import { handle, json } from '../../../lib/api.js';
 
-export const GET = handle(() => {
-  const { attempts, perDomain } = learnerAttemptStats();
+export const GET = handle((request) => {
+  const { learnerId } = resolveLearner(request);
+  const { attempts, perDomain } = learnerAttemptStats(learnerId);
   const firstRun = attempts.length === 0;
 
   const domainRows = domains.map((d) => {
@@ -40,7 +42,7 @@ export const GET = handle(() => {
     readiness: { percent: overall, targetPercent: exam.targetPercent, official: false },
     domains: domainRows,
     weakestCompetency: null, // competency-level readiness arrives with ProgressSnapshot (later slice)
-    resume: currentMockResume(), // in-progress mock exam, if any (§1 resume shape)
+    resume: currentMockResume(learnerId), // in-progress mock exam, if any (§1 resume shape)
     recommendedDrill,
     recentAttempts: attempts.slice(0, 3).map((a) => ({
       attemptId: a.attemptId,

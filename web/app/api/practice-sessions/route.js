@@ -1,8 +1,10 @@
 // POST /api/practice-sessions — contract §8.
 import { startDrill, ApiError } from '../../../lib/store.js';
+import { resolveLearner } from '../../../lib/identity.js';
 import { handle, json, errorResponse } from '../../../lib/api.js';
 
 export const POST = handle(async (request) => {
+  const { learnerId } = resolveLearner(request);
   let body;
   try {
     body = await request.json();
@@ -13,7 +15,7 @@ export const POST = handle(async (request) => {
   if (examId && examId !== 'cba') {
     throw new ApiError(400, 'VALIDATION_FAILED', `Unknown exam "${examId}".`);
   }
-  const result = startDrill({
+  const result = startDrill(learnerId, {
     domainId: domainId || undefined,
     competencyId: competencyId || undefined,
     questionCount: Number(questionCount),

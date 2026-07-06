@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CBA Web MVP — slice 1: deterministic drill loop (#39 / #11). Self-contained; not a root workspace.",
+  "description": "CBA Web MVP — deterministic learner loop, slices 1-4b (#39-#43 / #11): drill loop, mock exam, review missed + deterministic coach, persistence boundary, learner identity. Self-contained; not a root workspace.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

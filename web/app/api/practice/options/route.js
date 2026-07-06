@@ -1,10 +1,12 @@
 // GET /api/practice/options — contract §7.
 import { exam, domains } from '../../../../lib/bank.js';
 import { learnerAttemptStats } from '../../../../lib/store.js';
+import { resolveLearner } from '../../../../lib/identity.js';
 import { handle, json } from '../../../../lib/api.js';
 
-export const GET = handle(() => {
-  const { attempts, perDomain } = learnerAttemptStats();
+export const GET = handle((request) => {
+  const { learnerId } = resolveLearner(request);
+  const { attempts, perDomain } = learnerAttemptStats(learnerId);
 
   let recommended = { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' };
   if (attempts.length > 0) {
