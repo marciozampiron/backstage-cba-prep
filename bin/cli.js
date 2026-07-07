@@ -89,7 +89,7 @@ const HELP = `
     --from URL      source page to extract the domain from (default: the exam URL)
     --provider NAME anthropic | openai | google  (default anthropic)
     --write         apply the regenerated domain to spec/blueprint.json
-    ${c.gray('needs an API key, same as generate')}
+    ${c.gray('needs an API key, same as generate; or LLM_BACKEND=bedrock with AWS credentials')}
 
   ${c.bold('bedrock-check options:')}
     ${c.gray('(dry-run by default: validates config shape offline, no tokens spent)')}

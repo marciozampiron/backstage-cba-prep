@@ -133,7 +133,7 @@ function diffBlueprint(current, next) {
 }
 
 // Core (injectable): fetch page -> LLM extract -> merge -> validate -> diff.
-export async function generateBlueprint({ from, provider = 'anthropic', model, apiKey, fetchImpl = fetch, callImpl, modelProvider } = {}) {
+export async function generateBlueprint({ from, provider = 'anthropic', model, apiKey, fetchImpl = fetch, callImpl, modelProvider, createModelProviderImpl = createModelProvider } = {}) {
   if (!from) throw new Error('missing source url');
   const current = { exam: EXAM, domains: DOMAINS };
   const res = await fetchImpl(from, { headers: { 'user-agent': 'backstage-cba-prep/blueprint' } });
@@ -145,11 +145,16 @@ export async function generateBlueprint({ from, provider = 'anthropic', model, a
   if (callImpl) {
     raw = await callImpl(prompt);
   } else if (provider === 'anthropic') {
-    // Same pattern as generate: route Anthropic through the ModelProvider port,
-    // passing --model as a transient MODEL_STANDARD override (port stays tier-based).
-    const env = { ...process.env, LLM_BACKEND: 'anthropic', ANTHROPIC_API_KEY: apiKey || process.env.ANTHROPIC_API_KEY };
-    if (model) env.MODEL_STANDARD = model;
-    const mp = modelProvider || createModelProvider({ env });
+    // The CLI provider remains "anthropic" for compatibility, while LLM_BACKEND
+    // selects the transport: first-party Anthropic API or AWS Bedrock.
+    const backend = String(process.env.LLM_BACKEND || 'anthropic').toLowerCase();
+    const env = { ...process.env, LLM_BACKEND: backend };
+    if (backend === 'anthropic') env.ANTHROPIC_API_KEY = apiKey || process.env.ANTHROPIC_API_KEY;
+    if (model) {
+      if (backend === 'bedrock') env.BEDROCK_MODEL_STANDARD = model;
+      else env.MODEL_STANDARD = model;
+    }
+    const mp = modelProvider || createModelProviderImpl({ env });
     const out = await mp.invoke({ prompt, tier: 'standard', options: { maxTokens: 4096 } });
     raw = out.text;
     usage = out.usage;

@@ -1,51 +1,80 @@
 name: Refresh blueprint
 
 # Regenerates the exam domain (spec/blueprint.json) from the official source page using AI
-# and opens a PULL REQUEST when it changes — automatic, but a human reviews the diff before merge.
-# Requires an ANTHROPIC_API_KEY repo secret; skips gracefully if it is absent.
+# and opens a PULL REQUEST when it changes. Manual only: this workflow can spend Bedrock tokens.
+# Requires AWS OIDC role AWS_BEDROCK_REFRESH_ROLE_ARN and explicit confirm_ai_spend=true.
 
 on:
-  schedule:
-    - cron: '0 7 * * 1' # Mondays 07:00 UTC
   workflow_dispatch:
     inputs:
       url:
         description: Source URL to extract the domain from (defaults to the exam URL)
         required: false
+      confirm_ai_spend:
+        description: I understand this workflow invokes AWS Bedrock and can spend tokens
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_BEDROCK_REFRESH_ROLE_ARN: ${{ secrets.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+      BEDROCK_MODEL_STANDARD: ${{ vars.BEDROCK_MODEL_STANDARD }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - name: Regenerate the domain from the source page
-        id: gen
+          cache: npm
+      - name: Check Bedrock refresh gate
+        id: gate
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FROM_URL: ${{ github.event.inputs.url }}
+          CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
         run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "No ANTHROPIC_API_KEY secret set — skipping blueprint refresh."
+          if [ "$CONFIRM_AI_SPEND" != "true" ]; then
+            echo "confirm_ai_spend=true is required because blueprint refresh invokes AWS Bedrock."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ -z "$AWS_BEDROCK_REFRESH_ROLE_ARN" ]; then
+            echo "AWS_BEDROCK_REFRESH_ROLE_ARN secret is required to assume the Bedrock refresh role."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+      - name: Configure AWS credentials for Bedrock
+        if: steps.gate.outputs.skip != 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: npm ci
+      - name: Regenerate the domain from the source page
+        id: gen
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          FROM_URL: ${{ github.event.inputs.url }}
+          LLM_BACKEND: bedrock
+        run: |
           if [ -n "$FROM_URL" ]; then
-            node bin/cli.js blueprint --from "$FROM_URL" --write
+            node bin/cli.js blueprint --provider anthropic --from "$FROM_URL" --write
           else
-            node bin/cli.js blueprint --write
+            node bin/cli.js blueprint --provider anthropic --write
           fi
       - name: Check the bank against the (possibly) new domain
-        if: steps.gen.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true'
         run: node bin/cli.js validate || echo "::warning::bank no longer validates against the regenerated domain — review the PR carefully"
       - name: Open a PR if the domain changed
-        if: steps.gen.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           branch: chore/blueprint-refresh

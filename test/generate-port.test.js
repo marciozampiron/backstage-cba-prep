@@ -82,3 +82,48 @@ test('blueprint --provider anthropic routes through the ModelProvider port', asy
   assert.equal(r.changed, false); // extracted == current blueprint
   assert.equal(r.usage.totalTokens, 10);
 });
+
+test('blueprint ModelProvider path honors LLM_BACKEND=bedrock', async () => {
+  const prev = {
+    LLM_BACKEND: process.env.LLM_BACKEND,
+    BEDROCK_MODEL_STANDARD: process.env.BEDROCK_MODEL_STANDARD,
+    MODEL_STANDARD: process.env.MODEL_STANDARD,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  };
+  process.env.LLM_BACKEND = 'bedrock';
+  delete process.env.BEDROCK_MODEL_STANDARD;
+  delete process.env.MODEL_STANDARD;
+  delete process.env.ANTHROPIC_API_KEY;
+
+  let capturedEnv = null;
+  let invoked = null;
+  try {
+    const r = await generateBlueprint({
+      from: 'https://x',
+      fetchImpl: pageFetch,
+      model: 'us.anthropic.test-profile',
+      createModelProviderImpl: ({ env }) => {
+        capturedEnv = env;
+        return {
+          invoke: async (inv) => {
+            invoked = inv;
+            return { text: JSON.stringify(asExtracted()), usage: { provider: 'bedrock', model: env.BEDROCK_MODEL_STANDARD, tier: 'standard', inputTokens: 4, outputTokens: 6, totalTokens: 10, stopReason: 'end_turn' } };
+          },
+        };
+      },
+    });
+
+    assert.equal(capturedEnv.LLM_BACKEND, 'bedrock');
+    assert.equal(capturedEnv.BEDROCK_MODEL_STANDARD, 'us.anthropic.test-profile');
+    assert.equal(capturedEnv.MODEL_STANDARD, undefined);
+    assert.equal(capturedEnv.ANTHROPIC_API_KEY, undefined);
+    assert.equal(invoked.tier, 'standard');
+    assert.equal(r.usage.provider, 'bedrock');
+    assert.equal(r.changed, false);
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
