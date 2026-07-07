@@ -142,6 +142,11 @@ Production:
 
 ## Security Rules
 
+The concrete AWS bootstrap and IAM/OIDC model — the GitHub OIDC provider and the blueprint-refresh
+Bedrock role with copy-pasteable trust/permission policy JSON and a runbook — is in
+[`aws-bootstrap-and-oidc.md`](aws-bootstrap-and-oidc.md) (#54). The CDK security-stack encodes those
+artifacts.
+
 - No long-lived AWS keys in GitHub secrets.
 - Use GitHub OIDC + IAM role assumption.
 - Least-privilege roles by environment.
