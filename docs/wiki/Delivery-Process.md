@@ -10,6 +10,18 @@ Use GitHub issues for executable work. Use epics for larger product areas. Use t
 Idea -> issue -> Phase/Status -> implementation -> tests -> commit -> push -> CI -> close/update issue
 ```
 
+## Pilot CI/CD Posture
+
+The pilot uses a monorepo with separate GitHub Actions lanes by delivery boundary:
+
+- `web/**` for Next.js build and deterministic web smokes;
+- `src/**` and `bin/**` for CLI/core tests and no-spend AI readiness checks;
+- `services/**` for future BFF/core/AI service tests and contract checks;
+- `infra/aws/**` for AWS CDK synth/diff and IaC security checks;
+- `docs/**` for ADR/product/contract consistency checks where useful.
+
+AWS deploys use GitHub OIDC and environment gates. Default CI must not make paid model calls. See `docs/architecture/ci-cd-security-foundation.md`.
+
 ## Status Meaning
 
 - Todo: scoped but not started.

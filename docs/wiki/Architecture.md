@@ -56,6 +56,10 @@ Model providers and agent frameworks are infrastructure adapters behind applicat
 
 For the SaaS pilot, the learner/admin frontend (Next.js) is hosted at the Cloudflare edge, while the Web BFF, core services, and a separate AI Orchestration Service run on AWS. The browser reaches only the BFF; the AI Orchestration Service (Bedrock/Strands, `AgentRunRepository`) is never called directly from the browser. This is a reversible, pilot-scoped runtime choice — see `docs/adr/0002-cloudflare-nextjs-aws-bff.md`.
 
+## Delivery and IaC
+
+For the pilot, keep one repository and split delivery lanes by boundary (`web/`, `services/`, `infra/aws/`, `src/`, `docs/`). GitHub Actions is the CI/CD orchestrator. AWS infrastructure is authored with AWS CDK v2, with CloudFormation as the generated deployment substrate. See `docs/adr/0003-monorepo-github-actions-and-aws-cdk.md`, `docs/architecture/ci-cd-security-foundation.md`, and `docs/architecture/aws-iac-foundation.md`.
+
 ## Canonical Reference
 
 Detailed guidance lives in `spec/domain-driven-design.md`.
