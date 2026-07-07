@@ -77,6 +77,12 @@ Required inputs:
 
 ## Security Baseline
 
+The detailed GitHub security baseline and AWS OIDC role catalog — concrete branch-protection
+required checks, the Actions permissions model, GitHub Environments, the OIDC trust-boundary
+anatomy, the roles/vars/secrets registry, and the Dependabot/scanning posture — live in
+[`github-security-and-oidc-baseline.md`](github-security-and-oidc-baseline.md) (#52). The summary
+below stays; that doc is the source of truth for security specifics.
+
 ### GitHub Permissions
 
 Workflows should default to least privilege:
