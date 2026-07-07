@@ -41,6 +41,10 @@ Before content becomes learner-facing:
 - semantic review is complete;
 - provenance metadata is retained.
 
+## Weak-Domain Authoring
+
+Weak-domain or coverage-gap authoring is allowed only as an internal/admin workflow. The Question Authoring Agent may draft new QuestionVersions from official sources, but the Human Review Gate is the only path to publication. See `spec/ai-adaptive-study-strategy.md` for the adaptive study and authoring loop.
+
 ## Future Admin Console
 
 The review console should make source citation visible, not hidden. Reviewers should be able to approve, reject, request changes, and inspect validation warnings without editing JSON manually.

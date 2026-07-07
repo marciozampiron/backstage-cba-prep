@@ -15,6 +15,10 @@ The first supported exam is Certified Backstage Associate (CBA). CBA remains the
 - grounded AI coaching;
 - agentic authoring controls.
 
+## Adaptive Study Differentiator
+
+The SaaS differentiator is not only generating questions. It is the loop where submitted attempts become ProgressSnapshots, deterministic recommendations pick the next drill, Strands explains a grounded study strategy, weak-domain shortages create draft authoring work, and the Human Review Gate decides what becomes learner-visible. The short implementation spec is `spec/ai-adaptive-study-strategy.md`.
+
 ## Expansion Path
 
 After CBA learner workflows prove value, the platform should become a generic exam engine for other certifications. Generic support must not come before the CBA loop is stable.

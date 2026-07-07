@@ -69,6 +69,7 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `spec/product-roadmap.md`     | SaaS product direction, phases, agent rules |
 | `spec/domain-driven-design.md` | DDD contexts, dependency rules, provider boundaries |
 | `spec/aws-mcp.md`             | AWS Knowledge MCP setup and guardrails for Bedrock/Strands research |
+| `spec/ai-adaptive-study-strategy.md` | Adaptive AI study loop: ProgressSnapshot, recommendation engine, Strands coach, weak-domain authoring, human review gate |
 | `.agent-handoff/README.md`    | Agent-to-agent collaboration protocol and task handoff workflow |
 | `.agent-handoff/CURRENT.md`   | Current coordination state for agents entering the repo |
 | `.agent-handoff/EVENTS.md`    | Append-only coordination log of meaningful state changes |

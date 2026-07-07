@@ -11,7 +11,7 @@ The repository remains the source of truth. The GitHub Wiki is the readable navi
 | Product | Start as a Certified Backstage Associate study kit and evolve into a source-grounded SaaS exam platform. |
 | First domain | Certified Backstage Associate (CBA). Generic exam automation comes after the CBA loop is proven. |
 | Trust boundary | Facts come from the Linux Foundation exam page and official Backstage docs only. |
-| AI rule | AI may draft and assist, but reviewed content is the product. Human approval remains required for question correctness. |
+| AI rule | AI may draft and assist, but reviewed content is the product. Human approval remains required for question correctness. Adaptive study strategy is specified in `spec/ai-adaptive-study-strategy.md`. |
 | Architecture | Pragmatic DDD with provider-neutral domain/application layers and infrastructure adapters for model providers. |
 | Agent posture | The learner experience must feel like a study platform, not an agent console. Agents work behind product workflows. |
 | Execution | GitHub Issues are the unit of work. The Project board owns Status and Phase. |
@@ -33,7 +33,7 @@ The repository remains the source of truth. The GitHub Wiki is the readable navi
 | --- | --- | --- |
 | CLI Core | Keep the current CBA kit validated, source-grounded, and publishable. | [Roadmap](Roadmap.md), `spec/exam-blueprint.md`, `questions/schema.json` |
 | Web MVP | Turn the kit into an online simulator with focused learner UX. | [Product Vision](Product-Vision.md), [Roadmap](Roadmap.md) |
-| AI Coach | Add grounded learner assistance and model-provider routing. | [AI Agent Strategy](AI-Agent-Strategy.md), [Architecture](Architecture.md) |
+| AI Coach | Add grounded learner assistance and model-provider routing. | [AI Agent Strategy](AI-Agent-Strategy.md), [Architecture](Architecture.md), `spec/ai-adaptive-study-strategy.md` |
 | Authoring Pipeline | Ingest sources, draft questions, review, version, approve, and publish. | [Content Governance](Content-Governance.md), [Delivery Process](Delivery-Process.md) |
 | Generic Engine | Generalize the exam/domain model after CBA proves the loop. | [Product Vision](Product-Vision.md), `spec/product-roadmap.md` |
 
@@ -54,6 +54,7 @@ The repository remains the source of truth. The GitHub Wiki is the readable navi
 | `spec/product-roadmap.md` | Canonical product direction and SaaS roadmap. |
 | `spec/domain-driven-design.md` | DDD posture, bounded contexts, and dependency rule. |
 | `spec/aws-mcp.md` | AWS MCP usage rule and configuration guidance. |
+| `spec/ai-adaptive-study-strategy.md` | Short canonical spec for ProgressSnapshot, Recommendation Engine, Strands Study Coach, weak-domain authoring, Human Review Gate, and AI usage audit. |
 | `spec/exam-blueprint.md` | CBA domains, weights, competencies, and exam budget. |
 | `spec/backstage-docs-map.md` | Official documentation map used for source grounding. |
 | `spec/item-writing-rules.md` | Rules for exam-quality question authoring. |

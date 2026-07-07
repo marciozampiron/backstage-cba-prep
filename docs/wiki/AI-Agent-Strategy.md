@@ -58,6 +58,10 @@ Concrete model IDs belong in configuration, not in the domain.
 
 AWS Knowledge MCP is for implementation research around AWS, Bedrock, Strands, and agent infrastructure. It is not a CBA fact source.
 
+## Adaptive Study Loop
+
+The canonical implementation spec for learner progress, deterministic recommendations, Strands-powered study strategy, weak-domain authoring, human review, and AI usage audit is `spec/ai-adaptive-study-strategy.md`. Use that spec as the short context document before implementing #44 or any adaptive/agentic study feature.
+
 ## Runtime (pilot)
 
 In the SaaS pilot these ports are hosted by a dedicated AWS **AI Orchestration Service**, separate from the Web BFF and never reachable directly from the browser. See `docs/adr/0002-cloudflare-nextjs-aws-bff.md`.

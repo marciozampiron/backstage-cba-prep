@@ -37,6 +37,8 @@ Capture provider-neutral usage metadata where possible:
 
 This supports future cost controls, learner plan limits, and auditability.
 
+Agentic coach and authoring runs should be auditable through `AgentRunRepository` / `AIUsageEvent` and enforced by a deterministic UsageBudget/rate-limit policy before they become production features. See `spec/ai-adaptive-study-strategy.md`.
+
 ## Multi-Tenant Future
 
 Before SaaS launch, define controls for:
