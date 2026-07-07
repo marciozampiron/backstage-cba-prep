@@ -1,0 +1,57 @@
+# Web quality lane (#51, part of #48): path-scoped CI for the Next.js app in web/.
+# No-spend by design — deterministic smokes only (CBA_WEB_STORE=memory / temp-dir file store),
+# no AWS deploy, no live AI/model calls. See docs/architecture/ci-cd-security-foundation.md.
+name: Web Quality
+
+# Path filters include the runtime data the web app loads through web/lib/bank.js
+# (questions/*.json + spec/blueprint.json): bank/blueprint changes must also prove the
+# web build and deterministic smokes.
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'questions/**'
+      - 'spec/blueprint.json'
+      - '.github/workflows/web-quality.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'questions/**'
+      - 'spec/blueprint.json'
+      - '.github/workflows/web-quality.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  web-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Deterministic web smokes (memory store, shared server)
+        env:
+          CBA_WEB_STORE: memory
+        run: |
+          npx next start -p 3011 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3011/api/dashboard > /dev/null && break
+            sleep 1
+          done
+          BASE=http://localhost:3011 node scripts/smoke-blank-mock.mjs
+          BASE=http://localhost:3011 node scripts/smoke-review-coach.mjs
+          BASE=http://localhost:3011 node scripts/smoke-identity.mjs
+      - name: Restart-persistence smoke (file store, self-orchestrating)
+        run: node scripts/smoke-restart-persistence.mjs

@@ -134,6 +134,27 @@ Disallowed by default:
 
 Live AI smoke requires an explicit manual workflow input and environment approval.
 
+## Implemented Quality Lanes (#51)
+
+Implemented workflow lanes and the check names branch protection should require:
+
+| Lane | Workflow file | Check name(s) | Trigger | Spend |
+| --- | --- | --- | --- | --- |
+| Root quality (CLI/core/bank) | `.github/workflows/quality.yml` | `Quality / quality (20)`, `Quality / quality (22)` | every PR + push to `main` | none |
+| Web quality (`web/**` + runtime data) | `.github/workflows/web-quality.yml` | `Web Quality / web-quality` | PR + push to `main`, path-filtered on `web/**`, `questions/**`, `spec/blueprint.json`, and the workflow file (the web app loads the bank/blueprint at runtime via `web/lib/bank.js`) | none |
+| Code scanning | GitHub CodeQL default setup | `CodeQL` | push to `main` (+ scheduled) | none |
+
+Web lane content: `npm ci` → `npm run build` → deterministic smokes against a shared
+`CBA_WEB_STORE=memory` server (blank-mock, review-coach, identity — all order-safe) → the
+self-orchestrating restart-persistence smoke (file store in a temp dir). All lanes run with
+`permissions: contents: read` and make no paid AI/model calls.
+
+Required-check caveat: a path-filtered workflow that does not run reports no status, which blocks a
+PR that requires it. When enabling branch protection (#52), either require only the root lanes plus
+CodeQL, or add a no-op twin for `Web Quality` on non-web PRs. Note that the full drill/mock flow
+smokes assert first-run state and need a dedicated fresh server per smoke — wiring them into CI is a
+follow-up (per-smoke server isolation), not part of the shared-server set.
+
 ## Branch Protection
 
 Protect `main` with:
