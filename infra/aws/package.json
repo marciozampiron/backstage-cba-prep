@@ -1,0 +1,21 @@
+{
+  "name": "cba-study-coach-infra-aws",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS CDK v2 app for the CBA Study Coach pilot (#53/#49). Synth-only in CI; deploys are human-gated. Plain JavaScript (CommonJS, CDK JS template style) - no build step.",
+  "scripts": {
+    "synth": "cdk synth '*'",
+    "synth:quiet": "cdk synth --quiet",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.160.0",
+    "constructs": "^10.3.0"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.160.0"
+  }
+}

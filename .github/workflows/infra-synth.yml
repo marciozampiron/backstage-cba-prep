@@ -1,0 +1,64 @@
+# Infra synth lane (#53, part of #49/#48): synth-only validation for the CDK app in infra/aws/.
+# Credential-free by design — `cdk synth` is offline (env-agnostic stacks, no lookups), so this
+# lane needs no AWS role (see the #52 role catalog) and never deploys or calls Bedrock.
+name: Infra Synth
+
+on:
+  pull_request:
+    paths:
+      - 'infra/aws/**'
+      - '.github/workflows/infra-synth.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/aws/**'
+      - '.github/workflows/infra-synth.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  synth:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests (context helpers)
+        run: npm test
+      - name: Synthesize (no credentials, no deploy)
+        run: npm run synth:quiet
+      - name: Assert the security template encodes the #54 model
+        run: |
+          TEMPLATE=cdk.out/SecurityStack.template.json
+          test -f "$TEMPLATE"
+          grep -q 'cba-study-coach-gha-bedrock-refresh' "$TEMPLATE"
+          grep -q 'bedrock:InvokeModel' "$TEMPLATE"
+          grep -q 'repo:marciozampiron/backstage-cba-prep:ref:refs/heads/main' "$TEMPLATE"
+          grep -q 'token.actions.githubusercontent.com' "$TEMPLATE"
+          if grep -Eq '"[0-9]{12}"' "$TEMPLATE"; then
+            echo "::error::template contains a literal 12-digit account id — must stay pseudo-parameterized"
+            exit 1
+          fi
+          echo "template assertions passed"
+      - name: Assert the routed-model-ARN override parses (regression for the char-spread bug)
+        run: |
+          npm run synth:quiet -- \
+            -c 'bedrockRoutedModelArns=["arn:aws:bedrock:us-east-1::foundation-model/x","arn:aws:bedrock:us-west-2::foundation-model/x"]'
+          node -e '
+            const t = require("./cdk.out/SecurityStack.template.json");
+            const pol = Object.values(t.Resources).find((r) => r.Type === "AWS::IAM::Policy");
+            const res = pol.Properties.PolicyDocument.Statement[0].Resource;
+            const strings = res.filter((x) => typeof x === "string");
+            const ok = strings.length === 2 && strings.every((s) => s.startsWith("arn:aws:bedrock:"));
+            if (!ok) { console.error("override produced", JSON.stringify(res)); process.exit(1); }
+            console.log("routed-model-ARN override assertion passed");
+          '

@@ -148,6 +148,7 @@ Implemented workflow lanes and the check names branch protection should require:
 | --- | --- | --- | --- | --- |
 | Root quality (CLI/core/bank) | `.github/workflows/quality.yml` | `Quality / quality (20)`, `Quality / quality (22)` | every PR + push to `main` | none |
 | Web quality (`web/**` + runtime data) | `.github/workflows/web-quality.yml` | `Web Quality / web-quality` | PR + push to `main`, path-filtered on `web/**`, `questions/**`, `spec/blueprint.json`, and the workflow file (the web app loads the bank/blueprint at runtime via `web/lib/bank.js`) | none |
+| Infra synth (`infra/aws/**`) | `.github/workflows/infra-synth.yml` | `Infra Synth / synth` | PR + push to `main`, path-filtered on `infra/aws/**` and the workflow file | none (credential-free `cdk synth` + template assertions; #53) |
 | Code scanning | GitHub CodeQL default setup | `CodeQL` | push to `main` (+ scheduled) | none |
 
 Web lane content: `npm ci` → `npm run build` → deterministic smokes against a shared

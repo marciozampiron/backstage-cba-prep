@@ -6,11 +6,15 @@ This document captures the AWS infrastructure-as-code posture for #49. It define
 
 Use **AWS CDK v2** for AWS infrastructure.
 
-Author CDK in TypeScript under:
+Author CDK under:
 
 ```text
 infra/aws/
 ```
+
+Language decision (#53): **plain JavaScript (CommonJS, the CDK JS template style)** rather than
+TypeScript — zero build step (no tsc/tsconfig), consistent with the repo's JavaScript idiom, per
+the "avoid unnecessary complexity" guidance. Revisit if constructs grow enough to want types.
 
 CDK generates CloudFormation templates. Generated CloudFormation is the deployment substrate; hand-authored CloudFormation is not the primary authoring model.
 
