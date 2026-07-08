@@ -82,4 +82,3 @@ DOCUMENTED here, not applied (applying it mutates repo governance — human/foll
   - `SECURITY.md` replacement is a judgment call outside the literal #52 scope — architect may veto.
   - Follow-ups listed in the doc: apply the ruleset, create the roles (#54), refactor Web Quality
     if it must be required, merge the Dependabot postcss fix, drop `ANTHROPIC_API_KEY` if unused.
-- Remaining risks/follow-ups:

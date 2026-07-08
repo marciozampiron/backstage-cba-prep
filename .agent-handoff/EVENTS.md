@@ -2,6 +2,209 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-08 — Governance cleanup (Claude)
+
+- Dedicated governance commit collecting the local EVENTS.md audit residue accumulated since the last
+  cleanup (`ed2b7bd`): the architecture-docs / adaptive-AI-strategy push, the blueprint-refresh
+  Bedrock fix, and the #48/#49 CI/security foundation cycles (#52, #54, #53, and the Node 20 test-glob
+  fix) — every "kept as local audit" note lands here.
+- `CURRENT.md` refreshed to 2026-07-08: active priority now reflects the delivered CI/security
+  foundation (#51/#52/#53/#54) and three live CI lanes; do-not-touch extended with `infra/aws/**`,
+  the `.github/workflows/*`, and the security/OIDC docs; records the Node-20 tooling lesson and the
+  open housekeeping (#45 duplicate, postcss advisory). No SHAs pinned.
+- Also folds in the one-line `done/52` nit (a leftover empty bullet) removed earlier.
+- No product code touched; no feature issues altered; local commit only — push follows the human gate.
+
+## 2026-07-08 — Push + CI + issue closed (Claude) — #53 (+ Node 20 fix)
+
+- Pushed: `3cb9980` (#53 scaffold) then `973fdfa` (Node 20 test-glob fix-forward). `origin/main` is now at `973fdfa`.
+- CI: `3cb9980` — Infra Synth first run **success** (28908298318) + Quality(22) success, but Quality(20) FAILED (glob-pattern `--test` path needs Node >=21). `973fdfa` restored green: Quality **20 + 22** success (28908507400), CodeQL success (28908507080).
+- Issue #53 closed citing both commits; board Done. CDK app live under `infra/aws/` (JS/CommonJS, owner decision): security stack encoding the #54 OIDC/Bedrock model + 5 placeholder stacks; parseArnList fixes the `-c` override char-spread bug (unit tests + CI regression); Infra Synth lane is credential-free/no-deploy; root test scoped to `test/*.test.js` to decouple infra.
+- Lesson: a Node-version-dependent feature (`node --test` glob) slipped past local (Node 22) — verify CI-matrix compatibility for tooling changes. #48/#49 CI/security foundation is now implemented (#51/#52/#53/#54); remaining is human branch-protection + bootstrap runbook, and #46/#47 deploy/env.
+- Kept as local audit for the next governance cleanup.
+
+## 2026-07-08T00:30:38Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 973fdfa ci: scope root test glob for Node 20 compatibility
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-08 — Human gate (push approved) — #53 Node 20 CI fix
+
+- Context: `3cb9980` (#53) went green on Infra Synth + Quality(22) but FAILED Quality(20) — the root `npm test` was changed to `node --test 'test/**/*.test.js'`, and glob-pattern paths need Node >=21 (matrix runs 20 + 22). Main is red until fixed.
+- Human gate: approved push for `973fdfa ci: scope root test glob for Node 20 compatibility` (one-line: shell-expanded glob `test/*.test.js` — version-agnostic explicit file list, still scoped to test/).
+- Agent will run `npm run agent-refresh -- --record`, push only this commit, confirm Quality goes green on both Node versions, then close #53 citing `3cb9980` + `973fdfa`.
+- Out of scope (not pushed): EVENTS.md audit residue + the done/52 nit — next governance cleanup.
+
+## 2026-07-08T00:25:22Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 3cb9980 feat: scaffold AWS CDK app with synth-only validation for #53
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-07 — Human gate (push approved) — #53
+
+- Human gate: approved push for #53, commit `3cb9980 feat: scaffold AWS CDK app with synth-only validation for #53` (CDK v2 app in JS under infra/aws/: security stack encoding the #54 OIDC/Bedrock model + 5 placeholder stacks, synth-only CI lane; architect review fixes amended: parseArnList override bug fixed with unit tests + CI regression, root npm test scoped to decouple infra; JS-over-TS accepted as a documented owner decision).
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality + the first real Infra Synth run + CodeQL, and close #53 if green.
+- Out of scope (not pushed): the EVENTS.md audit residue and the one-line done/52 nit fix — both fold into the next governance cleanup.
+
+## 2026-07-07 — Push + CI + issue closed (Claude) — #54
+
+- Pushed the approved scope: `ae586ba..3271c78` (`3271c78 docs: define AWS bootstrap and IAM/OIDC model for #54`). `origin/main` is now at `3271c78`.
+- CI green: Quality (28903912968) and CodeQL (28903912706); Web Quality correctly did not trigger (docs-only).
+- Issue #54 was closed in parallel by the human/Codex while CI was being watched; the delivery comment citing `3271c78` was posted separately (close-with-comment no-ops on an already-closed issue). Board item Done.
+- AWS bootstrap + IAM/OIDC model live in `docs/architecture/aws-bootstrap-and-oidc.md`: OIDC provider (no manual thumbprint — architect blocker fixed), blueprint-refresh Bedrock role trust/permission policy JSON (Converse→InvokeModel, inference profile + routed model ARNs, region-locked), vars/secrets, 8-step runbook, CDK target, no-spend verification. Define only — no AWS resources created.
+- #48 security track: #51 ✅ #52 ✅ #54 ✅. Remaining: human applies branch protection + runs the bootstrap runbook; #53 (CDK synth lane); #49/#47 (IaC/env foundation). Kept as local audit for the next governance cleanup.
+
+## 2026-07-07T22:45:21Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 3271c78 docs: define AWS bootstrap and IAM/OIDC model for #54
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-07 — Human gate (push approved) — #54
+
+- Human gate: approved push for #54, commit `3271c78 docs: define AWS bootstrap and IAM/OIDC model for #54` (new `aws-bootstrap-and-oidc.md`: OIDC provider definition, blueprint-refresh Bedrock role with trust + least-privilege permission policy JSON [Converse→InvokeModel over inference profile + routed model ARNs, region-locked], vars/secrets, 8-step bootstrap runbook, CDK target for #49/#53, no-spend verification; architect blocker fixed: thumbprint placeholder removed — flag is optional per official AWS docs).
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality/CodeQL, close #54 citing `3271c78`, and confirm the board is Done.
+- Out of scope (not pushed): the EVENTS.md audit residue and the one-line `done/52` nit fix — both fold into the next governance cleanup.
+
+## 2026-07-07 — Push + CI + issue closed (Claude) — #52
+
+- Pushed the approved scope: `962218c..ae586ba` (`ae586ba docs: define GitHub security baseline and AWS OIDC roles for #52`). `origin/main` is now at `ae586ba`.
+- CI green: Quality (28897034189) and CodeQL (28897033652); Web Quality correctly did not trigger (docs-only, no web paths).
+- Issue #52 closed with the delivery summary and acceptance checklist; board item Done.
+- GitHub security baseline live in `docs/architecture/github-security-and-oidc-baseline.md`: branch protection + required checks + Web Quality path-filter caveat, least-privilege permissions, Environments, AWS OIDC role catalog/trust boundaries, vars/secrets registry, secret hygiene, Dependabot/scanning posture. Design only — nothing applied.
+- Post-close nit: removed a leftover empty `- Remaining risks/follow-ups:` bullet at the end of `done/52-github-security-oidc.md` (architect-flagged, cosmetic). Fixed locally to fold into the next commit, not a dedicated push cycle — so the working tree now also carries this one-line handoff fix alongside the EVENTS.md audit residue.
+- Next in the #48 track: apply branch protection ruleset (human) choosing Option A/B; #54 (AWS OIDC provider + roles); #53 (CDK synth lane). Kept as local audit for the next governance cleanup.
+
+## 2026-07-07T20:38:00Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - ae586ba docs: define GitHub security baseline and AWS OIDC roles for #52
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-07 — Human gate (push approved) — #52
+
+- Human gate: approved push for #52, commit `ae586ba docs: define GitHub security baseline and AWS OIDC roles for #52` (new `github-security-and-oidc-baseline.md`: branch protection + required checks + Web Quality path-filter strategy, permissions model, GitHub Environments, AWS OIDC role catalog/trust boundaries, vars/secrets registry, secret hygiene, Dependabot/scanning posture; cross-link from the CI/CD foundation doc; SECURITY.md replaced with a real reporting policy). Design only — nothing applied.
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality/CodeQL, and close #52 if green.
+- Out of scope (not pushed): this EVENTS.md audit stays local until the next governance cleanup.
+
+## 2026-07-07 — Push + CI (Claude) — blueprint-refresh Bedrock fix
+
+- Pushed the approved scope: `b1748e9..962218c` (`962218c fix: run blueprint refresh through Bedrock OIDC`). `origin/main` is now at `962218c`.
+- CI green: Quality (28873726019) and CodeQL (28873724638). **Web Quality correctly did not trigger** — the commit touches no `web/**`/`questions/**`/`spec/blueprint.json` paths, validating the #51 path filter in production.
+- A Dependabot job ran for the known moderate `postcss` advisory in `/web` (run 28873736935, success; no PR opened yet) — the dependency follow-up remains open for a security cycle.
+- Blueprint refresh is now Bedrock-native: manual-only + confirm_ai_spend gate, OIDC role assumption, tier-based port with BEDROCK_MODEL_STANDARD config, offline regression (69/69). No issue attached (bugfix cycle).
+- Kept as local audit for the next governance cleanup.
+
+## 2026-07-07T14:23:58Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 962218c fix: run blueprint refresh through Bedrock OIDC
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-07 — Human gate (push approved) — blueprint-refresh Bedrock fix
+
+- Human gate: approved push for `962218c fix: run blueprint refresh through Bedrock OIDC` (Codex-authored fix, Claude-reviewed: manual-only workflow with confirm_ai_spend gate, AWS OIDC via dedicated role, LLM_BACKEND=bedrock honored in blueprint.js with BEDROCK_MODEL_STANDARD mapping, offline regression test 69/69, npm ci added).
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality/CodeQL, and record the result here. No issue attached (bugfix cycle).
+- Out of scope (not pushed): this EVENTS.md audit stays local until the next governance cleanup.
+
+## 2026-07-07 — Push + CI + issue closed (Claude) — #51
+
+- Pushed the approved scope: `d68951d..b1748e9` (`b1748e9 ci: implement monorepo quality lanes for #51`). `origin/main` is now at `b1748e9`.
+- CI green 3/3: Quality (28865118330), **Web Quality first real run (28865118187 — all steps passed, including the deterministic memory-store smokes and the restart-persistence smoke on the runner)**, CodeQL (28865117423).
+- Issue #51 closed with the delivery summary and acceptance checklist; board item Done.
+- Quality-lanes foundation live: root lane untouched, web lane path-filtered on `web/**` + `questions/**` + `spec/blueprint.json` (runtime-data finding incorporated), least-privilege permissions, check names documented for #52 branch protection.
+- Next in the #48 track: #52 (branch protection + OIDC roles), #53 (CDK synth lane). Kept as local audit for the next governance cleanup.
+
+## 2026-07-07T12:11:21Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - b1748e9 ci: implement monorepo quality lanes for #51
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-07 — Human gate (push approved) — #51
+
+- Human gate: approved push for #51, commit `b1748e9 ci: implement monorepo quality lanes for #51` (new path-scoped Web Quality lane with deterministic memory-store smokes + restart smoke, least-privilege permissions, lanes/required-checks table in the foundation doc; architect finding amended: `questions/**` + `spec/blueprint.json` added to the web lane's path filters since the app loads them at runtime).
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality + the first real Web Quality run + CodeQL, and close #51 if green.
+- Out of scope (not pushed): this EVENTS.md audit stays local until the next governance cleanup.
+
+## 2026-07-06 — Push + CI (Codex) — architecture docs
+
+- Pushed the approved scope: `ed2b7bd..d68951d` containing:
+  - `fbd3b22 docs: define CI/CD and AWS IaC strategy`
+  - `d68951d docs: define adaptive AI study strategy`
+- CI green: Quality (run 28834910949) and CodeQL (run 28834910646) both passed.
+- Roadmap cards #51–#64 are already created/updated and referenced by the docs/specs.
+- GitHub reported one existing Dependabot vulnerability (moderate) on the default branch during push; handle as a separate security/dependency follow-up, not part of this architecture-doc push.
+- This push-result entry remains local EVENTS.md audit residue until the next governance cleanup.
+
+## 2026-07-07T01:25:12Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - d68951d docs: define adaptive AI study strategy
+  - fbd3b22 docs: define CI/CD and AWS IaC strategy
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-06 — Human gate (push approved) — architecture docs
+
+- Human gate: approved push for exactly these two architecture/documentation commits:
+  - `fbd3b22 docs: define CI/CD and AWS IaC strategy`
+  - `d68951d docs: define adaptive AI study strategy`
+- Approved scope: CI/CD + AWS IaC strategy docs, Adaptive AI Study Strategy spec, wiki/AGENTS references, and roadmap cards #51–#64 already created/updated.
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only these commits, follow Quality/CodeQL, and record the result here.
+
+## 2026-07-06 — Push + CI (Claude) — governance cleanup
+
+- Pushed the approved scope: `ffc16e6..ed2b7bd` (`ed2b7bd docs: reconcile handoff state and audits after #35-#43 cycles`). `origin/main` is now at `ed2b7bd`.
+- CI green: Quality (run 28830340035) and CodeQL (run 28830339585) both passed.
+- The #35–#43 audit trail, the refreshed CURRENT.md, and the documented `.vscode/mcp.json` ignore are now published; the only local EVENTS.md residue is this cycle's own gate/record/result entries (expected protocol mechanics).
+- No issue attached (governance task). Open queue: Cognito adapter + /api/me + sign-in; §15 progress screen; human closes duplicate #45.
+
+## 2026-07-06T23:28:42Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - ed2b7bd docs: reconcile handoff state and audits after #35-#43 cycles
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-06 — Human gate (push approved) — governance cleanup
+
+- Human gate: approved push for the governance commit `ed2b7bd docs: reconcile handoff state and audits after #35-#43 cycles` (EVENTS.md audit trail #35–#43, CURRENT.md refresh, documented `.vscode/mcp.json` ignore).
+- Agent will run `npm run agent-refresh -- --record` immediately before push, then push only this commit, follow Quality/CodeQL, and record the result here.
+- Note: this gate entry and the post-push result are, by protocol mechanics, the next small local EVENTS.md residue.
+
 ## 2026-07-06 — Governance cleanup (Claude)
 
 - Dedicated governance commit collecting the local audit trail of the #35–#43 push cycles (human
