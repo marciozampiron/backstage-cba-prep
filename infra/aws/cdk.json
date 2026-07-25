@@ -2,6 +2,7 @@
   "app": "node bin/cba-pilot.js",
   "context": {
     "@aws-cdk/core:checkSecretUsage": true,
-    "@aws-cdk/aws-iam:minimizePolicies": true
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }
 }

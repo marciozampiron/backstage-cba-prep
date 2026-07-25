@@ -21,13 +21,19 @@ function buildStacks(app) {
       description:
         'CBA Study Coach pilot security: GitHub OIDC provider + blueprint-refresh Bedrock role (#53/#54). Synth-only in CI; deploys are human-gated.',
     }),
-    identity: new IdentityStack(app, 'IdentityStack', { stackName: `${base}-identity` }),
     ...(function () {
-      // Explicit DataStack -> ApiStack reference (#77 decision): the data stack owns the table,
-      // the api stack owns the runtime role + scoped grants.
+      // Explicit references (#77/#69 decisions): DataStack owns the table, IdentityStack owns
+      // the Cognito pool + SPA client, ApiStack owns the runtime role's scoped grants AND the
+      // JWT authorizer that trusts the pool.
+      const identity = new IdentityStack(app, 'IdentityStack', { stackName: `${base}-identity` });
       const data = new DataStack(app, 'DataStack', { stackName: `${base}-data` });
-      const api = new ApiStack(app, 'ApiStack', { stackName: `${base}-api`, table: data.table });
-      return { data, api };
+      const api = new ApiStack(app, 'ApiStack', {
+        stackName: `${base}-api`,
+        table: data.table,
+        userPool: identity.userPool,
+        userPoolClient: identity.userPoolClient,
+      });
+      return { identity, data, api };
     })(),
     aiOrchestration: new AiOrchestrationStack(app, 'AiOrchestrationStack', {
       stackName: `${base}-ai-orchestration`,

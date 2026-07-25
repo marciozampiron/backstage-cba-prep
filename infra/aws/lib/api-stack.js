@@ -24,6 +24,7 @@ const lambda = require('aws-cdk-lib/aws-lambda');
 const { NodejsFunction, OutputFormat } = require('aws-cdk-lib/aws-lambda-nodejs');
 const apigwv2 = require('aws-cdk-lib/aws-apigatewayv2');
 const { HttpLambdaIntegration } = require('aws-cdk-lib/aws-apigatewayv2-integrations');
+const { HttpJwtAuthorizer } = require('aws-cdk-lib/aws-apigatewayv2-authorizers');
 const iam = require('aws-cdk-lib/aws-iam');
 const { getContext, resolveEnvironment } = require('./context');
 const { applyFoundationTags } = require('./tags');
@@ -32,6 +33,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const BFF_DIR = path.join(REPO_ROOT, 'services', 'bff');
 
 // The implemented learner contract surface (#76/#77) + readiness — EXPLICIT, nothing else.
+// Every route is protected by the Cognito JWT authorizer (#69) EXCEPT the ones listed in
+// PUBLIC_ROUTES: readiness is public and logical-only by contract (#47).
 const ROUTES = [
   ['GET', '/api/readiness'],
   ['GET', '/api/dashboard'],
@@ -47,6 +50,8 @@ const ROUTES = [
   ['GET', '/api/attempts/{id}/missed'],
   ['POST', '/api/coach/message'],
 ];
+
+const PUBLIC_ROUTES = new Set(['GET /api/readiness']);
 
 function parseCorsOrigins(value) {
   let list = value ?? [];
@@ -67,13 +72,19 @@ function parseCorsOrigins(value) {
 }
 
 class ApiStack extends Stack {
-  // props: { table: dynamodb.Table } — the EXPLICIT DataStack reference (#77 decision: the data
-  // stack creates zero IAM; this stack owns the runtime role's scoped grants).
+  // props: { table, userPool, userPoolClient } — EXPLICIT references (#77 decision: the data
+  // stack creates zero IAM, this stack owns the runtime role's scoped grants; #69: the identity
+  // stack owns the pool, this stack owns the authorizer that trusts it).
   constructor(scope, id, props = {}) {
     super(scope, id, props);
     const environment = resolveEnvironment(this.node, props.environment || 'pilot');
-    const { table } = props;
+    const { table, userPool, userPoolClient } = props;
     if (!table) throw new Error('ApiStack requires the DataStack table (explicit reference).');
+    if (!userPool || !userPoolClient) {
+      // Fail closed: without a trusted issuer there is no authorizer, and an authorizer-less
+      // authenticated surface must never synthesize.
+      throw new Error('ApiStack requires the IdentityStack userPool + userPoolClient (explicit references).');
+    }
     applyFoundationTags(this, environment);
 
     const fn = new NodejsFunction(this, 'BffFunction', {
@@ -144,12 +155,22 @@ class ApiStack extends Stack {
         : {}),
     });
 
+    // Trusted principal boundary (#69): API Gateway validates the JWT (signature, issuer,
+    // audience/client_id, expiry) against the environment's Cognito pool BEFORE the Lambda runs.
+    // The transport then maps only authorizer-validated claims; token_use=access enforcement and
+    // claim -> learner mapping are the Slice B adapter's job.
+    const jwtAuthorizer = new HttpJwtAuthorizer('BffJwtAuthorizer', userPool.userPoolProviderUrl, {
+      jwtAudience: [userPoolClient.userPoolClientId],
+    });
+
     const integration = new HttpLambdaIntegration('BffIntegration', fn);
     for (const [method, routePath] of ROUTES) {
+      const isPublic = PUBLIC_ROUTES.has(`${method} ${routePath}`);
       this.httpApi.addRoutes({
         path: routePath,
         methods: [apigwv2.HttpMethod[method]],
         integration,
+        ...(isPublic ? {} : { authorizer: jwtAuthorizer }),
       });
     }
 

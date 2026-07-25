@@ -16,7 +16,13 @@ lib/api-stack.js          #78: provider-neutral BFF as Lambda (Node.js 22, bundl
                           minimal DynamoDB IAM (item CRUD on the exact table ARN, Query on the
                           exact gsi1 index ARN); fail-closed auth env until #69; CORS only as a
                           #69 seam (exact origins, never "*")
-lib/{identity,ai-orchestration,observability}-stack.js
+lib/identity-stack.js     #69: environment-scoped Cognito User Pool (invite-only, durable in
+                          pilot) + PUBLIC PKCE-ready SPA client (authorization code grant ONLY —
+                          no secret, no implicit, all direct auth flows explicitly off) + usable
+                          classic hosted UI (pinned version + branding attachment); callback/
+                          logout URLs are exact validated configuration (PKCE itself is executed
+                          by the SPA — proven in #69 Slice C)
+lib/{ai-orchestration,observability}-stack.js
                           placeholder stacks (foundation tags + one SSM scaffold marker), filled by
                           their owning tracks — see docs/architecture/aws-iac-foundation.md
 lib/placeholder-stack.js  shared base for the placeholders
@@ -55,6 +61,8 @@ Override at synth/deploy time with `-c key=value`:
 | `bedrockRoutedModelArns` | 3-region placeholders | **JSON array**, e.g. `-c 'bedrockRoutedModelArns=["arn:aws:bedrock:us-east-1::foundation-model/..."]'` — replace at deploy time with the ARNs from `aws bedrock get-inference-profile` (see #54 doc §2). A non-array/bad value fails synth loudly (`parseArnList`). |
 | `environment` | `pilot` | environment (closed set `dev\|pilot`) — stack names, table/function names, runtime env |
 | `corsAllowedOrigins` | *(empty → no CORS)* | **JSON array** of exact origins for the HTTP API CORS seam (#69); `"*"` is rejected |
+| `authCallbackUrls` / `authLogoutUrls` | dev: localhost; pilot: `https://pilot.invalid/...` placeholders | **JSON array** of EXACT URLs for the Cognito SPA client (#69); https-only except localhost, wildcards rejected; #70 overrides at deploy with the real Cloudflare origin (#67) |
+| `authDomainPrefix` | `cba-study-coach-<env>` | Cognito hosted-UI domain prefix (globally unique per region) |
 
 ## Outputs
 
@@ -64,7 +72,8 @@ Override at synth/deploy time with `-c key=value`:
 ## Deliberate non-goals (this scaffold)
 
 - No `cdk deploy`/`cdk diff` in CI (synth lane runs with zero AWS permissions per the #52 catalog).
-- Real resources: the security stack (#54), the data stack (#77 DynamoDB simulation table) and the
-  api stack (#78 Lambda + HTTP API BFF); identity/ai-orchestration/observability remain
-  placeholders until their tracks (see `docs/architecture/aws-iac-foundation.md`).
+- Real resources: the security stack (#54), the data stack (#77 DynamoDB simulation table), the
+  api stack (#78 Lambda + HTTP API BFF, JWT-protected per #69) and the identity stack (#69
+  Cognito pool + PKCE client); ai-orchestration/observability remain placeholders until their
+  tracks (see `docs/architecture/aws-iac-foundation.md`).
 - Deploy roles, environments, and bootstrap execution are #54-runbook/human actions.

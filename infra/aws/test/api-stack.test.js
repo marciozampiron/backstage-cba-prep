@@ -114,3 +114,40 @@ test('invalid environment and missing table both fail construction', () => {
     /requires the DataStack table/,
   );
 });
+
+/* ---------------- #69 Slice A: trusted principal boundary ---------------- */
+
+test('authorizer: exactly one JWT authorizer reading the Authorization header', () => {
+  const t = apiTemplate('pilot');
+  const authorizers = Object.values(t.findResources('AWS::ApiGatewayV2::Authorizer'));
+  assert.equal(authorizers.length, 1);
+  assert.equal(authorizers[0].Properties.AuthorizerType, 'JWT');
+  assert.deepEqual(authorizers[0].Properties.IdentitySource, ['$request.header.Authorization']);
+  const cfg = authorizers[0].Properties.JwtConfiguration;
+  assert.ok(cfg.Issuer, 'issuer wired from the IdentityStack pool');
+  assert.equal(cfg.Audience.length, 1, 'audience is exactly the SPA client id');
+});
+
+test('routes: EVERY route requires the JWT authorizer except public readiness', () => {
+  const t = apiTemplate('pilot');
+  const routes = Object.values(t.findResources('AWS::ApiGatewayV2::Route'));
+  assert.equal(routes.length, 13, 'authorizer wiring must not add or drop routes');
+  for (const route of routes) {
+    const key = route.Properties.RouteKey;
+    if (key === 'GET /api/readiness') {
+      assert.notEqual(route.Properties.AuthorizationType, 'JWT', 'readiness stays public (#47)');
+      assert.equal(route.Properties.AuthorizerId, undefined);
+    } else {
+      assert.equal(route.Properties.AuthorizationType, 'JWT', `${key} must fail closed`);
+      assert.ok(route.Properties.AuthorizerId, `${key} must reference the authorizer`);
+    }
+  }
+});
+
+test('missing identity references fail construction (no authorizer-less authenticated surface)', () => {
+  const app = new App({ context: { environment: 'dev' } });
+  assert.throws(
+    () => new ApiStack(app, 'ApiStack', { table: { tableArn: 'arn:fake', tableName: 'fake' } }),
+    /requires the IdentityStack userPool/,
+  );
+});
