@@ -54,7 +54,7 @@ Model providers and agent frameworks are infrastructure adapters behind applicat
 
 ## Runtime Split (pilot)
 
-For the SaaS pilot, the learner/admin frontend (Next.js) is hosted at the Cloudflare edge, while the Web BFF, core services, and a separate AI Orchestration Service run on AWS. The browser reaches only the BFF; the AI Orchestration Service (Bedrock/Strands, `AgentRunRepository`) is never called directly from the browser. This is a reversible, pilot-scoped runtime choice — see `docs/adr/0002-cloudflare-nextjs-aws-bff.md`.
+For the SaaS pilot, the learner/admin frontend (Next.js) is hosted at the Cloudflare edge, while the Web BFF, core services, and a separate AI Orchestration Service run on AWS. The browser reaches only the BFF; the AI Orchestration Service (Bedrock/Strands, `AgentRunRepository`) is never called directly from the browser. This is a reversible, pilot-scoped runtime choice — see `docs/adr/0002-cloudflare-nextjs-aws-bff.md`. The concrete environment progression (`local -> dev -> pilot`), runtime path, and configuration registry are fixed by `docs/architecture/pilot-environment-contract.md` (#47).
 
 ## Delivery and IaC
 

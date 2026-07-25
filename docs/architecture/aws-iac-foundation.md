@@ -107,6 +107,11 @@ staging   protected integration environment
 prod      manual-gated production pilot
 ```
 
+The canonical MVP progression is `local -> dev -> pilot` — staging is deferred and `pilot` takes
+the protected production-like slot above. See
+[pilot-environment-contract.md](pilot-environment-contract.md) (#47) for the authoritative
+environment, runtime-path, and configuration contract.
+
 Naming convention:
 
 ```text

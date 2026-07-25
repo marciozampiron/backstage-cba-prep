@@ -1,9 +1,9 @@
 # GitHub Security Baseline and AWS OIDC Roles
 
 This document defines the repository's GitHub security baseline and the AWS OIDC role model for
-#52 (part of #48; related to #49/#54). It is the **GitHub-side contract**: it says which checks
-protect `main`, how workflows are permissioned, which GitHub Environments gate deploys, and which
-AWS roles each workflow may assume and under what trust conditions.
+Issue #52 (part of #48; related to #49/#54). It is the **GitHub-side contract**: it says which
+checks protect `main`, how workflows are permissioned, which GitHub Environments gate deploys, and
+which AWS roles each workflow may assume and under what trust conditions.
 
 Scope boundary:
 
@@ -102,6 +102,10 @@ Use GitHub Environments as the gate for anything that assumes a deploy/spend rol
 Environment-scoped secrets/vars (deploy role ARNs, per-env config) live on the Environment, not the
 repo, so a role is only assumable from a run that passed that environment's gate. The OIDC trust
 policy then scopes by `environment:<name>` (see §4).
+
+Note (#47): the MVP progression is `local -> dev -> pilot` — staging is deferred, and `pilot` takes
+the protected slot the table calls `staging`/`prod`. The authoritative environment contract is
+[pilot-environment-contract.md](pilot-environment-contract.md).
 
 ## 4. AWS OIDC role model
 
