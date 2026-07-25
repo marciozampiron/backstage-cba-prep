@@ -20,7 +20,7 @@ The pilot uses a monorepo with separate GitHub Actions lanes by delivery boundar
 - `infra/aws/**` for AWS CDK synth/diff and IaC security checks;
 - `docs/**` for ADR/product/contract consistency checks where useful.
 
-AWS deploys use GitHub OIDC and environment gates. Default CI must not make paid model calls. See `docs/architecture/ci-cd-security-foundation.md`.
+AWS deploys use GitHub OIDC and environment gates. Default CI must not make paid model calls. See `docs/architecture/ci-cd-security-foundation.md`. Release gates, the `BASE_URL` smoke plan, promotion rules, and the rollback policy are defined in `docs/architecture/pilot-release-runbook.md` (#55).
 
 ## Status Meaning
 
