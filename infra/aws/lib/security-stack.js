@@ -25,16 +25,20 @@ class SecurityStack extends Stack {
     // Reuse an existing account-global provider by ARN, or create one when empty.
     const existingProviderArn = ctx('githubOidcProviderArn', '');
     // Standard-tier cross-region inference profile (a model id is configuration, not a secret).
-    const inferenceProfileId = ctx('bedrockStandardInferenceProfileId', 'us.anthropic.claude-sonnet-5');
+    // Current pilot value: Amazon Nova Pro (#72) — Claude Sonnet 5 stays a non-blocking follow-up
+    // via AWS Sales. NOTE: the permissions boundary and this role's inline policy are
+    // model-specific — switching models requires new config/context PLUS a new default version of
+    // the operator-managed boundary AND a SecurityStack redeploy (each human-gated).
+    const inferenceProfileId = ctx('bedrockStandardInferenceProfileId', 'us.amazon.nova-pro-v1:0');
     // Routed foundation-model ARNs for the profile above. PLACEHOLDERS: enumerate the real ones
     // with `aws bedrock get-inference-profile` at bootstrap/deploy time (aws-bootstrap-and-oidc.md
     // §2) and pass them via context as a JSON array. Granting only the profile ARN fails at invoke.
     // parseArnList tolerates both the in-code array default and a `-c ...='[...]'` JSON string.
     const routedModelArns = parseArnList(
       ctx('bedrockRoutedModelArns', [
-        'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5',
-        'arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5',
-        'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5',
+        'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0',
+        'arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0',
+        'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0',
       ]),
       'bedrockRoutedModelArns',
     );

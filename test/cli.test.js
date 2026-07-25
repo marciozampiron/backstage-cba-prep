@@ -241,6 +241,12 @@ test('resolveModelConfig defaults to first-party Anthropic tiers', () => {
   assert.equal(cfg.models.critical, 'claude-opus-4-8');
 });
 
+test('resolveModelConfig bedrock default standard tier is Nova Pro without overrides (#72)', () => {
+  const cfg = resolveModelConfig({ LLM_BACKEND: 'bedrock' });
+  assert.equal(cfg.backend, 'bedrock');
+  assert.equal(cfg.models.standard, 'us.amazon.nova-pro-v1:0');
+});
+
 test('resolveModelConfig uses Bedrock inference-profile ids with env overrides', () => {
   const cfg = resolveModelConfig({
     LLM_BACKEND: 'bedrock',

@@ -17,7 +17,9 @@ const ANTHROPIC_DEFAULTS = {
 // BEDROCK_MODEL_FAST / BEDROCK_MODEL_STANDARD / BEDROCK_MODEL_CRITICAL.
 const BEDROCK_DEFAULTS = {
   fast: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  standard: 'us.anthropic.claude-sonnet-5',
+  // Pilot standard tier is Amazon Nova Pro (#72): Claude Sonnet 5 is commercially unavailable for
+  // the authorized account (AWS Sales follow-up). Override via BEDROCK_MODEL_STANDARD.
+  standard: 'us.amazon.nova-pro-v1:0',
   critical: 'us.anthropic.claude-opus-4-8',
 };
 

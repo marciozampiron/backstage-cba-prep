@@ -112,10 +112,15 @@ The Bedrock adapter calls the **Converse API**. AWS authorizes `Converse` with t
 `bedrock:InvokeModel` action (and `ConverseStream` with `bedrock:InvokeModelWithResponseStream`).
 Blueprint refresh is **non-streaming**, so the role needs `bedrock:InvokeModel` only.
 
-`BEDROCK_MODEL_STANDARD` is a **cross-region inference profile** (default
-`us.anthropic.claude-sonnet-5`). A `us.*` profile routes the actual invocation to the underlying
-foundation model in one of several US regions, so the policy must allow **both** the profile ARN and
-each routed foundation-model ARN — granting only the profile ARN fails at invoke time.
+`BEDROCK_MODEL_STANDARD` is the **configured standard-tier cross-region inference profile**
+(current pilot value: `us.amazon.nova-pro-v1:0` — Amazon Nova Pro, #72; Claude Sonnet 5 remains a
+**non-blocking follow-up via AWS Sales**). Because the permissions boundary and the role's inline
+policy are **model-specific**, switching the standard-tier model is NOT config-only: it requires
+the new configuration PLUS a new default version of the operator-managed boundary AND a
+SecurityStack redeploy, each behind its own human gate. A `us.*` profile routes the actual
+invocation to the underlying foundation model in one of several US regions, so the policy must
+allow **both** the profile ARN and each routed foundation-model ARN — granting only the profile
+ARN fails at invoke time.
 
 Enumerate the exact routed model ARNs (do not guess them):
 
@@ -137,8 +142,8 @@ Then scope the policy to the profile + those model ARNs, region-locked:
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
       "Resource": [
-        // the inference profile (account-scoped, in the call region):
-        "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5",
+        // the configured standard-tier inference profile (account-scoped, in the call region):
+        "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:inference-profile/us.amazon.nova-pro-v1:0",
         // each routed foundation model (account-less "::"), from get-inference-profile above:
         "arn:aws:bedrock:us-east-1::foundation-model/<routed-model-id>",
         "arn:aws:bedrock:us-east-2::foundation-model/<routed-model-id>",
@@ -167,7 +172,7 @@ The human sets these after the role exists (the ARN and account id are only know
 | Name | Kind | Value | How |
 | --- | --- | --- | --- |
 | `AWS_REGION` | variable | e.g. `us-east-1` | `gh variable set AWS_REGION --body us-east-1` |
-| `BEDROCK_MODEL_STANDARD` | variable | e.g. `us.anthropic.claude-sonnet-5` | `gh variable set BEDROCK_MODEL_STANDARD --body us.anthropic.claude-sonnet-5` |
+| `BEDROCK_MODEL_STANDARD` | variable | the configured standard-tier profile (currently `us.amazon.nova-pro-v1:0`) | `gh variable set BEDROCK_MODEL_STANDARD --body us.amazon.nova-pro-v1:0` |
 | `AWS_BEDROCK_REFRESH_ROLE_ARN` | secret | the created role ARN | `gh secret set AWS_BEDROCK_REFRESH_ROLE_ARN --body arn:aws:iam::<ACCOUNT_ID>:role/cba-study-coach-gha-bedrock-refresh` |
 
 Model ids are configuration (variables), not secrets. The role ARN is stored as a secret only to
@@ -177,10 +182,14 @@ avoid disclosing the account id; a variable would also be functionally fine.
 
 Run once, by an operator with AWS admin in the pilot account. No CI runs this; it is manual.
 
-1. **Enable Bedrock model access** for the Claude models in the target region(s) via the Bedrock
-   console, verify authorization with
-   `aws bedrock get-foundation-model-availability --model-id <model-id>` (expects
-   `authorizationStatus: AUTHORIZED`), and confirm the standard inference-profile id with
+1. **Enable Bedrock model access** for the configured standard-tier model in the target region(s)
+   via the Bedrock console, then verify the FULL availability tuple with
+   `aws bedrock get-foundation-model-availability --model-id <model-id>` — it must report
+   `authorizationStatus: AUTHORIZED` **and** `entitlementAvailability: AVAILABLE` **and**
+   `regionAvailability: AVAILABLE` **and** `agreementAvailability.status: AVAILABLE`.
+   `AUTHORIZED` alone is NOT sufficient: a model can be authorized while its marketplace agreement
+   is missing, and the invoke then fails at runtime (this is exactly how the Sonnet 5 preflight
+   passed and the paid smoke failed). Confirm the standard inference-profile id with
    `aws bedrock list-inference-profiles`.
 2. **Check for an existing GitHub OIDC provider** (`aws iam list-open-id-connect-providers`).
    Do **not** create one manually — the SecurityStack creates the native provider (step 7). If the
