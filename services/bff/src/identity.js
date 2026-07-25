@@ -13,6 +13,12 @@
 //   1. `x-cba-learner` header — tools/smokes and multi-learner testing;
 //   2. `cba_learner` cookie — per-browser identity when you want it;
 //   3. deterministic fallback `dev-learner` — the simple local mode (no auth configured).
+//
+// Cognito provider (#69 Slice B): consumes ONLY the neutral principal the transport built from
+// API-Gateway-authorizer-validated claims. Binding rules enforced here: access tokens only
+// (token_use=access), provider-namespaced learner id from `sub`, and `x-cba-learner` REJECTED —
+// browser-supplied identity is never trusted in a deployed runtime.
+import { ApiError } from './store.js';
 
 const LEARNER_TOKEN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -29,20 +35,32 @@ function devProvider(headers) {
   return { learnerId: 'dev-learner', mode: 'dev' };
 }
 
-function cognitoProvider() {
-  // Deliberate seam, not an implementation: the Cognito adapter (#69, ADR-0002) verifies the
-  // API-Gateway-validated session and maps the subject to a learnerId here.
-  throw new Error(
-    'CBA_WEB_AUTH=cognito is not configured in the local pilot. Implement the Cognito identity adapter (#69) or unset CBA_WEB_AUTH for dev mode.',
-  );
+function cognitoProvider(headers, principal) {
+  if (headers['x-cba-learner'] !== undefined) {
+    // Fail loudly instead of silently ignoring: a client sending dev identity against a deployed
+    // runtime is misconfigured, and accepting the request would mask that.
+    throw new ApiError(401, 'UNAUTHENTICATED', 'Dev identity headers are not accepted.');
+  }
+  if (
+    !principal ||
+    principal.provider !== 'cognito' ||
+    principal.tokenUse !== 'access' ||
+    typeof principal.sub !== 'string' ||
+    principal.sub === ''
+  ) {
+    throw new ApiError(401, 'UNAUTHENTICATED', 'A valid access token is required.');
+  }
+  return { learnerId: `cognito-${principal.sub}`, mode: 'cognito' };
 }
 
 /**
  * @param {Record<string, string>} headers plain object, lowercase keys
+ * @param {{ provider: string, sub: string, tokenUse: string } | null} principal neutral principal
+ *   built by the TRANSPORT from authorizer-validated claims (never from raw request data)
  * @returns {{ learnerId: string, mode: string }}
  */
-export function resolveLearner(headers = {}) {
+export function resolveLearner(headers = {}, principal = null) {
   const mode = process.env.CBA_WEB_AUTH ?? 'dev';
-  if (mode === 'cognito') return cognitoProvider(headers);
+  if (mode === 'cognito') return cognitoProvider(headers, principal);
   return devProvider(headers);
 }

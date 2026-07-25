@@ -7,6 +7,7 @@
 // #56 BASE_URL smokes and the frontend need no response-shape or path rewrite; the adapter
 // strips the single leading `/api` segment before dispatching.
 import { handleApiRequest } from './app.js';
+import { principalFromJwtClaims, createProfileLoader, bearerFromHeaders } from './cognito-identity.js';
 
 const API_PREFIX = /^\/api(?=\/|$)/;
 
@@ -47,9 +48,34 @@ export function toNeutralRequest(event = {}) {
   };
 }
 
+/**
+ * Neutral principal from the API Gateway JWT authorizer (#69 Slice B). Claims only exist when
+ * the authorizer already validated signature/issuer/audience; the adapter then enforces
+ * token_use=access and attaches the opaque loadProfile capability (the bearer token lives ONLY
+ * inside that closure — it is never a readable property of the principal).
+ *
+ * FAIL CLOSED on a missing bearer: the authorizer reads $request.header.Authorization, so valid
+ * claims without the header cannot happen on a real gateway — if they do (forged event, direct
+ * invoke, misconfiguration), there is no principal at all: 401, and nothing is ever persisted
+ * for the request.
+ */
+export function principalFromEvent(event, headers) {
+  const claims = event.requestContext?.authorizer?.jwt?.claims;
+  const principal = principalFromJwtClaims(claims);
+  if (!principal) return null;
+  const bearer = bearerFromHeaders(headers);
+  if (!bearer) return null;
+  principal.loadProfile = createProfileLoader({ bearer });
+  return principal;
+}
+
 /** API Gateway HTTP API (payload v2) Lambda handler. */
 export async function handler(event) {
-  const { status, body } = await handleApiRequest(toNeutralRequest(event));
+  const neutral = toNeutralRequest(event);
+  const { status, body } = await handleApiRequest({
+    ...neutral,
+    principal: principalFromEvent(event, neutral.headers),
+  });
   return {
     statusCode: status,
     headers: RESPONSE_HEADERS,

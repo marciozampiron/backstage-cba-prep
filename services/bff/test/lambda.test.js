@@ -101,6 +101,27 @@ test('errors keep the contract envelope through the Lambda transport', async () 
   assert.equal(JSON.parse(badBody.body).error.code, 'VALIDATION_FAILED');
 });
 
+/* ---------------- /api/me in DEV mode (#69 Slice B local regression) ---------------- */
+
+test('dev /api/me: deterministic provider-free profile with the §16 shape', async () => {
+  const res = await invoke('GET', '/api/me', { learner: 'meDev' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(Object.keys(res.body).sort(), ['activeExam', 'createdAt', 'displayName', 'email']);
+  assert.equal(res.body.displayName, 'dev-meDev');
+  assert.equal(res.body.email, 'dev-meDev@local.invalid');
+  assert.deepEqual(res.body.activeExam, { examId: 'cba', name: 'Certified Backstage Associate' });
+});
+
+test('dev /api/me PUT: display name updates and persists per learner', async () => {
+  const updated = await invoke('PUT', '/api/me', { learner: 'meDev', body: { displayName: 'Dev Nome' } });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.displayName, 'Dev Nome');
+  const readBack = await invoke('GET', '/api/me', { learner: 'meDev' });
+  assert.equal(readBack.body.displayName, 'Dev Nome');
+  const other = await invoke('GET', '/api/me', { learner: 'otherDev' });
+  assert.equal(other.body.displayName, 'dev-otherDev', 'profiles are per learner');
+});
+
 /* ---------------- allowlist validator: forbidden fields MUST fail ---------------- */
 
 test('allowlist: an injected top-level correction field is a violation', async () => {

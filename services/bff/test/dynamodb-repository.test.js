@@ -212,3 +212,50 @@ test('dynamodb: adapter source uses no Scan and no wildcard expressions (static 
   assert.ok(!/\bScan\w*\b|\.scan\(/.test(code), 'Scan must never appear in the adapter code');
   assert.ok(!code.includes("'*'"), 'no wildcard expressions in the adapter code');
 });
+
+/* ---------------- first-profile bootstrap race (#69 Slice B review fix) ---------------- */
+
+test('profile bootstrap race: the losing instance re-reads and returns the winner (no 409)', async () => {
+  const { getMe } = await import('../src/profile.js');
+  const { configureRuntime, resetRuntime } = await import('../src/runtime.js');
+  const store = createFakeDynamoStore();
+  const repoA = new DynamoDbSimulationRepository({ tableName: 't', client: createFakeDynamoClient(store) });
+  const repoB = new DynamoDbSimulationRepository({ tableName: 't', client: createFakeDynamoClient(store) });
+
+  try {
+    // Instance A bootstraps first and wins the conditional create.
+    configureRuntime({ repository: repoA });
+    const winner = await getMe('cognito-race-sub', {
+      loadProfile: async () => ({ email: 'winner@example.test', displayName: 'Winner' }),
+    });
+    assert.equal(winner.email, 'winner@example.test');
+
+    // Instance B raced: its read happened BEFORE A's write (simulated by nulling the first
+    // read), so its conditional create fails — the fix re-reads and returns A's profile.
+    let firstRead = true;
+    configureRuntime({
+      repository: new Proxy(repoB, {
+        get(target, prop) {
+          if (prop === 'getProfile') {
+            return async (learnerId) => {
+              if (firstRead) {
+                firstRead = false;
+                return null;
+              }
+              return target.getProfile(learnerId);
+            };
+          }
+          const value = target[prop];
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }),
+    });
+    const loser = await getMe('cognito-race-sub', {
+      loadProfile: async () => ({ email: 'loser@example.test', displayName: 'Loser' }),
+    });
+    assert.equal(loser.email, 'winner@example.test', 'the winning profile is returned, never a 409');
+    assert.equal(loser.displayName, 'Winner');
+  } finally {
+    resetRuntime();
+  }
+});

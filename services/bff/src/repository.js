@@ -27,7 +27,7 @@ export class RepositoryConflictError extends Error {
 }
 
 function emptyState() {
-  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {} };
+  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {} };
 }
 
 export class InMemorySimulationRepository {
@@ -99,6 +99,17 @@ export class InMemorySimulationRepository {
       delete this.state.activeMocks[learnerId];
       this.persist();
     }
+  }
+
+  /* Learner profile (#69 Slice B): the /api/me cache that keeps the identity provider's
+     UserInfo endpoint off the per-request path. */
+  async getProfile(learnerId) {
+    return this.state.profiles[learnerId] ?? null;
+  }
+
+  async saveProfile(profile) {
+    this.state.profiles[profile.learnerId] = profile;
+    this.persist();
   }
 
   /* Logical readiness only (#77): adapter kind + ready — never physical identifiers. */

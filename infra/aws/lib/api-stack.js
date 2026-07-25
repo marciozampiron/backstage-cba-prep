@@ -37,6 +37,8 @@ const BFF_DIR = path.join(REPO_ROOT, 'services', 'bff');
 // PUBLIC_ROUTES: readiness is public and logical-only by contract (#47).
 const ROUTES = [
   ['GET', '/api/readiness'],
+  ['GET', '/api/me'],
+  ['PUT', '/api/me'],
   ['GET', '/api/dashboard'],
   ['GET', '/api/practice/options'],
   ['POST', '/api/practice-sessions'],
@@ -78,12 +80,14 @@ class ApiStack extends Stack {
   constructor(scope, id, props = {}) {
     super(scope, id, props);
     const environment = resolveEnvironment(this.node, props.environment || 'pilot');
-    const { table, userPool, userPoolClient } = props;
+    const { table, userPool, userPoolClient, userPoolDomain } = props;
     if (!table) throw new Error('ApiStack requires the DataStack table (explicit reference).');
-    if (!userPool || !userPoolClient) {
+    if (!userPool || !userPoolClient || !userPoolDomain) {
       // Fail closed: without a trusted issuer there is no authorizer, and an authorizer-less
-      // authenticated surface must never synthesize.
-      throw new Error('ApiStack requires the IdentityStack userPool + userPoolClient (explicit references).');
+      // authenticated surface must never synthesize; the domain feeds the OIDC userInfo config.
+      throw new Error(
+        'ApiStack requires the IdentityStack userPool + userPoolClient + userPoolDomain (explicit references).',
+      );
     }
     applyFoundationTags(this, environment);
 
@@ -100,6 +104,9 @@ class ApiStack extends Stack {
         CBA_WEB_TABLE: table.tableName,
         // Fail closed: no dev identity in a deployable runtime; #69 supplies the adapter.
         CBA_WEB_AUTH: 'cognito',
+        // Cognito OIDC base for /oauth2/userInfo (#69 Slice B): composed from stack references —
+        // configuration, not a secret, and never a literal in Git.
+        COGNITO_DOMAIN: `https://${userPoolDomain.domainName}.auth.${this.region}.amazoncognito.com`,
         CBA_CONTENT_DIR: '/var/task/content',
       },
       depsLockFilePath: path.join(BFF_DIR, 'package-lock.json'),
@@ -146,7 +153,7 @@ class ApiStack extends Stack {
         ? {
             corsPreflight: {
               allowOrigins: corsOrigins,
-              allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
+              allowMethods: [apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST, apigwv2.CorsHttpMethod.PUT],
               allowHeaders: ['content-type', 'authorization'],
               allowCredentials: true,
               maxAge: Duration.minutes(10),

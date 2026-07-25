@@ -1,20 +1,23 @@
 // Transport-neutral learner API boundary (#76). One dispatcher owns the IMPLEMENTED routes of
-// the contract (docs/product/web-bff-contracts.md) — the 12 deterministic learner endpoints that
-// existed in the Next.js app: dashboard, practice options/drills, mock exam, results, missed
-// review, deterministic coach. Not yet implemented here (tracked owners): Progress -> #44,
-// /api/me -> #69, Preferences -> #79. Runtimes adapt transport to this dispatcher — the Next.js
+// the contract (docs/product/web-bff-contracts.md) — the deterministic learner endpoints that
+// existed in the Next.js app (dashboard, practice options/drills, mock exam, results, missed
+// review, deterministic coach) plus the learner profile /me (#69, §16). Not yet implemented
+// here (tracked owners): Progress -> #44, Preferences -> #79. Runtimes adapt transport to this dispatcher — the Next.js
 // route handlers today, the Lambda/API Gateway adapter in #78, and the offline contract harness —
 // and none of them re-implement validation, scoring, ownership, or exam-mode rules.
 //
 // Neutral request shape (no Fetch/Next/Lambda types):
-//   { method, path, query, headers, body }
-//     method:  'GET' | 'POST'
-//     path:    contract path WITHOUT the transport prefix (e.g. '/mock-exams/mock_1/submit')
-//     query:   plain object of string values (optional)
-//     headers: plain object, lowercase keys (optional)
-//     body:    parsed object, raw JSON string, or undefined
+//   { method, path, query, headers, body, principal }
+//     method:    'GET' | 'POST' | 'PUT'
+//     path:      contract path WITHOUT the transport prefix (e.g. '/mock-exams/mock_1/submit')
+//     query:     plain object of string values (optional)
+//     headers:   plain object, lowercase keys (optional)
+//     body:      parsed object, raw JSON string, or undefined
+//     principal: neutral principal built by the TRANSPORT from authorizer-validated claims
+//                ({ provider, sub, tokenUse, loadProfile? }) — absent in local/dev mode (#69)
 // Neutral response shape: { status, body } — plain JSON-serializable.
 import { resolveLearner } from './identity.js';
+import { getMe, updateMe } from './profile.js';
 import { resolveRuntimeConfig } from './config.js';
 import { activeRepository } from './runtime.js';
 import { RepositoryConflictError } from './repository.js';
@@ -92,6 +95,15 @@ const ROUTES = [
       return { adapter, ready, runtimeEnv };
     },
     { auth: false },
+  ],
+  // Learner profile (#69 Slice B, contract §16). The opaque loadProfile capability rides the
+  // principal; the use cases never see tokens or provider endpoints.
+  ['GET', '/me', 'none', ({ learnerId, principal }) => getMe(learnerId, { loadProfile: principal?.loadProfile })],
+  [
+    'PUT',
+    '/me',
+    'required-json',
+    ({ learnerId, principal, body }) => updateMe(learnerId, body, { loadProfile: principal?.loadProfile }),
   ],
   ['GET', '/dashboard', 'none', ({ learnerId }) => dashboard(learnerId)],
   ['GET', '/practice/options', 'none', ({ learnerId }) => practiceOptions(learnerId)],
@@ -191,15 +203,21 @@ function matchRoute(method, path) {
  * DynamoDB adapter and future async ports slot in without changing any runtime adapter. Never
  * rejects: every outcome is a `{ status, body }` (errors use the contract envelope).
  */
-export async function handleApiRequest({ method, path, query = {}, headers = {}, body } = {}) {
+export async function handleApiRequest({ method, path, query = {}, headers = {}, body, principal = null } = {}) {
   try {
     const matched = matchRoute(String(method ?? '').toUpperCase(), path ?? '');
     if (!matched) {
       return { status: 404, body: errorBody('NOT_FOUND', 'Unknown API route.') };
     }
-    const { learnerId } = matched.route.auth ? resolveLearner(headers) : { learnerId: null };
+    const { learnerId } = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null };
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
-    const result = await matched.route.handler({ learnerId, params: matched.params, query, body: parsedBody });
+    const result = await matched.route.handler({
+      learnerId,
+      principal: matched.route.auth ? principal : null,
+      params: matched.params,
+      query,
+      body: parsedBody,
+    });
     if (result && typeof result === 'object' && 'status' in result && 'body' in result) {
       return result;
     }

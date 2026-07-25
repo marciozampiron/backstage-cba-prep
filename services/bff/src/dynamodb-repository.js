@@ -4,7 +4,7 @@
 // real @aws-sdk DocumentClient via `createDynamoDbClient` below.
 //
 // ACCESS PATTERNS (documented before coding; NO Scan anywhere):
-//   Record items  pk = '<TYPE>#<id>' (TYPE in SESSION|ATTEMPT|MOCK), sk = 'REC'
+//   Record items  pk = '<TYPE>#<id>' (TYPE in SESSION|ATTEMPT|MOCK|PROFILE), sk = 'REC'
 //                 attrs: record (the plain JSON doc), learnerId, rev (optimistic counter),
 //                        gsi1pk = 'LEARNER#<learnerId>', gsi1sk = '<TYPE>#<id>'
 //     - get-by-id            -> GetItem(pk, 'REC')
@@ -150,6 +150,14 @@ export class DynamoDbSimulationRepository {
 
   async listMocks(learnerId) {
     return this.#listRecords(learnerId, 'MOCK');
+  }
+
+  async getProfile(learnerId) {
+    return this.#getRecord('PROFILE', learnerId);
+  }
+
+  async saveProfile(profile) {
+    await this.#saveRecord('PROFILE', profile.learnerId, profile.learnerId, profile);
   }
 
   async claimActiveMock(learnerId, mockExamId) {

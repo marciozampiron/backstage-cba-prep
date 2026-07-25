@@ -32,6 +32,7 @@ function buildStacks(app) {
         table: data.table,
         userPool: identity.userPool,
         userPoolClient: identity.userPoolClient,
+        userPoolDomain: identity.userPoolDomain,
       });
       return { identity, data, api };
     })(),

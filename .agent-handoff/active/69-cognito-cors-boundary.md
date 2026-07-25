@@ -71,5 +71,50 @@
   `code_challenge_method=S256` + `code_verifier`.
 - Preflight registered on #70: deploy must be blocked while `pilot.invalid` remains in
   authCallbackUrls/authLogoutUrls or the definitive Cognito domain prefix is not provided.
-- Next: Slice B (neutral principal + `token_use=access` + Cognito identity adapter + /api/me
-  §16); Slice C additionally owes the PKCE S256 proof.
+- Codex review round 2 (Slice A) — APPROVED at `6d588d4`. One blocker fixed via amend:
+  `@aws-cdk/core:defaultCrossStackReferences` pinned to `"strong"` in cdk.json (explicit,
+  producer-protecting cross-stack refs) with an offline guard test. Evidence: infra 57/57 ·
+  synth clean with ZERO cross-stack warnings · root 77/77 · bank 60/0 · diff --check limpo ·
+  zero ids/secrets · #82 local docs kept out of the commit.
+
+## Slice B binding rules (identity/UserInfo — approved direction, MUST hold)
+
+- The API accepts ONLY access tokens: `token_use=access` is required; an ID token is REJECTED.
+- `/api/me` needs `email` and `displayName`; initial enrichment comes from the Cognito OIDC
+  `/oauth2/userInfo` endpoint.
+- The bearer token and the Cognito endpoint stay in the infrastructure/transport adapter —
+  NEVER in application/domain code (no AWS SDK, no Cognito, no bearer token across that line).
+- The application receives only a neutral, sanitized principal/profile.
+- The profile is persisted/cached so UserInfo is NOT called on every request.
+- The `aws.cognito.signin.user.admin` scope is never added.
+- Cognito domain/issuer configuration is exposed via environment configuration — no physical
+  values in Git.
+
+## Work log (continued)
+
+- Slice B implemented (separate commit): neutral principal + Cognito identity adapter +
+  /api/me (§16). Transport (lambda.js) builds the principal ONLY from authorizer-validated JWT
+  claims via `cognito-identity.js` (infrastructure): token_use=access enforced (ID tokens
+  rejected even though they pass the authorizer), learner id namespaced `cognito-<sub>`,
+  `x-cba-learner` rejected with 401 in cognito mode. Profile enrichment via Cognito OIDC
+  /oauth2/userInfo happens inside an opaque `loadProfile()` closure — the bearer token is
+  captured by the closure and never readable by application code. Profile persisted as a
+  repository record (memory/file/dynamodb `PROFILE#<learnerId>`): normal later requests hit the
+  cache (call-count tests); concurrent FIRST requests may each call userInfo, but exactly one
+  canonical profile is persisted (conditional create + loser re-read). /api/me GET/PUT exactly per §16 (email never
+  changes via PUT; pilot single exam). ApiStack: GET+PUT /api/me JWT-protected (15 routes),
+  COGNITO_DOMAIN composed from stack references (no literals), CORS seam gains PUT. Static
+  boundary guard: application files carry no @aws-sdk/amazoncognito/oauth2/Bearer material.
+- Slice B validation: bff 124 (123 pass + 1 CI-skip) · infra 57/57 + synth (15 rotas, /me JWT,
+  COGNITO_DOMAIN por referência) · root 77/77 · validate 60/0 · web build OK · 4 smokes OK ·
+  /api/me provado vivo em dev local (GET bootstrap + PUT parcial) · diff --check limpo.
+- Codex review round 1 (Slice B) — two blockers fixed via amend: (1) FAIL CLOSED on a missing
+  bearer: valid authorizer claims without an Authorization bearer now yield NO principal → 401
+  and nothing persisted (a fail-open path was minting @local.invalid profiles); the test proves
+  the 401 and that the first authorized call still bootstraps from userInfo. (2) First-profile bootstrap
+  race: when two instances both read "no profile" and the conditional create fails for the
+  loser, the bootstrap re-reads and returns the WINNER instead of surfacing 409 — reproduced
+  with two real DynamoDB adapters over a shared fake store. Non-blocking DDD debts (loadProfile
+  riding the principal; ApiError imported from store.js) are registered on the #10 post-POC
+  gate by Codex.
+- Next: Slice C (sign-in/session/sign-out UI + CORS exato + prova PKCE S256 + regressão total).

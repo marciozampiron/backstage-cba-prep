@@ -21,6 +21,8 @@ function apiTemplate(env, extraContext = {}) {
 
 const EXPECTED_ROUTES = [
   'GET /api/readiness',
+  'GET /api/me',
+  'PUT /api/me',
   'GET /api/dashboard',
   'GET /api/practice/options',
   'POST /api/practice-sessions',
@@ -46,6 +48,12 @@ test('function: node22 runtime, fail-closed auth env, dynamodb-only runtime conf
   assert.equal(env.CBA_WEB_STORE, 'dynamodb');
   assert.equal(env.CBA_WEB_AUTH, 'cognito', 'no dev auth in a deployable runtime — fail closed until #69');
   assert.equal(env.CBA_CONTENT_DIR, '/var/task/content');
+  // #69 Slice B: OIDC userInfo base — composed from references (tokens), never a literal.
+  assert.ok(env.COGNITO_DOMAIN, 'COGNITO_DOMAIN must be wired for profile enrichment');
+  assert.ok(
+    JSON.stringify(env.COGNITO_DOMAIN).includes('amazoncognito.com'),
+    'COGNITO_DOMAIN is the hosted Cognito OIDC base',
+  );
   assert.ok(typeof env.CBA_WEB_TABLE === 'object', 'table name flows by reference, never hardcoded');
   // Bundled asset (reproducible via the bff lockfile) — not inline code.
   assert.ok(fn.Properties.Code.S3Key, 'code must be a bundled asset');
@@ -131,7 +139,7 @@ test('authorizer: exactly one JWT authorizer reading the Authorization header', 
 test('routes: EVERY route requires the JWT authorizer except public readiness', () => {
   const t = apiTemplate('pilot');
   const routes = Object.values(t.findResources('AWS::ApiGatewayV2::Route'));
-  assert.equal(routes.length, 13, 'authorizer wiring must not add or drop routes');
+  assert.equal(routes.length, 15, 'authorizer wiring must not add or drop routes');
   for (const route of routes) {
     const key = route.Properties.RouteKey;
     if (key === 'GET /api/readiness') {
