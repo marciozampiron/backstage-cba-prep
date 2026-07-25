@@ -116,3 +116,17 @@
   state precisely that the ONLY AWS SDK reference is the dynamic optional-peer import inside the
   DynamoDB infrastructure adapter.
 - Revalidated: bff 77/77; infra 34/34; root 77/77; synth OK; web build clean; diff-check clean.
+
+## Final report
+
+- Status: **DONE** — pushed as `d430722` + `626b715` (exactly two commits in scope); CI green on
+  ALL FOUR lanes: Quality (30173071870), Web Quality (30173071878 — bff harness 77/77 in the
+  lane), Infra Synth (30173071913 — 34/34 incl. DataStack + environment validation), CodeQL
+  (30173071645). #77 CLOSED with delivery evidence; board Done (GraphQL-confirmed).
+- Architecture decision recorded on the issue: the DataStack creates ZERO IAM resources — the
+  least-privilege table grants for the BFF runtime role belong to #78, which owns the Lambda role
+  and consumes the exported table construct.
+- Follow-ups owned elsewhere: #78 (Lambda/API GW + role/grants + SDK bundling of the optional
+  peers), #69 (Cognito + /api/me), #79 (preferences), #75 (cleanup contract), #70 (deploy lanes
+  consuming the /readiness signal).
+- Push/CI recorded in EVENTS.md; residue stays for the next governance cleanup.
