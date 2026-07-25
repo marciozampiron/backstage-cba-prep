@@ -156,3 +156,18 @@ a paid model.
 - Stale historical work-log claims annotated as superseded (denylist -> allowlist; tags-only
   rollback -> tags+dev-manifests; "no contract file touched" -> architecture-doc consistency
   edits listed). #68 now tracks the DynamoDB adapter readiness contract (registered by Codex).
+
+## Final report
+
+- Status: **DONE** — pushed as `30d8eee` (only commit in scope); CI green (Quality 30169558834,
+  CodeQL 30169558546; Web Quality/Infra Synth correctly not triggered — docs-only). #56 CLOSED
+  with delivery evidence; board: Done (GraphQL-confirmed).
+- Files: `docs/architecture/deployed-environment-smoke-workflow-design.md` (new, 242 lines);
+  consistency updates to `pilot-environment-contract.md` (runtime `CBA_BFF_BASE_URL`) and
+  `pilot-release-runbook.md`; wiki pointer; this handoff.
+- Both Codex review cycles folded in (runtime config, no direct-pilot flow, allowlist leak scan,
+  #68 persistence evidence, #75 cleanup dependency, F2 real-id browser smoke, dev manifests,
+  preflight split, named suffix vars, literal concurrency groups, force-cancel semantics).
+- Downstream dependencies flagged for #70: #75 (cleanup contract) and #68 (readiness evidence);
+  #67 carries the runtime-config decision (issue comment).
+- Push/CI recorded in EVENTS.md; residue stays for the next governance cleanup.

@@ -61,7 +61,16 @@ Project board remain the source of truth; this file summarizes local coordinatio
   #68 AWS Web BFF extraction, #69 Cognito/CORS security boundary, and #70 integrated deploy plus
   post-deploy smoke gates. The current Next.js app is not a pure static export; sensitive exam data
   and correction logic remain server-side behind the AWS BFF.
-- Next platform sequence (#47 and #66 delivered): #55/#56 -> #67/#68/#69 -> #70 -> close #46.
+- **#55 and #56 are CLOSED (Done)** — the #50 design track is complete: the pilot release
+  runbook (`pilot-release-runbook.md`, published `cde0c8c`) and the deployed-environment smoke
+  workflow blueprint (`deployed-environment-smoke-workflow-design.md`, published `30d8eee`),
+  both CI green. Key downstream decisions: browser BFF base is Worker RUNTIME config
+  (`CBA_BFF_BASE_URL`, never `NEXT_PUBLIC_*` — recorded on #67); gate 5 persistence evidence is
+  defined by #68; the smoke-cleanup deletion contract is #75. Execution logs:
+  `done/55-pilot-release-runbook.md`, `done/56-deployed-environment-smoke-workflow-design.md`.
+- Next platform sequence: #68 implementation slices — **#76 (services/bff scaffold + contract
+  harness) -> #77 (DynamoDB + DataStack) -> #78 (Lambda/API Gateway)** — alongside #67 and #69,
+  then #75 cleanup contract -> #70 -> close #46.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
   reconcile §1's single `CodeQL` check name to the real `Analyze (...)` runs; weigh Option B

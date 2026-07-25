@@ -2,6 +2,140 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-25 — Governance cleanup (Claude) — pre-#76
+
+- Dedicated docs-only commit folding the audit residue accumulated since `3f9f3b5`: the #55
+  (release runbook) and #56 (smoke workflow blueprint) delivery cycles — gates, pushes, CI
+  results, review rounds — plus their execution logs `done/55-pilot-release-runbook.md` and
+  `done/56-deployed-environment-smoke-workflow-design.md`.
+- `CURRENT.md` reconciled: #55/#56 recorded as CLOSED/Done with their published SHAs and the
+  downstream decisions (#67 runtime config, #68 readiness evidence, #75 cleanup contract); next
+  sequence now starts at the #68 implementation slices (#76 -> #77 -> #78, alongside #67/#69).
+- `.vscode/settings.json` deliberately left OUT (pending human share-or-ignore decision).
+- Local commit only; push follows the human gate. #76 execution starts after this cleanup.
+
+## 2026-07-25 — Push + CI (Claude) — #56
+
+- Pushed: `cde0c8c..30d8eee` (`30d8eee docs: design deployed-environment smoke workflow
+  blueprint for #56`). `origin/main` is now at `30d8eee`.
+- CI green: Quality (30169558834) and CodeQL/Push on main (30169558546). Web Quality + Infra
+  Synth correctly did not trigger (docs-only).
+- #56 CLOSED with delivery evidence; board Done (confirmed). Handoff finalized in
+  `done/56-deployed-environment-smoke-workflow-design.md`.
+- The #50 design track is complete (#55 runbook + #56 blueprint). Next per CURRENT.md:
+  #67/#68/#69 (with the runtime-config decision on #67, #68 readiness evidence, #75 cleanup
+  contract as flagged dependencies) -> #70 -> close #46. Product: #44 -> #57 -> #62.
+- Kept as local audit residue for the next governance cleanup.
+
+## 2026-07-25T18:24:20Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 30d8eee docs: design deployed-environment smoke workflow blueprint for #56
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #56
+
+- Human gate: approved push for ONLY `30d8eee docs: design deployed-environment smoke workflow
+  blueprint for #56` (workflow blueprint + runtime-config consistency updates to the #47
+  contract and #55 runbook; both Codex review cycles folded in — preflight split, single flow
+  without direct-pilot, allowlist leak scan, #68 persistence evidence, #75 cleanup dependency,
+  named host-suffix vars, literal concurrency groups, force-cancel semantics).
+- Agent will run `agent-refresh -- --record`, push only this commit, follow Quality/CodeQL
+  (docs-only), close #56 on green, confirm board Done, and record the result in the handoff.
+
+## 2026-07-25 - #56 Codex review and cleanup dependency
+
+- Independent checks on local commit `16bf72f`: root 77/77, bank 60/0, diff/check clean, no
+  secret/account-id match. Push is NOT approved pending architecture corrections.
+- Opened #75 as a native sub-issue of #70 and added it to Phase 1 / Todo: version and implement the
+  authenticated, idempotent smoke-data cleanup contract instead of letting #70 invent an endpoint or
+  use the deploy role for direct DynamoDB mutation.
+- Remaining review concerns are reported in chat for amend; no commit or push performed by Codex.
+
+## 2026-07-25 - #56 assigned to Claude (Codex)
+
+- Confirmed #55 CLOSED/Done and #56 OPEN/Todo in Phase 1 on the canonical Roadmap.
+- Reconciled #56 to #47/#55: `dev -> pilot`, distinct `BASE_URL`/`FRONTEND_URL`, the new
+  pre-submit mock leak scan, Cognito/DynamoDB smokes with deterministic cleanup, same-artifact
+  promotion, human-gated rollback hooks, and a fully no-spend release path.
+- Activated `.agent-handoff/active/56-deployed-environment-smoke-workflow-design.md` under Claude
+  ownership. No workflow, cloud mutation, paid model call, commit, or push was performed.
+
+## 2026-07-25 — Push + CI (Claude) — #55
+
+- Pushed: `3f9f3b5..cde0c8c` (`cde0c8c docs: define pilot release runbook, smoke gates, and
+  rollback policy for #55`). `origin/main` is now at `cde0c8c`.
+- CI green: Quality (30168534145) and CodeQL/Push on main (30168533986). Web Quality + Infra
+  Synth correctly did not trigger (docs-only).
+- #55 CLOSED with delivery evidence; board Done (confirmed). Handoff finalized in
+  `done/55-pilot-release-runbook.md`.
+- Next: #56 — workflow design that turns the runbook's policies (go/no-go, smoke gates incl. the
+  new mock leak-scan requirement, rollback hooks) into the automation blueprint #70 implements.
+  Open human actions: key rotation after SSO-first migration; `.vscode/settings.json` inclusion in
+  a future gated commit.
+- Kept as local audit residue for the next governance cleanup.
+
+## 2026-07-25T17:53:23Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - cde0c8c docs: define pilot release runbook, smoke gates, and rollback policy for #55
+- Active handoffs:
+  - .agent-handoff/active/55-pilot-release-runbook.md
+- Warnings:
+  - active handoff file(s) present: .agent-handoff/active/55-pilot-release-runbook.md
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #55
+
+- Human gate: approved push for ONLY `cde0c8c docs: define pilot release runbook, smoke gates,
+  and rollback policy for #55` (release-gate flow + go/no-go, promotion rules, honest local-vs-
+  deployed smoke split with the #56 mock leak-scan requirement, BASE_URL/FRONTEND_URL separation,
+  Cloudflare/BFF rollback, and the complete DynamoDB PITR cutover incl. joint
+  CBA_WEB_TABLE+IAM update, reviewed cdk diff, no wildcards; all Codex review cycles folded in).
+- Agent will run `agent-refresh -- --record`, push only this commit, follow Quality/CodeQL
+  (docs-only), record the result, close #55 with delivery evidence, confirm board Done, and
+  finalize the handoff into done/.
+
+## 2026-07-25 — Push + CI (Claude) — governance cleanup
+
+- Pushed: `9194039..3f9f3b5` (`3f9f3b5 docs: reconcile handoff state and audits after the
+  #66/#72/#73 delivery`). `origin/main` is now at `3f9f3b5`.
+- CI green: Quality (30167895783) and CodeQL/Push on main (30167895791). Web Quality + Infra Synth
+  correctly did not trigger (coordination-docs-only). No issue attached (governance task).
+- The #47/#66/#72/#73 audit trail is published; CURRENT.md is current. Local residue: this cycle's
+  own gate/record/result entries + the untracked `.vscode/settings.json` (pending share-or-ignore
+  decision). Priority HUMAN security action still open: revoke/rotate the AWS access keys from the
+  relocated CSV if they are active.
+- Next (per CURRENT.md): #55/#56 -> #67/#68/#69 -> #70 -> close #46; product #44 -> #57 -> #62.
+- Kept as local audit for the next governance cleanup.
+
+## 2026-07-25T17:34:20Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 3f9f3b5 docs: reconcile handoff state and audits after the #66/#72/#73 delivery
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — governance cleanup
+
+- Human gate: approved push for ONLY `3f9f3b5 docs: reconcile handoff state and audits after the
+  #66/#72/#73 delivery` (EVENTS audit trail since `4561e87`, reconciled CURRENT.md incl. the two
+  Codex-flagged wording fixes — SecurityStack deployed vs placeholder stacks; CI-OIDC vs local
+  SSO/assume-role access model — plus done/66 and done/73 execution logs).
+- CSV hygiene done pre-push (moved out of the repo, unread, 0600); key revocation/rotation stays a
+  priority HUMAN security action but does not block this sanitized commit.
+- Agent will run `agent-refresh -- --record`, push only this commit, follow Quality/CodeQL
+  (coordination-docs-only — Web Quality/Infra Synth do not trigger), record the result, and STOP.
+
 ## 2026-07-25 — Governance cleanup (Claude)
 
 - Dedicated governance commit collecting the local audit residue accumulated since `4561e87`:
