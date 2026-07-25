@@ -3,13 +3,14 @@
 # no AWS deploy, no live AI/model calls. See docs/architecture/ci-cd-security-foundation.md.
 name: Web Quality
 
-# Path filters include the runtime data the web app loads through web/lib/bank.js
+# Path filters include the runtime data the app loads through services/bff/src/bank.js
 # (questions/*.json + spec/blueprint.json): bank/blueprint changes must also prove the
 # web build and deterministic smokes.
 on:
   pull_request:
     paths:
       - 'web/**'
+      - 'services/bff/**'
       - 'questions/**'
       - 'spec/blueprint.json'
       - '.github/workflows/web-quality.yml'
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - 'services/bff/**'
       - 'questions/**'
       - 'spec/blueprint.json'
       - '.github/workflows/web-quality.yml'
@@ -39,6 +41,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: BFF contract harness (offline, no network/credentials)
+        run: npm --prefix ../services/bff test
       - name: Build
         run: npm run build
       - name: Deterministic web smokes (memory store, shared server)

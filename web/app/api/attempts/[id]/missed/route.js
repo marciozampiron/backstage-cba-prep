@@ -1,17 +1,4 @@
-// GET /api/attempts/:id/missed — contract §14. Grounded review of missed items (incl. unanswered
-// mock questions). Post-submit only: 409 ATTEMPT_NOT_COMPLETED while in progress.
-import { missedForAttempt } from '../../../../../lib/store.js';
-import { resolveLearner } from '../../../../../lib/identity.js';
-import { handle, json } from '../../../../../lib/api.js';
-
-export const GET = handle(async (request, { params }) => {
-  const { learnerId } = resolveLearner(request);
-  const { id } = await params;
-  const url = new URL(request.url);
-  return json(
-    missedForAttempt(id, learnerId, {
-      cursor: url.searchParams.get('cursor'),
-      limit: url.searchParams.get('limit'),
-    }),
-  );
-});
+// GET /api/attempts/:id/missed — contract §14 (grounded review of missed items; post-submit only).
+// Delegates to the shared BFF boundary (#76).
+import { bffRoute } from '../../../../../lib/api.js';
+export const GET = bffRoute((p) => `/attempts/${p.id}/missed`);

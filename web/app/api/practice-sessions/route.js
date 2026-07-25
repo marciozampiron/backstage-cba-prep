@@ -1,26 +1,3 @@
-// POST /api/practice-sessions — contract §8.
-import { startDrill, ApiError } from '../../../lib/store.js';
-import { resolveLearner } from '../../../lib/identity.js';
-import { handle, json, errorResponse } from '../../../lib/api.js';
-
-export const POST = handle(async (request) => {
-  const { learnerId } = resolveLearner(request);
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(400, 'VALIDATION_FAILED', 'Body must be JSON.');
-  }
-  const { examId, domainId, competencyId, questionCount, difficulty, onlyMissed } = body ?? {};
-  if (examId && examId !== 'cba') {
-    throw new ApiError(400, 'VALIDATION_FAILED', `Unknown exam "${examId}".`);
-  }
-  const result = startDrill(learnerId, {
-    domainId: domainId || undefined,
-    competencyId: competencyId || undefined,
-    questionCount: Number(questionCount),
-    difficulty: difficulty || 'mixed',
-    onlyMissed: Boolean(onlyMissed),
-  });
-  return json(result, 201);
-});
+// POST /api/practice-sessions — contract §8. Delegates to the shared BFF boundary (#76).
+import { bffRoute } from '../../../lib/api.js';
+export const POST = bffRoute(() => '/practice-sessions');

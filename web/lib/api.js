@@ -1,38 +1,27 @@
-// Error envelope + response helpers matching docs/product/web-bff-contracts.md conventions.
-import { ApiError } from './store.js';
+// Next.js -> BFF transport adapter (#76). The whole learner API lives in the shared
+// provider-neutral service (services/bff); each route handler is a one-line delegation built by
+// `bffRoute`. This file owns ONLY transport translation (Fetch Request -> neutral request ->
+// Response) — no validation, scoring, ownership, or exam-mode logic here.
+import { handleApiRequest } from 'backstage-cba-prep-bff';
 
-let requestCounter = 0;
+/**
+ * Build a Next.js route handler that delegates to the shared BFF dispatcher.
+ * @param {(params: Record<string, string>) => string} pathFor contract path builder
+ */
+export function bffRoute(pathFor) {
+  return async (request, ctx) => {
+    const params = ctx?.params ? await ctx.params : {};
+    const url = new URL(request.url);
+    const method = request.method.toUpperCase();
+    const body = method === 'GET' || method === 'HEAD' ? undefined : await request.text();
 
-export function json(body, status = 200) {
-  return Response.json(body, { status });
-}
-
-export function errorResponse(status, code, message, details) {
-  requestCounter += 1;
-  return Response.json(
-    {
-      error: {
-        code,
-        message,
-        ...(details !== undefined ? { details } : {}),
-        requestId: `req_${Date.now().toString(36)}${requestCounter.toString(36)}`,
-      },
-    },
-    { status },
-  );
-}
-
-// Wrap a route handler: ApiError -> contracted envelope; anything else -> INTERNAL without detail.
-export function handle(fn) {
-  return async (...args) => {
-    try {
-      return await fn(...args);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        return errorResponse(err.status, err.code, err.message, err.details);
-      }
-      console.error(err);
-      return errorResponse(500, 'INTERNAL', 'Unexpected failure.');
-    }
+    const { status, body: payload } = await handleApiRequest({
+      method,
+      path: pathFor(params),
+      query: Object.fromEntries(url.searchParams),
+      headers: Object.fromEntries(request.headers),
+      body,
+    });
+    return Response.json(payload, { status });
   };
 }

@@ -1,4 +1,6 @@
-// Simulation application layer: practice sessions, mock exams, missed review, deterministic coach.
+// Simulation application layer (moved from web/lib in #76 — the single owner of scoring,
+// ownership, mock finalization, and exam-mode rules): practice sessions, mock exams, missed
+// review, deterministic coach.
 // All state lives behind the SimulationRepository port (lib/repository.js) — records are plain
 // JSON-serializable objects (answers keyed by question index), scoped by learnerId, written through
 // on every mutation. Routes call these functions; neither routes nor pages touch the repository.

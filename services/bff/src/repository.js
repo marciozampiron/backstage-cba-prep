@@ -1,4 +1,4 @@
-// Persistence boundary for the web simulation state (slice 4a, #42).
+// Persistence boundary for the simulation state (slice 4a, #42; moved from web/lib in #76).
 //
 // This is the repository PORT: the store (application layer) is its only caller — route handlers
 // and React pages never import it. Records are plain JSON-serializable objects, keyed by id and

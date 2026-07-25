@@ -1,12 +1,19 @@
-// In-memory Exam Content adapter for slice 1 (#39).
+// In-memory Exam Content adapter (moved from web/lib/bank.js in #76 — single owner now).
 // Loads spec/blueprint.json and questions/*.json from the repo root and applies the JSON bank
 // migration mapping from docs/product/saas-data-model.md: each bank item becomes one Question plus
 // one published QuestionVersion (version 1, origin "manual", legacyExternalId = bank id).
 // Unknown domain/competency names fail loudly instead of creating orphans.
+//
+// Content-root resolution is runtime-neutral: CBA_CONTENT_DIR wins (the #78 Lambda bundle seam),
+// otherwise the repo root is derived from this module's real path (services/bff/src -> ../../..),
+// which works from any process cwd (web dev server, harness, future runtimes).
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(process.cwd(), '..');
+const REPO_ROOT =
+  process.env.CBA_CONTENT_DIR ??
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 function slugify(name) {
   return name
@@ -99,7 +106,7 @@ function loadExamContent() {
   return { exam, domains, versions };
 }
 
-// Next.js dev/HMR can re-evaluate modules; keep one instance per process.
+// Dev/HMR and multi-import safety: keep one instance per process.
 const globalKey = Symbol.for('cba.examContent');
 if (!globalThis[globalKey]) {
   globalThis[globalKey] = loadExamContent();

@@ -1,0 +1,98 @@
+// Read-model compositions (moved OUT of the Next.js route files in #76 so the logic has exactly
+// one owner): dashboard (contract §1) and practice options (contract §7).
+import { exam, domains } from './bank.js';
+import { learnerAttemptStats, currentMockResume } from './store.js';
+
+export function dashboard(learnerId) {
+  const { attempts, perDomain } = learnerAttemptStats(learnerId);
+  const firstRun = attempts.length === 0;
+
+  const domainRows = domains.map((d) => {
+    const stat = perDomain.get(d.domainId);
+    return {
+      domainId: d.domainId,
+      name: d.name,
+      weightPercent: d.weightPercent,
+      readinessPercent: stat ? Math.round((stat.correct / stat.answered) * 100) : null,
+    };
+  });
+
+  const rated = domainRows.filter((d) => d.readinessPercent !== null);
+  const overall =
+    rated.length > 0
+      ? Math.round(
+          rated.reduce((sum, d) => sum + d.readinessPercent * d.weightPercent, 0) /
+            rated.reduce((sum, d) => sum + d.weightPercent, 0),
+        )
+      : null;
+  const weakest =
+    rated.length > 0 ? [...rated].sort((a, b) => a.readinessPercent - b.readinessPercent)[0] : null;
+
+  // Deterministic fallback: without a rated weakest domain (edge cases), recommend a warm-up.
+  const recommendedDrill =
+    firstRun || !weakest
+      ? { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' }
+      : { domainId: weakest.domainId, competencyId: null, questionCount: 10, reason: 'weakest_domain' };
+
+  return {
+    exam: { examId: exam.examId, name: exam.name },
+    firstRun,
+    readiness: { percent: overall, targetPercent: exam.targetPercent, official: false },
+    domains: domainRows,
+    weakestCompetency: null, // competency-level readiness arrives with ProgressSnapshot (later slice)
+    resume: currentMockResume(learnerId), // in-progress mock exam, if any (§1 resume shape)
+    recommendedDrill,
+    recentAttempts: attempts.slice(0, 3).map((a) => ({
+      attemptId: a.attemptId,
+      kind: a.kind,
+      scorePercent: a.score.percent,
+      completedAt: a.submittedAt,
+    })),
+    coachNudge: {
+      text: firstRun
+        ? `The CBA covers ${domains.length} domains. Take a 5-question warm-up to get your first readiness signal.`
+        : weakest
+          ? `${weakest.name} is your weakest area — a focused 10-question drill will help.`
+          : 'Take a quick 5-question warm-up to refresh your readiness signal.',
+      action: recommendedDrill.domainId
+        ? { type: 'start_drill', domainId: recommendedDrill.domainId, questionCount: 10 }
+        : { type: 'start_drill', questionCount: 5 },
+      sourceRefs: [],
+      mode: 'deterministic',
+    },
+  };
+}
+
+export function practiceOptions(learnerId) {
+  const { attempts, perDomain } = learnerAttemptStats(learnerId);
+
+  let recommended = { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' };
+  if (attempts.length > 0) {
+    const rated = domains
+      .map((d) => ({ d, stat: perDomain.get(d.domainId) }))
+      .filter((x) => x.stat)
+      .sort((a, b) => a.stat.correct / a.stat.answered - b.stat.correct / b.stat.answered);
+    if (rated.length > 0) {
+      recommended = {
+        domainId: rated[0].d.domainId,
+        competencyId: null,
+        questionCount: 10,
+        reason: 'weakest_domain',
+      };
+    }
+  }
+
+  return {
+    exam: { examId: exam.examId },
+    domains: domains.map((d) => ({
+      domainId: d.domainId,
+      name: d.name,
+      weightPercent: d.weightPercent,
+      competencies: d.competencies.map((c) => ({ competencyId: c.competencyId, name: c.name })),
+    })),
+    questionCounts: [5, 10, 20],
+    difficulties: ['mixed', 'easy', 'medium', 'hard'],
+    toggles: { onlyMissed: true },
+    recommended,
+  };
+}

@@ -1,0 +1,17 @@
+{
+  "name": "backstage-cba-prep-bff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-neutral Web BFF service (#76/#68): the deterministic learner API application boundary behind a transport-neutral dispatcher. No Next.js, AWS SDK, or model calls — runtimes (Next routes today, Lambda in #78) adapt to it.",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
