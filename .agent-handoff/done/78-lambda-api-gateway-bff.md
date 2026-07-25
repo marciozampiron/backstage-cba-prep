@@ -67,4 +67,11 @@
 - Follow-up (non-blocking, flagged by Codex): local smokes use fixed learner names against the
   persistent `.data` file store — state should be isolated per run (fresh store or unique
   learner suffixes). Candidate for #75 (cleanup contract) or a small chore issue.
-- Awaiting Codex re-review + human push gate.
+- PUBLISHED (2026-07-25): human gate approved; pushed `bf9bd35` (Lambda transport) +
+  `a31294c` (ApiStack) as `626b715..a31294c` — `origin/main` at `a31294c`.
+- CI green on ALL FOUR lanes: Quality (30174652258), Web Quality (30174652262), Infra Synth
+  (30174652330 — the new bff bundling-toolchain step ran, real esbuild bundling in the lane,
+  40/40), CodeQL (30174651870).
+- #78 CLOSED with delivery evidence; board Done (confirmed via GraphQL).
+- NO AWS deploy: everything remains synth-only (only the SecurityStack exists in the account);
+  deploy belongs to #70, auth to #69.

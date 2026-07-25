@@ -25,9 +25,10 @@ Project board remain the source of truth; this file summarizes local coordinatio
   credential-free `cdk synth`), all no-spend + least-privilege, plus CodeQL.
 - `web/` = self-contained Next.js MVP (slices 1–4b) with smokes under `web/scripts/`.
   `infra/aws/` = CDK v2 app (JS/CommonJS) — the SecurityStack (#54 OIDC/Bedrock model) is
-  **DEPLOYED** to the authorized pilot account (#66); the other five stacks
-  (identity/data/api/ai-orchestration/observability) remain placeholders, synth-only, no deploy.
-  CI stays credential-free synth (Infra Synth lane); every deploy is human-gated.
+  **DEPLOYED** to the authorized pilot account (#66); the DataStack (#77) and ApiStack (#78) are
+  IMPLEMENTED but synth-only (not deployed — deploy belongs to #70);
+  identity/ai-orchestration/observability remain placeholders. CI stays credential-free synth
+  (Infra Synth lane); every deploy is human-gated.
 - `main` branch protection is APPLIED (2026-07-08, Option A): required checks `quality (20)`,
   `quality (22)`, `Analyze (javascript-typescript)`, `Analyze (actions)` (the CodeQL default-setup
   runs); `enforce_admins: false` so the owner keeps direct-push-after-human-gate; no PR requirement
@@ -68,9 +69,12 @@ Project board remain the source of truth; this file summarizes local coordinatio
   (`CBA_BFF_BASE_URL`, never `NEXT_PUBLIC_*` — recorded on #67); gate 5 persistence evidence is
   defined by #68; the smoke-cleanup deletion contract is #75. Execution logs:
   `done/55-pilot-release-runbook.md`, `done/56-deployed-environment-smoke-workflow-design.md`.
-- Next platform sequence: #68 implementation slices — **#76 (services/bff scaffold + contract
-  harness) -> #77 (DynamoDB + DataStack) -> #78 (Lambda/API Gateway)** — alongside #67 and #69,
-  then #75 cleanup contract -> #70 -> close #46.
+- Next platform sequence: #68 implementation slices #76/#77/#78 are ALL DELIVERED (published
+  through `a31294c`, CI green): `services/bff` provider-neutral core + DynamoDB adapter +
+  DataStack + Lambda/API Gateway ApiStack (13 explicit routes, minimal DynamoDB IAM, fail-closed
+  auth until #69, canonical BASE_URL contract runner for #70). Now #67 and #69 in parallel, then
+  #79, #75 cleanup contract -> #70 -> close #46/#68. Everything is still synth-only: NO stack
+  beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
   reconcile §1's single `CodeQL` check name to the real `Analyze (...)` runs; weigh Option B

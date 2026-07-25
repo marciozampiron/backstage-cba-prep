@@ -2,6 +2,166 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-25 — Push + CI (Claude) — #78
+
+- Pushed: `626b715..a31294c` (two commits: `bf9bd35` Lambda transport adapter + `a31294c`
+  ApiStack Lambda/HTTP API). `origin/main` is now at `a31294c`.
+- CI green on ALL FOUR lanes: Quality (30174652258), Web Quality (30174652262), Infra Synth
+  (30174652330 — new "Install BFF bundling toolchain" step ran, real esbuild bundling in the
+  lane, 40/40), CodeQL (30174651870).
+- #78 CLOSED with delivery evidence; board Done (confirmed). The #77 architecture decision is
+  closed out: the BFF runtime role now carries the least-privilege table grants (item CRUD on
+  the exact table ARN; Query only on the exact gsi1 index ARN).
+- Deployed-runtime posture published: fail-closed CBA_WEB_AUTH=cognito until #69; CORS only as
+  an exact-origin seam; readiness health-gated (ready/adapter/runtimeEnv); canonical BASE_URL
+  HTTP runner ready for #70. Handoff finalized in `done/78-lambda-api-gateway-bff.md`.
+- Follow-up registered: per-run state isolation for local smokes (fixed learners vs persistent
+  `.data` store) — candidate for #75 or a chore issue.
+- Remaining #68 sequence: #67/#69 in parallel; then #79, #75 -> #70 -> close #46/#68.
+- Local residue: this cycle's gate/record entries + handoff move + `.vscode/` (pending
+  decision) — next governance cleanup.
+
+## 2026-07-25T20:57:52Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - a31294c feat: publish BFF via Lambda + HTTP API with explicit routes and minimal IAM for #78
+  - bf9bd35 feat: add the Lambda transport adapter for the Web BFF (#78)
+- Active handoffs:
+  - .agent-handoff/active/78-lambda-api-gateway-bff.md
+- Warnings:
+  - active handoff file(s) present: .agent-handoff/active/78-lambda-api-gateway-bff.md
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #78
+
+- Human gate: approved push for EXACTLY two commits: `bf9bd35 feat: add the Lambda transport
+  adapter for the Web BFF (#78)` and `a31294c feat: publish BFF via Lambda + HTTP API with
+  explicit routes and minimal IAM for #78` — pure v2 transport + recursive-allowlist
+  deployed-contract suite (primitive-only leaves) + readiness health gate + canonical BASE_URL
+  HTTP runner (CI-skip, no network); ApiStack with 13 explicit routes, minimal DynamoDB IAM
+  (item CRUD on the exact table ARN, Query on the exact gsi1 index ARN), fail-closed
+  CBA_WEB_AUTH=cognito, CORS as an exact-origin #69 seam, reproducible bundling (SDK 3.1095.0,
+  audit clean). Both Codex review rounds folded in (five blockers total, all verified fixed).
+- Agent will run `agent-refresh -- --record`, push only these commits, follow Quality, Web
+  Quality, Infra Synth (now installs the bff toolchain and watches services/bff + bundle
+  inputs), and CodeQL; on green, close #78, confirm board Done, finalize the handoff. NO AWS
+  deploy — synth-only stays the rule.
+
+## 2026-07-25 — Push + CI (Claude) — #77
+
+- Pushed: `f61f468..626b715` (two commits: `d430722` async port/composition + `626b715` DynamoDB
+  adapter + DataStack). `origin/main` is now at `626b715`.
+- CI green on ALL FOUR lanes: Quality (30173071870), Web Quality (30173071878 — bff harness
+  77/77 in the lane), Infra Synth (30173071913 — 34/34), CodeQL (30173071645).
+- #77 CLOSED with delivery evidence; board Done (confirmed). Architecture decision recorded on
+  the issue: the DataStack creates zero IAM — least-privilege table grants for the BFF runtime
+  role belong to #78. Handoff finalized in `done/77-dynamodb-repository-data-stack.md`.
+- Remaining #68 sequence: #78 (Lambda/API Gateway adapter + runtime role/grants + SDK bundling)
+  alongside #67/#69; then #79, #75 -> #70 -> close #46/#68.
+- Local residue: this cycle's gate/record entries + `.vscode/settings.json` (pending decision) —
+  next governance cleanup.
+
+## 2026-07-25T20:11:02Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - 626b715 feat: add DynamoDB simulation repository adapter and real DataStack (#77)
+  - d430722 feat: make the simulation repository port and use cases async (#77)
+- Active handoffs:
+  - .agent-handoff/active/77-dynamodb-repository-data-stack.md
+- Warnings:
+  - active handoff file(s) present: .agent-handoff/active/77-dynamodb-repository-data-stack.md
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #77
+
+- Human gate: approved push for EXACTLY two commits: `d430722 feat: make the simulation
+  repository port and use cases async (#77)` and `626b715 feat: add DynamoDB simulation
+  repository adapter and real DataStack (#77)` — async port + composition seam +
+  CBA_RUNTIME_ENV fail-fast; mock-first DynamoDB adapter (per-read-object optimistic tokens,
+  paginated GSI listing, atomic claim, no Scan); logical readiness; real DataStack (closed
+  dev|pilot environment set, pilot durable / dev disposable, zero IAM); both Codex review rounds
+  folded in.
+- Agent will run `agent-refresh -- --record`, push only these commits, follow Quality, Web
+  Quality (bff harness now 77 tests in the lane), Infra Synth (34 tests + new DataStack), and
+  CodeQL; on green, close #77 recording that IAM grants belong to #78 per the architecture
+  decision, and confirm board Done.
+
+## 2026-07-25 — Push + CI (Claude) — #80
+
+- Pushed: `25db998..f61f468` (`f61f468 fix: own the Next server process group in the
+  restart-persistence smoke (#80)`). `origin/main` is now at `f61f468`.
+- CI green: Quality (30171615080), Web Quality (30171615081 — the corrected smoke itself ran
+  green in the lane), CodeQL (30171614971).
+- #80 CLOSED with delivery evidence; board Done (confirmed). Handoff in
+  `done/80-restart-persistence-smoke.md`.
+- Remaining #68 sequence: #77 (DynamoDB repository adapter + DataStack) -> #78 (Lambda/API
+  Gateway), alongside #67/#69; then #79, #75 -> #70 -> close #46/#68.
+- Local residue: this cycle's gate/record entries + `.vscode/settings.json` (pending decision) —
+  next governance cleanup.
+
+## 2026-07-25T19:26:50Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - f61f468 fix: own the Next server process group in the restart-persistence smoke (#80)
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #80
+
+- Human gate: approved push for ONLY `f61f468 fix: own the Next server process group in the
+  restart-persistence smoke (#80)` — direct process-group ownership (no npx), fail-fast on an
+  occupied port, verified exit + port closure before boot 2, distinct-pid assertion, try/finally
+  cleanup with ownership kept until exited && closed, host pinned to 127.0.0.1 everywhere; both
+  Codex review findings folded in; architect approval recorded on #80.
+- Agent will run `agent-refresh -- --record`, push only this commit, follow Quality/Web
+  Quality/CodeQL, record the result, close #80 on green, and confirm board Done. EVENTS.md,
+  `.vscode/`, and every other residue stay OUT of the push scope.
+
+## 2026-07-25 — Push + CI (Claude) — governance + #76
+
+- Pushed: `30d8eee..25db998` (two commits exactly: `615e9eb` governance docs-only + `25db998`
+  #76 BFF service). `origin/main` is now at `25db998`.
+- CI green: Quality (30171060326), **Web Quality (30171060318) — FIRST real CI run of the BFF
+  contract harness (12/12) plus build and all four smokes** (restart-persistence green in CI,
+  confirming the orphan-port issue is local-only, tracked by #80), CodeQL (30171060220).
+- #76 CLOSED with delivery evidence; board Done (confirmed). Handoff in
+  `done/76-bff-service-contract-harness.md`.
+- Next (#68 slices): #77 DynamoDB repository adapter + DataStack -> #78 Lambda/API Gateway;
+  alongside #67 (frontend) and #69 (Cognito, incl. /api/me); Preferences #79; smoke lifecycle
+  #80; then #75 -> #70 -> close #46/#68.
+- Local residue: this cycle's gate/record entries + `.vscode/settings.json` (pending decision) —
+  next governance cleanup.
+
+## 2026-07-25T19:09:39Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 2]
+- Unpublished commits:
+  - 25db998 feat: extract provider-neutral Web BFF service with contract harness (#76)
+  - 615e9eb docs: reconcile handoff state and audits after the #55/#56 design track
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — governance + #76
+
+- Human gate: approved push for EXACTLY two commits: `615e9eb docs: reconcile handoff state and
+  audits after the #55/#56 design track` (governance, docs-only) and `25db998 feat: extract
+  provider-neutral Web BFF service with contract harness (#76)` (services/bff boundary, async
+  public contract, delegating Next routes, offline harness, Web Quality wiring; all Codex review
+  cycles folded in; architect approval recorded on #76).
+- Agent will run `agent-refresh -- --record`, push only these commits, follow Quality, Web
+  Quality (first real CI run of the BFF harness — services/bff paths now trigger the lane), and
+  CodeQL, record the result, close #76 on green, and confirm board Done.
+- `.vscode/` and every other local residue stay OUT.
+
 ## 2026-07-25 — Governance cleanup (Claude) — pre-#76
 
 - Dedicated docs-only commit folding the audit residue accumulated since `3f9f3b5`: the #55
