@@ -3,6 +3,8 @@ name: Refresh blueprint
 # Regenerates the exam domain (spec/blueprint.json) from the official source page using AI
 # and opens a PULL REQUEST when it changes. Manual only: this workflow can spend Bedrock tokens.
 # Requires AWS OIDC role AWS_BEDROCK_REFRESH_ROLE_ARN and explicit confirm_ai_spend=true.
+# A no-diff refresh is an explicit SUCCESS and never runs the PR finalizer (#73).
+# pr_plumbing_test=true exercises ONLY the PR finalizer with a synthetic change — no AWS, no spend.
 
 on:
   workflow_dispatch:
@@ -13,6 +15,11 @@ on:
       confirm_ai_spend:
         description: I understand this workflow invokes AWS Bedrock and can spend tokens
         required: true
+        type: boolean
+        default: false
+      pr_plumbing_test:
+        description: Exercise the PR finalizer with a synthetic change (no Bedrock, no AWS, no spend)
+        required: false
         type: boolean
         default: false
 
@@ -30,6 +37,10 @@ jobs:
       BEDROCK_MODEL_STANDARD: ${{ vars.BEDROCK_MODEL_STANDARD }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The PR finalizer authenticates with its own token; persisting the checkout credential
+          # caused a "Duplicate header: Authorization" git failure inside create-pull-request (#73).
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -38,7 +49,15 @@ jobs:
         id: gate
         env:
           CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
+          PR_PLUMBING_TEST: ${{ github.event.inputs.pr_plumbing_test }}
         run: |
+          if [ "$PR_PLUMBING_TEST" = "true" ]; then
+            echo "PR plumbing test: skipping every AWS/Bedrock step; exercising only the PR finalizer."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "plumbing=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "plumbing=false" >> "$GITHUB_OUTPUT"
           if [ "$CONFIRM_AI_SPEND" != "true" ]; then
             echo "confirm_ai_spend=true is required because blueprint refresh invokes AWS Bedrock."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -59,7 +78,6 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: npm ci
       - name: Regenerate the domain from the source page
-        id: gen
         if: steps.gate.outputs.skip != 'true'
         env:
           FROM_URL: ${{ github.event.inputs.url }}
@@ -73,13 +91,33 @@ jobs:
       - name: Check the bank against the (possibly) new domain
         if: steps.gate.outputs.skip != 'true'
         run: node bin/cli.js validate || echo "::warning::bank no longer validates against the regenerated domain — review the PR carefully"
+      - name: Write a synthetic change (plumbing test only)
+        if: steps.gate.outputs.plumbing == 'true'
+        run: |
+          printf 'blueprint-refresh PR finalizer self-test — run %s\n' "$GITHUB_RUN_ID" \
+            > .github/blueprint-refresh-selftest.txt
+          echo "Synthetic change written (no Bedrock, no AWS)."
+      - name: Detect a tracked change
+        id: diff
+        if: steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Domain change detected — the PR finalizer will run."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "✓ No domain change — refresh completed successfully; no PR needed."
+          fi
       - name: Open a PR if the domain changed
-        if: steps.gate.outputs.skip != 'true'
-        uses: peter-evans/create-pull-request@v6
+        if: >-
+          (steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true')
+          && steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
         with:
-          branch: chore/blueprint-refresh
-          title: Refresh exam domain from the source page
-          commit-message: 'chore: refresh spec/blueprint.json from the source page'
+          branch: ${{ github.event.inputs.pr_plumbing_test == 'true' && 'chore/blueprint-refresh-selftest' || 'chore/blueprint-refresh' }}
+          delete-branch: true
+          title: "${{ github.event.inputs.pr_plumbing_test == 'true' && 'Self-test: blueprint-refresh PR finalizer (close me)' || 'Refresh exam domain from the source page' }}"
+          commit-message: "${{ github.event.inputs.pr_plumbing_test == 'true' && 'chore: blueprint-refresh PR finalizer self-test' || 'chore: refresh spec/blueprint.json from the source page' }}"
           labels: roadmap
           body: |
             Automated regeneration of the exam domain (`spec/blueprint.json`) from the official page.
@@ -87,3 +125,6 @@ jobs:
             Review the diff carefully: domains, weights, and competencies must match the source.
             If a domain was **renamed**, existing question IDs/prefixes may need updating too — check
             the `validate` output in the run logs before merging.
+
+            (If this is a `pr_plumbing_test` self-test PR, it only touches
+            `.github/blueprint-refresh-selftest.txt` — close it without merging.)
