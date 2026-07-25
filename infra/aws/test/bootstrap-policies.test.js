@@ -85,6 +85,27 @@ test('exec policy Allow statements carry no PassRole, lambda, logs, s3, or bedro
   }
 });
 
+test('exec policy: SSM access is exactly GetParameters on the CDK bootstrap-version parameter', () => {
+  const ssmStatements = execPolicy.Statement.filter((s) =>
+    asArray(s.Action).some((a) => a.toLowerCase().startsWith('ssm:')),
+  );
+  assert.equal(ssmStatements.length, 1, 'exactly one SSM statement');
+  const [stmt] = ssmStatements;
+  assert.equal(stmt.Effect, 'Allow');
+  assert.deepEqual(asArray(stmt.Action), ['ssm:GetParameters'], 'only ssm:GetParameters');
+  assert.deepEqual(asArray(stmt.Resource), [
+    'arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/hnb659fds/version',
+  ]);
+  // No SSM action or ssm parameter ARN may appear anywhere else in either policy.
+  const boundaryFlat = JSON.stringify(boundary);
+  assert.ok(!/ssm:/i.test(boundaryFlat), 'boundary must carry no SSM access');
+  const otherExec = execPolicy.Statement.filter((s) => s !== stmt);
+  assert.ok(
+    !/ssm/i.test(JSON.stringify(otherExec)),
+    'no other exec statement may reference SSM',
+  );
+});
+
 test('no wildcard anywhere in actions or resources of either policy', () => {
   for (const [name, doc] of [['boundary', boundary], ['exec', execPolicy]]) {
     for (const stmt of doc.Statement) {

@@ -45,6 +45,12 @@
       "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh"
     },
     {
+      "Sid": "ReadCdkBootstrapVersionParameter",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameters",
+      "Resource": "arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/hnb659fds/version"
+    },
+    {
       "Sid": "DenyBoundaryDetachOrSwapOnRefreshRole",
       "Effect": "Deny",
       "Action": [

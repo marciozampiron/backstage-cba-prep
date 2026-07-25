@@ -205,7 +205,12 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    `bedrock:InvokeModel` on the standard profile + routed models) and the scoped CloudFormation
    execution policy `cba-study-coach-pilot-cfn-exec-security` (OIDC-provider lifecycle, CreateRole
    pinned to the boundary via `iam:PermissionsBoundary`, lifecycle on the exact role only, explicit
-   denies on boundary tampering; no PassRole/lambda/logs/s3):
+   denies on boundary tampering; no PassRole/lambda/logs/s3). The policy also grants
+   `ssm:GetParameters` on exactly `parameter/cdk-bootstrap/hnb659fds/version`: this read is a
+   **baseline requirement of the CDK `DefaultStackSynthesizer`** — every synthesized template
+   carries the `BootstrapVersion` SSM parameter and CloudFormation resolves it **using the
+   execution role**; without it, changeset creation fails before any resource is touched. Do not
+   suppress the bootstrap-version rule in the synthesizer instead — it is a safety rail:
 
    ```bash
    BOUNDARY_POLICY_ARN=$(aws iam create-policy \
