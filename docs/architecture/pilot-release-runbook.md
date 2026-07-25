@@ -119,8 +119,8 @@ the **previous good SHA's artifacts** — never an untested state.
 
 - Primary: re-activate the previous Workers deployment/version (Cloudflare keeps prior
   deployments; `wrangler` rollback or dashboard "rollback to this deployment").
-- If config drifted (e.g. `NEXT_PUBLIC_CBA_BFF_BASE_URL`), redeploy the previous SHA through the
-  #70 lane instead of hand-editing live config.
+- If config drifted (e.g. the Worker runtime variable `CBA_BFF_BASE_URL`), redeploy the previous
+  SHA through the #70 lane instead of hand-editing live config.
 - Verify with the **`FRONTEND_URL` health/UI gates** (§3.2) — API smokes are never pointed at the
   frontend.
 

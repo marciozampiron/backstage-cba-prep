@@ -92,11 +92,17 @@ Names reuse what already exists in code/docs; only the minimum new names for #67
 Anything browser-visible is public by definition; nothing that can spend, read data, or mutate
 state may live there (`github-security-and-oidc-baseline.md` §6).
 
-### Browser-public (baked into the Cloudflare bundle — treat as disclosed)
+### Browser-public runtime config (served by the Worker at request time — treat as disclosed)
 
 | Name | Purpose | Introduced by |
 | --- | --- | --- |
-| `NEXT_PUBLIC_CBA_BFF_BASE_URL` | absolute base URL of the environment's BFF (API Gateway origin); locally unset → same-origin `/api` | #67 |
+| `CBA_BFF_BASE_URL` | absolute base URL of the environment's BFF (API Gateway origin), held as a **Cloudflare Worker runtime variable** and rendered/served to the browser at request time; locally unset → same-origin `/api` | #67 |
+
+Runtime-served on purpose (#56 review): Next.js **freezes `NEXT_PUBLIC_*` values into the bundle
+at build time**, which would force per-environment rebuilds and break the release model's
+build-once/promote-the-same-artifact rule. The browser still sees the value (public by
+exposure — treat as disclosed), but it is injected per environment at request time, so ONE
+artifact serves `dev` and `pilot`.
 
 ### Cloudflare runtime/deploy (GitHub Environment secrets — never AWS values)
 
@@ -172,8 +178,9 @@ owning tasks; deploy roles arrive with #70 per the §5 registry.
 
 ## 6. What consuming tasks take from this contract
 
-- **#67**: `NEXT_PUBLIC_CBA_BFF_BASE_URL`, preview→dev-BFF-only rule, OpenNext-on-Workers path,
-  bundle guardrails (no bank data, no credentials).
+- **#67**: `CBA_BFF_BASE_URL` as Worker runtime config (never `NEXT_PUBLIC_*` — build-frozen),
+  preview→dev-BFF-only rule, OpenNext-on-Workers path, bundle guardrails (no bank data, no
+  credentials).
 - **#68**: API Gateway HTTP API + Lambda target, `CBA_WEB_STORE=dynamodb` + `CBA_WEB_TABLE`,
   contract-preserving extraction with local adapters still green.
 - **#69**: Cognito behind `resolveLearner`, `COGNITO_*` config names, `CBA_WEB_ALLOWED_ORIGINS`
