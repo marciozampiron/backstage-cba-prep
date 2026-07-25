@@ -40,14 +40,16 @@ class SecurityStack extends Stack {
     );
 
     // --- GitHub OIDC identity provider (create or import) -------------------------------------
-    const provider = existingProviderArn
-      ? iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(this, 'GithubOidc', existingProviderArn)
-      : new iam.OpenIdConnectProvider(this, 'GithubOidc', {
-          url: GITHUB_OIDC_URL,
-          clientIds: ['sts.amazonaws.com'],
-          // No thumbprints on purpose: IAM retrieves them automatically and validates the GitHub
-          // IdP against AWS's trusted CA store (see aws-bootstrap-and-oidc.md §1).
-        });
+    // Native AWS::IAM::OIDCProvider (L1) — NOT iam.OpenIdConnectProvider, whose custom resource
+    // would drag a plumbing Lambda + role into the template and force the CloudFormation
+    // execution role to hold iam:PassRole + lambda:* (an indirect-escalation chain; #66 review).
+    // ThumbprintList is omitted on purpose: IAM retrieves the thumbprint automatically and
+    // validates the GitHub IdP against AWS's trusted CA store (aws-bootstrap-and-oidc.md §1).
+    const providerArn = existingProviderArn
+      || new iam.CfnOIDCProvider(this, 'GithubOidc', {
+        url: GITHUB_OIDC_URL,
+        clientIdList: ['sts.amazonaws.com'],
+      }).attrArn;
 
     // --- Blueprint-refresh Bedrock role (least privilege) --------------------------------------
     // Inference-profile ARN is account/region-scoped -> pseudo params keep the template id-free.
@@ -58,11 +60,23 @@ class SecurityStack extends Stack {
       arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
     });
 
+    // Operator-managed permissions boundary (#66): created OUTSIDE CloudFormation by the human
+    // operator; it caps the role at bedrock:InvokeModel on the standard-tier profile + routed
+    // models. The scoped CloudFormation execution policy pins iam:CreateRole to exactly this
+    // boundary ARN and explicitly denies boundary tampering, so the CFN execution can never
+    // mint a role broader than the boundary allows. Pseudo-param default keeps the template
+    // id-free; override with -c bedrockRefreshBoundaryArn=... if the operator names it otherwise.
+    const boundaryArn = ctx(
+      'bedrockRefreshBoundaryArn',
+      `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-pilot-boundary-bedrock-refresh`,
+    );
+
     const role = new iam.Role(this, 'BedrockRefreshRole', {
       roleName: 'cba-study-coach-gha-bedrock-refresh',
       description:
         'GitHub Actions blueprint-refresh: Bedrock Converse (bedrock:InvokeModel) on the standard-tier inference profile only. No data-plane, deploy, or write permissions.',
-      assumedBy: new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
+      permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, 'BedrockRefreshBoundary', boundaryArn),
+      assumedBy: new iam.WebIdentityPrincipal(providerArn, {
         StringEquals: {
           [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
           [`${GITHUB_OIDC_HOST}:sub`]: githubTrustSub,
@@ -86,7 +100,7 @@ class SecurityStack extends Stack {
       description: 'Publish as the GitHub secret AWS_BEDROCK_REFRESH_ROLE_ARN',
     });
     new CfnOutput(this, 'GithubOidcProviderArn', {
-      value: provider.openIdConnectProviderArn,
+      value: providerArn,
       description: 'Account-global GitHub OIDC provider (reuse via -c githubOidcProviderArn=...)',
     });
   }

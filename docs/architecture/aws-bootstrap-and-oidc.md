@@ -178,36 +178,103 @@ avoid disclosing the account id; a variable would also be functionally fine.
 Run once, by an operator with AWS admin in the pilot account. No CI runs this; it is manual.
 
 1. **Enable Bedrock model access** for the Claude models in the target region(s) via the Bedrock
-   console (or `PutModelInvocationLoggingConfiguration`/access request), and confirm the standard
-   inference-profile id with `aws bedrock list-inference-profiles`.
-2. **Create the OIDC provider** (§1) if it does not already exist in the account.
+   console, verify authorization with
+   `aws bedrock get-foundation-model-availability --model-id <model-id>` (expects
+   `authorizationStatus: AUTHORIZED`), and confirm the standard inference-profile id with
+   `aws bedrock list-inference-profiles`.
+2. **Check for an existing GitHub OIDC provider** (`aws iam list-open-id-connect-providers`).
+   Do **not** create one manually — the SecurityStack creates the native provider (step 7). If the
+   account already has the GitHub provider, pass its ARN at deploy time via
+   `-c githubOidcProviderArn=...` so the stack imports it instead of creating a duplicate.
 3. **Enumerate routed model ARNs** with `aws bedrock get-inference-profile` (§2).
-4. **Create the role** `cba-study-coach-gha-bedrock-refresh` with the trust policy (§2, branch-scoped
-   to start) and attach the permission policy (§2) as an inline or customer-managed policy.
-5. **Set the GitHub var/secret** (`AWS_BEDROCK_REFRESH_ROLE_ARN`, plus `AWS_REGION` and
+4. **Render the versioned policy templates** (they live in Git with `ACCOUNT_ID_PLACEHOLDER`
+   only — `infra/aws/bootstrap/policies/`). Substitute the account id from STS at render time; the
+   rendered files stay under `/tmp` and never enter Git:
+
+   ```bash
+   ACCT=$(aws sts get-caller-identity --query Account --output text)
+   mkdir -p /tmp/cba-bootstrap
+   for t in bedrock-refresh-boundary cfn-exec-security; do
+     sed "s/ACCOUNT_ID_PLACEHOLDER/$ACCT/g" \
+       infra/aws/bootstrap/policies/$t.template.json > /tmp/cba-bootstrap/$t.json
+   done
+   ```
+
+5. **Create the operator-managed policies** (outside CloudFormation): the permissions boundary
+   `cba-study-coach-pilot-boundary-bedrock-refresh` (caps the refresh role at
+   `bedrock:InvokeModel` on the standard profile + routed models) and the scoped CloudFormation
+   execution policy `cba-study-coach-pilot-cfn-exec-security` (OIDC-provider lifecycle, CreateRole
+   pinned to the boundary via `iam:PermissionsBoundary`, lifecycle on the exact role only, explicit
+   denies on boundary tampering; no PassRole/lambda/logs/s3):
+
+   ```bash
+   BOUNDARY_POLICY_ARN=$(aws iam create-policy \
+     --policy-name cba-study-coach-pilot-boundary-bedrock-refresh \
+     --policy-document file:///tmp/cba-bootstrap/bedrock-refresh-boundary.json \
+     --query 'Policy.Arn' --output text)
+   SCOPED_POLICY_ARN=$(aws iam create-policy \
+     --policy-name cba-study-coach-pilot-cfn-exec-security \
+     --policy-document file:///tmp/cba-bootstrap/cfn-exec-security.json \
+     --query 'Policy.Arn' --output text)
+   # both ARNs embed the account id — keep them in shell variables, do not echo them
+   ```
+
+6. **Bootstrap CDK with the scoped execution policy** (no `--trust`, single-account; CDK commands
+   run from the repo's `infra/aws/` directory, where `cdk.json` lives):
+
+   ```bash
+   cd infra/aws
+   npx --no-install cdk bootstrap "aws://$ACCT/us-east-1" \
+     --cloudformation-execution-policies "$SCOPED_POLICY_ARN" \
+     --termination-protection
+   ```
+
+7. **Deploy the SecurityStack only** (creates the native OIDC provider and the role with the
+   boundary attached — see §5), passing the routed model ARNs from step 3:
+
+   ```bash
+   npx --no-install cdk deploy SecurityStack \
+     -c bedrockRoutedModelArns='["<routed-model-arn-1>","<routed-model-arn-2>","<routed-model-arn-3>"]' \
+     --require-approval never \
+     --outputs-file /tmp/cba-bootstrap/security-outputs.json
+   # the outputs file carries the role ARN (account id) — it stays under /tmp, never in Git
+   ```
+
+8. **Set the GitHub var/secret** (`AWS_BEDROCK_REFRESH_ROLE_ARN`, plus `AWS_REGION` and
    `BEDROCK_MODEL_STANDARD` if not already present) (§3).
-6. **Prove the gate without spending**: run the `Refresh blueprint` workflow with
+9. **Prove the gate without spending**: run the `Refresh blueprint` workflow with
    `confirm_ai_spend=false` — it must skip (no role assumption, no tokens).
-7. **First gated live run** (optional, spends tokens): run with `confirm_ai_spend=true`; verify the
-   OIDC role is assumed, Converse succeeds, and a blueprint PR opens if the domain changed. This is
-   the only step that spends and is human-initiated.
-8. **Harden (recommended)**: create the `ai-batch` Environment with a required reviewer, add
-   `environment: ai-batch` to the workflow's `refresh` job, and switch the trust policy subject to
-   the environment-scoped form (§2).
+10. **First gated live run** (optional, spends tokens): run with `confirm_ai_spend=true`; verify the
+    OIDC role is assumed, Converse succeeds, and a blueprint PR opens if the domain changed. This is
+    the only step that spends and is human-initiated.
+11. **Harden (recommended)**: create the `ai-batch` Environment with a required reviewer, add
+    `environment: ai-batch` to the workflow's `refresh` job, and switch the trust policy subject to
+    the environment-scoped form (§2).
 
 ## 5. CDK target (for #49/#53)
 
 When the CDK app is scaffolded (#53), the security-stack encodes exactly the artifacts above:
 
-- `iam.OpenIdConnectProvider` for `token.actions.githubusercontent.com` (audience
-  `sts.amazonaws.com`), or import the existing provider by ARN;
-- `iam.Role` with `WebIdentityPrincipal` conditioned on the `aud`/`sub` claims (§2);
+- a **native `AWS::IAM::OIDCProvider`** (`iam.CfnOIDCProvider`, no `ThumbprintList` — IAM retrieves
+  it automatically) for `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`), or
+  import the existing provider by ARN. Deliberately **not** `iam.OpenIdConnectProvider`: its custom
+  resource drags a plumbing Lambda + role into the template and forces the CloudFormation execution
+  role to hold `iam:PassRole` + `lambda:*` — an indirect-escalation chain (#66 review);
+- `iam.Role` with `WebIdentityPrincipal` conditioned on the `aud`/`sub` claims (§2), carrying an
+  **operator-managed permissions boundary** (`cba-study-coach-pilot-boundary-bedrock-refresh`,
+  created outside CloudFormation) that caps the role at `bedrock:InvokeModel` on the standard-tier
+  profile + routed models. The scoped CloudFormation execution policy pins `iam:CreateRole` to this
+  boundary ARN (`iam:PermissionsBoundary` condition) and explicitly denies boundary tampering;
 - an inline policy granting `bedrock:InvokeModel` on the inference-profile + routed model ARNs (§2),
   region-locked;
 - outputs the role ARN so it can be published to the GitHub secret.
 
 Keep model ids and the account/region as CDK context/config, not hardcoded (mirrors
-`model-config.js`). This doc's JSON is the source of truth the constructs must reproduce.
+`model-config.js`). Sources of truth: the **versioned templates** under
+`infra/aws/bootstrap/policies/` are canonical for the operator-managed policies (the permissions
+boundary and the scoped CloudFormation execution policy — rendered per §4, never edited by hand in
+`/tmp`); this doc's §2 JSON remains the contract for the role's trust and permission policy that
+the stack constructs must reproduce. Change the templates/doc first, then the stack.
 
 ## 6. No-spend verification
 
@@ -216,7 +283,7 @@ Keep model ids and the account/region as CDK context/config, not hardcoded (mirr
   without calling Bedrock.
 - The workflow's `confirm_ai_spend=false` path proves the gate skips before any role assumption.
 - A live Converse call necessarily spends; the first real end-to-end proof is the human-initiated
-  gated run (runbook step 7). Default CI never reaches it.
+  gated run (runbook step 10). Default CI never reaches it.
 
 ## Non-goals
 

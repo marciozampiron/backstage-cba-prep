@@ -42,6 +42,7 @@ Override at synth/deploy time with `-c key=value`:
 | `githubRepo` | `marciozampiron/backstage-cba-prep` | repo baked into the OIDC trust subject |
 | `githubTrustSub` | `repo:<githubRepo>:ref:refs/heads/main` | full trust subject; switch to `repo:<repo>:environment:ai-batch` for the hardening target |
 | `githubOidcProviderArn` | *(empty → create)* | reuse the account-global GitHub OIDC provider instead of creating one |
+| `bedrockRefreshBoundaryArn` | pseudo-account `policy/cba-study-coach-pilot-boundary-bedrock-refresh` | operator-managed permissions boundary attached to the refresh role (#66); created outside CloudFormation |
 | `bedrockStandardInferenceProfileId` | `us.anthropic.claude-sonnet-5` | standard-tier cross-region inference profile (config, not secret) |
 | `bedrockRoutedModelArns` | 3-region placeholders | **JSON array**, e.g. `-c 'bedrockRoutedModelArns=["arn:aws:bedrock:us-east-1::foundation-model/..."]'` — replace at deploy time with the ARNs from `aws bedrock get-inference-profile` (see #54 doc §2). A non-array/bad value fails synth loudly (`parseArnList`). |
 | `environment` | `pilot` | `Environment` tag |
