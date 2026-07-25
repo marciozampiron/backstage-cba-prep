@@ -7,11 +7,17 @@ on:
   pull_request:
     paths:
       - 'infra/aws/**'
+      - 'services/bff/**'
+      - 'spec/blueprint.json'
+      - 'questions/**'
       - '.github/workflows/infra-synth.yml'
   push:
     branches: [main]
     paths:
       - 'infra/aws/**'
+      - 'services/bff/**'
+      - 'spec/blueprint.json'
+      - 'questions/**'
       - '.github/workflows/infra-synth.yml'
 
 permissions:
@@ -32,6 +38,8 @@ jobs:
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Install BFF bundling toolchain (esbuild + pinned SDK, from its lockfile)
+        run: npm ci --prefix ../../services/bff
       - name: Unit tests (context helpers)
         run: npm test
       - name: Synthesize (no credentials, no deploy)

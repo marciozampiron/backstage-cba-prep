@@ -11,7 +11,12 @@ lib/security-stack.js     #54 model: GitHub OIDC provider + blueprint-refresh Be
 lib/data-stack.js         #77: environment-scoped DynamoDB simulation table (on-demand, encrypted;
                           pilot durable with PITR+deletion protection+RETAIN, dev disposable);
                           grants/roles belong to #78
-lib/{identity,api,ai-orchestration,observability}-stack.js
+lib/api-stack.js          #78: provider-neutral BFF as Lambda (Node.js 22, bundled from
+                          services/bff via its OWN lockfile) + HTTP API with EXPLICIT routes only;
+                          minimal DynamoDB IAM (item CRUD on the exact table ARN, Query on the
+                          exact gsi1 index ARN); fail-closed auth env until #69; CORS only as a
+                          #69 seam (exact origins, never "*")
+lib/{identity,ai-orchestration,observability}-stack.js
                           placeholder stacks (foundation tags + one SSM scaffold marker), filled by
                           their owning tracks — see docs/architecture/aws-iac-foundation.md
 lib/placeholder-stack.js  shared base for the placeholders
@@ -48,7 +53,8 @@ Override at synth/deploy time with `-c key=value`:
 | `bedrockRefreshBoundaryArn` | pseudo-account `policy/cba-study-coach-pilot-boundary-bedrock-refresh` | operator-managed permissions boundary attached to the refresh role (#66); created outside CloudFormation |
 | `bedrockStandardInferenceProfileId` | `us.amazon.nova-pro-v1:0` | configured standard-tier cross-region inference profile (config, not secret; Nova Pro per #72 — Sonnet 5 is a non-blocking AWS Sales follow-up) |
 | `bedrockRoutedModelArns` | 3-region placeholders | **JSON array**, e.g. `-c 'bedrockRoutedModelArns=["arn:aws:bedrock:us-east-1::foundation-model/..."]'` — replace at deploy time with the ARNs from `aws bedrock get-inference-profile` (see #54 doc §2). A non-array/bad value fails synth loudly (`parseArnList`). |
-| `environment` | `pilot` | `Environment` tag |
+| `environment` | `pilot` | environment (closed set `dev\|pilot`) — stack names, table/function names, runtime env |
+| `corsAllowedOrigins` | *(empty → no CORS)* | **JSON array** of exact origins for the HTTP API CORS seam (#69); `"*"` is rejected |
 
 ## Outputs
 
@@ -58,7 +64,7 @@ Override at synth/deploy time with `-c key=value`:
 ## Deliberate non-goals (this scaffold)
 
 - No `cdk deploy`/`cdk diff` in CI (synth lane runs with zero AWS permissions per the #52 catalog).
-- Real resources: the security stack (#54) and the data stack (#77 DynamoDB simulation table);
-  identity/api/ai-orchestration/observability remain placeholders until their tracks (see
-  `docs/architecture/aws-iac-foundation.md`).
+- Real resources: the security stack (#54), the data stack (#77 DynamoDB simulation table) and the
+  api stack (#78 Lambda + HTTP API BFF); identity/ai-orchestration/observability remain
+  placeholders until their tracks (see `docs/architecture/aws-iac-foundation.md`).
 - Deploy roles, environments, and bootstrap execution are #54-runbook/human actions.

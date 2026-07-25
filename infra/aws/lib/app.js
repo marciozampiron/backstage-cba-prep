@@ -22,8 +22,13 @@ function buildStacks(app) {
         'CBA Study Coach pilot security: GitHub OIDC provider + blueprint-refresh Bedrock role (#53/#54). Synth-only in CI; deploys are human-gated.',
     }),
     identity: new IdentityStack(app, 'IdentityStack', { stackName: `${base}-identity` }),
-    data: new DataStack(app, 'DataStack', { stackName: `${base}-data` }),
-    api: new ApiStack(app, 'ApiStack', { stackName: `${base}-api` }),
+    ...(function () {
+      // Explicit DataStack -> ApiStack reference (#77 decision): the data stack owns the table,
+      // the api stack owns the runtime role + scoped grants.
+      const data = new DataStack(app, 'DataStack', { stackName: `${base}-data` });
+      const api = new ApiStack(app, 'ApiStack', { stackName: `${base}-api`, table: data.table });
+      return { data, api };
+    })(),
     aiOrchestration: new AiOrchestrationStack(app, 'AiOrchestrationStack', {
       stackName: `${base}-ai-orchestration`,
     }),
