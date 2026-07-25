@@ -66,6 +66,28 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
     assert.deepEqual((await repo.listMocks('l1')).map((x) => x.mockExamId), ['mock_1']);
   });
 
+  test(`${name}: active-mock claim is atomic per learner and release-safe`, async () => {
+    const repo = await makeRepo();
+    assert.equal(await repo.getActiveMock('l1'), null);
+    assert.equal(await repo.claimActiveMock('l1', 'mock_a'), true);
+    assert.equal(await repo.claimActiveMock('l1', 'mock_b'), false, 'second claim must lose');
+    assert.equal(await repo.getActiveMock('l1'), 'mock_a');
+    assert.equal(await repo.claimActiveMock('l2', 'mock_c'), true, 'claims are learner-scoped');
+    await repo.releaseActiveMock('l1', 'mock_WRONG');
+    assert.equal(await repo.getActiveMock('l1'), 'mock_a', 'only the owning claim releases');
+    await repo.releaseActiveMock('l1', 'mock_a');
+    assert.equal(await repo.getActiveMock('l1'), null);
+    assert.equal(await repo.claimActiveMock('l1', 'mock_d'), true, 'reclaim after release');
+  });
+
+  test(`${name}: readiness reports the logical adapter shape only`, async () => {
+    const repo = await makeRepo();
+    const r = await repo.readiness();
+    assert.deepEqual(Object.keys(r).sort(), ['adapter', 'ready']);
+    assert.equal(typeof r.adapter, 'string');
+    assert.equal(r.ready, true);
+  });
+
   if (reopen) {
     test(`${name}: state survives adapter re-instantiation`, async () => {
       const repo = await makeRepo();

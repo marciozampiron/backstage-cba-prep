@@ -7,8 +7,11 @@ rules), results, missed review, deterministic coach. Contract areas not implemen
 tracked owners: Progress -> **#44**, `/api/me` -> **#69**, Preferences -> **#79**.
 
 - **Transport-neutral**: `handleApiRequest({ method, path, query, headers, body })` returns
-  `{ status, body }`. No Next.js, Lambda, AWS SDK, network, or model imports — runtimes adapt to
-  it (`web/` Next routes today; the Lambda/API Gateway adapter is #78).
+  `{ status, body }`. The application layer has no Next.js, Lambda, AWS SDK, network, or model
+  imports; the ONLY AWS SDK reference lives in the DynamoDB infrastructure adapter
+  (`src/dynamodb-repository.js`), behind a dynamic import of optional peer dependencies that the
+  deployed runtime bundle (#78) provides. Runtimes adapt to the boundary (`web/` Next routes
+  today; the Lambda/API Gateway adapter is #78).
 - **Ports**: exam content (`src/bank.js`, reads `spec/blueprint.json` + `questions/*.json`;
   override the content root with `CBA_CONTENT_DIR`), identity (`src/identity.js`,
   `CBA_WEB_AUTH=dev|cognito` — Cognito adapter is #69), simulation repository (`src/repository.js`

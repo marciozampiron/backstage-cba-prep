@@ -16,8 +16,18 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
+/** Storage-level optimistic-concurrency violation — NEUTRAL port error (any adapter may raise
+ *  it); the dispatcher maps it to 409 CONFLICT. Lives here so application code never imports
+ *  from an infrastructure adapter. */
+export class RepositoryConflictError extends Error {
+  constructor(message) {
+    super(message ?? 'Concurrent modification detected.');
+    this.name = 'RepositoryConflictError';
+  }
+}
+
 function emptyState() {
-  return { counter: 0, sessions: {}, attempts: {}, mocks: {} };
+  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {} };
 }
 
 export class InMemorySimulationRepository {
@@ -69,6 +79,32 @@ export class InMemorySimulationRepository {
   async listMocks(learnerId) {
     return Object.values(this.state.mocks).filter((m) => m.learnerId === learnerId);
   }
+
+  /* One-active-mock claim (#77): the ATOMIC per-learner guard the store relies on instead of
+     list-then-create. Local adapters are single-process, so a plain check-and-set is atomic
+     enough here; the DynamoDB adapter implements the same contract with a conditional write. */
+  async claimActiveMock(learnerId, mockExamId) {
+    if (this.state.activeMocks[learnerId]) return false;
+    this.state.activeMocks[learnerId] = mockExamId;
+    this.persist();
+    return true;
+  }
+
+  async getActiveMock(learnerId) {
+    return this.state.activeMocks[learnerId] ?? null;
+  }
+
+  async releaseActiveMock(learnerId, mockExamId) {
+    if (this.state.activeMocks[learnerId] === mockExamId) {
+      delete this.state.activeMocks[learnerId];
+      this.persist();
+    }
+  }
+
+  /* Logical readiness only (#77): adapter kind + ready — never physical identifiers. */
+  async readiness() {
+    return { adapter: 'memory', ready: true };
+  }
 }
 
 // Runtime-only data paths: the turbopackIgnore comments keep Next's build-time file tracing (NFT)
@@ -93,7 +129,18 @@ export class FileSimulationRepository extends InMemorySimulationRepository {
         }
         this.state = emptyState();
       }
+      // Legacy files predate activeMocks: rebuild claims from in-progress mock attempts once.
+      if (Object.keys(this.state.activeMocks).length === 0) {
+        for (const mock of Object.values(this.state.mocks)) {
+          const attempt = this.state.attempts[mock.attemptId];
+          if (attempt?.status === 'in_progress') this.state.activeMocks[mock.learnerId] = mock.mockExamId;
+        }
+      }
     }
+  }
+
+  async readiness() {
+    return { adapter: 'file', ready: true };
   }
 
   persist() {

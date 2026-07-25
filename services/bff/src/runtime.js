@@ -8,6 +8,7 @@ import {
   FileSimulationRepository,
   dataFilePath,
 } from './repository.js';
+import { DynamoDbSimulationRepository, createDynamoDbClient } from './dynamodb-repository.js';
 
 const globalKey = Symbol.for('cba.bffRuntime');
 if (!globalThis[globalKey]) {
@@ -19,12 +20,24 @@ function createRepositoryFromEnv() {
   const config = resolveRuntimeConfig();
   if (config.store === 'memory') return new InMemorySimulationRepository();
   if (config.store === 'file') return new FileSimulationRepository(dataFilePath(config.dataDir));
-  // dynamodb: the infrastructure adapter is constructed here (Stage B) — the application layer
-  // below this seam never learns which adapter it got.
-  throw new Error(
-    `store "${config.store}" has no adapter wired in this build (dynamodb arrives with the ` +
-      'DynamoDB infrastructure adapter).',
-  );
+  // dynamodb (#77 Stage B): the SDK-backed document client is created lazily on first use so the
+  // AWS SDK is only ever loaded in a deployed runtime; the application layer below this seam
+  // never learns which adapter it got.
+  let clientPromise = null;
+  const lazy = (method) => async (params) => {
+    clientPromise ??= createDynamoDbClient();
+    return (await clientPromise)[method](params);
+  };
+  return new DynamoDbSimulationRepository({
+    tableName: config.table,
+    client: {
+      get: lazy('get'),
+      put: lazy('put'),
+      update: lazy('update'),
+      query: lazy('query'),
+      delete: lazy('delete'),
+    },
+  });
 }
 
 /** Test/composition hook: inject a repository and/or a clock. */

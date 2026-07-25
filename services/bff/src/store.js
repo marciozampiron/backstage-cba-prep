@@ -302,22 +302,52 @@ async function ensureMockCurrent(mock, attempt) {
     if (finalizeMock(mock, attempt, { autoSubmitted: true })) {
       await db().saveAttempt(attempt);
       await db().saveMock(mock);
+      await db().releaseActiveMock(mock.learnerId, mock.mockExamId);
     }
   }
 }
 
+// Lazy sweep of the learner's active-mock claim: finalizes an expired mock (releasing the claim)
+// and self-heals stale claims — missing records, AND claims left behind by a partial failure
+// (e.g. the attempt was submitted but a later save/release crashed). Any claim whose attempt is
+// not in_progress is released here, so a learner can never be locked out of starting a mock.
+// Returns the still-active { mock, attempt } or null when the learner may start a new mock.
+async function sweepActiveMock(learnerId) {
+  const activeId = await db().getActiveMock(learnerId);
+  if (!activeId) return null;
+  const mock = await db().getMock(activeId);
+  const attempt = mock ? await db().getAttempt(mock.attemptId) : null;
+  if (!mock || !attempt) {
+    await db().releaseActiveMock(learnerId, activeId);
+    return null;
+  }
+  await ensureMockCurrent(mock, attempt);
+  if (attempt.status !== 'in_progress') {
+    // Finalized (now or earlier) but the claim survived a partial failure: release it.
+    await db().releaseActiveMock(learnerId, activeId);
+    return null;
+  }
+  return { mock, attempt };
+}
+
 export async function startMockExam(learnerId) {
-  for (const mock of await db().listMocks(learnerId)) {
-    const attempt = await db().getAttempt(mock.attemptId);
-    await ensureMockCurrent(mock, attempt);
-    if (attempt.status === 'in_progress') {
-      throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {
-        mockExamId: mock.mockExamId,
-      });
-    }
+  // One-active-mock is enforced by an ATOMIC per-learner claim on the repository port (#77) —
+  // never list-then-create. The sweep first finalizes an expired claim so a learner can restart.
+  const active = await sweepActiveMock(learnerId);
+  if (active) {
+    throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {
+      mockExamId: active.mock.mockExamId,
+    });
   }
 
   const mockExamId = await db().nextId('mock');
+  if (!(await db().claimActiveMock(learnerId, mockExamId))) {
+    // Lost a concurrent race: surface the winner's mock, exactly like the sequential case.
+    const winnerId = await db().getActiveMock(learnerId);
+    throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {
+      mockExamId: winnerId,
+    });
+  }
   // Blueprint-weighted assembly: each domain contributes its mock target, then interleave.
   const picked = [];
   for (const d of domains) {
@@ -479,6 +509,7 @@ export async function submitMockExam(mockExamId, learnerId) {
     if (finalizeMock(mock, attempt, { autoSubmitted: false })) {
       await db().saveAttempt(attempt);
       await db().saveMock(mock);
+      await db().releaseActiveMock(mock.learnerId, mock.mockExamId);
     }
   }
   return {
@@ -658,19 +689,14 @@ export async function coachMessage(learnerId, { action, context }) {
 
 // Dashboard resume support (§1 resume shape). Sweeps expiry lazily.
 export async function currentMockResume(learnerId) {
-  for (const mock of await db().listMocks(learnerId)) {
-    const attempt = await db().getAttempt(mock.attemptId);
-    await ensureMockCurrent(mock, attempt);
-    if (attempt.status === 'in_progress') {
-      return {
-        sessionId: mock.mockExamId,
-        kind: 'mock',
-        answered: mockCounts(attempt).answeredCount,
-        total: attempt.questionOrder.length,
-      };
-    }
-  }
-  return null;
+  const active = await sweepActiveMock(learnerId);
+  if (!active) return null;
+  return {
+    sessionId: active.mock.mockExamId,
+    kind: 'mock',
+    answered: mockCounts(active.attempt).answeredCount,
+    total: active.attempt.questionOrder.length,
+  };
 }
 
 export async function learnerAttemptStats(learnerId) {

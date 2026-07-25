@@ -15,6 +15,9 @@
 //     body:    parsed object, raw JSON string, or undefined
 // Neutral response shape: { status, body } — plain JSON-serializable.
 import { resolveLearner } from './identity.js';
+import { resolveRuntimeConfig } from './config.js';
+import { activeRepository } from './runtime.js';
+import { RepositoryConflictError } from './repository.js';
 import {
   ApiError,
   startDrill,
@@ -76,6 +79,20 @@ function requireKnownExam(examId) {
 // Contract routes: [method, pattern, bodyPolicy, handler(ctx)]
 // ctx: { learnerId, params, query, body }
 const ROUTES = [
+  // Readiness (#77/#68): LOGICAL evidence only — adapter kind, ready flag, runtime tier. Never
+  // table names, ARNs, account ids, or record identifiers. Unauthenticated on purpose: deploy
+  // gates (#70) probe it before any learner smoke, and it exposes no learner data.
+  [
+    'GET',
+    '/readiness',
+    'none',
+    async () => {
+      const { runtimeEnv } = resolveRuntimeConfig();
+      const { adapter, ready } = await activeRepository().readiness();
+      return { adapter, ready, runtimeEnv };
+    },
+    { auth: false },
+  ],
   ['GET', '/dashboard', 'none', ({ learnerId }) => dashboard(learnerId)],
   ['GET', '/practice/options', 'none', ({ learnerId }) => practiceOptions(learnerId)],
   [
@@ -144,9 +161,9 @@ const ROUTES = [
     'required-json',
     ({ learnerId, body }) => coachMessage(learnerId, { action: body.action, context: body.context ?? {} }),
   ],
-].map(([method, pattern, bodyPolicy, handler]) => {
+].map(([method, pattern, bodyPolicy, handler, opts]) => {
   const parts = pattern.split('/').filter(Boolean);
-  return { method, parts, bodyPolicy, handler };
+  return { method, parts, bodyPolicy, handler, auth: opts?.auth !== false };
 });
 
 function matchRoute(method, path) {
@@ -170,10 +187,9 @@ function matchRoute(method, path) {
 
 /**
  * Dispatch one neutral request against the implemented learner API routes.
- * ASYNC by contract: today's use cases are synchronous, but the public boundary is a Promise so
- * the managed repository adapter (#77, DynamoDB) and future async ports slot in without changing
- * any runtime adapter. Never rejects: every outcome is a `{ status, body }` (errors use the
- * contract envelope).
+ * ASYNC end to end: the use cases and the repository port are awaitable (#77), so the managed
+ * DynamoDB adapter and future async ports slot in without changing any runtime adapter. Never
+ * rejects: every outcome is a `{ status, body }` (errors use the contract envelope).
  */
 export async function handleApiRequest({ method, path, query = {}, headers = {}, body } = {}) {
   try {
@@ -181,7 +197,7 @@ export async function handleApiRequest({ method, path, query = {}, headers = {},
     if (!matched) {
       return { status: 404, body: errorBody('NOT_FOUND', 'Unknown API route.') };
     }
-    const { learnerId } = resolveLearner(headers);
+    const { learnerId } = matched.route.auth ? resolveLearner(headers) : { learnerId: null };
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({ learnerId, params: matched.params, query, body: parsedBody });
     if (result && typeof result === 'object' && 'status' in result && 'body' in result) {
@@ -191,6 +207,12 @@ export async function handleApiRequest({ method, path, query = {}, headers = {},
   } catch (err) {
     if (err instanceof ApiError) {
       return { status: err.status, body: errorBody(err.code, err.message, err.details) };
+    }
+    if (err instanceof RepositoryConflictError) {
+      return {
+        status: 409,
+        body: errorBody('CONFLICT', 'The record was modified concurrently — retry the request.'),
+      };
     }
     console.error(err);
     return { status: 500, body: errorBody('INTERNAL', 'Unexpected failure.') };

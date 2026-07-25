@@ -8,7 +8,10 @@ step. **Synth-only in CI**; any deploy is human-gated and out of scope here.
 ```text
 bin/cba-pilot.js          app entry (env-agnostic — synth needs no AWS credentials)
 lib/security-stack.js     #54 model: GitHub OIDC provider + blueprint-refresh Bedrock role (real)
-lib/{identity,data,api,ai-orchestration,observability}-stack.js
+lib/data-stack.js         #77: environment-scoped DynamoDB simulation table (on-demand, encrypted;
+                          pilot durable with PITR+deletion protection+RETAIN, dev disposable);
+                          grants/roles belong to #78
+lib/{identity,api,ai-orchestration,observability}-stack.js
                           placeholder stacks (foundation tags + one SSM scaffold marker), filled by
                           their owning tracks — see docs/architecture/aws-iac-foundation.md
 lib/placeholder-stack.js  shared base for the placeholders
@@ -55,6 +58,7 @@ Override at synth/deploy time with `-c key=value`:
 ## Deliberate non-goals (this scaffold)
 
 - No `cdk deploy`/`cdk diff` in CI (synth lane runs with zero AWS permissions per the #52 catalog).
-- Only the security stack exists; identity/data/api/ai-orchestration/observability stacks arrive
-  with their tracks (see `docs/architecture/aws-iac-foundation.md`).
+- Real resources: the security stack (#54) and the data stack (#77 DynamoDB simulation table);
+  identity/api/ai-orchestration/observability remain placeholders until their tracks (see
+  `docs/architecture/aws-iac-foundation.md`).
 - Deploy roles, environments, and bootstrap execution are #54-runbook/human actions.

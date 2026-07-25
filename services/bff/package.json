@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Provider-neutral Web BFF service (#76/#68): the deterministic learner API application boundary behind a transport-neutral dispatcher. No Next.js, AWS SDK, or model calls — runtimes (Next routes today, Lambda in #78) adapt to it.",
+  "description": "Provider-neutral Web BFF service (#76/#68): the deterministic learner API application boundary behind a transport-neutral async dispatcher. Application layer free of Next.js/AWS/model imports; the AWS SDK appears only in the DynamoDB infrastructure adapter as optional peer deps (#77).",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js"
@@ -13,5 +13,17 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-dynamodb": {
+      "optional": true
+    },
+    "@aws-sdk/lib-dynamodb": {
+      "optional": true
+    }
   }
 }

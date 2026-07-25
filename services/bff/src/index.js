@@ -9,5 +9,7 @@ export { configureRuntime, resetRuntime, activeRepository } from './runtime.js';
 export {
   InMemorySimulationRepository,
   FileSimulationRepository,
+  RepositoryConflictError,
   dataFilePath,
 } from './repository.js';
+export { DynamoDbSimulationRepository } from './dynamodb-repository.js';
