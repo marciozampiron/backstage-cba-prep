@@ -82,9 +82,9 @@ const ROUTES = [
     'POST',
     '/practice-sessions',
     'required-json',
-    ({ learnerId, body }) => {
+    async ({ learnerId, body }) => {
       requireKnownExam(body.examId);
-      const result = startDrill(learnerId, {
+      const result = await startDrill(learnerId, {
         domainId: body.domainId || undefined,
         competencyId: body.competencyId || undefined,
         questionCount: Number(body.questionCount),
@@ -111,9 +111,9 @@ const ROUTES = [
     'POST',
     '/mock-exams',
     'optional-json',
-    ({ learnerId, body }) => {
+    async ({ learnerId, body }) => {
       requireKnownExam(body.examId);
-      return { status: 201, body: startMockExam(learnerId) };
+      return { status: 201, body: await startMockExam(learnerId) };
     },
   ],
   ['GET', '/mock-exams/:id', 'none', ({ learnerId, params, query }) => getMockExam(params.id, learnerId, query.index)],

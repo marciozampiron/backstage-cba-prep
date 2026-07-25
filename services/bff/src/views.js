@@ -3,8 +3,8 @@
 import { exam, domains } from './bank.js';
 import { learnerAttemptStats, currentMockResume } from './store.js';
 
-export function dashboard(learnerId) {
-  const { attempts, perDomain } = learnerAttemptStats(learnerId);
+export async function dashboard(learnerId) {
+  const { attempts, perDomain } = await learnerAttemptStats(learnerId);
   const firstRun = attempts.length === 0;
 
   const domainRows = domains.map((d) => {
@@ -40,7 +40,7 @@ export function dashboard(learnerId) {
     readiness: { percent: overall, targetPercent: exam.targetPercent, official: false },
     domains: domainRows,
     weakestCompetency: null, // competency-level readiness arrives with ProgressSnapshot (later slice)
-    resume: currentMockResume(learnerId), // in-progress mock exam, if any (§1 resume shape)
+    resume: await currentMockResume(learnerId), // in-progress mock exam, if any (§1 resume shape)
     recommendedDrill,
     recentAttempts: attempts.slice(0, 3).map((a) => ({
       attemptId: a.attemptId,
@@ -63,8 +63,8 @@ export function dashboard(learnerId) {
   };
 }
 
-export function practiceOptions(learnerId) {
-  const { attempts, perDomain } = learnerAttemptStats(learnerId);
+export async function practiceOptions(learnerId) {
+  const { attempts, perDomain } = await learnerAttemptStats(learnerId);
 
   let recommended = { domainId: null, competencyId: null, questionCount: 5, reason: 'warm_up' };
   if (attempts.length > 0) {

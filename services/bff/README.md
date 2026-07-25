@@ -11,9 +11,13 @@ tracked owners: Progress -> **#44**, `/api/me` -> **#69**, Preferences -> **#79*
   it (`web/` Next routes today; the Lambda/API Gateway adapter is #78).
 - **Ports**: exam content (`src/bank.js`, reads `spec/blueprint.json` + `questions/*.json`;
   override the content root with `CBA_CONTENT_DIR`), identity (`src/identity.js`,
-  `CBA_WEB_AUTH=dev|cognito` — Cognito adapter is #69), simulation repository
-  (`src/repository.js`, `CBA_WEB_STORE=memory|file`, `CBA_WEB_DATA_DIR`; the managed DynamoDB
-  adapter is #77).
+  `CBA_WEB_AUTH=dev|cognito` — Cognito adapter is #69), simulation repository (`src/repository.js`
+  — **async contract** since #77; `CBA_WEB_STORE=memory|file` locally, `dynamodb` in deployed
+  tiers; `CBA_WEB_DATA_DIR`).
+- **Composition seam** (`src/runtime.js` + `src/config.js`, #77): `CBA_RUNTIME_ENV=local|dev|pilot`
+  is the EXPLICIT deployment tier (never inferred from `NODE_ENV`); `dev|pilot` require
+  `CBA_WEB_STORE=dynamodb` + `CBA_WEB_TABLE` and fail loudly otherwise. Tests inject
+  repository/clock via `configureRuntime`/`resetRuntime`.
 - **Contract harness**: `npm test` runs the offline suite in `test/` — success, ownership,
   idempotency, and pre-submit exam-mode leak rules — with the in-memory adapter and zero
   network/credentials.

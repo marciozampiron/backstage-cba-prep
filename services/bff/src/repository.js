@@ -1,17 +1,18 @@
-// Persistence boundary for the simulation state (slice 4a, #42; moved from web/lib in #76).
+// Persistence boundary for the simulation state (slice 4a, #42; moved from web/lib in #76;
+// ASYNC contract since #77 Stage A).
 //
-// This is the repository PORT: the store (application layer) is its only caller — route handlers
-// and React pages never import it. Records are plain JSON-serializable objects, keyed by id and
-// scoped by learnerId, so a managed adapter (DynamoDB on AWS per ADR-0002) can replace the local
-// ones without touching the store, the routes, or the frontend. Review-state records ride the same
-// boundary when the review-progress feature lands.
+// This is the repository PORT: the store (application layer) is its only caller — runtime
+// adapters and React pages never import it. EVERY operation returns a Promise, because the
+// managed adapter (DynamoDB, #77 Stage B) is asynchronous; the local adapters implement the
+// same awaitable contract. Records are plain JSON-serializable objects, keyed by id and scoped
+// by learnerId.
 //
 // Adapters:
-//   - InMemorySimulationRepository — ephemeral (per process); used by the deterministic smokes.
-//   - FileSimulationRepository — restart-safe local pilot store: JSON file, atomic write-through
+//   - InMemorySimulationRepository — ephemeral (per process); used by deterministic tests/smokes.
+//   - FileSimulationRepository — restart-safe local store: JSON file, atomic write-through
 //     (tmp + rename), corrupt-file tolerant.
 //
-// Selection: CBA_WEB_STORE=file|memory (default file), CBA_WEB_DATA_DIR (default <web>/.data).
+// Adapter selection lives in the composition seam (runtime.js + config.js), not here.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -27,45 +28,45 @@ export class InMemorySimulationRepository {
   /** Write-through hook — no-op in memory. */
   persist() {}
 
-  nextId(prefix) {
+  async nextId(prefix) {
     this.state.counter += 1;
     const id = `${prefix}_${this.state.counter.toString(36)}${Date.now().toString(36).slice(-4)}`;
     this.persist();
     return id;
   }
 
-  getSession(practiceSessionId) {
+  async getSession(practiceSessionId) {
     return this.state.sessions[practiceSessionId] ?? null;
   }
 
-  saveSession(session) {
+  async saveSession(session) {
     this.state.sessions[session.practiceSessionId] = session;
     this.persist();
   }
 
-  getAttempt(attemptId) {
+  async getAttempt(attemptId) {
     return this.state.attempts[attemptId] ?? null;
   }
 
-  saveAttempt(attempt) {
+  async saveAttempt(attempt) {
     this.state.attempts[attempt.attemptId] = attempt;
     this.persist();
   }
 
-  listAttempts(learnerId) {
+  async listAttempts(learnerId) {
     return Object.values(this.state.attempts).filter((a) => a.learnerId === learnerId);
   }
 
-  getMock(mockExamId) {
+  async getMock(mockExamId) {
     return this.state.mocks[mockExamId] ?? null;
   }
 
-  saveMock(mock) {
+  async saveMock(mock) {
     this.state.mocks[mock.mockExamId] = mock;
     this.persist();
   }
 
-  listMocks(learnerId) {
+  async listMocks(learnerId) {
     return Object.values(this.state.mocks).filter((m) => m.learnerId === learnerId);
   }
 }
@@ -102,26 +103,12 @@ export class FileSimulationRepository extends InMemorySimulationRepository {
   }
 }
 
-const globalKey = Symbol.for('cba.simulationRepository');
-
-function dataFilePath() {
-  const custom = process.env.CBA_WEB_DATA_DIR;
-  if (custom) {
+export function dataFilePath(customDir) {
+  if (customDir) {
     // Dynamic by design (smokes point this at temp dirs); excluded from build-time file tracing.
-    const dir = path.resolve(/*turbopackIgnore: true*/ process.cwd(), custom);
+    const dir = path.resolve(/*turbopackIgnore: true*/ process.cwd(), customDir);
     return path.join(/*turbopackIgnore: true*/ dir, 'simulation.json');
   }
-  // Statically scoped default: <web>/.data/simulation.json.
+  // Statically scoped default: <cwd>/.data/simulation.json.
   return path.join(process.cwd(), '.data', 'simulation.json');
-}
-
-export function getRepository() {
-  if (!globalThis[globalKey]) {
-    const mode = process.env.CBA_WEB_STORE ?? 'file';
-    globalThis[globalKey] =
-      mode === 'memory'
-        ? new InMemorySimulationRepository()
-        : new FileSimulationRepository(dataFilePath());
-  }
-  return globalThis[globalKey];
 }

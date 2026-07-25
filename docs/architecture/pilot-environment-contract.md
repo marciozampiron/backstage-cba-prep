@@ -114,6 +114,7 @@ artifact serves `dev` and `pilot`.
 
 | Name | Values | Purpose |
 | --- | --- | --- |
+| `CBA_RUNTIME_ENV` | `local` \| `dev` \| `pilot` | **explicit deployment tier** (#77) — never inferred from `NODE_ENV` or ambient AWS variables. `local` permits `memory`/`file` stores; `dev`/`pilot` REQUIRE `CBA_WEB_STORE=dynamodb` + `CBA_WEB_TABLE` and fail loudly otherwise (this is the enforcement mechanism of the fail-fast rule below) |
 | `CBA_WEB_AUTH` | `dev` \| `cognito` | existing identity port switch (`web/lib/identity.js`); `dev` is a **local-only** value |
 | `CBA_WEB_STORE` | `memory` \| `file` \| `dynamodb` | existing repository switch; `memory`/`file` are **local-only** values; `dynamodb` arrives with #68 |
 | `CBA_WEB_DATA_DIR` | path | file-store location (local only) |
