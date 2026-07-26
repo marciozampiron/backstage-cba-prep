@@ -416,7 +416,7 @@ never a denial.
 
 Round 11's record is marked historical, since this round supersedes its description of the scanner.
 
-## Work log — round 13 (Codex FINDINGS on 36e417f)
+## HISTORICAL — work log record, round 13 (Codex FINDINGS on 36e417f)
 
 **Confirmed and reproduced.** All three inputs were suppressed: a denial matched somewhere in the
 sentence, so the whole sentence was exempted. That is the same defect as rounds 9–12, which is the
@@ -463,6 +463,64 @@ sentence discussing authority without naming one is outside it. And no document 
 behaviour: it constrains what the repository says.
 
 Round 12's record is marked historical.
+
+## Work log — round 14 (Codex ARCHITECTURE_DIRECTION on e4a72ed)
+
+Taken as the architectural reset it is, not another narrowing round. All three findings confirmed.
+
+### 1 HIGH — the policy was not validated as closed
+
+It was checked by scattered assertions, so extra actors, extra fields and prohibited capabilities in
+`may` all passed. And `merge`/`deploy` carried `authorizedBy: "none"`, which reads as *no gate needed*
+— the opposite of the protocol.
+
+`src/lib/authority-policy.js` is now a **pure closed-schema validator**, and it is code rather than
+test assertions for a specific reason: if the vocabulary lived inside the policy, the policy could
+widen its own bounds by adding an entry. It enforces exact top-level keys; exact actor, document,
+effect and governed-surface sets; exact nested keys; a closed capability vocabulary; `may` ∩
+`mayNever` = ∅; a `NEVER_GRANTABLE` set no actor may hold; the required prohibitions on secrets and
+paid-service invocation; every reference resolved both ways (a document authorizing an effect and the
+effect naming that document back); a supported version; and normalized, unique allowlist entries.
+
+Merge is now authorized by Zamp's `MERGE_DECISION`; deploy requires a `separate-human-gate`. `"none"`
+is not an accepted authorization source at all.
+
+Sixteen negative tests inject one violation each — unknown actor, missing actor, unknown top-level
+field, unknown field in an actor and in a document, six prohibited capabilities in `may`, a
+may/mayNever contradiction, a dropped canonical prohibition, five unresolved references, four
+unsupported versions, a scope document that claims authority it must not have, merge/deploy without
+their own gate, a dangling
+document-to-effect authority, an incomplete or padded surface list, and a denormalized or duplicated
+allowlist entry.
+
+### 2 MEDIUM — prose next to a table was dropped
+
+The collector chose one representation per markdown block, so prose immediately before or after a
+table with no blank line was discarded. It now walks **line by line**: prose accumulates into a
+paragraph buffer, a table row flushes it and is a unit itself, a blank line flushes it, and fenced
+code is skipped as illustration. Two direct regressions cover before-table and after-table, plus one
+mixed case and one proving a row naming no governed document is correctly out of scope.
+
+### 3 MEDIUM — the governed-surface list was incomplete
+
+It is now **in the policy** and validated closed against the required set in code, covering both
+security-review skills, both templates and every cold-start document — thirteen surfaces, 86
+statements.
+
+### One correction of my own
+
+Validating the policy at module scope made a malformed policy abort the whole file: node reported a
+single opaque failure and the other three hundred assertions never ran. Fail-closed, but unreadable.
+The policy is parsed at module scope and validated in its own test, so a violation now names itself.
+
+### What this still does not guarantee
+
+The closed policy represents the rules without prose interpretation, so no design limitation to
+report. Its scope is what the repository *says*: it constrains documents, not behaviour. The allowlist
+remains a baseline of already-reviewed text whose value is failing closed on change, and its reach is
+sentences naming a governed document. The prose scanner beside it is advisory and labelled as such.
+
+Round 13's record is marked historical.
 
 ## Status
 

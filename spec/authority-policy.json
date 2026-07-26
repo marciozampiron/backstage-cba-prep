@@ -32,7 +32,9 @@
         "push-integration-branch",
         "force-push",
         "administer-repository",
-        "rewrite-reviewed-history"
+        "rewrite-reviewed-history",
+        "access-secrets",
+        "invoke-paid-service"
       ]
     },
     "codex": {
@@ -49,7 +51,9 @@
         "push",
         "merge",
         "deploy",
-        "grant-human-gate"
+        "grant-human-gate",
+        "access-secrets",
+        "invoke-paid-service"
       ]
     },
     "zamp": {
@@ -58,6 +62,7 @@
         "author-review-scope",
         "grant-execution-gate",
         "accept-risk",
+        "authorize-spend",
         "merge"
       ],
       "mayNever": [
@@ -109,15 +114,30 @@
       "performedBy": "opus"
     },
     "merge": {
-      "authorizedBy": "none",
+      "authorizedBy": "MERGE_DECISION",
       "performedBy": "zamp"
     },
     "deploy": {
-      "authorizedBy": "none",
+      "authorizedBy": "separate-human-gate",
       "performedBy": "zamp",
-      "note": "separate human gate, not part of #93"
+      "note": "outside the scope of #93; its own human gate"
     }
   },
+  "governedSurfaces": [
+    "AGENTS.md",
+    ".agent-handoff/MESSAGE-PROTOCOL.md",
+    ".agent-handoff/README.md",
+    ".agent-handoff/COMMANDS.md",
+    ".agent-handoff/publish-gates/README.md",
+    ".agent-handoff/templates/task.md",
+    ".agent-handoff/templates/message.md",
+    "spec/security-rules.md",
+    "docs/architecture/agent-publication-runbook.md",
+    ".claude/skills/publication-prepare/SKILL.md",
+    ".claude/skills/security-review/SKILL.md",
+    ".agents/skills/publication-review/SKILL.md",
+    ".agents/skills/review-security/SKILL.md"
+  ],
   "allowedAuthorityStatements": {
     "AGENTS.md": [
       "Reports findings or recommends a gate.",
@@ -125,6 +145,14 @@
       "The execution gate is the HUMAN_GATE_GRANTED itself — written after review because it names the artifact's digest — supplied as CBA_EXECUTION_GATE and validated by the artifact both before the operator confirmation and again immediately before the push.",
       "- The publish gate is authored by the human outside the task worktree (for example /tmp/cba-gate-<issue>.json).",
       "A gate written inside the repository is an untracked file, which makes the worktree dirty and is refused; .agent-handoff/publish-gates/ holds only the schema and its example."
+    ],
+    ".agent-handoff/MESSAGE-PROTOCOL.md": [
+      "| Codex (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and read-only review; reports findings or recommends a gate |",
+      "| GATE_RECOMMENDATION | Codex | Zamp | Recommendation only; never a gate |",
+      "Two gates, not one. The review scope manifest (/tmp/cba-scope-<n>.json, passed as --gate) bounds what may be prepared and is read and validated at preparation — never consumed; idempotent consumption is #91 Stage B.",
+      "The execution gate is the HUMAN_GATE_GRANTED itself: written after review, it names the digest of the artifact plus the exact ordered SHAs and a bounded expiry, and the artifact reads and validates it at run time via CBA_EXECUTION_GATE, never as --gate.",
+      "It is a separate closed nine-key schema, not the review scope plus extras.",
+      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose."
     ],
     ".agent-handoff/README.md": [
       "| #91 Stage A — agent-publish | Validates a gate against local state, prints the plan, stops. |",
@@ -139,20 +167,9 @@
       "A generic \"approved\", or a Codex REVIEW_APPROVED, is review feedback and never a gate."
     ],
     ".agent-handoff/COMMANDS.md": [
-      "OPUS: advisory local validation — this is all it does node bin/cli.js agent-publish --role executor --executor <agent-id> \\ --gate /tmp/cba-scope-<n>.json # REVIEW SCOPE, authored by Zamp OUTSIDE the worktree",
       "- Step 6 — Zamp (HUMAN_GATE_GRANTED). Writes the execution gate: a second manifest, outside the worktree, naming the branch, ordered full SHAs, the artifact digest, a bounded expiry and the allowed effects.",
       "A generic \"approved\" is not a gate, and the review scope from step 3 authorizes nothing.",
-      "A gate whose approver is the operator, or looks like an agent identity, is refused.",
-      "# # BOTH commands take the REVIEW SCOPE.",
-      "The execution gate is a different manifest with a different, # closed schema, and it reaches the artifact as CBA_EXECUTION_GATE — never as --gate."
-    ],
-    ".agent-handoff/MESSAGE-PROTOCOL.md": [
-      "| Codex (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and read-only review; reports findings or recommends a gate |",
-      "| GATE_RECOMMENDATION | Codex | Zamp | Recommendation only; never a gate |",
-      "Two gates, not one. The review scope manifest (/tmp/cba-scope-<n>.json, passed as --gate) bounds what may be prepared and is read and validated at preparation — never consumed; idempotent consumption is #91 Stage B.",
-      "The execution gate is the HUMAN_GATE_GRANTED itself: written after review, it names the digest of the artifact plus the exact ordered SHAs and a bounded expiry, and the artifact reads and validates it at run time via CBA_EXECUTION_GATE, never as --gate.",
-      "It is a separate closed nine-key schema, not the review scope plus extras.",
-      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose."
+      "A gate whose approver is the operator, or looks like an agent identity, is refused."
     ],
     ".agent-handoff/publish-gates/README.md": [
       "# Publish Gates (#91, #93)",
@@ -180,6 +197,10 @@
       "A new commit — including a fix-forward after review — needs a new review scope and a new execution gate, and because the execution gate names the artifact digest, regenerating the artifact invalidates it too.",
       "## What a gate does NOT do (Stage A)",
       "A gate is validated, never consumed: the same file passes twice."
+    ],
+    ".agent-handoff/templates/message.md": [
+      "GATE_RECOMMENDATION (Codex → Zamp) — a recommendation, never a gate:",
+      "The machine-readable form is the execution gate manifest, written outside the worktree and supplied to the artifact as CBA_EXECUTION_GATE:"
     ],
     "spec/security-rules.md": [
       "Two gates are required and are not interchangeable: a review scope bounds preparation and authorizes nothing; the execution gate — supplied as CBA_EXECUTION_GATE, closed-schema, bounded to 12 hours — is validated by the artifact before the operator confirmation and again immediately before the push.",
@@ -221,6 +242,10 @@
       "Confirm that the reported command does that, embeds the digest you verified, and exports it as CBA_ARTIFACT_DIGEST so the execution gate can be bound to these bytes.",
       "The execution gate. The artifact must require CBA_EXECUTION_GATE, refuse a symlink or non-regular file, and validate that the gate is a HUMAN_GATE_GRANTED for this issue, branch and canonical approver, naming the reviewed commits exactly and in order, unexpired, bounded to 12 hours, and carrying an artifactDigest equal to the digest of the bytes being run.",
       "A gate that could authorize a different artifact is a finding."
+    ],
+    ".agents/skills/review-security/SKILL.md": [
+      "You may NEVER implement the reviewed delivery, prepare or execute a publication script, push, merge, deploy, administer the repository, or grant the human gate — agent-publish and agent-human-publish-script both refuse your declared role before reading a gate, running git or writing a file.",
+      "Identify review targets by full commit SHA, and recommend a gate rather than acting on one."
     ]
   }
 }

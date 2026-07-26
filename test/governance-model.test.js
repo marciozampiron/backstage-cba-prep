@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES } from '../src/lib/authority-policy.js';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1414,20 +1415,18 @@ test('the complete-denial equivalents of all three still pass', () => {
 // spec/authority-policy.json. A new phrasing fails until a human adds it deliberately — fail-closed,
 // the same discipline as the closed nine-key execution-gate schema.
 
+/**
+ * Parsed at module scope, VALIDATED in its own test.
+ *
+ * Validating here would throw during module evaluation, and node's test runner then reports one opaque
+ * failure for the whole file — three hundred other assertions never run, and the reason is invisible.
+ * A malformed policy must fail loudly and attributably, so validation is a test of its own and the
+ * dependent tests read the parsed document.
+ */
 const POLICY = JSON.parse(read('spec/authority-policy.json'));
 
-/** Surfaces whose authority statements are governed by the policy allowlist. */
-const POLICY_SURFACES = [
-  'AGENTS.md',
-  '.agent-handoff/README.md',
-  '.agent-handoff/COMMANDS.md',
-  '.agent-handoff/MESSAGE-PROTOCOL.md',
-  '.agent-handoff/publish-gates/README.md',
-  'spec/security-rules.md',
-  'docs/architecture/agent-publication-runbook.md',
-  '.claude/skills/publication-prepare/SKILL.md',
-  '.agents/skills/publication-review/SKILL.md',
-];
+/** Surfaces come FROM the policy, so the list itself is validated closed rather than restated here. */
+const POLICY_SURFACES = POLICY.governedSurfaces ?? [];
 
 /**
  * The governed vocabulary. Any statement naming one of these documents is in scope.
@@ -1444,23 +1443,48 @@ const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').tr
 /**
  * Every statement on a surface that mentions a governed document.
  *
- * Table rows are units in their own right — splitting a row on `.` would sever a cell mid-thought —
- * and prose is joined per paragraph before being split into sentences, so a wrapped sentence is one
- * statement.
+ * Parsed SEQUENTIALLY, line by line. Choosing one representation per markdown block was a real gap:
+ * a block containing a table was parsed entirely as table rows, so prose sitting immediately before or
+ * after the table — with no blank line between — was discarded and never checked. Prose accumulates
+ * into a paragraph buffer; a table row flushes it and is a unit in its own right; a blank line flushes
+ * it. Nothing is skipped because of what a neighbouring line happens to be.
  */
 function authorityStatements(text) {
   const out = [];
-  for (const block of text.split(/\n\s*\n/)) {
-    const lines = block.split('\n');
-    const isTable = lines.some((l) => /^\s*\|/.test(l));
-    const units = isTable
-      ? lines.filter((l) => /^\s*\|/.test(l) && !/^\s*\|[\s:|-]+\|\s*$/.test(l))
-      : block.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/);
-    for (const u of units) {
-      const t = normalizeStatement(u);
+  let paragraph = [];
+  let inFence = false;
+
+  const flush = () => {
+    if (!paragraph.length) return;
+    const joined = paragraph.join(' ').replace(/\s+/g, ' ');
+    for (const sentence of joined.split(/(?<=[.!?])\s+/)) {
+      const t = normalizeStatement(sentence);
       if (t && GOVERNED_DOC.test(t)) out.push(t);
     }
+    paragraph = [];
+  };
+
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      flush();
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue; // fenced code is example text, not a statement about authority
+    if (line.trim() === '') {
+      flush();
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      flush(); // prose that ended where the table began is still a statement
+      if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) continue; // separator row
+      const t = normalizeStatement(line);
+      if (t && GOVERNED_DOC.test(t)) out.push(t);
+      continue;
+    }
+    paragraph.push(line.trim());
   }
+  flush();
   return out;
 }
 
@@ -1479,9 +1503,12 @@ test('the authority policy states the invariants as data, not prose', () => {
   assert.equal(POLICY.documents['execution-gate'].boundTo, 'artifactDigest');
   assert.equal(POLICY.documents['execution-gate'].suppliedAs, 'CBA_EXECUTION_GATE');
 
-  // Merge is nobody's gate to grant and Zamp's to perform.
-  assert.equal(POLICY.effects.merge.authorizedBy, 'none');
+  // Merge is authorized by Zamp's MERGE_DECISION and performed by Zamp. Recording it as authorized
+  // by nothing was wrong in a way that mattered: it reads as "no gate needed".
+  assert.equal(POLICY.effects.merge.authorizedBy, 'MERGE_DECISION');
   assert.equal(POLICY.effects.merge.performedBy, 'zamp');
+  // Deploy needs its own human gate; it is not a document-authorized effect either.
+  assert.equal(POLICY.effects.deploy.authorizedBy, 'separate-human-gate');
 
   // Opus operates but may never approve itself or merge; Codex may never implement or operate.
   assert.ok(POLICY.actors.opus.mayNever.includes('self-approve'));
@@ -1543,4 +1570,213 @@ test('POSITIVE CONTROL: an unlisted authority claim fails, and rewording it is w
   const real = authorityStatements(read('AGENTS.md'));
   assert.ok(real.length >= 1);
   for (const s of real) assert.ok(allowed.has(s), `already-reviewed statement must be permitted: ${s}`);
+});
+
+/* ================= the policy is validated as CLOSED ========================================== */
+//
+// A closed schema is only closed if rejection is demonstrated. Each case below takes the real policy,
+// injects one specific violation, and requires the validator to refuse it. Without these the validator
+// could be an empty function and every other test here would still pass.
+
+/** A deep copy of the real policy, so injections cannot leak between cases. */
+const clonePolicy = () => JSON.parse(read('spec/authority-policy.json'));
+
+function expectRejected(mutate, expected) {
+  const policy = clonePolicy();
+  mutate(policy);
+  assert.throws(() => validateAuthorityPolicy(policy), (err) => {
+    assert.ok(err instanceof PolicyError, `expected a PolicyError, got ${err}`);
+    assert.match(err.message, expected, `unexpected reason: ${err.message}`);
+    return true;
+  });
+}
+
+test('the authority policy is a valid closed policy', () => {
+  // The whole guarantee rests on this passing; every negative case below proves it can fail.
+  assert.doesNotThrow(() => validateAuthorityPolicy(clonePolicy()));
+});
+
+test('an unknown actor is rejected', () => {
+  expectRejected((p) => {
+    p.actors.gemini_ops = { role: 'helper', may: ['validate'], mayNever: [] };
+  }, /policy\.actors must be exactly/);
+});
+
+test('a missing actor is rejected', () => {
+  expectRejected((p) => {
+    delete p.actors.gemini;
+  }, /policy\.actors must be exactly/);
+});
+
+test('an unknown top-level field is rejected', () => {
+  expectRejected((p) => {
+    p.extra = true;
+  }, /policy has unknown key\(s\): extra/);
+});
+
+test('an unknown field inside an actor is rejected', () => {
+  expectRejected((p) => {
+    p.actors.opus.escalation = 'allowed';
+  }, /policy\.actors\.opus has unknown key\(s\): escalation/);
+});
+
+test('an unknown field inside a document is rejected', () => {
+  expectRejected((p) => {
+    p.documents['review-scope'].alsoAuthorizes = ['merge'];
+  }, /policy\.documents\.review-scope has unknown key\(s\)/);
+});
+
+test('a prohibited capability in `may` is rejected', () => {
+  for (const cap of ['self-approve', 'force-push', 'administer-repository', 'access-secrets', 'invoke-paid-service', 'grant-human-gate']) {
+    expectRejected((p) => {
+      p.actors.opus.may.push(cap);
+    }, new RegExp(`may contains "${cap}", which no actor may ever be granted`));
+  }
+});
+
+test('a may/mayNever contradiction is rejected', () => {
+  expectRejected((p) => {
+    p.actors.opus.may.push('merge');
+  }, /lists merge as both may and mayNever/);
+});
+
+test('a dropped canonical prohibition is rejected', () => {
+  expectRejected((p) => {
+    p.actors.opus.mayNever = p.actors.opus.mayNever.filter((c) => c !== 'access-secrets');
+  }, /policy\.actors\.opus\.mayNever must include "access-secrets"/);
+  expectRejected((p) => {
+    p.actors.opus.mayNever = p.actors.opus.mayNever.filter((c) => c !== 'invoke-paid-service');
+  }, /must include "invoke-paid-service"/);
+  expectRejected((p) => {
+    p.actors.codex.mayNever = p.actors.codex.mayNever.filter((c) => c !== 'grant-human-gate');
+  }, /policy\.actors\.codex\.mayNever must include "grant-human-gate"/);
+});
+
+test('an unresolved reference is rejected', () => {
+  // an effect that no declared document or decision authorizes
+  expectRejected((p) => {
+    p.effects.merge.authorizedBy = 'the-vibes';
+  }, /policy\.effects\.merge\.authorizedBy must be one of/);
+  // a document authorizing an effect that does not exist
+  expectRejected((p) => {
+    p.documents['execution-gate'].authorizes.push('rewrite-history');
+  }, /references unknown effect "rewrite-history"/);
+  // an unknown capability
+  expectRejected((p) => {
+    p.actors.zamp.may.push('bypass-review');
+  }, /references unknown capability "bypass-review"/);
+  // a performer who is not a declared actor
+  expectRejected((p) => {
+    p.effects.deploy.performedBy = 'jenkins';
+  }, /performedBy must be a declared actor/);
+  // an allowlist entry for a surface the policy does not govern
+  expectRejected((p) => {
+    p.allowedAuthorityStatements['README.md'] = ['A gate is a gate.'];
+  }, /which is not a governed surface/);
+});
+
+test('an unsupported policy version is rejected', () => {
+  for (const version of [0, 2, '1', null]) {
+    expectRejected((p) => {
+      p.version = version;
+    }, /is not supported/);
+  }
+});
+
+test('the review scope authorizing anything is rejected', () => {
+  expectRejected((p) => {
+    p.documents['review-scope'].authorizes.push('create-or-reuse-one-pull-request');
+  }, /review-scope\.authorizes must be empty/);
+});
+
+test('merge or deploy recorded as needing no authorization is rejected', () => {
+  expectRejected((p) => {
+    p.effects.merge.authorizedBy = 'review-scope';
+  }, /must be authorized by MERGE_DECISION/);
+  expectRejected((p) => {
+    p.effects.deploy.authorizedBy = 'execution-gate';
+  }, /deploy must require a separate human gate/);
+});
+
+test('a dangling document-to-effect authority is rejected', () => {
+  expectRejected((p) => {
+    // the document claims the effect, but the effect names a different authorizer
+    p.documents['execution-gate'].authorizes.push('merge');
+  }, /policy\.effects\.merge\.authorizedBy must be "execution-gate"/);
+});
+
+test('an incomplete governed-surface list is rejected', () => {
+  expectRejected((p) => {
+    p.governedSurfaces = p.governedSurfaces.filter((s) => s !== '.agents/skills/review-security/SKILL.md');
+  }, /policy\.governedSurfaces must be exactly/);
+  expectRejected((p) => {
+    p.governedSurfaces.push('docs/README.md');
+  }, /policy\.governedSurfaces must be exactly/);
+});
+
+test('the governed-surface list covers every cold-start document, template and review skill', () => {
+  // Asserted against the code's required set, and the policy is validated against the same set, so a
+  // surface cannot be quietly dropped from either side.
+  for (const required of [
+    'AGENTS.md',
+    '.agent-handoff/MESSAGE-PROTOCOL.md',
+    '.agent-handoff/README.md',
+    '.agent-handoff/COMMANDS.md',
+    '.agent-handoff/publish-gates/README.md',
+    '.agent-handoff/templates/task.md',
+    '.agent-handoff/templates/message.md',
+    'spec/security-rules.md',
+    'docs/architecture/agent-publication-runbook.md',
+    '.claude/skills/publication-prepare/SKILL.md',
+    '.claude/skills/security-review/SKILL.md',
+    '.agents/skills/publication-review/SKILL.md',
+    '.agents/skills/review-security/SKILL.md',
+  ]) {
+    assert.ok(REQUIRED_SURFACES.includes(required), `${required} must be a governed surface`);
+    assert.ok(POLICY.governedSurfaces.includes(required), `${required} must be listed in the policy`);
+  }
+});
+
+test('a denormalized allowlist entry is rejected', () => {
+  expectRejected((p) => {
+    p.allowedAuthorityStatements['AGENTS.md'].push('  a gate   with odd spacing ');
+  }, /must hold normalized statements/);
+  expectRejected((p) => {
+    const first = p.allowedAuthorityStatements['AGENTS.md'][0];
+    p.allowedAuthorityStatements['AGENTS.md'].push(first);
+  }, /lists a duplicate statement/);
+});
+
+/* ================= prose adjacent to a table is still collected ================================ */
+
+test('REGRESSION: prose immediately BEFORE a table, with no blank line, is collected', () => {
+  const text = ['The review scope authorizes publication.', '| Field | Meaning |', '| --- | --- |'].join('\n');
+  assert.deepEqual(authorityStatements(text), ['The review scope authorizes publication.']);
+});
+
+test('REGRESSION: prose immediately AFTER a table, with no blank line, is collected', () => {
+  const text = ['| Field | Meaning |', '| --- | --- |', 'The execution gate authorizes merge.'].join('\n');
+  assert.deepEqual(authorityStatements(text), ['The execution gate authorizes merge.']);
+});
+
+test('a table row and its surrounding prose are all collected, in order', () => {
+  const text = [
+    'The review scope authorizes publication.',
+    '| the review scope | authorized to publish |',
+    '| --- | --- |',
+    'The execution gate authorizes merge.',
+  ].join('\n');
+  assert.deepEqual(authorityStatements(text), [
+    'The review scope authorizes publication.',
+    '| the review scope | authorized to publish |',
+    'The execution gate authorizes merge.',
+  ]);
+  // A row that names no governed document is correctly out of scope.
+  assert.deepEqual(authorityStatements('| `executor` | authorized to publish |'), []);
+});
+
+test('fenced code is not read as an authority statement', () => {
+  // Command examples name the gate files constantly; they are illustrations, not claims.
+  const text = ['```bash', 'node bin/cli.js agent-publish --gate /tmp/cba-scope-93.json', '```'].join('\n');
+  assert.deepEqual(authorityStatements(text), []);
 });
