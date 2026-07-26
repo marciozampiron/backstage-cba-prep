@@ -99,20 +99,35 @@ A copyable skeleton lives in [`templates/message.md`](templates/message.md).
 
 ## 5. Mechanical guards
 
-`test/governance-model.test.js` reads every active operational source and fails if any of these
-becomes true. Each is a prohibition, and the test exists because prose alone has already drifted
-twice:
+The authoritative control is **[`../spec/authority-policy.json`](../spec/authority-policy.json)** — a
+closed policy stating, as data, who may authorize what, plus the exact normalized set of statements
+that may mention a governed document on a canonical surface. `test/governance-model.test.js` enforces
+it in both directions: an unlisted statement fails, and a stale allowance fails. Editing any sentence
+that names the review scope, the execution gate or "a gate" therefore requires a human to add it to
+the policy on purpose.
+
+That inversion is deliberate. Five review rounds found bypasses in a regex scanner over prose, each
+fix narrowing a window and the next round finding another — because detecting *bad* prose is
+unbounded, while permitting *known-good* prose is not. It is the same discipline as the closed
+nine-key execution-gate schema, applied to documentation.
+
+A prose scanner remains alongside it and is **advisory**: it catches the specific shapes already known
+to have shipped, and it is not a complete semantic guard. Its regressions are kept because they are
+cheap and they name real historical defects.
+
+The suite additionally holds these prohibitions, each phrased as one so the document never states the
+forbidden thing as though it were permitted:
 
 - a message type, sender, receiver or next owner must never diverge from §3;
 - Gemini must never hold a collaboration, publication or governance role;
 - Codex must never be instructed to implement, prepare, publish, push, merge or deploy;
-- Opus must never be permitted to self-review, self-approve, merge, deploy, push `main`,
-  force-push or administer the repository;
+- Opus must never be permitted to self-review, self-approve, merge, deploy, push `main`, force-push
+  or administer the repository;
 - Zamp must never be described as implementation executor or script operator;
 - `REVIEW_APPROVED`, or a generic approval, must never be treated as a publication gate;
 - a bare-path publication instruction must never be offered as supported;
 - a template must never omit exact SHAs, status, next owner, prohibited actions, evidence or
-  residual risks where required.
+  residual risks.
 
 Append-only history — `EVENTS.md` and `done/` — may retain former workflows when clearly marked
 historical. The guards read those as records, not as instructions.

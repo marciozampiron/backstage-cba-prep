@@ -384,7 +384,7 @@ field-bound denial.
 
 Round 10's record is marked historical, since this round supersedes its description of the scanner.
 
-## Work log — round 12 (Codex FINDINGS on 324e4b2)
+## HISTORICAL — work log record, round 12 (Codex FINDINGS on 324e4b2)
 
 **All three confirmed and reproduced before any change.**
 
@@ -415,6 +415,54 @@ per-pattern complete denials that must pass and a primitive assertion that an em
 never a denial.
 
 Round 11's record is marked historical, since this round supersedes its description of the scanner.
+
+## Work log — round 13 (Codex FINDINGS on 36e417f)
+
+**Confirmed and reproduced.** All three inputs were suppressed: a denial matched somewhere in the
+sentence, so the whole sentence was exempted. That is the same defect as rounds 9–12, which is the
+argument for taking the review's preferred direction rather than narrowing another regex.
+
+### What replaced the guarantee
+
+The authoritative control is now **`spec/authority-policy.json`** — a closed policy holding, as data,
+who may authorize what, plus the exact normalized set of statements permitted to mention a governed
+document on a canonical surface. `test/governance-model.test.js` enforces it in both directions: an
+unlisted statement fails, and a stale allowance fails, so editing any sentence naming the review
+scope, the execution gate or "a gate" requires a human to put it in the policy deliberately.
+
+Detecting bad prose is unbounded; permitting known-good prose is not. It is the same discipline as the
+closed nine-key execution-gate schema, applied to documentation.
+
+### The correction inside the correction
+
+My first version of the collector kept an authority-word filter, and a planted sentence — *"The review
+scope may serve as sufficient basis for publication in urgent cases"* — walked straight past it,
+because it contains no word from the list. That was the identical unbounded-detection mistake one level
+up, and my own poisoning test caught it. The filter is gone: **every** sentence naming a governed
+document is in scope, 85 of them today.
+
+### The prose scanner, correctly labelled
+
+It stays, and it is **advisory** — it covers only shapes already known to have shipped, and the docs
+and its own header now say so instead of implying completeness. Its claim unit changed from "sentence"
+to "predicate span", so the three reported inputs are reported: the negation must break the span or sit
+immediately before it, and a denial about a different object is elsewhere in the sentence and cannot
+reach it.
+
+### Verification
+
+Fifteen `REGRESSION:` tests through the real scanners. Both fail-closed directions demonstrated by
+poisoning a canonical surface: adding an unlisted statement fails, and *changing* an existing one fails
+as both unlisted and stale. Seven complete-denial equivalents of the reported inputs must pass.
+
+### What this still does not guarantee
+
+The allowlist is a **baseline of text already reviewed** across rounds 1–13; its value is fail-closed
+on change, not that each line was re-derived. Its scope is sentences naming a governed document — a
+sentence discussing authority without naming one is outside it. And no document scanner constrains
+behaviour: it constrains what the repository says.
+
+Round 12's record is marked historical.
 
 ## Status
 

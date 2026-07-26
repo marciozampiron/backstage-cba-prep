@@ -896,55 +896,46 @@ const undeniedScopePredicates = (sentence) => relationshipPredicates(sentence, S
 /** Stage B is the other actor that may be said not to promote the scope into an authorization. */
 const STAGE_B_DOES_NOT_PROMOTE = /\bStage B\b[^.]{0,40}\bdoes\s+not\s+promote\b[^.]{0,40}review[- ]scope/i;
 
-/** A filler that cannot cross a clause boundary, so a denial cannot reach past "but" or "while". */
-const SAME_CLAUSE = String.raw`(?:(?!\b(?:but|while|however|whereas|although|though|except)\b)[\w'-]+\s+){0,3}`;
-const NEG_AUX = String.raw`(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)`;
-
 /**
- * Sentences that promote the review scope into an authorization, however they are phrased.
+ * Claim SPANS, not sentence patterns.
  *
- * Each entry binds its denials to ITS OWN relationship. Pattern-specific matchers that merely looked
- * for a nearby negation were themselves bypasses — "The same gate is not immutable but becomes the
- * publication input" and "A gate is not optional but is the machine-readable form of
- * HUMAN_GATE_GRANTED" each denied something irrelevant and were exempted — so every denial below
- * names the subject, the negation and the predicate, and none may cross a clause boundary.
+ * Five rounds of findings all had one shape: a denial matched somewhere in the sentence and suppressed
+ * the whole sentence. Narrowing the denial regex never fixed it, because the unit of judgement was
+ * wrong. So each entry now names the exact span that IS the claim, and the negation has to break that
+ * span or sit immediately before it. A denial about a different object cannot reach it, because the
+ * span it would have to interrupt is somewhere else in the sentence.
  *
- * The review-scope authority entry keeps the predicate ENUMERATION instead, because that relationship
- * genuinely carries several predicates in one sentence and each must be judged separately.
+ * This scanner is **advisory**. The authoritative control is the allowlist in
+ * `spec/authority-policy.json`: it fails closed on any authority statement that is not explicitly
+ * permitted, which is bounded, whereas detecting bad prose is not.
  */
 const CONFLATION_PATTERNS = [
   {
-    label: 'the same gate carried into Stage B',
-    // "the same gate validates twice" is replay, not conflation, so the publication sense is required.
-    re: /\bthe same gate\b[^.]{0,80}\b(becomes|is the input|input to|publish\w*|publication)\b/i,
-    denials: [
-      new RegExp(String.raw`\bthe same gate\b\s+${SAME_CLAUSE}${NEG_AUX}\s+not\s+${SAME_CLAUSE}(?:become|be|serve|act|input|publish)`, 'i'),
-      new RegExp(String.raw`\bthe same gate\b\s+${SAME_CLAUSE}(?:${NEG_AUX}\s+)?(?:never|cannot|can't)\s+${SAME_CLAUSE}(?:become|be|serve|act|the|input|publish)`, 'i'),
-    ],
-  },
-  {
-    label: 'the review scope becoming a publication input',
-    re: new RegExp(String.raw`${SCOPE}[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b`, 'i'),
-    denials: [
-      new RegExp(String.raw`${SCOPE}\b\s+${SAME_CLAUSE}${NEG_AUX}\s+not\s+${SAME_CLAUSE}(?:become|be|serve|act|promot|input)`, 'i'),
-      new RegExp(String.raw`${SCOPE}\b\s+${SAME_CLAUSE}(?:${NEG_AUX}\s+)?(?:never|cannot|can't)\s+${SAME_CLAUSE}(?:become|be|serve|act|promot|the|input)`, 'i'),
-      STAGE_B_DOES_NOT_PROMOTE,
-    ],
+    label: 'a gate or the review scope described as the publication input',
+    subject: /\b(?:the same gate|review[- ]scope)\b/i,
+    // The span is the PREDICATE alone. A negation either breaks the span — "does not become the
+    // publication input" simply does not contain "become the publication input" — or sits immediately
+    // before it. A denial about a different object is elsewhere in the sentence and cannot reach it.
+    claims: /\b(?:becomes?|is|serves? as|acts? as|promoted (?:into|to))\s+(?:the\s+|a\s+|an\s+)?(?:publication\s+input|input\s+(?:to|for)\s+(?:\w+\s+){0,3}publication)\b/gi,
   },
   {
     label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED',
-    re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i,
-    denials: [
-      new RegExp(String.raw`\bA gate\b\s+${SAME_CLAUSE}${NEG_AUX}\s+(?:not|never)\s+${SAME_CLAUSE}machine-readable`, 'i'),
-    ],
+    subject: /\bA gate\b/i,
+    claims: /\bis\s+(?:the\s+)?machine-readable\s+form\s+of\s+(?:a|an)?\s*`?HUMAN_GATE_GRANTED/gi,
   },
   {
     label: 'the review scope authorizing an operation',
+    // This relationship really does carry several predicates in one sentence, so it keeps the
+    // per-occurrence enumeration rather than a span.
     re: new RegExp(String.raw`${SCOPE}[^.]{0,60}\bauthoriz\w+`, 'i'),
     relationship: SCOPE_AUTHORITY,
     denials: [STAGE_B_DOES_NOT_PROMOTE],
   },
 ];
+
+/** Text immediately before a claim span, within the same clause. */
+const ADJACENT_NEGATION =
+  /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$|\b(?:never|cannot|can't)\s+(?:\w{1,12}\s+)?$/i;
 
 /**
  * Shared scanner, so the positive controls exercise the SAME code the repository scan does.
@@ -955,12 +946,27 @@ function findConflations(files) {
   const violations = [];
   for (const { rel, text, markdown } of files) {
     for (const { line, text: sentence } of sentencesOf(text, { markdown })) {
-      for (const { label, re, relationship, denials } of CONFLATION_PATTERNS) {
+      for (const { label, re, subject, claims, relationship, denials } of CONFLATION_PATTERNS) {
+        const t = sentence.replace(/[*`]/g, '');
+
+        // Span-based entries: every occurrence is judged on its own, the subject must precede it, and
+        // a negation counts only when it sits immediately before that occurrence.
+        if (claims) {
+          const at = subject.exec(t);
+          if (!at) continue;
+          for (const m of t.matchAll(claims)) {
+            if (m.index < at.index) continue; // the predicate must follow its subject
+            if (ADJACENT_NEGATION.test(t.slice(0, m.index))) continue;
+            violations.push(`${rel}:${line}: [${label}] ${m[0].trim().slice(0, 140)}`);
+          }
+          continue;
+        }
+
+        // Enumeration where a relationship carries several predicates. Finding nothing is never a
+        // denial.
         if (!re.test(sentence)) continue;
-        // Enumeration where a relationship carries several predicates; otherwise bound denials only.
-        // Either way, finding nothing is never treated as a denial.
         if (relationship && relationshipIsFullyDenied(sentence, relationship)) continue;
-        if ((denials ?? []).some((d) => d.test(sentence.replace(/[*`]/g, '')))) continue;
+        if ((denials ?? []).some((d) => d.test(t))) continue;
         violations.push(`${rel}:${line}: [${label}] ${sentence.trim().slice(0, 140)}`);
       }
     }
@@ -1359,4 +1365,182 @@ test('an empty predicate set never counts as a denial, for any pattern', () => {
   assert.equal(relationshipIsFullyDenied('The same gate becomes the publication input.', noSuchVerb), false);
   const realVerb = { subject: /\bthe same gate\b/i, verbs: /\bbecomes?\b/ };
   assert.equal(relationshipIsFullyDenied('The same gate does not become the publication input.', realVerb), true);
+});
+
+/* ================= a denial neutralizes only the OCCURRENCE it interrupts ====================== */
+//
+// Five rounds of findings shared one shape: a denial matched somewhere in the sentence and suppressed
+// the whole sentence. Narrowing the denial never fixed it, because the unit of judgement was wrong.
+// The claim is now a predicate SPAN, judged per occurrence.
+
+test('REGRESSION: a denial of one object does not exempt a claim about another (same gate)', () => {
+  const hits = scan('The same gate does not become the documentation input but becomes the publication input.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /becomes the publication input/i);
+});
+
+test('REGRESSION: a denial of one object does not exempt a claim about another (review scope)', () => {
+  const hits = scan('The review scope does not become a documentation input but serves as the publication input.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /serves as the publication input/i);
+});
+
+test('REGRESSION: a denial about an advisory review does not exempt the HUMAN_GATE_GRANTED claim', () => {
+  const hits = scan(
+    'A gate is not the machine-readable form of an advisory review but is the machine-readable form of HUMAN_GATE_GRANTED.',
+  );
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('the complete-denial equivalents of all three still pass', () => {
+  for (const accepted of [
+    'The same gate does not become the publication input.',
+    'The same gate is never the publication input.',
+    'The review scope does not become the publication input.',
+    'The review scope does not serve as the publication input.',
+    'The review scope is not promoted into a publication input.',
+    'A gate is not the machine-readable form of a HUMAN_GATE_GRANTED.',
+    'A gate is never the machine-readable form of a HUMAN_GATE_GRANTED.',
+  ]) {
+    assert.deepEqual(scan(accepted), [], `must be accepted: ${accepted}`);
+  }
+});
+
+/* ================= the AUTHORITATIVE control: a closed authority policy ======================== */
+//
+// The prose scanner above is advisory, and five rounds of bypasses are the argument for why it cannot
+// be the guarantee: detecting bad prose is unbounded. This inverts the problem. Every sentence on a
+// canonical surface that makes an authority claim must appear, verbatim and normalized, in
+// spec/authority-policy.json. A new phrasing fails until a human adds it deliberately — fail-closed,
+// the same discipline as the closed nine-key execution-gate schema.
+
+const POLICY = JSON.parse(read('spec/authority-policy.json'));
+
+/** Surfaces whose authority statements are governed by the policy allowlist. */
+const POLICY_SURFACES = [
+  'AGENTS.md',
+  '.agent-handoff/README.md',
+  '.agent-handoff/COMMANDS.md',
+  '.agent-handoff/MESSAGE-PROTOCOL.md',
+  '.agent-handoff/publish-gates/README.md',
+  'spec/security-rules.md',
+  'docs/architecture/agent-publication-runbook.md',
+  '.claude/skills/publication-prepare/SKILL.md',
+  '.agents/skills/publication-review/SKILL.md',
+];
+
+/**
+ * The governed vocabulary. Any statement naming one of these documents is in scope.
+ *
+ * There is deliberately NO second filter for "does this sound like an authority claim". That filter
+ * was the same unbounded-detection mistake one level up: a planted sentence — "The review scope may
+ * serve as sufficient basis for publication in urgent cases" — contained no word from the authority
+ * list, so the collector never saw it and the allowlist never checked it. Dropping the filter makes
+ * the collector mechanical: every sentence about a governed document must be explicitly permitted.
+ */
+const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b/i;
+const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
+
+/**
+ * Every statement on a surface that mentions a governed document.
+ *
+ * Table rows are units in their own right — splitting a row on `.` would sever a cell mid-thought —
+ * and prose is joined per paragraph before being split into sentences, so a wrapped sentence is one
+ * statement.
+ */
+function authorityStatements(text) {
+  const out = [];
+  for (const block of text.split(/\n\s*\n/)) {
+    const lines = block.split('\n');
+    const isTable = lines.some((l) => /^\s*\|/.test(l));
+    const units = isTable
+      ? lines.filter((l) => /^\s*\|/.test(l) && !/^\s*\|[\s:|-]+\|\s*$/.test(l))
+      : block.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/);
+    for (const u of units) {
+      const t = normalizeStatement(u);
+      if (t && GOVERNED_DOC.test(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
+test('the authority policy states the invariants as data, not prose', () => {
+  // The review scope authorizes nothing — as an empty list, not a sentence a scanner has to parse.
+  assert.deepEqual(POLICY.documents['review-scope'].authorizes, []);
+  assert.deepEqual(POLICY.documents['review-scope'].bounds, ['preparation', 'review']);
+  assert.equal(POLICY.documents['review-scope'].suppliedAs, '--gate');
+
+  // The execution gate authorizes exactly two effects, and is bound to the artifact digest.
+  assert.deepEqual(POLICY.documents['execution-gate'].authorizes, [
+    'push-reviewed-commit-to-task-branch',
+    'create-or-reuse-one-pull-request',
+  ]);
+  assert.equal(POLICY.documents['execution-gate'].messageType, 'HUMAN_GATE_GRANTED');
+  assert.equal(POLICY.documents['execution-gate'].boundTo, 'artifactDigest');
+  assert.equal(POLICY.documents['execution-gate'].suppliedAs, 'CBA_EXECUTION_GATE');
+
+  // Merge is nobody's gate to grant and Zamp's to perform.
+  assert.equal(POLICY.effects.merge.authorizedBy, 'none');
+  assert.equal(POLICY.effects.merge.performedBy, 'zamp');
+
+  // Opus operates but may never approve itself or merge; Codex may never implement or operate.
+  assert.ok(POLICY.actors.opus.mayNever.includes('self-approve'));
+  assert.ok(POLICY.actors.opus.mayNever.includes('merge'));
+  assert.ok(POLICY.actors.codex.mayNever.includes('implement'));
+  assert.ok(POLICY.actors.codex.mayNever.includes('operate-artifact'));
+  assert.ok(POLICY.actors.codex.mayNever.includes('grant-human-gate'));
+  assert.deepEqual(POLICY.actors.gemini.may, []);
+
+  // Every effect the execution gate authorizes must be an effect the policy knows about.
+  for (const effect of POLICY.documents['execution-gate'].authorizes) {
+    assert.ok(POLICY.effects[effect], `effect ${effect} must be declared`);
+    assert.equal(POLICY.effects[effect].authorizedBy, 'execution-gate');
+  }
+});
+
+test('every authority statement on a canonical surface is explicitly allowed', () => {
+  const unlisted = [];
+  for (const rel of POLICY_SURFACES) {
+    const allowed = new Set(POLICY.allowedAuthorityStatements[rel] ?? []);
+    for (const statement of authorityStatements(read(rel))) {
+      if (!allowed.has(statement)) unlisted.push(`${rel}: ${statement}`);
+    }
+  }
+  assert.deepEqual(
+    unlisted,
+    [],
+    'these statements make an authority claim that spec/authority-policy.json does not permit.\n' +
+      'Fix the sentence, or add it to allowedAuthorityStatements after a human confirms it is correct:\n' +
+      unlisted.join('\n'),
+  );
+});
+
+test('the allowlist has no stale entries — every permitted statement still exists', () => {
+  // Fail-closed cuts both ways: an entry left behind after an edit would quietly permit wording that
+  // is no longer in the tree, and the next author would inherit an allowance nobody reviewed.
+  const stale = [];
+  for (const [rel, statements] of Object.entries(POLICY.allowedAuthorityStatements)) {
+    const present = new Set(authorityStatements(read(rel)));
+    for (const s of statements) if (!present.has(s)) stale.push(`${rel}: ${s}`);
+  }
+  assert.deepEqual(stale, [], `stale allowlist entries:\n${stale.join('\n')}`);
+});
+
+test('POSITIVE CONTROL: an unlisted authority claim fails, and rewording it is what fixes it', () => {
+  const allowed = new Set(POLICY.allowedAuthorityStatements['AGENTS.md'] ?? []);
+  // A claim the policy does not permit — including the exact shapes the prose scanner missed.
+  for (const planted of [
+    'The review scope authorizes publication.',
+    'The same gate does not become the documentation input but becomes the publication input.',
+    'A gate is not the machine-readable form of an advisory review but is the machine-readable form of HUMAN_GATE_GRANTED.',
+    'The review scope grants limited publication authority.',
+  ]) {
+    const found = authorityStatements(planted);
+    assert.equal(found.length, 1, `the collector must see it as an authority statement: ${planted}`);
+    assert.equal(allowed.has(found[0]), false, `it must not already be permitted: ${planted}`);
+  }
+  // And a real allowlisted statement is recognised as permitted.
+  const real = authorityStatements(read('AGENTS.md'));
+  assert.ok(real.length >= 1);
+  for (const s of real) assert.ok(allowed.has(s), `already-reviewed statement must be permitted: ${s}`);
 });
