@@ -1,0 +1,41 @@
+{
+  // Cloudflare Workers config for the learner frontend (#67 Stage A).
+  //
+  // Written BY HAND on purpose: `opennextjs-cloudflare migrate` is never run in this repo because
+  // it can provision an R2 bucket when one is available, and #67 Stage A forbids ANY Cloudflare
+  // account mutation. Every binding below is either platform-provided (ASSETS) or absent.
+  //
+  // Deploy/preview are OUT OF SCOPE here and belong to #70 (human-gated), which also owns the
+  // per-environment worker names, routes and runtime variables.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cba-study-coach-web",
+  "main": ".open-next/worker.js",
+
+  // nodejs_compat is REQUIRED by @opennextjs/cloudflare, together with a compatibility date of
+  // 2024-09-23 or later. The date tracks the workerd shipped with the pinned wrangler (1.20260722)
+  // so the local build validates against the same runtime semantics it would deploy onto.
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static output produced by `opennextjs-cloudflare build`. This is the ONLY browser-downloadable
+  // surface, and it is what `npm run cf:leak-scan` inspects.
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  }
+
+  // Deliberately NOT configured (each would provision or require a Cloudflare resource):
+  //   - r2_buckets / incremental cache: the pilot uses the default in-worker cache (see
+  //     open-next.config.ts). Adding R2 is a #70 decision with its own human gate.
+  //   - images binding, WORKER_SELF_REFERENCE service, KV/D1/Durable Objects: not needed by the
+  //     learner surface today.
+  //
+  // Runtime configuration (NOT committed here, by contract):
+  //   - CBA_BFF_BASE_URL — the environment's Web BFF (API Gateway) origin, supplied as a Worker
+  //     runtime variable per environment (pilot-environment-contract.md §3). It is NEVER a
+  //     NEXT_PUBLIC_* value (Next freezes those at build time, which would break the
+  //     build-once/promote-the-same-artifact rule of the #56 smoke design) and it never carries a
+  //     committed value in this file. #70 supplies it at deploy time.
+  //   - CBA_RUNTIME_ENV — local | dev | pilot. dev/pilot REQUIRE CBA_BFF_BASE_URL; the resolver in
+  //     lib/bff-config.js fails fast when it is missing.
+}

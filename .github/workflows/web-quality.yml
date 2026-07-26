@@ -45,8 +45,10 @@ jobs:
         run: npm --prefix ../services/bff test
       - name: Web unit tests (offline PKCE S256 proof, #69)
         run: npm test
-      - name: Build
+      - name: Build (local target — real in-process BFF)
         run: npm run build
+      - name: Artifact leak scan (browser-reachable output, no-spend)
+        run: npm run leak-scan
       - name: Deterministic web smokes (memory store, shared server)
         env:
           CBA_WEB_STORE: memory
@@ -61,3 +63,15 @@ jobs:
           BASE=http://localhost:3011 node scripts/smoke-identity.mjs
       - name: Restart-persistence smoke (file store, self-orchestrating)
         run: node scripts/smoke-restart-persistence.mjs
+      # Cloudflare target LAST: it aliases the in-process BFF away, so it must not disturb the
+      # smokes above, which prove the real learner loop against the local build. Build only —
+      # no deploy, no preview, no Cloudflare credentials (#67; deployment belongs to #70).
+      - name: Cloudflare OpenNext build (no deploy, no credentials)
+        run: npm run cf:build
+      - name: Cloudflare artifact leak scan (assets + Worker bundle + cache)
+        run: npm run cf:leak-scan
+      # The gate is only worth its exit code if it still catches leaks: these controls plant real
+      # bank content, an AWS SDK import and credentials into synthetic artifacts and assert the
+      # scanner fails, plus that a missing critical artifact fails.
+      - name: Leak-scan positive controls (proves the gate still fails on leaks)
+        run: npm run leak-scan:selftest

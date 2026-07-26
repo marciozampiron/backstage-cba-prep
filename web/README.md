@@ -24,6 +24,67 @@ npm run dev     # http://localhost:3000
 
 Self-contained on purpose: not a root npm workspace; the root CLI, tests, and CI are untouched.
 
+```bash
+npm test            # offline unit tests (PKCE S256 proof, session gate, BFF runtime config)
+npm run build       # Next.js production build
+npm run leak-scan   # deny-by-default scan of browser-reachable build output
+```
+
+## Cloudflare Workers build (#67, Stage A)
+
+The learner frontend targets Cloudflare Workers through the **OpenNext** adapter — no static
+export (dynamic routes and the session UI need a runtime), and no second door to the BFF.
+
+| Tool | Version | Why |
+| --- | --- | --- |
+| `next` | 16.2.12 (range stays `^16.2.10`) | the adapter supports `>=16.2.11`; the bump is lockfile-only |
+| `@opennextjs/cloudflare` | 1.20.2 | current adapter release |
+| `wrangler` | 4.114.0 | satisfies the adapter's `^4.86.0` peer |
+
+```bash
+npm run cf:build      # CBA_BUILD_TARGET=cloudflare opennextjs-cloudflare build -> .open-next/
+npm run cf:leak-scan  # scans .open-next assets AND the Worker bundle
+```
+
+`wrangler.jsonc` and `open-next.config.ts` are written **by hand**: `opennextjs-cloudflare migrate`
+is never run here because it can provision an R2 bucket, and no Cloudflare account mutation is
+authorized. For the same reason the OpenNext config sets **no** cache override (no R2/KV/D1/Durable
+Objects) and `wrangler.jsonc` declares only the platform-provided `ASSETS` binding. There is no
+`deploy`/`preview` script — deployment belongs to #70 behind a human gate.
+
+### Two explicit build targets
+
+`CBA_BUILD_TARGET` selects the target; nothing is inferred.
+
+| | local (default) | `CBA_BUILD_TARGET=cloudflare` |
+| --- | --- | --- |
+| `/api/**` route handlers | run the REAL in-process BFF (`backstage-cba-prep-bff`) | aliased to `lib/bff-unavailable.js`, a fail-closed 503 stub |
+| tracing root | repo root (the linked BFF lives outside `web/`) | `web/` — required by the OpenNext adapter, which anchors on `web/`'s own lockfile |
+| used by | `npm run dev`, `npm run build`, all four smokes | `npm run cf:build` |
+
+Both targets write `.next`, so **`cf:build` leaves `.next` holding the fail-closed stub**: run
+`npm run build` again before `next start` or the smokes. CI already orders it that way — the
+smokes run on the local build, and the Cloudflare target goes last.
+
+The learner API belongs to AWS (ADR-0002), so the Worker bundle must not contain the BFF, the
+question bank, or the AWS SDK. `npm run cf:leak-scan` proves that on the built artifact: it
+refuses to run unless the critical pieces (`assets`, `worker.js`, `server-functions`) are all
+present, and it scans the prerendered `cache` and `middleware` too.
+`npm run leak-scan:selftest` is the automated counter-proof — it plants real bank content, an AWS
+SDK import and credentials into synthetic artifacts and asserts the scanner FAILS on each.
+
+## Configuration responsibilities
+
+| Variable | Owner | Notes |
+| --- | --- | --- |
+| `CBA_BFF_BASE_URL` | Cloudflare Worker **runtime** variable, supplied per environment by #70 | the environment's Web BFF (API Gateway) origin. **Never** `NEXT_PUBLIC_*` — Next inlines those at build time, which would break the build-once/promote-the-same-artifact rule of the #56 smoke design. Resolved server-side by `lib/bff-config.js`; unset locally means same-origin `/api`. |
+| `CBA_RUNTIME_ENV` | environment | `local` \| `dev` \| `pilot`. `dev`/`pilot` **require** `CBA_BFF_BASE_URL` — the resolver fails fast instead of silently falling back to same-origin. **On Cloudflare Workers it is mandatory and only `dev`/`pilot` are legal**: a deployed runtime never inherits the `local` default. |
+| `CBA_WEB_AUTH` | environment (#69) | `dev` only locally. In a `dev`/`pilot` runtime it must be exactly `cognito`; absent, `dev` or unknown makes `/auth/config` answer `AUTH_MISCONFIGURED` instead of downgrading to the deterministic local learner. |
+| `COGNITO_*` | environment (#69) | served to the browser at request time by `/auth/config`; ids are configuration, not secrets. |
+
+No Cloudflare API token, AWS credential, account id or ARN belongs in this repo, in logs, or in
+fixtures. `npm run leak-scan` enforces the browser-facing half of that rule.
+
 ## Identity / auth
 
 Routes resolve the learner through the identity boundary in `lib/identity.js`

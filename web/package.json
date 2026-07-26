@@ -8,7 +8,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "cf:build": "CBA_BUILD_TARGET=cloudflare opennextjs-cloudflare build",
+    "leak-scan": "node scripts/leak-scan.mjs",
+    "cf:leak-scan": "node scripts/leak-scan.mjs --cloudflare",
+    "leak-scan:selftest": "node --test test/leak-scan.test.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -19,5 +23,9 @@
     "oidc-client-ts": "^3.5.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@opennextjs/cloudflare": "^1.20.2",
+    "wrangler": "^4.114.0"
   }
 }
