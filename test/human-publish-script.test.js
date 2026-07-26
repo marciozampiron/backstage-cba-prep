@@ -86,6 +86,26 @@ function scriptFixture(gate, repo) {
   });
 }
 
+/**
+ * A script whose REVIEW-SCOPE window is live against the real clock.
+ *
+ * `scriptFixture()` pins a 2026-07-26 expiry, which is correct for asserting on text but useless for
+ * running the artifact: `check_gate_expiry` calls the real `date`, so once wall-clock passes that
+ * instant every execution test starts failing for a reason unrelated to what it tests. Runtime tests
+ * therefore build against now.
+ */
+function runnableScript(gateOver = {}, repoOver = {}) {
+  const now = Date.now();
+  const stamp = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const gate = gateFixture({ approvedAt: stamp(now - 60_000), expiresAt: stamp(now + 4 * 3600_000), ...gateOver });
+  const repo = repoFixture(repoOver);
+  return buildPublicationScript({
+    result: validateGate({ gate, role: 'executor', executor: 'claude-opus-5', repo, nowMs: now }),
+    repo: REPO,
+    generatedAt: stamp(now),
+  });
+}
+
 function expectRefusal(code, fn) {
   try {
     fn();
@@ -253,7 +273,15 @@ test('the script touches only `gh pr list`, `gh pr view` and `gh pr create`', ()
 });
 
 test('no secret-shaped material reaches the generated script', () => {
-  const script = scriptFixture();
+  // The artifact deliberately CONTAINS a credential-marker pattern, to refuse a credential-shaped
+  // gate id. That detector is not a secret, so it is excluded — and asserted to still be there,
+  // because excluding it silently would be a way to lose the control.
+  const raw = scriptFixture();
+  assert.match(raw, /grep -Eqi 'akia\[0-9a-z\]\{16\}\|ghp_/, 'the credential detector must exist');
+  const script = raw
+    .split('\n')
+    .filter((l) => !/grep -Eqi 'akia/.test(l))
+    .join('\n');
   for (const re of [/ghp_[A-Za-z0-9]/, /github_pat_/, /AKIA[0-9A-Z]{8}/, /-----BEGIN [A-Z ]*PRIVATE KEY/, /xox[baprs]-/]) {
     assert.equal(re.test(script), false, `secret-shaped material matched ${re}`);
   }
@@ -1411,7 +1439,7 @@ const EXEC_GATE = (over = {}) => ({
 test('the artifact refuses to run without an execution gate — preparation authorizes nothing', async () => {
   await withTempDir(async (dir) => {
     const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-    const r = runArtifact(scriptFixture(), { gate: '', digest: 'd'.repeat(64), stubDir });
+    const r = runArtifact(runnableScript(), { gate: '', digest: 'd'.repeat(64), stubDir });
     assert.match(r.stderr, /set CBA_EXECUTION_GATE/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false, 'nothing may be pushed');
   });
@@ -1422,7 +1450,7 @@ test('the artifact refuses to run without the digest the verify-and-run command 
     const g = path.join(dir, 'gate.json');
     fs.writeFileSync(g, JSON.stringify(EXEC_GATE()));
     const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-    const r = runArtifact(scriptFixture(), { gate: g, digest: '', stubDir });
+    const r = runArtifact(runnableScript(), { gate: g, digest: '', stubDir });
     assert.match(r.stderr, /CBA_ARTIFACT_DIGEST is unset/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
@@ -1433,7 +1461,7 @@ test('POSITIVE CONTROL: a well-formed execution gate is accepted', async () => {
     const g = path.join(dir, 'gate.json');
     fs.writeFileSync(g, JSON.stringify(EXEC_GATE()));
     const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-    const r = runArtifact(scriptFixture(), { gate: g, digest: 'd'.repeat(64), stubDir, confirm: 'nope' });
+    const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir, confirm: 'nope' });
     assert.match(r.stdout, /Execution gate accepted: gate-93-exec approved by marciozampiron/, r.stderr);
     // It got as far as the confirmation and stopped there, without reaching any mutation.
     assert.match(r.stderr, /confirmation did not match/);
@@ -1447,7 +1475,7 @@ test('an execution gate for a DIFFERENT artifact cannot authorize this one', asy
     // The gate was written for a previous artifact; regenerating changes the digest.
     fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ artifactDigest: 'e'.repeat(64) })));
     const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-    const r = runArtifact(scriptFixture(), { gate: g, digest: 'd'.repeat(64), stubDir });
+    const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir });
     assert.match(r.stderr, /authorizes a different artifact than the one being run/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
@@ -1475,7 +1503,7 @@ test('the execution gate must match issue, branch, approver, commits and be a HU
       const g = path.join(dir, 'gate.json');
       fs.writeFileSync(g, JSON.stringify(EXEC_GATE(over)));
       const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-      const r = runArtifact(scriptFixture(), { gate: g, digest: 'd'.repeat(64), stubDir });
+      const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir });
       assert.match(r.stderr, expected, `${JSON.stringify(over)} should be refused`);
       assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false, `${JSON.stringify(over)} must not reach a mutation`);
     });
@@ -1489,7 +1517,7 @@ test('a symlinked execution gate is refused rather than followed', async () => {
     fs.writeFileSync(real, JSON.stringify(EXEC_GATE()));
     fs.symlinkSync(real, link);
     const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
-    const r = runArtifact(scriptFixture(), { gate: link, digest: 'd'.repeat(64), stubDir });
+    const r = runArtifact(runnableScript(), { gate: link, digest: 'd'.repeat(64), stubDir });
     assert.match(r.stderr, /the execution gate path is a symlink/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
@@ -1611,7 +1639,7 @@ test('an execution gate that expires while the prompt is open cannot reach the p
     });
 
     // Confirming creates the marker, so every `date` call after the confirmation sees a later clock.
-    const script = scriptFixture().replace(
+    const script = runnableScript().replace(
       'IFS= read -r typed || die',
       `touch ${JSON.stringify(marker)}; IFS= read -r typed || die`,
     );
@@ -1641,7 +1669,7 @@ test('POSITIVE CONTROL: with a steady clock the same run reaches the push attemp
       remoteBase: BASE,
       commits: [C1, C2],
     });
-    const r = runArtifact(scriptFixture(), {
+    const r = runArtifact(runnableScript(), {
       gate: g,
       digest: 'd'.repeat(64),
       stubDir,
@@ -1694,7 +1722,7 @@ test('a gate inside the repository worktree is refused at run time', async () =>
     // makeStubs reports `<dir>/repo` as the toplevel, so a gate written there is inside it.
     const inside = path.join(dir, 'repo', 'gate.json');
     fs.writeFileSync(inside, JSON.stringify(EXEC_GATE()));
-    const r = runArtifact(scriptFixture(), { gate: inside, digest: 'd'.repeat(64), stubDir });
+    const r = runArtifact(runnableScript(), { gate: inside, digest: 'd'.repeat(64), stubDir });
     assert.match(r.stderr, /must live outside the repository worktree/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
@@ -1741,7 +1769,7 @@ exec /usr/bin/date "$@"
       );
     fs.writeFileSync(path.join(stubDir, 'git'), git, { mode: 0o755 });
 
-    const r = runArtifact(scriptFixture(), {
+    const r = runArtifact(runnableScript(), {
       gate: g,
       digest: 'd'.repeat(64),
       stubDir,
@@ -1769,7 +1797,7 @@ test('the execution gate is opened with O_NOFOLLOW, closing the last window', as
       remoteBase: BASE,
       commits: [C1, C2],
     });
-    const r = runArtifact(scriptFixture(), { gate: link, digest: 'd'.repeat(64), stubDir });
+    const r = runArtifact(runnableScript(), { gate: link, digest: 'd'.repeat(64), stubDir });
     assert.match(r.stderr, /the execution gate path is a symlink/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
@@ -1786,12 +1814,12 @@ test('an oversized or non-regular execution gate is refused by the helper', asyn
     });
     const big = path.join(dir, 'big.json');
     fs.writeFileSync(big, 'x'.repeat(70 * 1024));
-    const oversized = runArtifact(scriptFixture(), { gate: big, digest: 'd'.repeat(64), stubDir });
+    const oversized = runArtifact(runnableScript(), { gate: big, digest: 'd'.repeat(64), stubDir });
     assert.match(oversized.stderr, /larger than 64 KiB/);
 
     const empty = path.join(dir, 'empty.json');
     fs.writeFileSync(empty, '');
-    const blank = runArtifact(scriptFixture(), { gate: empty, digest: 'd'.repeat(64), stubDir });
+    const blank = runArtifact(runnableScript(), { gate: empty, digest: 'd'.repeat(64), stubDir });
     assert.match(blank.stderr, /the execution gate is empty/);
   });
 });
@@ -1806,4 +1834,107 @@ test('publication evidence attributes authority to the execution gate', () => {
   assert.match(script, /execution gate : \$EXECUTION_GATE_ID {2}\(this is the authorization\)/);
   assert.match(script, /Authorized by execution gate \$EXECUTION_GATE_ID \(review scope \$REVIEW_SCOPE_ID\)/);
   assert.match(script, /authorized by {2}: execution gate \$EXECUTION_GATE_ID/);
+});
+
+/* ================= #93 round 7: adjacency, credential-shaped ids, and a FIFO gate ============== */
+
+test('the gate check and the push are consecutive statements, with not even a note between', () => {
+  const script = scriptFixture();
+  const check = script.indexOf('check_execution_gate "immediately before push"');
+  const push = script.indexOf('git push origin');
+  assert.ok(check > -1 && check < push);
+  const between = script
+    .slice(check + 'check_execution_gate "immediately before push"'.length, push)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'));
+  assert.deepEqual(between, [], `nothing may sit between the check and the push: ${between.join(' | ')}`);
+  // And the progress line moved ABOVE the check rather than being deleted.
+  assert.ok(script.indexOf('Pushing the reviewed commit') < check);
+});
+
+test('a credential-shaped execution gateId is refused before it is ever echoed', async () => {
+  // The gate id is printed at the prompt, in the pull-request body and in the evidence. A charset
+  // check alone is not enough: `ghp_...` and `api_key...` are perfectly lowercase.
+  const shaped = ['ghp_abcdefghij0123', 'github_pat_abc', 'sk-abcdefgh1234', 'my-secret-1', 'bearer-abc', 'api_key-1'];
+  for (const id of shaped) {
+    await withTempDir(async (dir) => {
+      const g = path.join(dir, 'gate.json');
+      fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ gateId: id })));
+      const stubDir = makeStubs(dir, {
+        headSha: C2,
+        baseSha: BASE,
+        branch: 'task/93-human-publication-script',
+        remoteBase: BASE,
+        commits: [C1, C2],
+      });
+      const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir });
+      assert.match(r.stderr, /malformed; the value is not echoed|credential material and was refused unprinted/, id);
+      assert.equal(r.stderr.includes(id), false, `the refused id ${id} must never be echoed`);
+      assert.equal(r.stdout.includes(id), false, `the refused id ${id} must never be echoed`);
+    });
+  }
+});
+
+test('a benign gateId still passes, so the credential check is not simply refusing everything', async () => {
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ gateId: 'gate-93-001' })));
+    const stubDir = makeStubs(dir, {
+      headSha: C2,
+      baseSha: BASE,
+      branch: 'task/93-human-publication-script',
+      remoteBase: BASE,
+      commits: [C1, C2],
+    });
+    const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir, confirm: 'nope' });
+    assert.match(r.stdout, /Execution gate accepted: gate-93-001/, r.stderr);
+  });
+});
+
+test('a FIFO planted at the gate path fails fast instead of hanging the operation', async () => {
+  // Without O_NONBLOCK, opening a FIFO with no writer blocks forever: the operation would hang
+  // rather than refuse. The bounded timeout is the assertion — if this test ever times out, the
+  // flag has been lost.
+  await withTempDir(async (dir) => {
+    const fifo = path.join(dir, 'gate.json');
+    const mk = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+    if (mk.status !== 0) return; // platform without mkfifo; the O_NONBLOCK assertion below still runs
+    const stubDir = makeStubs(dir, {
+      headSha: C2,
+      baseSha: BASE,
+      branch: 'task/93-human-publication-script',
+      remoteBase: BASE,
+      commits: [C1, C2],
+    });
+    const started = process.hrtime.bigint();
+    const r = spawnSync('bash', ['-c', runnableScript()], {
+      encoding: 'utf8',
+      input: '',
+      timeout: 15_000,
+      env: {
+        PATH: `${stubDir}:${process.env.PATH}`,
+        CBA_EXECUTION_GATE: fifo,
+        CBA_ARTIFACT_DIGEST: 'd'.repeat(64),
+      },
+    });
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.notEqual(r.signal, 'SIGTERM', 'the open must not block until the timeout kills it');
+    assert.ok(elapsedMs < 15_000, `expected a fast refusal, took ${Math.round(elapsedMs)}ms`);
+    // A FIFO is not a regular file, so fstat refuses it.
+    assert.match(r.stderr, /not a regular file|cannot be opened/);
+    assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
+  });
+});
+
+test('the gate is opened with O_NONBLOCK as well as O_NOFOLLOW', () => {
+  const script = scriptFixture();
+  assert.match(script, /O_RDONLY \| fs\.constants\.O_NOFOLLOW \| fs\.constants\.O_NONBLOCK/);
+  assert.match(script, /st\.isFile\(\)/);
+});
+
+test('the gate documents reserve each filename for exactly one channel', () => {
+  const doc = docText('.agent-handoff/publish-gates/README.md');
+  assert.match(doc, /review scope as `\/tmp\/cba-scope-<issue>\.json`/);
+  assert.match(doc, /reserved for `CBA_EXECUTION_GATE` and is\s+never passed to `--gate`/);
 });

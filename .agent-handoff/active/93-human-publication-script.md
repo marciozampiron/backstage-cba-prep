@@ -200,6 +200,24 @@ them from git.
 | 4 | MEDIUM | Conflicting gate instructions: the duplicate push-gate block passed the execution-gate filename to `--gate`; the gate doc said the execution gate "adds" fields to the review scope; the protocol described the review scope as being consumed rather than read and validated. | Distinct filename conventions and channels documented everywhere (`--gate` takes `cba-scope-*`; the execution gate arrives only as `CBA_EXECUTION_GATE`); the execution gate is described as a separate closed nine-key schema; "consumed" replaced by "read and validated". Four semantic documentation tests added, not word-presence checks |
 | 5 | MEDIUM | Symlink TOCTOU at the open: `[ ! -L ]` then `exec 9<` left a window, and bash follows a symlink. | The open is delegated to a small node helper using `O_RDONLY \| O_NOFOLLOW`, with `fstat`, size and content read from that same descriptor. The kernel refuses the symlink at open time, so there is no window — and the `/proc/self/fd` dependency is gone |
 
+## Work log — Codex required corrections on 3d0a91d (round 6), all confirmed
+
+| # | Correction | Fix |
+| --- | --- | --- |
+| 1 | The `note "Pushing..."` line sat between the final gate check and `git push`, so they were not consecutive statements. My own guard only forbade network-bound calls in that window, which was too weak a rule. | The progress line moved **above** the check; the guard now requires **zero** executable statements between the check and the push |
+| 2 | A credential-shaped `gateId` passed the charset check and would be echoed three times — prompt, PR body, evidence. `ghp_…` and `api_key…` are perfectly lowercase. | The Stage A secret-marker policy is applied to the gate id before anything is printed; refusals name the field and never the value |
+| 3 | The gate open lacked `O_NONBLOCK`, so a FIFO planted at the path would block forever — a hang rather than a refusal. | `O_RDONLY \| O_NOFOLLOW \| O_NONBLOCK`, with `fstat` rejecting anything that is not a regular file. A real `mkfifo` regression asserts a fast refusal under a bounded timeout, so losing the flag fails the test instead of hanging CI |
+| 4 | `publish-gates/README.md` still pointed the review scope at the execution-gate filename. | `/tmp/cba-scope-<issue>.json` for the review scope; `/tmp/cba-gate-<issue>.json` reserved for `CBA_EXECUTION_GATE` and never passed to `--gate`, asserted by a test |
+
+Two latent defects surfaced while fixing these, both mine:
+
+- the "no secret-shaped material" test began failing on the credential **detector** I had just added.
+  The detector is excluded from that scan and separately asserted to exist, so removing the control
+  cannot pass quietly;
+- every test that executes the artifact used a fixture with a hardcoded review-scope expiry. Wall
+  clock passed it, and they started failing for a reason unrelated to what they test. Runtime tests
+  now build their window against the real clock via `runnableScript()`.
+
 ## Status
 
 Implementation complete, **local commits only, nothing published**. Next owner: **Codex**, for

@@ -776,9 +776,16 @@ test('the execution gate is re-checked immediately before the push, after every 
   const before = lib.lastIndexOf('check_execution_gate "immediately before push"', push);
   assert.ok(before > -1 && before < push, 'the gate must be re-checked immediately before the push');
 
-  // Nothing that can block on the network may sit between that check and the mutation.
+  // They must be CONSECUTIVE executable statements. "Nothing network-bound in between" was too weak
+  // a rule: a printed line still sits in the window, and any statement can be widened later.
   const between = lib.slice(before + 'check_execution_gate "immediately before push"'.length, push);
-  for (const slow of ['ls-remote', 'gh pr', 'git fetch', 'assert_pr_set', 'check_remote_state']) {
-    assert.equal(between.includes(slow), false, `${slow} must not run between the gate check and the push`);
-  }
+  const executable = between
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'));
+  assert.deepEqual(
+    executable,
+    [],
+    `the gate check and the push must be consecutive statements; found: ${executable.join(' | ')}`,
+  );
 });

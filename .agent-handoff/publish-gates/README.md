@@ -33,7 +33,9 @@ regenerated artifact, and it is validated by the artifact immediately before any
 The schema documented below is the **review scope**.
 
 **This folder holds the schema and its example only — never a real gate.** A gate is authored by
-the human **outside the task worktree**, for example `/tmp/cba-gate-<issue>.json`. This directory is
+Zamp **outside the task worktree** — the review scope as `/tmp/cba-scope-<issue>.json`, and the
+execution gate as `/tmp/cba-gate-<issue>.json`, which is reserved for `CBA_EXECUTION_GATE` and is
+never passed to `--gate`. This directory is
 tracked and not ignored, so a gate written here would be an untracked file, which makes the worktree
 dirty, which validation then refuses. `agent-human-publish-script` refuses an in-repository gate
 path outright (`GATE_PATH_IN_REPO`) so the protocol cannot drift back into being unexecutable.

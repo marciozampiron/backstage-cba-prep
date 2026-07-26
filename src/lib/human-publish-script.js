@@ -327,7 +327,10 @@ const fs = require("node:fs");
 const target = process.argv[1];
 let fd;
 try {
-  fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  // O_NONBLOCK matters: without it, opening a FIFO planted at this path blocks forever and the
+  // operation hangs instead of failing. O_NOFOLLOW refuses a symlink at open time. The fstat below
+  // then rejects anything that is not a regular file, so a device or directory cannot be parsed.
+  fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
 } catch (err) {
   process.stderr.write(err && err.code === "ELOOP" ? "symlink" : "unopenable");
   process.exit(2);
@@ -371,8 +374,13 @@ gate_digest=$(gate_field artifactDigest)
 gate_expires=$(gate_field expiresAt)
 
 # Formats first. Nothing below echoes a value that has not passed its own pattern.
+# Charset first, then the Stage A secret-marker policy. The gate id is printed at the prompt, in the
+# pull-request body and in the evidence, so a mistyped credential would be echoed three times. The
+# charset alone is not enough: \`ghp_...\` and \`api_key...\` are perfectly lowercase.
 printf '%s' "$gate_id" | grep -Eq '^[a-z0-9][a-z0-9._-]{2,63}$' \\
   || die "the execution gate id is malformed; the value is not echoed"
+printf '%s' "$gate_id" | grep -Eqi 'akia[0-9a-z]{16}|ghp_|gho_|github_pat_|eyj[0-9a-z_-]{6,}|sk-[0-9a-z]{8,}|xox[baprs]-|bearer|token|secret|password|credential|apikey|api[-_]key' \\
+  && die "the execution gate id looks like it contains credential material and was refused unprinted"
 printf '%s' "$gate_digest" | grep -Eq '^[0-9a-f]{64}$' \\
   || die "the execution gate artifact digest must be 64 lowercase hex characters"
 printf '%s' "$gate_expires" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' \\
@@ -564,9 +572,11 @@ pr_count_now=$(assert_pr_set "after confirmation")
 # The gate is re-checked HERE, after every local and remote revalidation above. Those steps contact
 # the network and can block for a long time, and an execution gate that expired while they ran must
 # not still authorize a push. This call is deliberately the last statement before the mutation.
-check_execution_gate "immediately before push"
-
 note "Pushing the reviewed commit (no force)..."
+
+# Nothing — not even a printed line — sits between this check and the mutation. The gate is the last
+# thing evaluated before the push, so no statement can widen the window again.
+check_execution_gate "immediately before push"
 git push origin "$EXPECTED_HEAD:refs/heads/$SOURCE_BRANCH"
 
 # The remote ref must now be exactly the reviewed commit. If it is anything else, something raced
