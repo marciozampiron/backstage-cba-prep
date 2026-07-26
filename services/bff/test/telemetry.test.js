@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 process.env.CBA_WEB_STORE = 'memory';
 process.env.CBA_WEB_AUTH = 'dev';
 const { handleApiRequest } = await import('../src/app.js');
-const { buildCompletionEvent, COMPLETION_EVENT_FIELDS } = await import('../src/telemetry.js');
+const { buildCompletionEvent, COMPLETION_EVENT_FIELDS, FIELD_VALIDATORS } = await import('../src/telemetry.js');
 const { handler, toNeutralRequest } = await import('../src/lambda.js');
 
 /** Collect completion events instead of printing them. */
@@ -195,6 +195,231 @@ test('a real request never emits a learner id, token, cookie, body or exam conte
   const serialized = JSON.stringify(events[0]);
   for (const leak of ['privacy', 'Bearer', 'tok', 'cba_learner', start.body.mockExamId, start.body.attemptId]) {
     assert.ok(!serialized.includes(leak), `"${leak}" leaked into the completion event`);
+  }
+});
+
+/* ---------------- per-field validators (#85 review, Finding 1) ---------------- */
+
+// A key allowlist alone let sensitive VALUES ride an approved key. Every field now has its own
+// validator; these tests push token/email/URL/object/oversized/malformed material into EACH
+// allowed key and prove it is dropped — and a positive control proves legitimate values survive,
+// so the suite cannot pass vacuously.
+
+const LEGITIMATE_EVENT = {
+  level: 'info',
+  message: 'request.completed',
+  requestId: 'JKJaXmPLvHcESHA=',
+  routeKey: 'GET /practice-sessions/:id/next',
+  method: 'GET',
+  statusCode: 200,
+  durationMs: 12,
+  errorCode: 'NOT_FOUND',
+  runtimeEnv: 'pilot',
+};
+
+test('POSITIVE CONTROL: a fully legitimate event survives every validator intact', () => {
+  assert.deepEqual(buildCompletionEvent(LEGITIMATE_EVENT), LEGITIMATE_EVENT);
+  // Sanity: the suite would be vacuous if nothing ever passed.
+  assert.equal(Object.keys(buildCompletionEvent(LEGITIMATE_EVENT)).length, COMPLETION_EVENT_FIELDS.length);
+});
+
+test("the Codex reproduction payload is now rejected in EVERY field", () => {
+  const event = buildCompletionEvent({
+    requestId: 'Bearer-super-secret',
+    routeKey: 'GET learner@example.test',
+    errorCode: 'TOKEN_secret',
+    durationMs: -42,
+    level: 'anything',
+    message: 'arbitrary',
+    method: 'HACK',
+    runtimeEnv: 'prod',
+    statusCode: 99999,
+  });
+  assert.deepEqual(event, {}, 'not one field of the reported payload may survive');
+});
+
+// Adversarial material pushed into EACH allowed key, one key at a time.
+const ADVERSARIAL_VALUES = [
+  ['bearer token', 'Bearer eyJhbGciOiJIUzI1NiJ9.abc.def'],
+  ['bare credential marker', 'authorization-secret'],
+  ['AWS access key id', ['AKIA', 'IOSFODNN', '7EXAMPLE'].join('')],
+  ['email', 'learner@example.test'],
+  ['URL', 'https://api.example.test/api/dashboard?token=abc'],
+  ['object', { nested: 'payload' }],
+  ['array', ['a', 'b']],
+  ['oversized string', 'X'.repeat(5000)],
+  ['newline injection', 'ok\nlevel=admin'],
+  ['control character', 'ok null'],
+  ['whitespace', 'has spaces'],
+  ['negative number', -1],
+  ['non-finite number', Number.POSITIVE_INFINITY],
+  ['null', null],
+  ['boolean', true],
+];
+
+for (const field of ['level', 'message', 'requestId', 'routeKey', 'method', 'statusCode', 'durationMs', 'errorCode', 'runtimeEnv']) {
+  test(`field "${field}" rejects every adversarial value`, () => {
+    for (const [label, value] of ADVERSARIAL_VALUES) {
+      const event = buildCompletionEvent({ ...LEGITIMATE_EVENT, [field]: value });
+      assert.ok(!(field in event), `"${field}" accepted ${label}: ${JSON.stringify(value)?.slice(0, 60)}`);
+      // The other eight fields must still be emitted: one bad value degrades one field, not the
+      // whole operational signal.
+      assert.equal(Object.keys(event).length, COMPLETION_EVENT_FIELDS.length - 1);
+    }
+  });
+}
+
+test('closed enums accept only their documented members', () => {
+  assert.ok(FIELD_VALIDATORS.level('info') && FIELD_VALIDATORS.level('error'));
+  assert.ok(!FIELD_VALIDATORS.level('debug') && !FIELD_VALIDATORS.level('INFO'));
+  assert.ok(FIELD_VALIDATORS.message('request.completed'));
+  assert.ok(!FIELD_VALIDATORS.message('request.started'));
+  for (const m of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']) {
+    assert.ok(FIELD_VALIDATORS.method(m), m);
+  }
+  assert.ok(!FIELD_VALIDATORS.method('get') && !FIELD_VALIDATORS.method('TRACE'));
+  for (const e of ['local', 'dev', 'pilot']) assert.ok(FIELD_VALIDATORS.runtimeEnv(e), e);
+  assert.ok(!FIELD_VALIDATORS.runtimeEnv('prod') && !FIELD_VALIDATORS.runtimeEnv('staging'));
+});
+
+test('statusCode is a real HTTP integer and durationMs is finite and non-negative', () => {
+  for (const ok of [100, 200, 404, 500, 599]) assert.ok(FIELD_VALIDATORS.statusCode(ok), String(ok));
+  for (const bad of [99, 600, 99999, 200.5, '200', NaN]) assert.ok(!FIELD_VALIDATORS.statusCode(bad), String(bad));
+  for (const ok of [0, 1, 12.5, 1e6]) assert.ok(FIELD_VALIDATORS.durationMs(ok), String(ok));
+  for (const bad of [-1, -0.001, NaN, Infinity, '12']) assert.ok(!FIELD_VALIDATORS.durationMs(bad), String(bad));
+});
+
+test('errorCode accepts contract codes only', () => {
+  for (const ok of ['NOT_FOUND', 'VALIDATION_FAILED', 'NOT_RESOURCE_OWNER', 'CONFLICT', 'INTERNAL']) {
+    assert.ok(FIELD_VALIDATORS.errorCode(ok), ok);
+  }
+  for (const bad of ['TOKEN_secret', 'not_found', 'NOT FOUND', 'NOT-FOUND', '1_BAD', 'A'.repeat(200)]) {
+    assert.ok(!FIELD_VALIDATORS.errorCode(bad), bad);
+  }
+});
+
+test('routeKey accepts ONLY the internal METHOD /pattern shape', () => {
+  for (const ok of ['GET /readiness', 'GET /practice-sessions/:id/next', 'POST /mock-exams/:id/submit', 'PUT /me']) {
+    assert.ok(FIELD_VALIDATORS.routeKey(ok), ok);
+  }
+  for (const bad of [
+    'GET learner@example.test',
+    'GET https://api.example.test/x',
+    'GET /dashboard?token=abc',
+    'GET /attempts/att_9f2/results#frag',
+    '/dashboard',
+    'GET  /double-space',
+    'FETCH /dashboard',
+  ]) {
+    assert.ok(!FIELD_VALIDATORS.routeKey(bad), bad);
+  }
+});
+
+test('every REAL dispatcher route key passes the validator (no false negatives)', async () => {
+  // Exercises the actual routing table: if a future route key stopped validating, telemetry would
+  // silently lose routeKey for it.
+  const seen = new Set();
+  for (const call of [
+    { method: 'GET', path: '/readiness' },
+    { method: 'GET', path: '/dashboard' },
+    { method: 'GET', path: '/practice/options' },
+    { method: 'GET', path: '/me' },
+    { method: 'GET', path: '/attempts/att_x/results' },
+    { method: 'GET', path: '/mock-exams/mock_x' },
+    { method: 'POST', path: '/coach/message' },
+  ]) {
+    const { events, emit } = collector();
+    await handleApiRequest({ ...call, headers: { 'x-cba-learner': 'routes' }, emit });
+    const key = events[0].routeKey;
+    if (key !== undefined) {
+      seen.add(key);
+      assert.ok(FIELD_VALIDATORS.routeKey(key), `real route key rejected: ${key}`);
+    }
+  }
+  assert.ok(seen.size >= 5, 'the probe must actually reach several routes');
+});
+
+test('requestId format is narrow: no whitespace, control chars, emails, URLs or credential shapes', () => {
+  for (const ok of ['JKJaXmPLvHcESHA=', 'loc_abc123xyz', 'req_1k2j3h', 'a1b2-c3d4-e5f6', 'A'.repeat(128)]) {
+    assert.ok(FIELD_VALIDATORS.requestId(ok), ok);
+  }
+  for (const bad of [
+    'Bearer-super-secret',
+    'my-token-value',
+    'authorization',
+    'learner@example.test',
+    'https://x.test/id',
+    'has space',
+    'line\nbreak',
+    '',
+    'A'.repeat(129),
+  ]) {
+    assert.ok(!FIELD_VALIDATORS.requestId(bad), bad);
+  }
+});
+
+test('a non-object input yields an empty event instead of throwing', () => {
+  for (const input of [null, undefined, 'string', 42, []]) {
+    assert.deepEqual(buildCompletionEvent(input), {});
+  }
+});
+
+/* ---------------- sink failure is best effort (#85 review, Finding 2) ---------------- */
+
+test('a THROWING sink never changes the response — 200, 4xx and 500 alike', async () => {
+  const boom = () => {
+    throw new Error('telemetry sink failed');
+  };
+
+  const ok = await handleApiRequest({ method: 'GET', path: '/readiness', emit: boom });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.ready, true, 'the original body survives');
+
+  const notFound = await handleApiRequest({ method: 'GET', path: '/nope', requestId: 'sink-404', emit: boom });
+  assert.equal(notFound.status, 404);
+  assert.equal(notFound.body.error.code, 'NOT_FOUND');
+  assert.equal(notFound.body.error.requestId, 'sink-404');
+
+  const badBody = await handleApiRequest({
+    method: 'POST',
+    path: '/practice-sessions',
+    headers: { 'x-cba-learner': 'sink' },
+    body: 'not-json',
+    emit: boom,
+  });
+  assert.equal(badBody.status, 400);
+  assert.equal(badBody.body.error.code, 'VALIDATION_FAILED');
+});
+
+test('a THROWING sink on the 500 path still returns the contract envelope', async () => {
+  // Force an unexpected (non-ApiError) failure inside a handler via a poisoned clock.
+  const res = await handleApiRequest({
+    method: 'GET',
+    path: '/readiness',
+    now: () => {
+      throw new Error('unexpected internal failure');
+    },
+    emit: () => {
+      throw new Error('telemetry sink failed');
+    },
+  }).catch((err) => ({ threw: err }));
+  assert.ok(!res.threw, 'the dispatcher must not reject even when clock AND sink fail');
+});
+
+test('exactly ONE emission attempt is made even when the sink throws', async () => {
+  let attempts = 0;
+  const boom = () => {
+    attempts += 1;
+    throw new Error('telemetry sink failed');
+  };
+  for (const call of [
+    { method: 'GET', path: '/readiness' },
+    { method: 'GET', path: '/nope' },
+    { method: 'POST', path: '/practice-sessions', headers: { 'x-cba-learner': 'once' }, body: 'not-json' },
+  ]) {
+    attempts = 0;
+    await handleApiRequest({ ...call, emit: boom });
+    assert.equal(attempts, 1, `${call.method} ${call.path} must attempt exactly once`);
   }
 });
 

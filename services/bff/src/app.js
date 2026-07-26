@@ -46,6 +46,19 @@ function safeRuntimeEnv() {
   }
 }
 
+/**
+ * Clock reading for telemetry only. The duration measurement is part of the side channel, so an
+ * injected/broken clock must not be able to reject a request either — it just costs `durationMs`.
+ */
+function readClock(now) {
+  try {
+    const value = now();
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 let requestCounter = 0;
 
 /**
@@ -240,7 +253,7 @@ export async function handleApiRequest({
   emit = emitCompletionEvent,
 } = {}) {
   const requestId = resolveRequestId(incomingRequestId);
-  const startedAt = now();
+  const startedAt = readClock(now);
   const upperMethod = String(method ?? '').toUpperCase();
   let routeKey;
   let outcome;
@@ -282,20 +295,33 @@ export async function handleApiRequest({
     outcome = { status: 500, body: errorBody(requestId, 'INTERNAL', 'Unexpected failure.') };
     return outcome;
   } finally {
-    // EXACTLY ONE completion event per request, emitted after the response shape is known
-    // (`finally` runs on every path, including the early 404 return). Fields come from the
-    // telemetry allowlist; the raw request/response never reaches it.
+    // EXACTLY ONE emission ATTEMPT per request, made after the response shape is known (`finally`
+    // runs on every path, including the early 404 return). "Attempt" is the honest guarantee:
+    // telemetry is a side channel, so DELIVERY cannot be promised — a broken sink must never
+    // change, delay or reject an otherwise valid business result (`security-rules.md` §2.5).
+    //
+    // The catch is deliberately silent: reporting a sink failure through another logger risks a
+    // failure loop, and logging the request or the raw error here would leak exactly the material
+    // the allowlist exists to keep out. The lost event is visible operationally as a gap between
+    // API Gateway access logs and application events.
     const status = outcome?.status ?? 500;
-    emit({
-      level: status >= 500 ? 'error' : 'info',
-      message: 'request.completed',
-      requestId,
-      routeKey,
-      method: upperMethod,
-      statusCode: status,
-      durationMs: now() - startedAt,
-      errorCode: outcome?.body?.error?.code,
-      runtimeEnv: safeRuntimeEnv(),
-    });
+    try {
+      const endedAt = readClock(now);
+      emit({
+        level: status >= 500 ? 'error' : 'info',
+        message: 'request.completed',
+        requestId,
+        routeKey,
+        method: upperMethod,
+        statusCode: status,
+        // Undefined when either clock reading failed — the validator then drops the field rather
+        // than emitting NaN, and the rest of the event still ships.
+        durationMs: startedAt !== undefined && endedAt !== undefined ? endedAt - startedAt : undefined,
+        errorCode: outcome?.body?.error?.code,
+        runtimeEnv: safeRuntimeEnv(),
+      });
+    } catch {
+      /* best effort by contract — see above */
+    }
   }
 }

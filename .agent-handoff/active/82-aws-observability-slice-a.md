@@ -3,7 +3,8 @@
 ## Status
 
 - Architecture package published (`d46d5be`, CI green) and independently reviewed.
-- **Slice A: IMPLEMENTED locally, awaiting Codex review and the human push gate.**
+- **Slice A: IMPLEMENTED locally + HARDENED after the Codex security review; awaiting re-review
+  and the human push gate.**
 - Slices B (ObservabilityStack) and C (release evidence) remain unassigned.
 - #82 remains OPEN/Todo and is a prerequisite of #70.
 
@@ -138,3 +139,94 @@ it, and #70 must re-check it at deploy time.
 - root/infra/BFF test counts, synth result, and `git diff --check`;
 - explicit confirmation of no deploy and no OTEL enablement;
 - local commit SHA, without push until the human gate.
+
+## Codex independent security review — findings and fix-forward
+
+Reviewed against `spec/security-rules.md` and the #85 baseline. Both findings were reproduced
+locally before any change. Fixed in a NEW commit on top of `HEAD`: `7fdc6a4` (Slice A) and
+`ecd0f62` (#85, owned by Codex) were NOT amended, rebased or squashed.
+
+### Finding 1 — sensitive values crossed allowlisted keys
+
+`services/bff/src/telemetry.js` validated only type and size, so a key allowlist alone let these
+serialize: `requestId: "Bearer-super-secret"`, `routeKey: "GET learner@example.test"`,
+`errorCode: "TOKEN_secret"`, `durationMs: -42`. Reproduced verbatim.
+
+Fix — a validator per field, so the VALUE is bounded and not just the key:
+
+| Field | Rule |
+| --- | --- |
+| `level` | closed enum `info \| error` |
+| `message` | only `request.completed` |
+| `method` | closed HTTP method set |
+| `runtimeEnv` | `local \| dev \| pilot` |
+| `statusCode` | integer in 100–599 |
+| `durationMs` | finite and non-negative |
+| `errorCode` | `^[A-Z][A-Z0-9_]{1,63}$` contract-code shape |
+| `requestId` | `^[A-Za-z0-9_=.:-]{1,128}$`, refusing control chars, whitespace, emails, URLs and credential words |
+| `routeKey` | only the internal `METHOD /contract/pattern` shape — no email, query, URL, concrete id |
+
+Credential tripwires are split by ambiguity: SHAPE markers (AWS key id, JWT, `sk-`, `gh*_`) are
+refused in EVERY string field, while WORD markers (`bearer`, `token`, `secret`, …) are refused only
+in `requestId`, so a legitimate future contract code such as `TOKEN_EXPIRED` is not silently lost.
+
+The module header now states the honest model: safety comes from the COMBINATION of internal field
+origin, key allowlist and per-field validators — the allowlist alone is not the control.
+
+### Finding 2 — sink failure masked the response
+
+`emit()` was called unguarded inside `finally`, so a throwing emitter turned a valid response into
+a rejection. Reproduced verbatim.
+
+Fix — emission is best effort: the call is wrapped, the original outcome is always returned, and
+the catch is deliberately SILENT (no second logger, no raw request/body/error) to avoid a failure
+loop and to avoid logging exactly the material the allowlist exists to keep out. The guarantee is
+now documented as **one emission ATTEMPT per request**, because delivery cannot be promised.
+
+While writing the regressions, the same rule exposed a second side-channel hazard: `startedAt` was
+read from the injected clock OUTSIDE the try block, so a throwing clock also rejected the request.
+The clock is telemetry too, so it is now read through `readClock()`; when either reading fails,
+`durationMs` is simply omitted and the rest of the event still ships.
+
+### Tests added (services/bff 143 -> 163)
+
+- adversarial matrix: token, credential word, AWS key id, email, URL, object, array, oversized
+  string, newline injection, control character, whitespace, negative, non-finite, null and boolean
+  pushed into EACH of the nine allowed fields — each must be dropped while the other eight fields
+  still emit;
+- the exact Codex reproduction payload must reduce to `{}`;
+- POSITIVE CONTROL: a fully legitimate event survives all nine validators intact, so the matrix
+  cannot pass vacuously;
+- closed-enum, HTTP-status, duration, errorCode, routeKey and requestId format tests with explicit
+  accept/reject lists;
+- every REAL dispatcher route key is fed through the validator (no false negatives);
+- throwing sink on 200, 4xx and 500 returns the original status/body and never rejects;
+- exactly ONE emission attempt on success, contract error and 404 even when the sink throws.
+
+### Accepted risks, unchanged by this fix
+
+- retention stays 7 days dev / 30 days pilot;
+- `durationMs` remains dispatcher time; p95 alarms will use the native Lambda metric;
+- one event per request stays, with cost reviewed in Slice B;
+- #89 owns legal hold and sanitized incident evidence.
+
+### Residual risks after the fix
+
+- A dropped field is silent by design. If a transport regression started emitting a malformed
+  `requestId`, correlation would degrade without an alarm; Slice B should consider a metric on
+  events missing `requestId`.
+- The credential tripwires are heuristics, not proof. They exist as defense in depth; the real
+  boundary remains that these fields are internally generated.
+- Emission is best effort, so event loss is possible and invisible in-process. It is detectable
+  operationally as a gap between API Gateway access logs and application events.
+- Telemetry volume/cost is still unbounded per request rate — Slice B owns quotas.
+
+### Validation
+
+services/bff **163 pass + 1 skip** · infra/aws **62/62** · `cdk synth` credential-free OK · web
+**62/62** + build OK · root **77/77** · bank **60/0** · `git diff --check` clean ·
+`npm run agent-refresh` ok.
+
+**Zero deploy and zero cloud mutation:** no AWS or Cloudflare call, no OTEL/Application Signals
+enablement, no Bedrock invocation, no push. `7fdc6a4` and `ecd0f62` are untouched; #10, `EVENTS.md`,
+`.vscode/` and all governance residue are preserved.
