@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-25 (governance cleanup)
+Last updated: 2026-07-25 (governance cleanup after the #69 publication)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -27,7 +27,11 @@ Project board remain the source of truth; this file summarizes local coordinatio
   `infra/aws/` = CDK v2 app (JS/CommonJS) — the SecurityStack (#54 OIDC/Bedrock model) is
   **DEPLOYED** to the authorized pilot account (#66); the DataStack (#77) and ApiStack (#78) are
   IMPLEMENTED but synth-only (not deployed — deploy belongs to #70);
-  identity/ai-orchestration/observability remain placeholders. CI stays credential-free synth
+  IdentityStack Slices A/B/C (#69) are IMPLEMENTED and PUBLISHED through `961af51`, with #69
+  CLOSED/Done and Quality, Web Quality, Infra Synth, and CodeQL green. Path-bound session
+  readiness, honest auth errors, session-scoped OIDC stores, and the single `apiFetch` door are
+  protected by 14 web tests. Identity/Data/Api remain synth-only; no AWS/Cloudflare deploy was
+  performed. AI-orchestration/observability remain placeholders. CI stays credential-free synth
   (Infra Synth lane); every deploy is human-gated.
 - `main` branch protection is APPLIED (2026-07-08, Option A): required checks `quality (20)`,
   `quality (22)`, `Analyze (javascript-typescript)`, `Analyze (actions)` (the CodeQL default-setup
@@ -62,6 +66,18 @@ Project board remain the source of truth; this file summarizes local coordinatio
   #68 AWS Web BFF extraction, #69 Cognito/CORS security boundary, and #70 integrated deploy plus
   post-deploy smoke gates. The current Next.js app is not a pure static export; sensitive exam data
   and correction logic remain server-side behind the AWS BFF.
+- #82 is the Phase 1 / Todo operational-observability baseline and a native sub-issue of #46.
+  It replaces the placeholder ObservabilityStack with privacy-safe logs, native alarms, dashboard,
+  SNS notifications, and optional project-scoped budget. #70 now depends on its O1 structural gate
+  before learner smokes and O2 alarm-health gate after smokes. No observability deploy has been
+  authorized.
+- Phase 5 / #10 is the post-POC evolution from the CBA pilot to a multi-certification portal.
+  Before the first non-CBA certification, a mandatory DDD hardening gate must make certification
+  partitioning explicit, keep principals data-only, separate application ports/errors from adapters,
+  replace ambient composition where needed, and prove cross-certification isolation with at least
+  two fixtures. Canonical checklist: `spec/domain-driven-design.md`; roadmap gate:
+  `spec/product-roadmap.md`. This does not authorize a broad POC refactor unless security, isolation,
+  deterministic scoring, provenance, or publish approval is at risk.
 - **#55 and #56 are CLOSED (Done)** — the #50 design track is complete: the pilot release
   runbook (`pilot-release-runbook.md`, published `cde0c8c`) and the deployed-environment smoke
   workflow blueprint (`deployed-environment-smoke-workflow-design.md`, published `30d8eee`),
@@ -72,9 +88,13 @@ Project board remain the source of truth; this file summarizes local coordinatio
 - Next platform sequence: #68 implementation slices #76/#77/#78 are ALL DELIVERED (published
   through `a31294c`, CI green): `services/bff` provider-neutral core + DynamoDB adapter +
   DataStack + Lambda/API Gateway ApiStack (13 explicit routes, minimal DynamoDB IAM, fail-closed
-  auth until #69, canonical BASE_URL contract runner for #70). Now #67 and #69 in parallel, then
-  #79, #75 cleanup contract -> #70 -> close #46/#68. Everything is still synth-only: NO stack
-  beyond SecurityStack is deployed.
+  auth until #69, canonical BASE_URL contract runner for #70). **#69 is CLOSED (Done)**: Cognito
+  User Pool + PKCE-ready public client, API Gateway JWT authorizer on every route except public
+  readiness, access-token-only neutral principal (ID tokens and `x-cba-learner` refused, missing
+  bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
+  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. Now #67
+  Cloudflare frontend, then #79, #75 cleanup contract, #82 -> #70 -> close #46/#68. Everything is
+  still synth-only: NO stack beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
   reconcile §1's single `CodeQL` check name to the real `Analyze (...)` runs; weigh Option B

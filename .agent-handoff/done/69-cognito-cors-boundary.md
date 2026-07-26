@@ -9,7 +9,8 @@
 
 ## Source of truth
 
-- GitHub issue #69 (sub-issue of #46); kickoff + binding decisions: issue comment 5080592123.
+- GitHub issue #69 — part of #46 as a `[Task]`, not a native sub-issue (so closing it does NOT
+  move the board automatically); kickoff + binding decisions: issue comment 5080592123.
 - Environment contract: `docs/architecture/pilot-environment-contract.md` (#47).
 - `/api/me` contract: §16 of `docs/product/web-bff-contracts.md` — implement EXACTLY, no
   invented fields.
@@ -35,7 +36,7 @@
 
 ## Plan (reviewable slices)
 
-- Slice A (CURRENT): IdentityStack (User Pool + public PKCE client) + HTTP API JWT authorizer
+- Slice A: IdentityStack (User Pool + public PKCE client) + HTTP API JWT authorizer
   wiring — synth + CDK tests only.
 - Slice B: neutral principal + Cognito identity adapter + `/api/me`.
 - Slice C: learner sign-in/session/sign-out UI + exact CORS + full regression evidence.
@@ -159,3 +160,18 @@
   buildSessionStores proving BOTH oidc stores share the same session-scoped storage, and a
   static guard forbidding direct fetch() outside lib/client-api.js + the /auth/config bootstrap
   (source-wide scan, multiline-proof, comments stripped).
+- PUBLISHED (2026-07-25): human gate approved; pushed `6d588d4` (Slice A), `b91d2ca` (Slice B)
+  and `961af51` (Slice C) as `97df6c1..961af51` — `origin/main` at `961af51`.
+- CI green on ALL FOUR lanes: Quality (30183327735), Web Quality (30183327721 — the new offline
+  web unit tests ran in the lane), Infra Synth (30183327736), CodeQL (30183327600).
+- #69 CLOSED with delivery evidence; board moved to Done EXPLICITLY — a `[Task]` issue is not a
+  native sub-issue, so closing it does not move the board automatically (applies to future
+  `[Task]` closes too).
+- Test evidence at the published SHA: web 14/14 · bff 125 pass + 1 gated skip · infra 57/57 +
+  clean synth · root 77/77 · bank 60/0 · 4 local smokes.
+- NO AWS or Cloudflare deploy, no User Pool creation, no real user: everything stays
+  synth/test-only. Deploy lanes and the `pilot.invalid` + Cognito-domain preflight belong to
+  #70 (preflight registered there).
+- Follow-ups carried forward: post-POC DDD debts on the #10 gate (loadProfile riding the
+  principal; `ApiError` imported from `store.js`); Slice-C UI polish and per-run smoke state
+  isolation remain candidates for #75 or a chore issue.

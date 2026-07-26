@@ -2,6 +2,197 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-25 — Codex post-push validation — #69 closed and Done
+
+- Independently confirmed `HEAD == origin/main == 961af51`, no unpublished commits, and no active
+  handoff. #69 is CLOSED and its Roadmap project item is explicitly Done.
+- Confirmed all four required lanes green on the published SHA: Quality `30183327735`, Web Quality
+  `30183327721`, Infra Synth `30183327736`, and CodeQL `30183327600`.
+- Confirmed the handoff is in `done/69-cognito-cors-boundary.md` and no AWS/Cloudflare deployment
+  occurred. SecurityStack remains the only deployed project stack.
+- Corrected one local governance nit: the earlier CURRENT block still said “unpublished/push gate”;
+  it now reflects the published, closed, CI-green, synth-only terminal state. No commit/push made.
+
+## 2026-07-25 — Push + CI (Claude) — #69
+
+- Pushed: `97df6c1..961af51` (three commits: `6d588d4` Slice A identity foundation + JWT
+  authorizer, `b91d2ca` Slice B neutral principal + /api/me, `961af51` Slice C session UI +
+  proven PKCE S256). `origin/main` is now at `961af51`.
+- CI green on ALL FOUR lanes: Quality (30183327735), Web Quality (30183327721 — the new "Web
+  unit tests (offline PKCE S256 proof)" step ran in the lane), Infra Synth (30183327736),
+  CodeQL (30183327600).
+- #69 CLOSED with delivery evidence; board moved to Done explicitly (the `[Task]` issue is not
+  a native sub-issue, so the close did not move it automatically — future `[Task]` closes need
+  the same manual board step).
+- Security posture published: deployed runtime accepts ONLY Cognito access tokens
+  (token_use=access; ID tokens rejected), `x-cba-learner` refused, missing bearer fails closed,
+  every route JWT-protected except public readiness, CORS remains an exact-origin seam.
+- NO AWS or Cloudflare deploy: everything stays synth/test-only. The `pilot.invalid` +
+  Cognito-domain preflight is registered on #70.
+- Remaining #46 sequence: #67 Cloudflare frontend, then #79, #75, #82 -> #70 -> close #46/#68.
+- Local residue: this cycle's gate/record entries + handoff move + `.vscode/` + the #82 and
+  #10 documents owned by other tracks (deliberately untouched).
+
+## 2026-07-26T01:41:59Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 3]
+- Unpublished commits:
+  - 961af51 feat: add learner sign-in session UI with proven PKCE S256 flow for #69
+  - b91d2ca feat: map Cognito access tokens to neutral principals and add /api/me for #69
+  - 6d588d4 feat: add Cognito identity foundation and JWT authorizer boundary for #69
+- Active handoffs:
+  - .agent-handoff/active/69-cognito-cors-boundary.md
+- Warnings:
+  - active handoff file(s) present: .agent-handoff/active/69-cognito-cors-boundary.md
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — #69
+
+- Human gate: approved push for EXACTLY three commits: `6d588d4` (Slice A — IdentityStack
+  Cognito pool + PKCE-ready public client + API Gateway JWT authorizer), `b91d2ca` (Slice B —
+  neutral principal from authorizer-validated claims, access-token-only, Cognito adapter,
+  /api/me §16 with cached profile) and `961af51` (Slice C — learner sign-in/session/sign-out UI,
+  central session gate bound to the validated pathname, proven PKCE S256, apiFetch bearer).
+  All three Codex review rounds folded in (A: 1 blocker; B: 2 blockers + textual amend; C: 4 +
+  2 findings).
+- Agent will run `agent-refresh -- --record`, push only these commits, follow Quality, Web
+  Quality (now runs the new web unit tests), Infra Synth and CodeQL; on green, close #69 and
+  confirm board Done. NO AWS or Cloudflare deploy — synth/test only remains the rule.
+
+## 2026-07-25 — Human gate — #69 three-commit stack push approved
+
+- Human explicitly approved push of exactly: Slice A `6d588d4`, Slice B `b91d2ca`, and final
+  Slice C `961af51`. Codex technical gate is approved with no remaining blockers.
+- Executor must run `npm run agent-refresh -- --record` immediately before push, confirm these are
+  the only unpublished commits, push them, and monitor Quality, Web Quality, Infra Synth, and CodeQL.
+- With all four lanes green, close #69 with evidence and confirm Board Done. This gate authorizes
+  no AWS/Cloudflare deploy, resource mutation, or real-user creation; deployment remains #70.
+
+## 2026-07-25 — Codex final re-review — #69 technical gate approved
+
+- Approved the complete unpublished stack: Slice A `6d588d4`, Slice B `b91d2ca`, and final
+  Slice C `961af51`; no remaining technical blockers found.
+- Confirmed pathname-bound readiness prevents stale route results from mounting protected pages;
+  cleanup discards late async results. Auth failures remain explicit and both OIDC stores are
+  session-scoped.
+- Web suite is now 14/14 with dev/Cognito/error/route-transition/storage regressions and the
+  static no-direct-fetch guard; production build clean. BFF 125/126 (+1 expected skip), direct
+  fetch inventory and diff checks clean; infra/root unchanged from approved 57/57 and 77/77.
+- Approval posted to #69. Stack is ready only for a separate human push gate; after push require
+  Quality, Web Quality, Infra Synth, and CodeQL green. No deploy or AWS/Cloudflare mutation authorized.
+
+## 2026-07-25 — Codex re-review — #69 Slice C still blocked
+
+- Confirmed the amend closes three original findings: all learner API calls use `apiFetch`, auth
+  errors no longer become fake dev state, and OIDC `stateStore` plus `userStore` are session-scoped.
+- Found a route-transition race in `AuthGate`: stale `ready` survives the render preceding the
+  pathname effect, so protected children can mount and call APIs before the current route/session
+  is validated. Required pathname/generation-bound readiness.
+- Confirmed `95fa3d7..b64facd` adds no web test changes. The web suite remains four PKCE tests;
+  required dev/signed-out/signed-in/error/route-transition regressions, runtime-store assertion,
+  and static no-direct-learner-fetch CI guard are absent.
+- Independent baseline: web 4/4 + production build, BFF 125/126 (+1 expected skip), direct learner
+  fetch grep zero, diff checks clean. Findings posted to #69; no push or deploy authorized.
+
+## 2026-07-25 — Codex review — #69 Slice C blocked pending amend
+
+- Independent validation passed: web unit 4/4, BFF 125/126 (+1 expected skip), infra 57/57,
+  root 77/77, production web build, bank 60/0, and diff checks.
+- Found two protected learner reads still using raw `fetch`, so mock resume and missed review
+  fail with 401 in Cognito mode. Required `apiFetch` migration plus a static no-direct-API-fetch
+  guard.
+- Found auth failures downgraded to dev and no central signed-out session boundary; deployed
+  misconfiguration can render “Hello, Learner” while learner pages issue unauthenticated calls.
+  Required explicit unavailable/signed-out states and focused auth-mode regressions.
+- Confirmed `oidc-client-ts` defaults an omitted PKCE `stateStore` to `localStorage`; runtime must
+  explicitly use the session-scoped store for both OIDC state and user data.
+- Findings posted to #69. Slices A/B remain approved; no push, deploy, or Cloudflare/AWS mutation
+  authorized.
+
+## 2026-07-25 — Codex re-review — #69 Slice B runtime gate approved
+
+- Independently confirmed fail-closed 401 for valid claims without bearer and winner re-read for
+  concurrent first-profile creation; BFF 125/126 (+1 expected skip), syntax and diff checks green.
+- One required text-only amend remains before Slice C: replace the false “UserInfo at most once
+  per learner” claim in the profile comment, handoff work log, and commit body. Concurrent first
+  requests may both call UserInfo; the actual guarantee is one canonical stored profile and no 409.
+- After that exact amend, Slice C is authorized without another code review. No push or deploy
+  authorized. Review result posted to #69.
+
+## 2026-07-25 — Codex review — #69 Slice B blocked before Slice C
+
+- Independent validation passed: BFF 123/124 (+1 expected skip), infra 57/57 + clean synth,
+  web build, syntax, and diff checks.
+- Reproduced a fail-open profile bootstrap: Cognito access-token claims without an Authorization
+  bearer returned 200 and persisted a local `.invalid` profile. Required result is 401 and no
+  write.
+- Reproduced concurrent first-profile creation over two DynamoDB adapter instances: one success
+  plus one `RepositoryConflictError`. Bootstrap must re-read the winner instead of exposing 409.
+- Findings and required regressions posted to #69. Broader principal/error/repository layering
+  remains tracked by the post-POC #10 DDD gate; no push, deploy, or Slice C authorization.
+
+## 2026-07-25 — Architecture decision (Codex) — post-POC multi-certification portal gate
+
+- Confirmed #10 / Phase 5 as the existing roadmap owner; no duplicate epic created.
+- Documented that the CBA POC remains pragmatic and CBA-first. Before the first non-CBA
+  certification, the portal must pass a DDD hardening review covering explicit certification
+  partitioning, data-only principals, neutral application ports/errors, adapter separation,
+  explicit composition, and cross-certification isolation tests over at least two fixtures.
+- The review may be pulled into the POC only for security, learner isolation, deterministic
+  scoring, provenance, or publish-gate risk. No #69 implementation file, commit, deploy, or push
+  was changed or authorized by this documentation task.
+
+## 2026-07-25 — Architecture decision (Codex) — AWS observability baseline #82
+
+- Created #82 as a native #46 sub-issue; added it to Roadmap / Phase 1 / Todo. Updated #70 so
+  pilot deploy/promotion depends on the O1 structural and O2 post-smoke alarm-health gates.
+- Added the canonical `docs/architecture/aws-observability-baseline.md` and pointers in the IaC
+  foundation, Architecture wiki, #55 runbook, and #56 workflow design. Operational telemetry is
+  explicitly separate from learner analytics (#18).
+- Baseline: explicit 7d dev / 30d pilot log retention, strict field allowlists, no learner/exam/
+  auth data in logs, native API/Lambda/DynamoDB alarms, dashboard, SNS notification path, and a
+  project budget only after cost-allocation-tag activation. No AWS deploy or AI spend authorized.
+- #69 Slice A independent review: infra 56/56 and synth succeeds, but the synth is not warning-free.
+  Blocked Slice B pending an explicit `-cdk/core:defaultCrossStackReferences=strong` flag and
+  test. Binding Slice B rule posted to #69: access-token-only API; Cognito UserInfo enrichment stays
+  in the infrastructure adapter and only a sanitized neutral principal/profile crosses inward.
+- Architecture docs are intentionally uncommitted while the executor-owned #69 commit remains
+  unpublished/amendable; do not push them as part of #69 without a separate human gate.
+
+## 2026-07-25 — Push + CI (Claude) — governance cleanup pós-#78
+
+- Pushed: `a31294c..97df6c1` (docs-only governance reconciliation). `origin/main` is now at
+  `97df6c1`.
+- CI green: Quality (30175316497), CodeQL (30175316494). Web Quality/Infra Synth correctly did
+  not trigger (path filters, docs-only change).
+- Next: #69 active handoff opened; Slice A starts (IdentityStack + Cognito public client/PKCE +
+  API Gateway JWT authorizer) — synth/test only, NO AWS or Cloudflare mutation.
+- Local residue: this cycle's gate/record entries + the #69 active handoff + `.vscode/`
+  (pending decision).
+
+## 2026-07-25T21:16:31Z — agent-refresh --record
+
+- Status: ok
+- Git: ## main...origin/main [ahead 1]
+- Unpublished commits:
+  - 97df6c1 docs: reconcile handoff state after #78 publication
+- Active handoffs: none
+- Warnings: none
+- Errors: none
+
+## 2026-07-25 — Human gate (push approved) — governance cleanup pós-#78
+
+- Human gate: approved push for EXACTLY one commit: `97df6c1 docs: reconcile handoff state
+  after #78 publication` — EVENTS.md cycle records, CURRENT.md reconciliation (DataStack/
+  ApiStack implemented but synth-only; identity/ai-orchestration/observability placeholders),
+  handoff #78 moved to done/ with full terminal state (push SHAs, four CI ids, CLOSED/Done,
+  NO AWS deploy, smoke-isolation follow-up). Codex technical gate passed with no findings.
+- Agent will run `agent-refresh -- --record`, push only this commit, follow Quality + CodeQL
+  (Web Quality/Infra Synth path filters don't match docs-only), record the result, then open
+  the #69 active handoff and start Slice A (IdentityStack + Cognito public client/PKCE + JWT
+  authorizer, synth/test only). NO AWS or Cloudflare mutation authorized.
+
 ## 2026-07-25 — Push + CI (Claude) — #78
 
 - Pushed: `626b715..a31294c` (two commits: `bf9bd35` Lambda transport adapter + `a31294c`
