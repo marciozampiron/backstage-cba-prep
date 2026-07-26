@@ -137,7 +137,11 @@ async function main() {
   // network dependency could exist. An explicit --role always wins over CBA_AGENT_ROLE, so an
   // environment variable cannot smuggle a forbidden role past this check.
   if (cmd === 'agent-publish') {
-    const declaredRole = typeof args.role === 'string' ? args.role : process.env.CBA_AGENT_ROLE;
+    // Presence, not type: `--role` with no value parses to `true`, and treating that as "absent"
+    // silently fell back to CBA_AGENT_ROLE, letting an environment value decide after an explicit
+    // argument was given. An explicit argument ALWAYS wins, malformed or not, and the malformed
+    // value is handed to assertPublishingRole so it is refused here rather than after loadEnv().
+    const declaredRole = Object.hasOwn(args, 'role') ? args.role : process.env.CBA_AGENT_ROLE;
     try {
       assertPublishingRole(declaredRole);
     } catch (err) {

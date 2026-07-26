@@ -58,7 +58,7 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 
 Until Stage B exists, steps 5 and 6 are both performed by the human owner.
 
-A gate is consumed by a specific commit sequence. A new commit — including a fix-forward after
+A gate is bound to a specific commit sequence. A new commit — including a fix-forward after
 review — needs a new gate.
 
 ## What a gate does NOT do (Stage A)

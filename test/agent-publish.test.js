@@ -577,3 +577,116 @@ test('--role=<value> and --role <value> refuse identically, before .env, gate or
     assert.match(stderr, /No \.env was loaded, no gate was read and no git command ran/, `${argv[1]} was refused too late`);
   }
 });
+
+/* ================= #91 round 3 ================= */
+
+test('an explicit --role with NO value is refused before .env, gate or git', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cli = fileURLToPath(new URL('../bin/cli.js', import.meta.url));
+  let status = 0;
+  let stderr = '';
+  try {
+    // CBA_AGENT_ROLE=executor would previously win, because `--role` with no value parses to
+    // `true` and a type check treated that as "no argument given".
+    execFileSync(process.execPath, [cli, 'agent-publish', '--role', '--executor', 'codex', '--gate', '/does-not-exist'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CBA_AGENT_ROLE: 'executor' },
+    });
+  } catch (err) {
+    status = err.status;
+    stderr = String(err.stderr ?? '');
+  }
+  assert.equal(status, 2);
+  assert.match(stderr, /ROLE_MISSING/);
+  assert.match(stderr, /No \.env was loaded, no gate was read and no git command ran/);
+  assert.ok(!/gate|git command ran\. Ask the executor/.test(stderr.replace(/No \.env[^\n]*/g, '')),
+    'the late, in-command refusal path must not be the one that fired');
+});
+
+test('an explicitly given but malformed role never falls back to the environment', () => {
+  for (const malformed of [true, 42, {}, [], null]) {
+    expectRefusal('ROLE_MISSING', () => assertPublishingRole(malformed));
+  }
+});
+
+test('the manifest is a CLOSED schema: unknown fields fail without being echoed', () => {
+  const TOKEN = ['ghp', '_', 'FAKESECRET123456'].join('');
+  const cases = [
+    ['synthetic token', { token: TOKEN }],
+    ['nested object', { extra: { nested: TOKEN } }],
+    ['array', { extras: [TOKEN] }],
+    ['typo of a real field', { reviewedSHA: [C1, C2] }],
+    ['plausible-looking addition', { mergeAfter: true }],
+  ];
+  for (const [label, extra] of cases) {
+    const err = expectRefusal('GATE_UNKNOWN_FIELD', () => parseGate(gateFixture(extra)), label);
+    assert.ok(!err.message.includes('FAKESECRET'), `${label}: value echoed`);
+    for (const key of Object.keys(extra)) {
+      assert.ok(!err.message.includes(key), `${label}: field name "${key}" echoed`);
+    }
+  }
+  // POSITIVE CONTROL: the exact allowed set still parses.
+  const ok = parseGate(gateFixture());
+  assert.deepEqual(Object.keys(ok).sort(), [
+    'approvedAt', 'approver', 'baseSha', 'commits', 'executor',
+    'expiresAt', 'gateId', 'issue', 'reviewedShas', 'sourceBranch', 'targetBranch',
+  ]);
+});
+
+test('evidence never gains a field beyond its own fixed shape', () => {
+  const result = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW });
+  const evidence = evidenceFor(result, { role: 'executor', executor: 'claude-opus-5', at: '2026-07-26T19:00:00Z' });
+  assert.deepEqual(Object.keys(evidence).sort(), [
+    'approver', 'baseSha', 'commits', 'declaredExecutor', 'declaredRole', 'gateId',
+    'issue', 'merged', 'published', 'sourceBranch', 'stage', 'targetBranch', 'validatedAt',
+  ]);
+});
+
+test('the gate schema doc says a gate is BOUND to commits, never consumed by them', async () => {
+  const { readFileSync } = await import('node:fs');
+  const doc = readFileSync(new URL('../.agent-handoff/publish-gates/README.md', import.meta.url), 'utf8')
+    .replace(/\s+/g, ' ');
+  assert.match(doc, /A gate is bound to a specific commit sequence/i);
+  // "consumed" may only appear as a deferred Stage B property, never as Stage A behaviour.
+  const consumedClaims = doc.match(/[^.]*\bconsume[sd]?\b[^.]*\./gi) ?? [];
+  for (const sentence of consumedClaims) {
+    assert.match(sentence, /never consume|Stage B|not.*consume|does not consume/i,
+      `gate doc claims consumption as Stage A behaviour: ${sentence.trim()}`);
+  }
+});
+
+test('the handoff leads with the canonical state, not the superseded first commit', async () => {
+  const { readFileSync } = await import('node:fs');
+  const raw = readFileSync(new URL('../.agent-handoff/active/91-role-separated-publication.md', import.meta.url), 'utf8');
+  const canonicalStart = raw.indexOf('## CANONICAL CURRENT STATE');
+  assert.ok(canonicalStart > 0, 'the handoff must carry a canonical current-state section');
+
+  // A cold-start reader must not have to reach the end of the file to learn the real limits.
+  const historicalStart = raw.indexOf('## HISTORICAL');
+  assert.ok(historicalStart > canonicalStart, 'canonical state must precede any historical section');
+
+  const summary = raw.slice(canonicalStart, historicalStart).replace(/\s+/g, ' ');
+  // Superseded concepts must not describe current behaviour in the summary.
+  for (const { label, re } of [
+    { label: 'a publisher seam', re: /publisher seam|reaches the publisher/i },
+    { label: 'the removed --dry-run flag', re: /--dry-run/ },
+    { label: 'replay protection as provided', re: /replay protection(?![^.]*not provided)/i },
+    { label: 'authenticated identity', re: /authenticated identity(?![^.]*never)/i },
+    { label: 'only sanctioned publication path', re: /only sanctioned publication path/i },
+  ]) {
+    assert.ok(!re.test(summary), `the canonical summary still claims: ${label}`);
+  }
+  // ...and it states the real limits.
+  assert.match(summary, /local advisory pre-flight validation only/i);
+  assert.match(summary, /Declared by the caller.*never authenticated/i);
+  assert.match(summary, /validated, never consumed/i);
+  assert.match(summary, /remains possible until Stage\s*B/i);
+
+  // Every superseded section is labelled as such.
+  for (const heading of raw.split('\n').filter((l) => l.startsWith('## '))) {
+    if (/first commit|as first written|tests as of/i.test(heading)) {
+      assert.match(heading, /HISTORICAL|SUPERSEDED/i, `unlabelled historical section: ${heading}`);
+    }
+  }
+});

@@ -6,6 +6,34 @@
 - Architect/security reviewer: Codex
 - Human gate: required before ANY publication. Stage B is a separate outward-facing gate.
 
+## CANONICAL CURRENT STATE (read this first)
+
+Stage A is **local advisory pre-flight validation only**.
+
+`agent-publish` validates a human-authored publish gate against local repository state and prints
+the plan. It does **not** publish, open a pull request, merge, consume a gate, authenticate
+identity, use a credential or deploy — and it contains no code path that could.
+
+| Property | Stage A today | Owner when it exists |
+| --- | --- | --- |
+| Role / executor identity | **Declared by the caller**, never authenticated | Stage B bot credential |
+| Publishing the branch / opening the PR | **Not performed** | Stage B |
+| Merge | Never an agent action | Human owner |
+| Gate consumption (replay protection) | **Not provided** — a gate is validated, never consumed | Stage B |
+| Remote base truth | Local `origin/main` ref only, may be stale | Stage B live check |
+| Exclusive worktree / handoff ownership | Observed and reported; local convention | Stage B + human process |
+| Preventing a direct `main` push | **Not prevented** — hook is skippable, command is optional | Stage B branch protection |
+
+What Stage A does enforce locally: declared-role refusal before `.env`/gate/git (exit 2, both
+`--role x` and `--role=x`, explicit argument beating the environment even when malformed); `main`
+never a source branch; `task/<issue>-<slug>` matching the gated issue; a named human approver;
+strict RFC3339 timestamps with a 12-hour maximum TTL; a **closed** manifest schema; `reviewedShas`
+equal to `commits` exactly and in order; base drift, commit-set drift, dirty worktree, shared
+worktree and `origin/main` drift; and redaction of caller-supplied values in every refusal.
+
+`enforce_admins` is still `false`. **A direct `git push origin main` remains possible until Stage
+B.** Publication and merge are human actions today.
+
 ## Source of truth
 
 - GitHub issue #91 (sub-issue of #84), read in full.
@@ -20,11 +48,16 @@ architect/reviewer agent as permission to run `git push origin main`. The push w
 wrong ROLE performed it; separately, two agents sharing a writable `main` raced on
 `git commit --amend`, requiring reflog recovery. Prose was not a control.
 
-## Stage A delivered (this branch/worktree)
+## HISTORICAL — as delivered by the first commit `8a71865` (SUPERSEDED)
+
+The list below describes the ORIGINAL commit and is kept for review traceability. Several items —
+the publisher seam, the `--dry-run` flag, expiry framed as replay protection, "the only sanctioned
+publication path", and tests that reached a publisher — were **removed or corrected** by the
+fix-forward commits recorded further down. For current behaviour read the canonical section above.
 
 - `src/lib/publish-gate.js` — PURE validation: role separation, branch rules, named approver,
   expiry/replay, executor binding, base drift, exact ordered commits, dirty worktree, stale review.
-- `src/commands/agent-publish.js` — the only sanctioned publication path. Role is refused BEFORE
+- `src/commands/agent-publish.js` — described then as the only sanctioned publication path. Role is refused BEFORE
   the gate is read and before any network dependency is constructed (dedicated exit code `2`).
   No merge path, no branch-protection path, no credential path, no deploy path.
 - `bin/cli.js` — `agent-publish` wired with `--role`, `--executor`, `--gate` (the `--dry-run` flag
@@ -39,7 +72,7 @@ wrong ROLE performed it; separately, two agents sharing a writable `main` raced 
   remote plan with a rollout order that cannot lock the repo out, and recovery paths that never
   force-push published history.
 
-## Tests
+## HISTORICAL — tests as of the first commit (SUPERSEDED)
 
 `test/agent-publish.test.js` — 19 tests, fully offline (fs/git/publish seams injected):
 positive control; role refusal for architect/reviewer/unknown/missing; **proof that no fs, git or
@@ -50,12 +83,12 @@ stale review SHA; malformed/incomplete manifest; the example fixture proven unus
 reaching the publisher exactly once with `merged:false` and no credential in evidence; `--dry-run`
 never reaching the publisher; hook content and executable bit.
 
-## NOT executed (each needs its own human gate)
+## NOT executed (still true — each needs its own human gate)
 
 No push, no PR creation, no branch-protection change, no GitHub App/token creation, no merge, no
 deploy, no cloud mutation. Stage B is entirely unimplemented.
 
-## Residual risk
+## HISTORICAL — residual risk as first written (see the canonical section for the current list)
 
 - Stage A is local: the hook is absent from a fresh clone and skippable, and `agent-publish` can
   simply not be run. **Direct `main` pushes remain possible until Stage B**, and `enforce_admins`
@@ -152,7 +185,9 @@ incident, prohibiting it, or warning it is still possible; it may never instruct
 
 ### 2. Sensitive values echoed in refusals (MEDIUM)
 
-Reproduced: `--role ghp_FAKESECRET123456` was echoed back as `Unknown declared role "ghp_…"`.
+Reproduced: a synthetic `--role` value shaped like a GitHub token (prefix `ghp` + underscore +
+fake body) was echoed back verbatim in the `Unknown declared role` message. The literal is not
+written here so a secret scanner is not trained to ignore this file.
 
 `safeLabel()` now gates every interpolation of caller-controlled input: a value is printed only if
 it is ≤64 chars, matches a safe charset AND carries no credential marker; otherwise `<redacted>`.
@@ -184,3 +219,53 @@ preserved.
 Authenticated role/identity, replay protection, live-remote base truth, exclusive worktree and
 handoff ownership enforcement, and preventing a direct `main` push. `enforce_admins` remains
 `false`: the incident condition is still open.
+
+## Codex review round 3 — three findings, fixed forward
+
+`8a71865…`, `77cf5bc…` and `f236648…` are reviewed and IMMUTABLE. This is a FOURTH commit on the
+same branch; no amend, rebase, squash or replacement was performed.
+
+### 1. `--role` with no value bypassed the preflight (MEDIUM)
+
+Reproduced: `CBA_AGENT_ROLE=executor … --role --executor codex` was refused with `ROLE_MISSING`
+but only AFTER `loadEnv()` — the output lacked the `No .env was loaded` line that only the
+preflight path prints.
+
+Cause: the preflight tested `typeof args.role === 'string'`. `--role` with no value parses to
+`true`, so a type check read it as "no argument given" and fell back to the environment. The fix
+tests PRESENCE (`Object.hasOwn(args, 'role')`) and hands the raw value — malformed or not — to
+`assertPublishingRole`, which refuses it in the preflight. An explicit argument always wins over
+the environment. No new parser was introduced.
+
+### 2. The manifest accepted unknown fields (MEDIUM)
+
+Reproduced: a valid gate plus `token: <synthetic github token>` parsed successfully and the field
+survived in the returned object.
+
+The manifest is now a CLOSED schema over exactly the eleven allowed keys. Anything else fails with
+`GATE_UNKNOWN_FIELD`, and neither the field name nor its value is echoed. Nothing is silently
+normalised or stripped — a mistyped `reviewedSHA` must fail rather than quietly disable a control.
+
+### 3. Documentation and handoff still contradictory (MEDIUM)
+
+- `publish-gates/README.md` said "A gate is consumed by a specific commit sequence" and later "A
+  gate is validated, never consumed". The first is now "A gate is **bound** to a specific commit
+  sequence."
+- This handoff opened with the FIRST commit's summary — publisher seam, `--dry-run`, expiry framed
+  as replay protection, "only sanctioned publication path" — presented as current state. A
+  cold-start reader had to reach the end of the file to discover it was superseded. The file now
+  opens with **CANONICAL CURRENT STATE**, a table of what Stage A does and does not provide and
+  who owns each deferred property, and every superseded section is explicitly labelled
+  `HISTORICAL … (SUPERSEDED)`.
+
+### Tests: 32 -> 38
+
+Added: `--role` with no value refused in the preflight at the real entrypoint with
+`CBA_AGENT_ROLE=executor` set (exit 2, `ROLE_MISSING`, `No .env was loaded`, and an assertion that
+the late in-command path was not the one that fired); malformed explicit roles (`true`, number,
+object, array, null) never falling back to the environment; the closed schema refusing a synthetic
+token, a nested object, an array, a field typo and a plausible addition — each without echoing the
+name or value — with a positive control that the exact allowed set still parses; evidence pinned to
+its fixed key set; the gate doc asserting "bound to" and permitting the word "consume" only as a
+deferred Stage B property; and a handoff test proving the canonical section precedes any historical
+one, states the real limits, and carries no superseded claim in the summary.

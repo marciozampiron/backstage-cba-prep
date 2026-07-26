@@ -142,10 +142,24 @@ export function parseGate(raw) {
     fail('GATE_MALFORMED', 'The publish gate must be a JSON object.');
   }
 
-  const required = [
+  // CLOSED schema: the manifest is human-authored and echoed into evidence, so an unexpected key
+  // is a defect, not something to normalise away. Silently dropping it would let a mistyped
+  // `reviewedSHA` disable a control while the gate still "passes", and would let a pasted token
+  // ride along in the parsed object. Fail closed, and never name or echo the offending key.
+  const ALLOWED_FIELDS = [
     'gateId', 'issue', 'executor', 'baseSha', 'commits',
     'sourceBranch', 'targetBranch', 'approver', 'approvedAt', 'expiresAt', 'reviewedShas',
   ];
+  const unknown = Object.keys(gate).filter((key) => !ALLOWED_FIELDS.includes(key));
+  if (unknown.length > 0) {
+    fail(
+      'GATE_UNKNOWN_FIELD',
+      `The publish gate carries ${unknown.length} field(s) outside the closed schema. The names and ` +
+        'values are not echoed. Allowed fields: ' + ALLOWED_FIELDS.join(', ') + '.',
+    );
+  }
+
+  const required = ALLOWED_FIELDS;
   for (const key of required) {
     if (gate[key] === undefined || gate[key] === null || gate[key] === '') {
       fail('GATE_INCOMPLETE', `The publish gate is missing "${key}".`);
