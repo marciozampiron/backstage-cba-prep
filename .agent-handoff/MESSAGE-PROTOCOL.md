@@ -51,9 +51,24 @@ Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides
 **No actor may emit another actor's authoritative message.** `REVIEW_APPROVED` is a technical
 verdict, not permission to publish. Generic text — "approved", "ok", "lgtm", "aprovado", "pode
 pushar" — is review feedback and is **never** equivalent to `HUMAN_GATE_GRANTED`. Only a
-`HUMAN_GATE_GRANTED` message with exact ordered full SHAs authorizes an operation, and the publish
-gate manifest is its machine-readable form (see
-[`publish-gates/README.md`](publish-gates/README.md)).
+`HUMAN_GATE_GRANTED` message with exact ordered full SHAs authorizes an operation.
+
+**Review happens twice, and the two are not interchangeable.** `REVIEW_REQUEST`, `FINDINGS` and
+`REVIEW_APPROVED` therefore carry a `SCOPE` field:
+
+| `SCOPE` | What is read | Evidence |
+| --- | --- | --- |
+| `code` | the commits themselves | files, tests, control IDs |
+| `artifact` | the generated publication bytes | the `/tmp` path, its SHA-256, permissions, the embedded bindings |
+
+A `REVIEW_APPROVED` with `SCOPE: code` says nothing about the artifact, and vice versa.
+
+**Two gates, not one.** The *review scope* manifest bounds what may be prepared and is consumed at
+preparation. The *execution gate* is the `HUMAN_GATE_GRANTED` itself: written after review, it names
+the **digest of the artifact** plus the exact ordered SHAs and a bounded expiry, and the artifact
+reads and validates it at run time via `CBA_EXECUTION_GATE`. A single manifest could not do both —
+it must exist before the artifact, so it cannot name the artifact's digest. See
+[`publish-gates/README.md`](publish-gates/README.md) and the runbook §4.4.
 
 ## 4. Required envelope
 

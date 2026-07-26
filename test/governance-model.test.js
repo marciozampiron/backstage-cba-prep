@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -249,8 +250,11 @@ const CANONICAL_MESSAGES = [
 test('the canonical message table matches the contract exactly', () => {
   const text = read(PROTOCOL);
   // Scoped to section 3: the actors table and the envelope table also use backticked cells.
+  // Only the FIRST table in section 3: a second table there documents the SCOPE values and also
+  // uses backticked cells.
   const section = text.slice(text.indexOf('## 3. Message types'), text.indexOf('## 4. Required envelope'));
-  const rows = section
+  const firstTable = section.split(/\n\s*\n/).find((b) => /^\|\s*Type\s*\|/m.test(b)) ?? '';
+  const rows = firstTable
     .split('\n')
     .filter((l) => /^\|\s*`[A-Z_]+`\s*\|/.test(l))
     .map((l) => l.split('|').map((c) => c.trim()).filter(Boolean));
@@ -475,4 +479,130 @@ test('surfaces summarise rather than duplicate the contract', () => {
     return CANONICAL_MESSAGES.every((m) => text.includes(m.type));
   });
   assert.deepEqual(full, [], `only ${PROTOCOL} may restate the full message table: ${full.join(', ')}`);
+});
+
+/* ================= explicit assertions, because the heuristic had false negatives ============== */
+//
+// The clause heuristic above is a coarse net, and it proved too coarse: because a negation anywhere
+// in a sentence exempts the whole sentence, every contradiction below passed 20/20 while sitting in
+// live documents. The heuristic stays as a backstop for phrasings nobody predicted, but the real
+// control is here — exact phrases that must not exist, and exact statements that must.
+
+/** Phrases from the superseded model. Each was live and green under the heuristic alone. */
+const FORBIDDEN_PHRASES = [
+  'no agent publishes',
+  'No agent may execute',
+  'human operator',
+  'the human runs',
+  'the HUMAN runs',
+  'human-operated',
+  'interactive terminal is required',
+  'human at the keyboard',
+  'the human then reopened',
+  'only actor who runs',
+];
+
+test('no active operational source contains a superseded-model phrase', () => {
+  const violations = [];
+  for (const rel of SOURCES) {
+    // blocksOf skips sections explicitly marked HISTORICAL, which may keep the old wording.
+    for (const { line, text } of blocksOf(read(rel), { markdown: rel.endsWith('.md') })) {
+      for (const phrase of FORBIDDEN_PHRASES) {
+        if (text.toLowerCase().includes(phrase.toLowerCase())) {
+          violations.push(`${rel}:${line}: "${phrase}" in: ${text.trim().slice(0, 120)}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(violations, [], `superseded-model phrasing is still live:\n${violations.join('\n')}`);
+});
+
+test('POSITIVE CONTROL: the phrase scan would catch a reintroduced contradiction', () => {
+  // Proof the scan is not vacuous: the same matcher, on the same shape of text, must flag it.
+  const planted = 'The one-line answer: no agent publishes. The human operator runs it.';
+  const hits = FORBIDDEN_PHRASES.filter((p) => planted.toLowerCase().includes(p.toLowerCase()));
+  assert.ok(hits.length >= 2, 'the phrase list must detect the exact contradictions it exists for');
+});
+
+/**
+ * Statements each canonical surface MUST make. An omission is as much a drift as a contradiction —
+ * the previous round passed every guard while the runbook still taught the old model.
+ */
+const REQUIRED_STATEMENTS = {
+  'docs/architecture/agent-publication-runbook.md': [
+    /nothing is published without an exact human gate/i,
+    /Opus prepares and, after\s+Codex reviews and Zamp grants a `HUMAN_GATE_GRANTED`/i,
+    /Zamp decides and performs the merge/i,
+    /no terminal check/i,
+    /Two gates, because one was circular/i,
+    /CBA_EXECUTION_GATE/,
+    /headRefOid/,
+  ],
+  '.agent-handoff/MESSAGE-PROTOCOL.md': [
+    /Only a\s+`HUMAN_GATE_GRANTED` message with exact ordered full SHAs authorizes an operation/i,
+    /Review happens twice/i,
+    /Two gates, not one/i,
+    /artifact/i,
+  ],
+  'AGENTS.md': [/MESSAGE-PROTOCOL\.md/, /HUMAN_GATE_GRANTED/, /Gemini/],
+  'spec/security-rules.md': [/HUMAN_GATE_GRANTED/, /MESSAGE-PROTOCOL\.md/],
+  '.claude/skills/publication-prepare/SKILL.md': [/HUMAN_GATE_GRANTED/, /CBA_EXECUTION_GATE/, /never merge/i],
+  '.agents/skills/publication-review/SKILL.md': [/read-only/i, /never implement/i, /SCOPE/],
+  '.agent-handoff/publish-gates/README.md': [/execution gate/i, /artifactDigest|artifact digest/i],
+};
+
+test('every canonical surface makes the statements the model depends on', () => {
+  for (const [rel, patterns] of Object.entries(REQUIRED_STATEMENTS)) {
+    const flat = read(rel).replace(/\s+/g, ' ');
+    for (const re of patterns) {
+      assert.match(flat, re, `${rel} must state ${re}`);
+    }
+  }
+});
+
+/* ================= the two-gate separation is real, not just documented ======================== */
+
+test('the artifact requires and validates an execution gate before any effect', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  const gateCheck = lib.indexOf('CBA_EXECUTION_GATE');
+  const push = lib.indexOf('git push origin');
+  assert.ok(gateCheck > -1 && push > -1 && gateCheck < push, 'the execution gate must be validated before the push');
+
+  for (const required of [
+    /HUMAN_GATE_GRANTED" \]/, // the gate must declare its type
+    /the execution gate is for a different issue/,
+    /the execution gate names a different source branch/,
+    /the execution gate authorizes a different artifact than the one being run/,
+    /does not name the reviewed commits exactly and in order/,
+    /the execution gate expired at/,
+    /window exceeds 12 hours/,
+    /the execution gate path is a symlink/,
+  ]) {
+    assert.match(lib, required, `the artifact must enforce ${required}`);
+  }
+});
+
+test('the verify-and-run command supplies the digest the gate must name', () => {
+  const cmd = verifyAndRun('/tmp/x.sh', 'b'.repeat(64));
+  assert.match(cmd, /CBA_ARTIFACT_DIGEST='b{64}' bash -c "\$s"/);
+  // Without it the gate could authorize a different artifact than the one running.
+  assert.ok(cmd.indexOf('CBA_ARTIFACT_DIGEST') < cmd.indexOf('bash -c'));
+});
+
+test('the approver is bound to a canonical identity, not merely a shape', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  assert.match(lib, /export const CANONICAL_APPROVER/);
+  assert.match(lib, /APPROVER_NOT_CANONICAL/);
+  // The honesty requirement survives: this is declared, not authenticated.
+  assert.match(lib.replace(/\s+/g, ' '), /still a DECLARED identity, not an authenticated one/i);
+});
+
+test('the artifact is written through one descriptor, never reopened by name', () => {
+  const cmd = read('src/commands/agent-human-publish-script.js');
+  assert.match(cmd, /O_CREAT \| C\.O_EXCL \| C\.O_WRONLY \| C\.O_NOFOLLOW/);
+  assert.match(cmd, /fchmodSync\(fd, SCRIPT_MODE\)/);
+  assert.match(cmd, /fstatSync\(fd\)/);
+  // The name must not be re-resolved after the create.
+  assert.equal(/chmodSync\(outputPath/.test(cmd), false, 'chmod must act on the descriptor, not the path');
+  assert.equal(/[^l]statSync\(outputPath/.test(cmd), false, 'stat must act on the descriptor, not the path');
 });

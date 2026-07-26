@@ -152,11 +152,55 @@ Implemented on top of the five preserved commits, as new fix-forward work:
 | Gemini has no workflow role | stated in the contract; guard 2. Model-provider support untouched |
 | Repository-wide consistency guards | `test/governance-model.test.js` (new), 20 tests |
 
+## Work log — Codex FINDINGS on 5cead9d (round 3), all confirmed
+
+Received as `FINDINGS`, verdict "changes required". Every one reproduced before fixing. The six
+earlier commits stay byte-for-byte; corrections are a NEW commit.
+
+| # | Sev | Finding | Verified how |
+| --- | --- | --- | --- |
+| 1 | HIGH | The final gate is circular and never validated mechanically: the manifest must exist *before* generation, so it cannot carry the artifact digest produced afterwards, and the artifact never reads the `HUMAN_GATE_GRANTED` sent after review. Code review and artifact review also shared one `REVIEW_REQUEST`. | Read the flow: `--gate` is consumed at preparation only; nothing at run time reads a post-review gate |
+| 2 | HIGH | Documents, skills and the generated artifact still taught the superseded model: they denied that any agent could publish or operate the artifact, and required a human at a terminal. | `grep` found six live sites, including both skill `description:` frontmatters |
+| 3 | HIGH | The pull request is never bound to the reviewed SHA: `pr_query` omits `headRefOid`, and nothing re-verifies after create/reuse. | Inspected the `--json` field list |
+| 4 | MEDIUM | The governance guards have proven false negatives — any negation anywhere in a sentence exempts the whole sentence, which is why 20/20 passed while finding 2's contradictions survived. | The contradictions in finding 2 were live and green |
+| 5 | MEDIUM | The approver is not bound to Zamp: only equality-with-executor and an agent-name regex are refused, so `OpenAI Codex` or any synthetic person passes. | Read `AGENT_IDENTITY` and `assertApproverIsNotOperator` |
+| 6 | MEDIUM | The artifact write reopens the path: `writeFileSync(...,'wx')` closes the fd, then `chmodSync`/`statSync` resolve the name again. | Read the write sequence |
+| 7 | LOW | The handoff report claimed 18 files, +1332/-259; the real `621682d..5cead9d` diff is 21 files, +1255/-307. | `git diff --shortstat 621682d..5cead9d` |
+
+Finding 7 is mine to own plainly: I reported numbers I had not computed. The final report now derives
+them from git.
+
+## Round 4 — the seven findings on 5cead9d
+
+| # | Fix | Where |
+| --- | --- | --- |
+| 1 | Two gates. The review-scope manifest bounds preparation; a separate `HUMAN_GATE_GRANTED` — written after review, naming `artifactDigest` — is read and validated by the artifact at run time via `CBA_EXECUTION_GATE`, immediately before any effect. The verify-and-run command exports `CBA_ARTIFACT_DIGEST` so the gate is bound to the exact bytes. `REVIEW_REQUEST`/`FINDINGS`/`REVIEW_APPROVED` now carry `SCOPE: code \| artifact`. | artifact §0; runbook §4.4; `MESSAGE-PROTOCOL.md` §3; `publish-gates/README.md`; `templates/message.md` |
+| 2 | Every superseded phrase removed from active sources, including both skill `description:` frontmatters, the runbook §4 heading and one-line answer, the artifact header, and the TTY step that contradicted the same document two paragraphs later. | 8 files |
+| 3 | `headRefOid` added to `pr_query`; required to equal `EXPECTED_HEAD` after the push; the remote ref and the pull request are both re-verified after create/reuse. | artifact §7, §9 |
+| 4 | The clause heuristic is demoted to a backstap. The real control is explicit: a forbidden-phrase scan over active sources, required statements per canonical surface, and positive controls proving both can fail. | `test/governance-model.test.js` |
+| 5 | `CANONICAL_APPROVER` with exact match (`APPROVER_NOT_CANONICAL`), on top of the operator-equality and agent-shape refusals. `OpenAI Codex` and any synthetic person are now refused. | `human-publish-script.js` |
+| 6 | The write is one descriptor: `O_CREAT\|O_EXCL\|O_WRONLY\|O_NOFOLLOW`, then `writeFileSync(fd)`, `fchmodSync(fd)`, `fstatSync(fd)`. The pathname is never re-resolved after the create. | `agent-human-publish-script.js` |
+| 7 | The final report derives file and line counts from `git diff --shortstat`. | this report |
+
 ## Status
 
-Implementation complete, **local commits only, nothing published**. Awaiting Codex read-only
-review, then a Zamp `HUMAN_GATE_GRANTED` before any operation. Any further finding is fix-forward:
-a NEW commit, never an amend, rebase or squash of reviewed history.
+Implementation complete, **local commits only, nothing published**. Next owner: **Codex**, for
+read-only review with `SCOPE: code` and `SCOPE: artifact`. After that, a Zamp `HUMAN_GATE_GRANTED`
+naming the artifact digest is required before any operation. Further findings are fix-forward: a NEW
+commit, never an amend, rebase or squash.
 
 **Prohibited by this state:** push, PR creation or mutation, merge, deploy, branch-protection
 change, credential creation, cloud mutation, paid call.
+
+## Residual risks
+
+- Declared roles remain caller-supplied; the canonical approver is a declared string, not an
+  authenticated identity.
+- Neither document is consumed in the replay sense — expiry and the digest binding bound the window
+  instead. Idempotent consumption is #91 Stage B.
+- `enforce_admins` is still `false`, so a direct `main` push remains possible.
+- The integrity guarantee holds only when the verify-and-run command is used; nothing prevents a
+  bare-path invocation.
+- The governance guards read documents, not behaviour: an agent that ignores them is not stopped.
+- `services/bff/test/telemetry.test.js` (on `main` under #82) still contains a NUL byte and is
+  therefore binary in diffs. Another track owns it; the guard lists it and fails once it is fixed.

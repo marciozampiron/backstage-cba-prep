@@ -19,6 +19,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 import {
   verifyAndRunCommand,
+  assertApproverIsNotOperator,
+  CANONICAL_APPROVER,
   assertSafeOutputPath,
   assertRepoSlug,
   buildPublicationScript,
@@ -1323,4 +1325,184 @@ test('the script claims no other REMOTE mutation, and admits the local fetch', (
   assert.match(script, /NO OTHER REMOTE MUTATION/);
   // `git fetch` writes local objects and FETCH_HEAD, so "everything else is a read" was inaccurate.
   assert.match(script, /writes to the local object store and FETCH_HEAD/);
+});
+
+/* ================= #93 round 4: the execution gate is a second, digest-bound decision ========== */
+
+/** Runs the artifact's execution-gate section only, with stubs, so nothing can reach a remote. */
+function runGateSection(script, { gate, digest, env = {} }) {
+  // Everything after the gate section is discarded, and `git`/`gh` are shadowed by failing stubs, so
+  // a bug that let execution continue cannot contact a remote from a test.
+  const upto = script.indexOf('# --- 1. volatile checks');
+  assert.ok(upto > 0, 'the gate section must come first');
+  const harness = `${script.slice(0, upto)}\necho GATE_SECTION_PASSED\n`;
+  return spawnSync('bash', ['-c', harness], {
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      CBA_EXECUTION_GATE: gate ?? '',
+      CBA_ARTIFACT_DIGEST: digest ?? '',
+      ...env,
+    },
+  });
+}
+
+const EXEC_GATE = (over = {}) => ({
+  type: 'HUMAN_GATE_GRANTED',
+  gateId: 'gate-93-exec',
+  issue: 93,
+  sourceBranch: 'task/93-human-publication-script',
+  targetBranch: 'main',
+  approver: 'marciozampiron',
+  commits: [C1, C2],
+  artifactDigest: 'd'.repeat(64),
+  expiresAt: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  ...over,
+});
+
+test('the artifact refuses to run without an execution gate — preparation authorizes nothing', () => {
+  const r = runGateSection(scriptFixture(), { gate: '', digest: 'd'.repeat(64) });
+  assert.match(r.stderr, /set CBA_EXECUTION_GATE/);
+  assert.equal(/GATE_SECTION_PASSED/.test(r.stdout), false);
+});
+
+test('the artifact refuses to run without the digest the verify-and-run command supplies', async () => {
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE()));
+    const r = runGateSection(scriptFixture(), { gate: g, digest: '' });
+    assert.match(r.stderr, /CBA_ARTIFACT_DIGEST is unset/);
+    assert.equal(/GATE_SECTION_PASSED/.test(r.stdout), false);
+  });
+});
+
+test('POSITIVE CONTROL: a well-formed execution gate is accepted', async () => {
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE()));
+    const r = runGateSection(scriptFixture(), { gate: g, digest: 'd'.repeat(64) });
+    assert.match(r.stdout, /GATE_SECTION_PASSED/, `gate rejected: ${r.stderr}`);
+    assert.match(r.stdout, /Execution gate accepted: gate-93-exec approved by marciozampiron/);
+  });
+});
+
+test('an execution gate for a DIFFERENT artifact cannot authorize this one', async () => {
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    // The gate was written for a previous artifact; regenerating changes the digest.
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ artifactDigest: 'e'.repeat(64) })));
+    const r = runGateSection(scriptFixture(), { gate: g, digest: 'd'.repeat(64) });
+    assert.match(r.stderr, /authorizes a different artifact than the one being run/);
+    assert.equal(/GATE_SECTION_PASSED/.test(r.stdout), false);
+  });
+});
+
+test('the execution gate must match issue, branch, approver, commits and be a HUMAN_GATE_GRANTED', async () => {
+  const cases = [
+    [{ type: 'REVIEW_APPROVED' }, /not a HUMAN_GATE_GRANTED/],
+    [{ issue: 91 }, /for a different issue/],
+    [{ sourceBranch: 'task/93-other' }, /different source branch/],
+    [{ targetBranch: 'develop' }, /different target branch/],
+    [{ approver: 'someone-else' }, /approver differs from the reviewed gate/],
+    [{ commits: [C1] }, /does not name the reviewed commits exactly and in order/],
+    [{ commits: [C2, C1] }, /does not name the reviewed commits exactly and in order/],
+    [{ artifactDigest: '' }, /does not name an artifact digest/],
+    [{ expiresAt: '2020-01-01T00:00:00Z' }, /expired at/],
+    [{ expiresAt: new Date(Date.now() + 40 * 3600_000).toISOString().replace(/\.\d{3}Z$/, 'Z') }, /exceeds 12 hours/],
+  ];
+  for (const [over, expected] of cases) {
+    await withTempDir(async (dir) => {
+      const g = path.join(dir, 'gate.json');
+      fs.writeFileSync(g, JSON.stringify(EXEC_GATE(over)));
+      const r = runGateSection(scriptFixture(), { gate: g, digest: 'd'.repeat(64) });
+      assert.match(r.stderr, expected, `${JSON.stringify(over)} should be refused`);
+      assert.equal(/GATE_SECTION_PASSED/.test(r.stdout), false, `${JSON.stringify(over)} must not pass`);
+    });
+  }
+});
+
+test('a symlinked execution gate is refused rather than followed', async () => {
+  await withTempDir(async (dir) => {
+    const real = path.join(dir, 'gate.json');
+    const link = path.join(dir, 'link.json');
+    fs.writeFileSync(real, JSON.stringify(EXEC_GATE()));
+    fs.symlinkSync(real, link);
+    const r = runGateSection(scriptFixture(), { gate: link, digest: 'd'.repeat(64) });
+    assert.match(r.stderr, /the execution gate path is a symlink/);
+    assert.equal(/GATE_SECTION_PASSED/.test(r.stdout), false);
+  });
+});
+
+/* ================= #93 round 4: approver binding and single-descriptor write ==================== */
+
+test('only the canonical human approver may approve, and never the operator', () => {
+  const base = { approver: 'marciozampiron', executor: 'claude-opus-5' };
+  assert.equal(assertApproverIsNotOperator(base, 'claude-opus-5'), 'marciozampiron');
+
+  expectRefusal('APPROVER_IS_OPERATOR', () =>
+    assertApproverIsNotOperator({ approver: 'claude-opus-5', executor: 'claude-opus-5' }, 'claude-opus-5'));
+  expectRefusal('APPROVER_NOT_HUMAN', () =>
+    assertApproverIsNotOperator({ approver: 'codex-reviewer', executor: 'claude-opus-5' }, 'claude-opus-5'));
+  // Finding 5: a plausible synthetic person used to pass the shape heuristic.
+  for (const impostor of ['OpenAI Codex', 'some-other-person', 'zamp-deputy', 'marciozampiron2']) {
+    expectRefusal('APPROVER_NOT_CANONICAL', () =>
+      assertApproverIsNotOperator({ approver: impostor, executor: 'claude-opus-5' }, 'claude-opus-5'));
+  }
+  assert.equal(CANONICAL_APPROVER, 'marciozampiron');
+});
+
+test('a non-canonical approver is refused end to end, without echoing the value', async () => {
+  await withTempDir(async (dir) => {
+    await withTmpScriptPath(async (out) => {
+      const gate = gateFileIn(dir, gateFixture({ approver: 'OpenAI Codex' }));
+      const { value, output } = await captureAsync(() =>
+        runAgentHumanPublishScript({
+          role: 'executor',
+          executor: 'claude-opus-5',
+          gate,
+          out,
+          deps: { runGit: gitSeam(), now: () => NOW, cwd: ROOT },
+        }),
+      );
+      assert.equal(value, EXIT.VALIDATION_FAILED);
+      assert.match(output, /APPROVER_NOT_CANONICAL/);
+      assert.equal(/OpenAI Codex/.test(output), false, 'the refused approver must not be echoed');
+      assert.equal(fs.existsSync(out), false);
+    });
+  });
+});
+
+test('the artifact write cannot be redirected by a symlink planted at the path', async () => {
+  await withTempDir(async (dir) => {
+    await withTmpScriptPath(async (out) => {
+      const victim = path.join(dir, 'victim.txt');
+      fs.writeFileSync(victim, 'untouched\n');
+      fs.symlinkSync(victim, out);
+      const gate = gateFileIn(dir);
+      const { value, output } = await captureAsync(() =>
+        runAgentHumanPublishScript({
+          role: 'executor',
+          executor: 'claude-opus-5',
+          gate,
+          out,
+          deps: { runGit: gitSeam(), now: () => NOW, cwd: ROOT },
+        }),
+      );
+      assert.equal(value, EXIT.VALIDATION_FAILED);
+      assert.match(output, /OUTPUT_PATH_SYMLINK/);
+      assert.equal(fs.readFileSync(victim, 'utf8'), 'untouched\n', 'the symlink target must be untouched');
+    });
+  });
+});
+
+test('the pull request is bound to the reviewed commit, not to a branch name', () => {
+  const script = scriptFixture();
+  assert.match(script, /--json number,baseRefName,headRefName,headRefOid,isCrossRepository,headRepositoryOwner/);
+  assert.match(script, /points at a commit that is not the reviewed head/);
+  // Verified again after the push and after create/reuse — a branch can move in between.
+  const push = script.indexOf('git push origin');
+  const finalCheck = script.indexOf('final verification');
+  assert.ok(finalCheck > push, 'the pull request must be re-verified after publishing');
+  assert.match(script, /moved to \$final_ref after publishing/);
+  assert.match(script, /pull request #\$pr_number points at \$pr_oid, not the reviewed head/);
 });

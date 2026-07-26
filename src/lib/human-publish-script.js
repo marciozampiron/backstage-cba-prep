@@ -39,6 +39,18 @@ export const FORBIDDEN_SCRIPT_PATTERNS = [
   { label: 'paid service invocation', re: /bedrock|invoke-model|openai\.com|anthropic\.com\/v1/i },
 ];
 
+/**
+ * The only identity that may approve publication.
+ *
+ * Finding 5 was right: refusing "equal to the executor" plus an agent-name regex still let
+ * `OpenAI Codex`, or any invented person, through. The protocol says Zamp alone grants the gate, so
+ * the check is an exact match against a canonical identifier rather than a shape heuristic.
+ *
+ * This is still a DECLARED identity, not an authenticated one. A caller can write this string into
+ * a manifest; nothing here proves who wrote it. #91 Stage B is what authenticates the approver.
+ */
+export const CANONICAL_APPROVER = 'marciozampiron';
+
 /** Identities that are agents, never approvers. Matched case-insensitively on the whole value. */
 export const AGENT_IDENTITY =
   /^(claude|opus|sonnet|haiku|fable|codex|gpt|o[0-9]|gemini|bard|llama|mistral|copilot|bot)\b|[-_](bot|agent|ai)$/i;
@@ -125,7 +137,14 @@ export function assertApproverIsNotOperator(gate, declaredExecutor) {
   if (AGENT_IDENTITY.test(approver)) {
     fail(
       'APPROVER_NOT_HUMAN',
-      'The gate approver looks like an AI agent identity. Only a named human may approve publication.',
+      'The gate approver looks like an AI agent identity. Only the canonical human approver may approve publication.',
+    );
+  }
+  if (norm(approver) !== norm(CANONICAL_APPROVER)) {
+    fail(
+      'APPROVER_NOT_CANONICAL',
+      'The gate approver is not the canonical approval authority. Only that named human grants a ' +
+        'publication gate; the value is not echoed.',
     );
   }
   return approver;
@@ -164,7 +183,9 @@ export function verifyAndRunCommand(outputPath, digest) {
     '(',
     `  s=$(cat ${shQuote(outputPath)})`,
     `  if [ "$(printf '%s\\n' "$s" | sha256sum | cut -d' ' -f1)" = ${shQuote(digest)} ]; then`,
-    '    bash -c "$s"',
+    // The digest is exported so the artifact can require the execution gate to name these exact
+    // bytes. Without it the gate could authorize a different artifact than the one running.
+    `    CBA_ARTIFACT_DIGEST=${shQuote(digest)} bash -c "$s"`,
     '  else',
     "    echo 'REFUSED: the script changed after review — do not run it' >&2",
     '    exit 1',
@@ -174,7 +195,7 @@ export function verifyAndRunCommand(outputPath, digest) {
 }
 
 /**
- * Build the human-operated publication script.
+ * Build the gated publication artifact.
  *
  * Everything the script may touch is bound at generation time from an already-validated gate:
  * repository, issue, source branch, target branch, the exact ordered reviewed SHAs, the expected
@@ -200,18 +221,21 @@ export function buildPublicationScript({ result, repo, generatedAt }) {
   const confirmation = `publish ${issue} ${head.slice(0, 12)}`;
 
   return `#!/usr/bin/env bash
-# Human-operated publication script for issue #${issue} — GENERATED, DO NOT EDIT.
+# Gated publication artifact for issue #${issue} — GENERATED, DO NOT EDIT.
 #
 # Generated: ${generatedAt}
 # Gate:      ${gate.gateId}
 # Approver:  ${gate.approver}
 #
-# WHO RUNS THIS: the human operator, explicitly, using the verify-and-run command printed when this
-# file was prepared. That command reads this file ONCE, checks its SHA-256 against the reviewed
-# digest, and executes those same captured bytes. Do NOT run it with a bare \`bash <path>\`: that
-# reopens the file, and anything running as your user could have replaced it after the review.
-# No agent may execute it. The file is mode 0600 and deliberately NOT executable so running it is
-# always a deliberate act. It uses only your existing git/gh session — it holds no credential.
+# WHO RUNS THIS: Opus, the implementation executor and publication operator, using the
+# verify-and-run command printed when this file was prepared, and ONLY after Zamp's
+# HUMAN_GATE_GRANTED is supplied via CBA_EXECUTION_GATE. That command reads this file ONCE, checks
+# its SHA-256 against the reviewed digest, and executes those same captured bytes. A bare-path
+# invocation is never supported: it reopens the file, and anything running as the same user could
+# have replaced it after the review.
+# Codex never runs this. Zamp does not need to run it; Zamp approves and merges.
+# The file is mode 0600 and deliberately NOT executable so operating it is always a deliberate,
+# separately gated act. It uses only the existing git/gh session — it holds no credential.
 #
 # WHAT IT MAY DO — exactly two bounded external effects, in this order: push the gated branch
 # ${source} without force, and then create or reuse exactly one pull
@@ -224,8 +248,8 @@ export function buildPublicationScript({ result, repo, generatedAt }) {
 # Merge remains a separate human action after required checks and review.
 #
 # This is the interim bridge between #91 Stage A (advisory local validation) and #91 Stage B
-# (authenticated bot identity and remote enforcement). It is a process guardrail, not authenticated
-# role separation.
+# (authenticated operator identity and remote enforcement). It is a process guardrail, not
+# authenticated role separation. Canonical contract: .agent-handoff/MESSAGE-PROTOCOL.md
 
 set -euo pipefail
 
@@ -255,6 +279,57 @@ note() { printf '%s\\n' "$*"; }
 #
 # The decision lives in the gate — authored by the approver, naming them, bound to these commits.
 # This confirmation is the OPERATOR acknowledging that decision, never a second approval.
+
+# --- 0. THE EXECUTION GATE ----------------------------------------------------------------------
+# Finding 1: the manifest consumed at preparation time cannot be the authorization to operate. It
+# has to exist BEFORE this file is generated, so it cannot possibly carry this file's digest, and
+# the reviewer had not read anything yet when it was written. Two different decisions were being
+# collapsed into one artifact.
+#
+# They are now separate:
+#   - the REVIEW SCOPE manifest bounded what was prepared (base, branch, ordered commits);
+#   - this EXECUTION GATE is Zamp's HUMAN_GATE_GRANTED, authored AFTER Codex reviewed both the code
+#     and this artifact. It names the digest of the exact bytes being run, so it cannot be recycled
+#     for a different artifact, and it is read and validated HERE, immediately before any effect.
+#
+# CBA_ARTIFACT_DIGEST is supplied by the verify-and-run command, which computed it over the bytes it
+# actually executed. Requiring the gate to name that same digest is what closes the loop.
+[ -n "\${CBA_EXECUTION_GATE:-}" ] \\
+  || die "set CBA_EXECUTION_GATE to the path of Zamp's HUMAN_GATE_GRANTED manifest; preparation alone authorizes nothing"
+[ -n "\${CBA_ARTIFACT_DIGEST:-}" ] \\
+  || die "CBA_ARTIFACT_DIGEST is unset; run this through the verify-and-run command, which supplies it"
+command -v jq >/dev/null 2>&1 || die "jq is required to validate the execution gate"
+[ ! -L "$CBA_EXECUTION_GATE" ] || die "the execution gate path is a symlink; refusing to follow it"
+[ -f "$CBA_EXECUTION_GATE" ] || die "the execution gate is not a regular file"
+
+gate_field() { jq -r --arg k "$1" '.[$k] // empty' "$CBA_EXECUTION_GATE"; }
+
+[ "$(gate_field type)" = "HUMAN_GATE_GRANTED" ] || die "the execution gate is not a HUMAN_GATE_GRANTED message"
+[ "$(gate_field issue)" = "$ISSUE" ] || die "the execution gate is for a different issue"
+[ "$(gate_field sourceBranch)" = "$SOURCE_BRANCH" ] || die "the execution gate names a different source branch"
+[ "$(gate_field targetBranch)" = "$TARGET_BRANCH" ] || die "the execution gate names a different target branch"
+[ "$(gate_field approver)" = "$GATE_APPROVER" ] || die "the execution gate approver differs from the reviewed gate"
+
+# The digest binds this gate to THESE bytes. A gate for an earlier artifact cannot authorize this one.
+gate_digest=$(gate_field artifactDigest)
+[ -n "$gate_digest" ] || die "the execution gate does not name an artifact digest"
+[ "$gate_digest" = "$CBA_ARTIFACT_DIGEST" ] \\
+  || die "the execution gate authorizes a different artifact than the one being run"
+
+# The commit set must match the reviewed set exactly and in order.
+gate_commits=$(jq -r '.commits | join(" ")' "$CBA_EXECUTION_GATE")
+[ "$gate_commits" = "\${REVIEWED_SHAS[*]}" ] || die "the execution gate does not name the reviewed commits exactly and in order"
+
+# Expiry is the gate's own, not the review scope's, and is bounded.
+gate_expires=$(gate_field expiresAt)
+[ -n "$gate_expires" ] || die "the execution gate has no expiry"
+gate_expiry_epoch=$(date -u -d "$gate_expires" +%s 2>/dev/null) \\
+  || die "cannot parse the execution gate expiry; GNU date is required"
+gate_now=$(date -u +%s)
+[ "$gate_now" -le "$gate_expiry_epoch" ] || die "the execution gate expired at $gate_expires; ask for a new one"
+[ $((gate_expiry_epoch - gate_now)) -le 43200 ] || die "the execution gate window exceeds 12 hours; ask for a bounded one"
+
+note "Execution gate accepted: $(gate_field gateId) approved by $GATE_APPROVER."
 
 # --- 1. volatile checks, defined once and run TWICE ---------------------------------------------
 # Expiry, the origin binding, the live remote and the pull-request set are all state that can change
@@ -306,7 +381,7 @@ check_remote_state() {
 # whose branch happens to share this name would otherwise look like "the" pull request.
 pr_query() {
   gh pr list --repo "$REPO" --head "$SOURCE_BRANCH" --state open \\
-    --json number,baseRefName,headRefName,isCrossRepository,headRepositoryOwner
+    --json number,baseRefName,headRefName,headRefOid,isCrossRepository,headRepositoryOwner
 }
 REPO_OWNER=\${REPO%%/*}
 
@@ -326,6 +401,13 @@ assert_pr_set() {
       || die "$when: the open pull request targets a different base; refusing to touch it"
     [ "$(printf '%s' "$json" | jq -r '.[0].headRefName')" = "$SOURCE_BRANCH" ] \\
       || die "$when: the open pull request has a different head; refusing to touch it"
+    # A branch name is not a commit. Between the push and this query another operation could have
+    # moved the branch, and the pull request would then describe work that was never reviewed.
+    # \`require_oid\` is off for the pre-push check, when the remote head is legitimately different.
+    if [ "\${require_oid:-0}" = "1" ]; then
+      [ "$(printf '%s' "$json" | jq -r '.[0].headRefOid')" = "$EXPECTED_HEAD" ] \\
+        || die "$when: the open pull request points at a commit that is not the reviewed head"
+    fi
   fi
   printf '%s' "$count"
 }
@@ -409,6 +491,7 @@ landed=$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | awk 'NR==1 {print $1
 # --- 9. SECOND external effect: create or reuse EXACTLY one pull request -----------------------
 # Re-queried after the push, not trusted from before it: the remote may have changed in between,
 # and the same assertions must hold against the state that actually exists now.
+require_oid=1
 pr_count_after=$(assert_pr_set "after publishing")
 if [ "$pr_count_after" -eq 1 ]; then
   existing_number=$(pr_query | jq -r '.[0].number')
@@ -418,8 +501,19 @@ else
   note "Creating the pull request..."
   gh pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SOURCE_BRANCH" \\
     --title "Issue #$ISSUE" \\
-    --body "Publishes the reviewed branch for issue #$ISSUE under gate $GATE_ID. Merge remains a separate human action after required checks and review."
+    --body "Publishes the reviewed commit for issue #$ISSUE under gate $GATE_ID. Merge remains Zamp's decision, after required checks and review."
 fi
+
+# Final binding: the pull request that now exists must point at the reviewed commit, and the remote
+# ref must still be it. Checking only before the push would leave a race between the push and this.
+assert_pr_set "final verification" >/dev/null
+final_ref=$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | awk 'NR==1 {print $1}')
+[ "$final_ref" = "$EXPECTED_HEAD" ] \\
+  || die "origin/$SOURCE_BRANCH moved to $final_ref after publishing; the pull request no longer describes the reviewed commit"
+pr_number=$(pr_query | jq -r '.[0].number // empty')
+[ -n "$pr_number" ] || die "no open pull request for the reviewed head after publishing"
+pr_oid=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq '.headRefOid')
+[ "$pr_oid" = "$EXPECTED_HEAD" ] || die "pull request #$pr_number points at $pr_oid, not the reviewed head"
 
 # --- 10. redacted evidence ------------------------------------------------------------------------
 note ""

@@ -4,9 +4,13 @@ How source reaches `origin`, why the control exists, and what Stage B still has 
 
 Controls: `SEC-GOV-01`, `SEC-SUP-01`, `SEC-IAM-01`, `SEC-REL-01`.
 
-**The one-line answer: no agent publishes.** The executor validates and prepares, the reviewer
-reads, the human runs. The rest of this document explains that sentence and, more importantly, its
-limits.
+**The one-line answer: nothing is published without an exact human gate.** Opus prepares and, after
+Codex reviews and Zamp grants a `HUMAN_GATE_GRANTED` naming this artifact's digest, Opus operates it.
+Zamp decides and performs the merge. The rest of this document explains that sentence and, more
+importantly, its limits.
+
+Roles and messages are canonical in
+[`../../.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md).
 
 ## 1. The incident this exists for
 
@@ -99,7 +103,7 @@ What Stage A does check:
 `enforce_admins` is still `false` today. **A direct `git push origin main` remains possible.** That
 is the exact condition behind the incident, and only Stage B closes it.
 
-## 4. The human-operated publication bridge (#93)
+## 4. The gated publication bridge (#93)
 
 Stage A validates and stops, and Stage B does not exist yet. The gap in between was being filled by
 a human typing publication commands from memory against a chat approval — which is precisely the
@@ -148,7 +152,7 @@ That file:
 - is scanned before it reaches disk against a forbidden-operation list — force push, pushing an
   integration branch, merge, deploy, repository administration, credential handling, history
   rewriting and paid-service invocation. A match aborts and writes nothing: it would be a generator
-  defect, and it must fail in front of the executor rather than the human operator.
+  defect, and it must fail at preparation rather than at operation.
 
 The command prints the SHA-256 of the exact bytes written, **and the verify-and-run command the
 human must use**. That command reads the file once into a shell variable, hashes those captured
@@ -163,13 +167,17 @@ substitution and asserts that the swapped script neither runs nor leaves a side 
 
 ### 4.3 What the artifact does when the operator runs it
 
-Everything the artifact may touch is bound at generation time from the validated gate — repository,
-issue, source branch, target branch, the ordered reviewed SHAs, the expected HEAD, the expiry. It
-then re-verifies all of it against live state:
+Everything the artifact may touch is bound at generation time from the review scope — repository,
+issue, source branch, target branch, the ordered reviewed SHAs, the expected HEAD. It then requires
+Zamp's execution gate and re-verifies everything against live state:
 
-1. **an interactive terminal is required.** Without one, the typed confirmation could be fed from a
-   pipe or here-string by an automated caller, so a non-interactive stdin is refused outright;
-2. the gate must not have expired;
+1. **the execution gate is required, and it is a different artifact from the review scope.** See
+   §4.4 — nothing is authorized by preparation alone. The gate is read from
+   `CBA_EXECUTION_GATE`, refused if it is a symlink or not a regular file, and must be a
+   `HUMAN_GATE_GRANTED` naming this issue, this branch, the canonical approver, the reviewed
+   commits exactly and in order, a bounded unexpired window, and — critically — the **digest of the
+   exact bytes being run**, supplied by the verify-and-run command as `CBA_ARTIFACT_DIGEST`;
+2. the review-scope window must not have expired either;
 3. the source branch may never be `main`/`master`; the target must be `main`;
 4. the correct branch must be checked out, the worktree clean, and the branch must not be checked
    out in a second worktree;
@@ -184,15 +192,16 @@ then re-verifies all of it against live state:
    remote branch already exists, the push must be a fast-forward, never discarding remote commits;
 8. **the pull-request set is asserted before anything is published.** `gh pr list --head` matches by
    branch *name* and spans forks, so a pull request opened from a fork with the same branch name
-   would otherwise look like the right one. The script requires zero or exactly one open match, not
+   would otherwise look like the right one. The artifact requires zero or exactly one open match, not
    cross-repository, owned by the same owner, with exactly the reviewed base and head. Doing this
    *before* the push means a mismatch costs nothing — the branch is not published yet;
 9. **the operator confirms.** The exact phrase `publish <issue> <head12>` is bound to this issue
    and this reviewed head, so it cannot be produced by habit, reused from another run, or satisfied
    by a generic "approved". This is an acknowledgement by the operator, **not** a second approval —
-   the human decision is the gate, and the approver's name is displayed at this prompt so the two
-   cannot be confused. There is deliberately no terminal check: requiring a TTY would block the
-   executor, which is the actor meant to run this;
+   the decision is the gate, and the approver's name is displayed at this prompt so the two cannot
+   be confused. There is deliberately **no terminal check**: demanding a TTY would block Opus, which
+   is the actor meant to run this, and an earlier draft of this document required both a TTY and an
+   agent operator, which was a contradiction;
 10. **everything volatile is re-checked.** Expiry, the origin binding, the live remote base and
     head, the pull-request set, HEAD and worktree cleanliness are all state that can change while a
     human reads a prompt — a terminal left open overnight would otherwise push against an expired
@@ -208,7 +217,12 @@ then re-verifies all of it against live state:
     exists, and exactly one pull request is created or reused. It never touches a fork's pull
     request, an ambiguous set, or one with a different base or head, and it never opens a second
     one if the pre-push match disappeared;
-13. it prints redacted evidence and states that merge remains a separate human action.
+13. **the pull request is bound to the reviewed commit, not to a branch name.** A branch name is not
+    a commit: between the push and the pull request another operation could move the branch, and the
+    pull request would then describe unreviewed work. So `headRefOid` is queried and must equal
+    `EXPECTED_HEAD`, the remote ref is read back once more, and the pull request is re-verified
+    after it is created or reused;
+14. it prints redacted evidence and states that merge remains Zamp's decision.
 
 Two of those are **remote** effects; nothing else the script does mutates the remote. It is not
 purely read-only locally, though: when the branch already exists on the remote it fetches those
@@ -236,12 +250,40 @@ The same reasoning governs bookkeeping: `EVENTS.md`, `CURRENT.md` and `agent-ref
 write tracked files. They belong to the main worktree or to a later commit — never to the task
 worktree before generation.
 
-### 4.4 What the bridge does NOT provide
+### 4.4 Two gates, because one was circular
+
+The first version of this bridge had a single manifest, and that was a real defect rather than a
+simplification. The manifest had to exist **before** the artifact was generated — the artifact is
+built from it — so it could not possibly name the artifact's digest, and when it was written the
+reviewer had not read anything yet. Calling it "the machine-readable form of `HUMAN_GATE_GRANTED`"
+made the authorization circular: it authorized an artifact that did not exist.
+
+There are now two distinct documents:
+
+| | Review scope manifest | Execution gate |
+| --- | --- | --- |
+| Written by | Zamp, before preparation | Zamp, after review |
+| Answers | "which commits may be prepared?" | "may THIS artifact run, now?" |
+| Contains | base, branch, ordered commits, approver | issue, branch, ordered commits, approver, **artifact digest**, bounded expiry |
+| Read by | `agent-human-publish-script` at preparation | the artifact itself, at run time, via `CBA_EXECUTION_GATE` |
+| Message type | — (scope input) | `HUMAN_GATE_GRANTED` |
+
+Because the execution gate names the digest, it cannot be recycled for a different artifact: a
+regenerated script has a different digest and needs a new gate. And because the artifact validates
+it immediately before any effect, an expired or mismatched gate stops the operation rather than
+being noticed afterwards.
+
+Review is likewise two things, and the `REVIEW_REQUEST`/`FINDINGS`/`REVIEW_APPROVED` messages carry
+a `SCOPE` field saying which: **code review** of the commits, and **artifact review** of the
+generated bytes and their digest. They are different reads with different evidence, and one
+`REVIEW_APPROVED` for the code says nothing about the artifact.
+
+### 4.5 What the bridge does NOT provide
 
 | Not provided | Why |
 | --- | --- |
 | Authenticated role separation | `--role` is caller-supplied. An agent that ignores this document is not stopped by it. |
-| A guarantee no agent runs the script | Non-executable mode and the TTY check raise the cost and make it deliberate; they do not make it impossible. |
+| A guarantee that only Opus operates the artifact | Non-executable mode, the required execution gate and the digest binding raise the cost and make operation deliberate and traceable; they do not authenticate who ran it. |
 | Protection if the operator ignores the verify-and-run command | A bare-path invocation is never supported, but nothing prevents one; it would reopen the file. The integrity guarantee is only as good as the command actually used. |
 | Replay protection | The gate is validated, never consumed. Expiry and the exact-HEAD check bound the window instead. |
 | Protection of `main` | Unchanged: `enforce_admins` is still `false`. Only Stage B closes it. |

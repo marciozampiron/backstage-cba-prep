@@ -1,6 +1,6 @@
 ---
 name: publication-review
-description: Review — never generate and never run — a human-operated publication script prepared by the implementation executor. Use when the executor hands over a /tmp script and its SHA-256 for a gated task branch, before the human operator runs it. Read-only.
+description: Review — never implement, prepare or execute — the publication artifact Opus prepared. Use when Opus sends a REVIEW_REQUEST with a /tmp path and its SHA-256 for a gated task branch, before Zamp grants the execution gate. Read-only; covers both code review and artifact review.
 ---
 
 # Review a publication script (Codex — architect and independent reviewer, read-only)
@@ -32,10 +32,13 @@ Read the file. It is short and bounded by design; read all of it.
 
 1. **Integrity.** Recompute the digest — `sha256sum <path>` — and compare it with the one reported.
    A mismatch means the file changed after preparation: refuse and report it as a finding.
-   Your digest is only meaningful because the human runs the file through the verify-and-run
+   Your digest is only meaningful because the artifact is operated through the verify-and-run
    command, which re-reads it once and re-checks the same digest before executing those exact
-   bytes. Confirm that the reported command does that and embeds the digest you verified; if the
-   handover says `bash <path>`, that is a finding on its own.
+   bytes. Confirm that the reported command does that, embeds the digest you verified, and exports
+   it as `CBA_ARTIFACT_DIGEST` so the execution gate can be bound to these bytes. A handover that
+   offers a bare-path invocation is a finding on its own.
+   Your review has a `SCOPE`: `code` for the commits, `artifact` for these bytes. Say which. An
+   approval of one is never an approval of the other.
 2. **Permissions.** `ls -l <path>` must show `-rw-------` and **no executable bit**. An executable
    or group/world-readable artifact is a finding.
 3. **Location.** It must be directly under `/tmp`, never inside the repository or a symlink target.
@@ -59,19 +62,27 @@ Read the file. It is short and bounded by design; read all of it.
    `rebase`/`reset --hard`/`commit --amend`/`filter-branch`, no `gh api` against branches, rulesets,
    protection, secrets or environments, no `gh repo edit`, no token or credential assignment, no
    `gh auth`, and no paid-service call.
-7. **Guards.** The script must refuse a non-interactive stdin, refuse an expired gate, require the
+7. **The execution gate.** The artifact must require `CBA_EXECUTION_GATE`, refuse a symlink or
+   non-regular file, and validate that the gate is a `HUMAN_GATE_GRANTED` for this issue, branch and
+   canonical approver, naming the reviewed commits exactly and in order, unexpired, bounded to 12
+   hours, and carrying an `artifactDigest` equal to the digest of the bytes being run. A gate that
+   could authorize a *different* artifact is a finding. Note that this gate is written **after** your
+   review — the manifest consumed at preparation only bounded the scope.
+8. **Guards.** The artifact must refuse an expired gate, require the
    correct clean and exclusive worktree, require HEAD and the ordered commit set to match, re-check
    the live `origin/main` against the base, refuse a push that would discard remote commits, and
    require a typed confirmation before the push.
-8. **Re-validation after the confirmation.** Everything volatile — expiry, the origin binding, the
+9. **Re-validation after the confirmation.** Everything volatile — expiry, the origin binding, the
    live remote base and head, the pull-request set, HEAD and worktree cleanliness — must be checked
    AGAIN after the human types the confirmation, with nothing between that and the push. A prompt
    can sit open for hours. Each volatile check should be a function defined once and called twice;
    two copied blocks are a finding, because they drift.
-8. **Pull request handling.** It creates one PR, or reuses a single existing open one only after
-   confirming its base and head. It must never touch a PR with a different base or head, and must
-   never merge.
-9. **Leakage.** No token, key, account id or other secret material anywhere in the file. Branch
+10. **Pull request handling.** It creates one PR, or reuses a single existing open one only after
+   confirming its base, head **and `headRefOid`** — a branch name is not a commit, and the branch can
+   move between the push and the query. The remote ref and the pull request must both be re-verified
+   against `EXPECTED_HEAD` after creation or reuse. It must never touch a PR with a different base or
+   head, and must never merge.
+11. **Leakage.** No token, key, account id or other secret material anywhere in the file. Branch
    names, SHAs and the gate id are expected and fine.
 
 ## Reporting

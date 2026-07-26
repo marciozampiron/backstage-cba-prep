@@ -2,6 +2,29 @@
 
 A publish gate is the machine-readable form of a human publication decision.
 
+## Two documents, not one
+
+A single manifest could not be both the scope of a review and the authorization to operate. It has
+to exist **before** the artifact is generated — the artifact is built from it — so it can never name
+the artifact's digest, and when it is written nothing has been reviewed yet. That made the
+authorization circular.
+
+| | Review scope manifest | **Execution gate** |
+| --- | --- | --- |
+| Written | before preparation | after review |
+| Answers | which commits may be prepared? | may THIS artifact run, now? |
+| Extra field | — | `artifactDigest`, plus `type: "HUMAN_GATE_GRANTED"` |
+| Read by | `agent-human-publish-script` | the artifact itself, via `CBA_EXECUTION_GATE` |
+
+Stage A does not consume a gate, and neither does the artifact: both documents are validated, and the
+same file would validate twice. Bounded expiry and the digest binding narrow the window instead.
+Idempotent consumption belongs to #91 Stage B.
+
+The schema below is the review scope. The **execution gate** adds `type`, `artifactDigest` and its
+own bounded `expiresAt`, and is validated by the artifact immediately before any effect — see
+[`../templates/message.md`](../templates/message.md) for its exact shape and the runbook §4.4 for
+why. Because it names a digest, an execution gate cannot be recycled for a regenerated artifact.
+
 **This folder holds the schema and its example only — never a real gate.** A gate is authored by
 the human **outside the task worktree**, for example `/tmp/cba-gate-<issue>.json`. This directory is
 tracked and not ignored, so a gate written here would be an untracked file, which makes the worktree

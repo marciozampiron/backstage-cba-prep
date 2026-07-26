@@ -29,9 +29,11 @@ short SHA and a branch name all mean something different tomorrow; use full SHAs
 **`REVIEW_REQUEST` (Opus → Codex)** — add:
 
 ```
+SCOPE: (code | artifact)
 VALIDATION: (commands run and their results)
-FILES_CHANGED: (paths)
+FILES_CHANGED: (paths; for SCOPE: code, derive counts from git — never estimate them)
 REQUIREMENT_MAP: (each requirement -> where it is implemented)
+ARTIFACT: (for SCOPE: artifact — /tmp path, SHA-256, mode)
 RESIDUAL_RISKS: (what is still not guaranteed)
 ```
 
@@ -39,6 +41,7 @@ RESIDUAL_RISKS: (what is still not guaranteed)
 violated control ID, evidence and remediation. Add:
 
 ```
+SCOPE: (code | artifact)
 VERDICT: (approved | changes required)
 ```
 
@@ -46,7 +49,7 @@ VERDICT: (approved | changes required)
 publication:
 
 ```
-SCOPE: technical review only
+SCOPE: (code | artifact)   # a code approval says nothing about the artifact, and vice versa
 PROHIBITED_ACTIONS: does not authorize push, PR mutation, merge or deploy
 ```
 
@@ -61,16 +64,33 @@ PROHIBITED_ACTIONS: this message is not a gate and authorizes nothing
 
 ```
 GATE_ID: <id>
-DIGEST: <sha256 of the reviewed script>
+ARTIFACT_DIGEST: <sha256 of the reviewed artifact — binds this gate to those exact bytes>
 EXPIRES_AT: <RFC3339 with offset, at most 12h>
 ALLOWED_EFFECTS: push the listed commit to task/<n>-<slug>; create or reuse exactly one pull request
 PROHIBITED_ACTIONS: no merge, no deploy, no push to main, no force-push, no repository administration, no secret access, no paid call
 ```
 
+The machine-readable form is the **execution gate** manifest, written outside the worktree and
+supplied to the artifact as `CBA_EXECUTION_GATE`:
+
+```json
+{
+  "type": "HUMAN_GATE_GRANTED",
+  "gateId": "<id>",
+  "issue": <n>,
+  "sourceBranch": "task/<n>-<slug>",
+  "targetBranch": "main",
+  "approver": "<canonical human approver>",
+  "commits": ["<full sha>", "..."],
+  "artifactDigest": "<sha256 of the artifact>",
+  "expiresAt": "<RFC3339 with offset, at most 12h>"
+}
+```
+
 **`OPERATION_RESULT` (Opus → Zamp + Codex)** — add:
 
 ```
-EVIDENCE: (branch ref landed, PR number, CI status)
+EVIDENCE: (branch ref landed, PR number and its headRefOid, CI status)
 MERGED: no — merge is Zamp's decision
 RESIDUAL_RISKS: (what remains)
 ```

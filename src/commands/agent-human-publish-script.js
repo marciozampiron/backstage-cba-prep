@@ -130,7 +130,7 @@ export async function runAgentHumanPublishScript(opts = {}) {
   const now = deps.now ?? (() => Date.now());
   const CMD = 'agent-human-publish-script';
 
-  // --- STEP 1: declared role. The reviewer reviews and the human runs; neither generates. ---
+  // --- STEP 1: declared role. Codex reviews and Zamp approves; neither prepares. ---
   let role;
   try {
     role = assertPublishingRole(opts.role ?? process.env.CBA_AGENT_ROLE);
@@ -263,7 +263,7 @@ export async function runAgentHumanPublishScript(opts = {}) {
   const script = buildPublicationScript({ result, repo: repoSlug, generatedAt });
 
   // The generator is trusted to be correct, and the output is still scanned. A defect that adds a
-  // forbidden verb must fail here rather than in front of the human operator.
+  // forbidden verb must fail at preparation rather than at operation.
   for (const { label, re } of FORBIDDEN_SCRIPT_PATTERNS) {
     if (re.test(script)) {
       printRefusal(CMD, {
@@ -274,17 +274,34 @@ export async function runAgentHumanPublishScript(opts = {}) {
     }
   }
 
-  // --- STEP 5: write 0600, non-executable, never overwriting. ---
+  // --- STEP 5: write through ONE descriptor: create, write, fchmod, fstat, close. ---
+  // `writeFileSync(..., 'wx')` closes the file, and the following `chmodSync`/`statSync` then
+  // resolve the PATHNAME again — a same-user process can swap in a symlink in between, so the
+  // permissions would be applied to, and verified on, something else. Everything after the create
+  // therefore acts on the descriptor.
   try {
-    // `wx` fails when the path exists, closing the gap between the lstat above and this write.
-    fsImpl.writeFileSync(outputPath, script, { mode: SCRIPT_MODE, flag: 'wx' });
-    // The mode passed to open() is masked by the umask, so the permissions are set explicitly and
-    // then verified. A world-readable script naming branches and SHAs is not a leak of secrets, but
-    // an executable one invites exactly the accidental run this design exists to prevent.
-    fsImpl.chmodSync(outputPath, SCRIPT_MODE);
-    const mode = fsImpl.statSync(outputPath).mode & 0o777;
-    if (mode !== SCRIPT_MODE) {
-      throw new GateError('SCRIPT_MODE_UNEXPECTED', `The script was written with mode ${mode.toString(8)} instead of 600.`);
+    const C = fsImpl.constants ?? fs.constants;
+    // O_EXCL is the anti-overwrite guarantee; O_NOFOLLOW refuses a symlink at the target itself.
+    const fd = fsImpl.openSync(outputPath, C.O_CREAT | C.O_EXCL | C.O_WRONLY | C.O_NOFOLLOW, SCRIPT_MODE);
+    try {
+      fsImpl.writeFileSync(fd, script, 'utf8');
+      // The mode passed to open() is masked by the umask, so it is applied explicitly — on the
+      // descriptor, not the name — and then verified on that same descriptor.
+      fsImpl.fchmodSync(fd, SCRIPT_MODE);
+      const st = fsImpl.fstatSync(fd);
+      if (!st.isFile()) {
+        throw new GateError('OUTPUT_NOT_REGULAR_FILE', 'The artifact is not a regular file.');
+      }
+      const mode = st.mode & 0o777;
+      if (mode !== SCRIPT_MODE) {
+        throw new GateError('SCRIPT_MODE_UNEXPECTED', `The artifact was written with mode ${mode.toString(8)} instead of 600.`);
+      }
+    } finally {
+      try {
+        fsImpl.closeSync(fd);
+      } catch {
+        /* closing is best effort; it cannot change what was already written and verified */
+      }
     }
   } catch (err) {
     if (err instanceof GateError) {
@@ -292,11 +309,13 @@ export async function runAgentHumanPublishScript(opts = {}) {
       return EXIT.VALIDATION_FAILED;
     }
     printRefusal(CMD, {
-      code: err?.code === 'EEXIST' ? 'OUTPUT_PATH_EXISTS' : 'OUTPUT_WRITE_FAILED',
+      code: err?.code === 'EEXIST' ? 'OUTPUT_PATH_EXISTS' : err?.code === 'ELOOP' ? 'OUTPUT_PATH_SYMLINK' : 'OUTPUT_WRITE_FAILED',
       message:
         err?.code === 'EEXIST'
           ? 'The output path already exists; refusing to overwrite a previous artifact.'
-          : 'The script could not be written.',
+          : err?.code === 'ELOOP'
+            ? 'The output path is a symlink; refusing to follow it.'
+            : 'The artifact could not be written.',
     });
     return EXIT.VALIDATION_FAILED;
   }
