@@ -3,6 +3,7 @@
 // the scoped action chips, the grounded answer with source chips, and the recommended drill.
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { apiFetch } from '../../lib/client-api.js';
 
 export default function CoachPanel({ context, actions }) {
   const router = useRouter();
@@ -13,7 +14,7 @@ export default function CoachPanel({ context, actions }) {
   const ask = async (action) => {
     setBusy(true);
     setError(null);
-    const res = await fetch('/api/coach/message', {
+    const res = await apiFetch('/api/coach/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, context }),

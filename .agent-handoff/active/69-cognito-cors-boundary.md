@@ -117,4 +117,45 @@
   with two real DynamoDB adapters over a shared fake store. Non-blocking DDD debts (loadProfile
   riding the principal; ApiError imported from store.js) are registered on the #10 post-POC
   gate by Codex.
-- Next: Slice C (sign-in/session/sign-out UI + CORS exato + prova PKCE S256 + regressão total).
+- Slice B textual amend (Codex): cache guarantee wording corrected everywhere — normal later
+  requests hit the cache; concurrent FIRST requests may each call UserInfo, but exactly one
+  canonical profile is persisted. Slice C authorized without new code review.
+- Slice C implemented (separate commit): learner sign-in/session/sign-out UI + PKCE S256 proof.
+  `oidc-client-ts` (proven library — zero hand-rolled OAuth/JWT crypto) drives the hosted-UI
+  code+PKCE flow. Runtime auth config served by `/auth/config` from process.env at request time
+  (never NEXT_PUBLIC_*, #47 rule; dev mode -> {mode:'dev'} and the sign-in UI hides). Session
+  layer (`web/lib/auth.js`): sign-in redirect, `/auth/callback` completion (matches the
+  IdentityStack callback path), page-refresh resume via sessionStorage, silent refresh-token
+  renewal, Cognito hosted logout with exact client/return origin. `apiFetch` wrapper attaches
+  the bearer (all 17 page/component call sites migrated) — #67 swaps the base URL in that ONE
+  place. AccountControl widget in the Shell greets via /api/me displayName (never provider
+  claims). PKCE PROOF (offline, 4 tests, no network): authorization request carries
+  code_challenge_method=S256 + real code_challenge, stored code_verifier != challenge, scopes
+  exactly openid/email/profile (never aws.cognito.signin.user.admin), logout URL shape. Web
+  Quality lane gains the `npm test` step (glob-safe for Node 20). CORS stays the exact-origin
+  ApiStack seam (GET/POST/PUT + authorization header, '*' rejected — Slice A/B tests).
+- Slice C validation: web PKCE 4/4 · web build OK · /auth/config dev-mode probe OK · dashboard
+  renders with the widget · 4 smokes OK · bff 125+1 skip · infra 57/57 · root 77/77 · validate
+  60/0 · diff --check limpo.
+- Codex review round 1 (Slice C) — four findings fixed via amend: (P1) the two remaining
+  MULTILINE fetch call sites (mock view, missed review) migrated to apiFetch — zero direct
+  /api fetches remain (verified by grep); (P1) auth failures are honest now: AccountControl
+  shows an explicit "account unavailable" state (never a fake dev/signed-in state) and apiFetch
+  no longer swallows auth-layer errors (dev mode's null token stays legitimate; failures surface
+  through the caller's error path); (P1) central session gate: AuthGate wraps the app in the
+  root layout — in cognito mode NO protected page mounts and no API call fires without a
+  session (explicit sign-in screen, no redirect loops; /auth/* bypasses the gate so the
+  callback can create the session; dev mode passes through untouched); (P2) BOTH oidc stores
+  (userStore AND stateStore — OIDC state + code_verifier) are explicitly session-scoped in
+  sessionStorage — nothing auth-related rests in localStorage.
+- Codex review round 2 (Slice C) — two findings fixed via amend: (P1) `ready` is now BOUND to
+  the validated pathname — gate logic extracted to pure `lib/session-gate.js`
+  (resolveGateStatus): during a route transition the answer is 'checking', a previous route's
+  'ready'/'signed-out' is never reused, and no protected page mounts ahead of its own
+  validation (dev short-circuits only after the config is known; cognito re-validates every
+  route). (P1) The requested regressions exist now — web suite went 4 -> 14: validateSession
+  outcomes (dev without user lookup, cognito signed-in/signed-out, config failure = ERROR not
+  dev), route-transition no-ready-reuse (incl. stale signed-out), gate short-circuits,
+  buildSessionStores proving BOTH oidc stores share the same session-scoped storage, and a
+  static guard forbidding direct fetch() outside lib/client-api.js + the /auth/config bootstrap
+  (source-wide scan, multiline-proof, comments stripped).

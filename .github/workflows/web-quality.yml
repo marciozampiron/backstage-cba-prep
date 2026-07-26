@@ -43,6 +43,8 @@ jobs:
         run: npm ci
       - name: BFF contract harness (offline, no network/credentials)
         run: npm --prefix ../services/bff test
+      - name: Web unit tests (offline PKCE S256 proof, #69)
+        run: npm test
       - name: Build
         run: npm run build
       - name: Deterministic web smokes (memory store, shared server)

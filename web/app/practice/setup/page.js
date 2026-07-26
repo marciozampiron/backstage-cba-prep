@@ -5,6 +5,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Shell from '../../components/Shell.js';
+import { apiFetch } from '../../../lib/client-api.js';
 
 function SetupForm() {
   const router = useRouter();
@@ -19,7 +20,7 @@ function SetupForm() {
   const [starting, setStarting] = useState(false);
 
   useEffect(() => {
-    fetch('/api/practice/options')
+    apiFetch('/api/practice/options')
       .then((r) => r.json())
       .then(setOptions)
       .catch(() => setError('Could not load practice options.'));
@@ -33,7 +34,7 @@ function SetupForm() {
   const start = async () => {
     setStarting(true);
     setError(null);
-    const res = await fetch('/api/practice-sessions', {
+    const res = await apiFetch('/api/practice-sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

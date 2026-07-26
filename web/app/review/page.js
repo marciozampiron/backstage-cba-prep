@@ -4,17 +4,18 @@
 import { useEffect, useState } from 'react';
 import Shell from '../components/Shell.js';
 import { ChevronIcon } from '../components/icons.js';
+import { apiFetch } from '../../lib/client-api.js';
 
 export default function ReviewIndexPage() {
   const [rows, setRows] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const dash = await (await fetch('/api/dashboard')).json();
+      const dash = await (await apiFetch('/api/dashboard')).json();
       const attempts = dash.recentAttempts ?? [];
       const withMissed = await Promise.all(
         attempts.map(async (a) => {
-          const res = await (await fetch(`/api/attempts/${a.attemptId}/results`)).json();
+          const res = await (await apiFetch(`/api/attempts/${a.attemptId}/results`)).json();
           return { ...a, missed: res.missed?.count ?? 0 };
         }),
       );

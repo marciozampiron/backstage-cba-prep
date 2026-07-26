@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Shell from '../../components/Shell.js';
 import { TargetIcon } from '../../components/icons.js';
+import { apiFetch } from '../../../lib/client-api.js';
 
 function pctClass(p) {
   if (p >= 75) return 'good';
@@ -43,7 +44,7 @@ export default function AttemptResultsPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/attempts/${attemptId}/results`)
+    apiFetch(`/api/attempts/${attemptId}/results`)
       .then(async (r) => {
         const body = await r.json();
         if (!r.ok) throw new Error(body.error?.message ?? 'Could not load results.');
@@ -83,7 +84,7 @@ export default function AttemptResultsPage() {
 
   const retakeMock = async () => {
     setBusy(true);
-    const res = await fetch('/api/mock-exams', { method: 'POST' });
+    const res = await apiFetch('/api/mock-exams', { method: 'POST' });
     const body = await res.json();
     if (res.status === 201) router.push(`/mock/${body.mockExamId}`);
     else if (res.status === 409) router.push(`/mock/${body.error.details.mockExamId}`);

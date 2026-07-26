@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { BulbIcon } from '../../../components/icons.js';
 import CoachPanel from '../../../components/CoachPanel.js';
+import { apiFetch } from '../../../../lib/client-api.js';
 
 function useElapsed(resetKey) {
   const [seconds, setSeconds] = useState(0);
@@ -36,7 +37,7 @@ export default function PracticeSessionPage() {
 
   const loadNext = useCallback(async () => {
     setError(null);
-    const res = await fetch(`/api/practice-sessions/${sessionId}/next`);
+    const res = await apiFetch(`/api/practice-sessions/${sessionId}/next`);
     const body = await res.json();
     if (!res.ok) {
       setError(body.error?.message ?? 'Could not load the next question.');
@@ -60,7 +61,7 @@ export default function PracticeSessionPage() {
   const submit = async () => {
     if (!selected || busy) return;
     setBusy(true);
-    const res = await fetch(`/api/practice-sessions/${sessionId}/answers`, {
+    const res = await apiFetch(`/api/practice-sessions/${sessionId}/answers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

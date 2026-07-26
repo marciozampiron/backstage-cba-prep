@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from '../components/Shell.js';
 import { ClockIcon } from '../components/icons.js';
+import { apiFetch } from '../../lib/client-api.js';
 
 export default function MockStartPage() {
   const router = useRouter();
@@ -13,7 +14,7 @@ export default function MockStartPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch('/api/dashboard')
+    apiFetch('/api/dashboard')
       .then((r) => r.json())
       .then((d) => setResume(d.resume?.kind === 'mock' ? d.resume : null))
       .catch(() => {});
@@ -22,7 +23,7 @@ export default function MockStartPage() {
   const start = async () => {
     setBusy(true);
     setError(null);
-    const res = await fetch('/api/mock-exams', { method: 'POST' });
+    const res = await apiFetch('/api/mock-exams', { method: 'POST' });
     const body = await res.json();
     if (res.status === 201) {
       router.push(`/mock/${body.mockExamId}`);

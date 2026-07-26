@@ -7,6 +7,7 @@ import { useParams, useRouter } from 'next/navigation';
 import Shell from '../../components/Shell.js';
 import CoachPanel from '../../components/CoachPanel.js';
 import { TargetIcon } from '../../components/icons.js';
+import { apiFetch } from '../../../lib/client-api.js';
 
 function pctClass(p) {
   if (p >= 75) return 'good';
@@ -30,7 +31,7 @@ export default function ReviewAttemptPage() {
       let cursor = null;
       let first = null;
       do {
-        const res = await fetch(
+        const res = await apiFetch(
           `/api/attempts/${attemptId}/missed?limit=60${cursor ? `&cursor=${cursor}` : ''}`,
         );
         const body = await res.json();
@@ -40,7 +41,7 @@ export default function ReviewAttemptPage() {
         cursor = body.nextCursor;
       } while (cursor);
       setMissed({ ...first, items });
-      const r = await (await fetch(`/api/attempts/${attemptId}/results`)).json();
+      const r = await (await apiFetch(`/api/attempts/${attemptId}/results`)).json();
       setResults(r);
     })().catch((e) => setError(e.message));
   }, [attemptId]);

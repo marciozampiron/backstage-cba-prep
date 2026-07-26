@@ -1560,3 +1560,30 @@ select:focus {
   display: grid;
   place-items: center;
 }
+
+/* Account widget (#69 Slice C) */
+.account { display: inline-flex; align-items: center; gap: 10px; }
+.auth-btn {
+  border: 1px solid var(--border, #d0d7de);
+  background: transparent;
+  color: inherit;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.auth-btn:hover { background: rgba(127, 127, 127, 0.12); }
+
+/* Session gate (#69 Slice C) */
+.gate-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+}
+.gate-cta { font-size: 15px; padding: 8px 24px; }

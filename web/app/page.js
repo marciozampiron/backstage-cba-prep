@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Shell from './components/Shell.js';
 import { ChevronIcon, TrendIcon, TargetIcon, BookIcon, ClockIcon } from './components/icons.js';
+import { apiFetch } from '../lib/client-api.js';
 
 function pctClass(p) {
   if (p === null || p === undefined) return 'none';
@@ -19,7 +20,7 @@ export default function DashboardPage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch('/api/dashboard')
+    apiFetch('/api/dashboard')
       .then((r) => r.json())
       .then(setData)
       .catch(() => setError('Could not load your dashboard.'));

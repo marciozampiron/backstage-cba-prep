@@ -4,6 +4,7 @@
 // Exam-mode rule: the §11/§12 payloads carry no correctness; feedback exists only after submit.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { apiFetch } from '../../../lib/client-api.js';
 
 function fmt(seconds) {
   const m = Math.floor(seconds / 60);
@@ -30,7 +31,7 @@ export default function MockExamPage() {
   const load = useCallback(
     async (index) => {
       setError(null);
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/mock-exams/${mockExamId}${index ? `?index=${index}` : ''}`,
       );
       const body = await res.json();
@@ -61,7 +62,7 @@ export default function MockExamPage() {
   const submit = useCallback(async () => {
     if (submitting.current) return;
     submitting.current = true;
-    const res = await fetch(`/api/mock-exams/${mockExamId}/submit`, { method: 'POST' });
+    const res = await apiFetch(`/api/mock-exams/${mockExamId}/submit`, { method: 'POST' });
     const body = await res.json();
     if (res.ok) {
       router.replace(`/results/${body.attemptId}`);
@@ -84,7 +85,7 @@ export default function MockExamPage() {
   const flagged = nav.filter((n) => n.flagged).length;
 
   const save = async (patch) => {
-    const res = await fetch(`/api/mock-exams/${mockExamId}/answers`, {
+    const res = await apiFetch(`/api/mock-exams/${mockExamId}/answers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

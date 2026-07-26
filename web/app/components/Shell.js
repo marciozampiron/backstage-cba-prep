@@ -2,6 +2,7 @@
 // App shell matching the Stitch prototype: 260px sidebar + top tab bar on desktop; navy top bar +
 // bottom tab bar on mobile. Surfaces outside slice 1 render disabled with a "Soon" marker.
 import { usePathname } from 'next/navigation';
+import AccountControl from './AccountControl.js';
 import {
   GridIcon,
   BookIcon,
@@ -85,8 +86,7 @@ export default function Shell({ children }) {
           <div className="top-right">
             <BellIcon />
             <HelpIcon />
-            <span>Hello, Learner</span>
-            <span className="avatar">L</span>
+            <AccountControl />
           </div>
         </header>
 
@@ -94,7 +94,9 @@ export default function Shell({ children }) {
           <div className="logo-mark">C</div>
           <div>
             <div className="m-title">CBA Study Coach</div>
-            <div className="m-sub">Hello, Learner</div>
+            <div className="m-sub">
+              <AccountControl compact />
+            </div>
           </div>
         </header>
 
