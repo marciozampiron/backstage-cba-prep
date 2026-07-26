@@ -177,8 +177,8 @@ function shQuote(value) {
 export function verifyAndRunCommand(outputPath, digest) {
   // Wrapped in a subshell so a mismatch can `exit 1` — a refusal must be detectable by exit status,
   // not only by a message — without terminating the human's interactive shell, which a bare `exit`
-  // would do. The subshell inherits the terminal, so the script's TTY check and typed confirmation
-  // still work.
+  // would do. The subshell inherits stdin, so the typed operator confirmation still works, and it
+  // exports the digest the artifact requires its execution gate to name.
   return [
     '(',
     `  s=$(cat ${shQuote(outputPath)})`,
@@ -245,7 +245,7 @@ export function buildPublicationScript({ result, repo, generatedAt }) {
 #
 # WHAT IT MAY NEVER DO: merge, deploy, push ${target}, force-push, rewrite history, change
 # repository settings or branch protection, read or administer secrets, or call a paid service.
-# Merge remains a separate human action after required checks and review.
+# Merge remains Zamp's decision, after required checks and review.
 #
 # This is the interim bridge between #91 Stage A (advisory local validation) and #91 Stage B
 # (authenticated operator identity and remote enforcement). It is a process guardrail, not
@@ -281,55 +281,103 @@ note() { printf '%s\\n' "$*"; }
 # This confirmation is the OPERATOR acknowledging that decision, never a second approval.
 
 # --- 0. THE EXECUTION GATE ----------------------------------------------------------------------
-# Finding 1: the manifest consumed at preparation time cannot be the authorization to operate. It
-# has to exist BEFORE this file is generated, so it cannot possibly carry this file's digest, and
-# the reviewer had not read anything yet when it was written. Two different decisions were being
-# collapsed into one artifact.
+# The manifest consumed at preparation time cannot be the authorization to operate: it exists BEFORE
+# this file is generated, so it can never name this file's digest, and when it was written nothing
+# had been reviewed. Two decisions were being collapsed into one artifact. They are now separate:
 #
-# They are now separate:
 #   - the REVIEW SCOPE manifest bounded what was prepared (base, branch, ordered commits);
-#   - this EXECUTION GATE is Zamp's HUMAN_GATE_GRANTED, authored AFTER Codex reviewed both the code
-#     and this artifact. It names the digest of the exact bytes being run, so it cannot be recycled
-#     for a different artifact, and it is read and validated HERE, immediately before any effect.
+#   - this EXECUTION GATE is the HUMAN_GATE_GRANTED, authored AFTER review of both the code and this
+#     artifact. It names the digest of the exact bytes being run, so it cannot be recycled for a
+#     different or regenerated artifact.
 #
-# CBA_ARTIFACT_DIGEST is supplied by the verify-and-run command, which computed it over the bytes it
-# actually executed. Requiring the gate to name that same digest is what closes the loop.
-[ -n "\${CBA_EXECUTION_GATE:-}" ] \\
-  || die "set CBA_EXECUTION_GATE to the path of Zamp's HUMAN_GATE_GRANTED manifest; preparation alone authorizes nothing"
-[ -n "\${CBA_ARTIFACT_DIGEST:-}" ] \\
-  || die "CBA_ARTIFACT_DIGEST is unset; run this through the verify-and-run command, which supplies it"
+# READ ONCE, VALIDATE TWICE. The gate is read into an immutable snapshot through a single file
+# descriptor, and every field comes from that snapshot. Re-reading the pathname for each field would
+# let a same-user process swap the file between reads, so that the fields validated and the fields
+# used need not be the same fields. The validation itself is a function, called here and AGAIN
+# immediately before the push — including its own expiry, which is NOT the review scope's expiry.
 command -v jq >/dev/null 2>&1 || die "jq is required to validate the execution gate"
+
+[ -n "\${CBA_EXECUTION_GATE:-}" ] \\
+  || die "set CBA_EXECUTION_GATE to the path of the HUMAN_GATE_GRANTED manifest; preparation alone authorizes nothing"
+[ -n "\${CBA_ARTIFACT_DIGEST:-}" ] \\
+  || die "CBA_ARTIFACT_DIGEST is unset; operate this through the verify-and-run command, which supplies it"
 [ ! -L "$CBA_EXECUTION_GATE" ] || die "the execution gate path is a symlink; refusing to follow it"
-[ -f "$CBA_EXECUTION_GATE" ] || die "the execution gate is not a regular file"
 
-gate_field() { jq -r --arg k "$1" '.[$k] // empty' "$CBA_EXECUTION_GATE"; }
+# The gate must live outside this repository: inside, it would be an untracked file and the worktree
+# would be dirty, which the checks below then refuse. Compared canonically, not lexically.
+gate_dir=$(cd "$(dirname "$CBA_EXECUTION_GATE")" 2>/dev/null && pwd -P) \\
+  || die "the execution gate directory cannot be resolved"
+repo_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+repo_top=$(cd "\${repo_top:-.}" 2>/dev/null && pwd -P)
+case "$gate_dir" in
+  "$repo_top"|"$repo_top"/*) die "the execution gate must live outside the repository worktree" ;;
+esac
 
-[ "$(gate_field type)" = "HUMAN_GATE_GRANTED" ] || die "the execution gate is not a HUMAN_GATE_GRANTED message"
-[ "$(gate_field issue)" = "$ISSUE" ] || die "the execution gate is for a different issue"
-[ "$(gate_field sourceBranch)" = "$SOURCE_BRANCH" ] || die "the execution gate names a different source branch"
-[ "$(gate_field targetBranch)" = "$TARGET_BRANCH" ] || die "the execution gate names a different target branch"
-[ "$(gate_field approver)" = "$GATE_APPROVER" ] || die "the execution gate approver differs from the reviewed gate"
+# ONE open, ONE read. Checks on /proc/self/fd/9 describe the OPENED OBJECT, not the name, which is
+# how a shell gets the effect of fstat. If that is unavailable, fail closed rather than guess.
+exec 9< "$CBA_EXECUTION_GATE" || die "the execution gate cannot be opened"
+[ "$(stat -L -c '%F' /proc/self/fd/9 2>/dev/null)" = "regular file" ] \\
+  || die "the execution gate is not a regular file"
+EXECUTION_GATE_JSON=$(cat <&9)
+exec 9<&-
+[ -n "$EXECUTION_GATE_JSON" ] || die "the execution gate is empty"
 
-# The digest binds this gate to THESE bytes. A gate for an earlier artifact cannot authorize this one.
+gate_json() { printf '%s' "$EXECUTION_GATE_JSON" | jq "$@"; }
+gate_field() { gate_json -r --arg k "$1" '.[$k] // empty'; }
+
+# --- closed schema: exactly these keys, nothing more and nothing less ---------------------------
+# An open schema is how an unexpected field rides along unnoticed, so the key set is compared
+# exactly. Values are then format-checked BEFORE any of them is echoed anywhere.
+gate_json -e 'type == "object"' >/dev/null 2>&1 || die "the execution gate is not a JSON object"
+expected_keys='["approver","artifactDigest","commits","expiresAt","gateId","issue","sourceBranch","targetBranch","type"]'
+actual_keys=$(gate_json -c 'keys_unsorted | sort')
+[ "$actual_keys" = "$expected_keys" ] \\
+  || die "the execution gate schema is wrong: it must carry exactly type, gateId, issue, sourceBranch, targetBranch, approver, commits, artifactDigest, expiresAt"
+
+gate_id=$(gate_field gateId)
 gate_digest=$(gate_field artifactDigest)
-[ -n "$gate_digest" ] || die "the execution gate does not name an artifact digest"
-[ "$gate_digest" = "$CBA_ARTIFACT_DIGEST" ] \\
-  || die "the execution gate authorizes a different artifact than the one being run"
-
-# The commit set must match the reviewed set exactly and in order.
-gate_commits=$(jq -r '.commits | join(" ")' "$CBA_EXECUTION_GATE")
-[ "$gate_commits" = "\${REVIEWED_SHAS[*]}" ] || die "the execution gate does not name the reviewed commits exactly and in order"
-
-# Expiry is the gate's own, not the review scope's, and is bounded.
 gate_expires=$(gate_field expiresAt)
-[ -n "$gate_expires" ] || die "the execution gate has no expiry"
-gate_expiry_epoch=$(date -u -d "$gate_expires" +%s 2>/dev/null) \\
-  || die "cannot parse the execution gate expiry; GNU date is required"
-gate_now=$(date -u +%s)
-[ "$gate_now" -le "$gate_expiry_epoch" ] || die "the execution gate expired at $gate_expires; ask for a new one"
-[ $((gate_expiry_epoch - gate_now)) -le 43200 ] || die "the execution gate window exceeds 12 hours; ask for a bounded one"
 
-note "Execution gate accepted: $(gate_field gateId) approved by $GATE_APPROVER."
+# Formats first. Nothing below echoes a value that has not passed its own pattern.
+printf '%s' "$gate_id" | grep -Eq '^[a-z0-9][a-z0-9._-]{2,63}$' \\
+  || die "the execution gate id is malformed; the value is not echoed"
+printf '%s' "$gate_digest" | grep -Eq '^[0-9a-f]{64}$' \\
+  || die "the execution gate artifact digest must be 64 lowercase hex characters"
+printf '%s' "$gate_expires" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' \\
+  || die "the execution gate expiry must be strict RFC3339 with Z or an offset"
+gate_json -e '.commits | type == "array" and length > 0 and all(test("^[0-9a-f]{40}$"))' >/dev/null 2>&1 \\
+  || die "the execution gate commits must be a non-empty array of full lowercase 40-character SHAs"
+gate_json -e '.issue | type == "number"' >/dev/null 2>&1 || die "the execution gate issue must be a number"
+for k in type sourceBranch targetBranch approver; do
+  gate_json -e --arg k "$k" '.[$k] | type == "string" and length > 0' >/dev/null 2>&1 \\
+    || die "the execution gate field $k must be a non-empty string"
+done
+
+# --- semantics, and expiry, re-checked on every call --------------------------------------------
+check_execution_gate() {
+  local when="$1" now expiry
+  [ "$(gate_field type)" = "HUMAN_GATE_GRANTED" ] || die "$when: the execution gate is not a HUMAN_GATE_GRANTED message"
+  [ "$(gate_field issue)" = "$ISSUE" ] || die "$when: the execution gate is for a different issue"
+  [ "$(gate_field sourceBranch)" = "$SOURCE_BRANCH" ] || die "$when: the execution gate names a different source branch"
+  [ "$(gate_field targetBranch)" = "$TARGET_BRANCH" ] || die "$when: the execution gate names a different target branch"
+  [ "$(gate_field approver)" = "$GATE_APPROVER" ] || die "$when: the execution gate approver differs from the reviewed gate"
+
+  # The digest binds this gate to THESE bytes: a regenerated artifact needs a new gate.
+  [ "$gate_digest" = "$CBA_ARTIFACT_DIGEST" ] \\
+    || die "$when: the execution gate authorizes a different artifact than the one being run"
+
+  [ "$(gate_json -r '.commits | join(" ")')" = "\${REVIEWED_SHAS[*]}" ] \\
+    || die "$when: the execution gate does not name the reviewed commits exactly and in order"
+
+  # THIS gate's expiry, not the review scope's. A prompt left open must not outlive the gate.
+  expiry=$(date -u -d "$gate_expires" +%s 2>/dev/null) || die "$when: cannot parse the execution gate expiry"
+  now=$(date -u +%s)
+  [ "$now" -le "$expiry" ] || die "$when: the execution gate expired at $gate_expires; ask for a new one"
+  [ $((expiry - now)) -le 43200 ] || die "$when: the execution gate window exceeds 12 hours; ask for a bounded one"
+}
+
+check_execution_gate "before publishing"
+note "Execution gate accepted: $gate_id approved by $GATE_APPROVER."
 
 # --- 1. volatile checks, defined once and run TWICE ---------------------------------------------
 # Expiry, the origin binding, the live remote and the pull-request set are all state that can change
@@ -466,6 +514,7 @@ IFS= read -r typed || die "no confirmation was supplied; nothing was published"
 # The human may have taken any amount of time at the prompt. Everything that could have changed in
 # the meantime is re-verified here; local history is re-verified too, in case the worktree moved.
 note "Revalidating after confirmation..."
+check_execution_gate "after confirmation"
 check_gate_expiry
 check_origin_binding
 check_remote_state
@@ -524,6 +573,6 @@ note "  branch     : $SOURCE_BRANCH"
 note "  head       : \${EXPECTED_HEAD:0:12}"
 note "  base       : \${BASE_SHA:0:12}"
 note "  commits    : \${#REVIEWED_SHAS[@]}"
-note "  merged     : no — merge is a separate human action"
+note "  merged     : no — merge is Zamp's decision"
 `;
 }

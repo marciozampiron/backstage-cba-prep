@@ -99,9 +99,9 @@ then raced on `git commit --amend` in a shared worktree.
 Mechanics:
 
 1. Each task gets its own branch AND worktree: `git worktree add ../cba-issue-<n> -b task/<n>-<slug> main`.
-2. Zamp writes the publish gate **outside the task worktree** — for example
-   `/tmp/cba-gate-<issue>.json` — naming themselves, the executor, the base SHA and the exact
-   ordered commits. The schema lives in `publish-gates/README.md`, but that folder holds the schema
+2. Zamp writes the **review scope** manifest **outside the task worktree** — for example
+   `/tmp/cba-scope-<issue>.json` — naming themselves, the executor, the base SHA and the exact
+   ordered commits. **This bounds what may be prepared; it authorizes nothing.** The schema lives in `publish-gates/README.md`, but that folder holds the schema
    and its example only. A gate written inside the repository would be an untracked file, which
    makes the worktree dirty, which validation then refuses; an in-repository or symlinked gate path
    is refused outright so the protocol cannot drift back into being unexecutable.
@@ -117,11 +117,30 @@ Mechanics:
    the verify-and-run command. It makes no network call and no Git or GitHub mutation.
 5. Codex **reads** that file, confirms the SHA-256, and sends `FINDINGS` or `REVIEW_APPROVED`.
    Reviewing is not implementing and not executing, and `REVIEW_APPROVED` is never a gate.
-6. Zamp sends `HUMAN_GATE_GRANTED` with the exact branch, ordered full SHAs, digest, expiry and
-   allowed effects.
-7. Opus operates it with the **verify-and-run command printed in step 4**, which reads the artifact
-   once, checks its digest and executes those same bytes. There is no supported bare-path
-   invocation. The artifact re-verifies local and live remote state before *and* after the operator
+6. Zamp writes the **execution gate** — a second manifest, outside the worktree, written *after*
+   review because it names the artifact's digest:
+
+   ```json
+   { "type": "HUMAN_GATE_GRANTED", "gateId": "gate-93-001", "issue": 93,
+     "sourceBranch": "task/93-slug", "targetBranch": "main", "approver": "<canonical approver>",
+     "commits": ["<full sha>"], "artifactDigest": "<sha256 of the artifact>",
+     "expiresAt": "2026-07-27T02:00:00Z" }
+   ```
+
+   The schema is closed: exactly those nine keys, a `[a-z0-9._-]` gate id, 64 lowercase hex for the
+   digest, full 40-character lowercase SHAs, strict RFC3339 with `Z` or an offset, and at most 12
+   hours.
+7. Opus operates it, supplying that gate:
+
+   ```bash
+   export CBA_EXECUTION_GATE=/tmp/cba-gate-<issue>.json
+   # then the verify-and-run command printed in step 4, verbatim
+   ```
+
+   That command reads the artifact once, checks its digest, exports it as `CBA_ARTIFACT_DIGEST`, and
+   executes those same bytes. The artifact reads the execution gate **once** into a snapshot and
+   validates it — including its own expiry — both before the confirmation and again immediately
+   before the push. There is no supported bare-path invocation. The artifact re-verifies local and live remote state before *and* after the operator
    confirmation, then has exactly **two** bounded remote effects: pushing the reviewed commit by
    SHA, and creating or reusing exactly one pull request. It can never merge, deploy, push `main`,
    force-push, rewrite history, change repository settings or read secrets.

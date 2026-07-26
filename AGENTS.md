@@ -45,9 +45,12 @@ Collaboration rules:
     governance. It remains a supported model provider for authoring and a supported tutoring CLI;
     that is product functionality, not a workflow role.
 
-  Only a `HUMAN_GATE_GRANTED` naming the exact ordered full SHAs authorizes an operation. A generic
-  "approved", or a `REVIEW_APPROVED`, is review feedback and is never a publication gate. The
-  mechanism itself is documented in
+  **Two gates, not one.** A *review scope* manifest bounds what may be prepared and authorizes
+  nothing. The *execution gate* is the `HUMAN_GATE_GRANTED` itself — written after review because it
+  names the artifact's digest — supplied as `CBA_EXECUTION_GATE` and validated by the artifact both
+  before the operator confirmation and again immediately before the push. A generic "approved", or a
+  `REVIEW_APPROVED`, is review feedback and is never a publication gate. The mechanism is documented
+  in
   [`docs/architecture/agent-publication-runbook.md`](docs/architecture/agent-publication-runbook.md).
 - Each active agent task uses its own branch and worktree; agents do not share a writable `main`.
 - Once independent review begins, reviewed commits are immutable — findings produce a NEW

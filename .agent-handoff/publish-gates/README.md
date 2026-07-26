@@ -101,7 +101,8 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 8. An executor bot credential performs the push and PR under an authenticated identity, with
    authoritative, idempotent gate consumption and remote branch protection.
 
-Until Stage B exists, the push and the merge are both performed by the human owner.
+Until Stage B exists, Opus performs the push under Zamp's execution gate, and Zamp performs the
+merge. Neither is authorized by the review scope alone.
 
 A gate is bound to a specific commit sequence. A new commit — including a fix-forward after
 review — needs a new gate.

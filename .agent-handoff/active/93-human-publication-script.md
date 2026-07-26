@@ -182,10 +182,18 @@ them from git.
 | 6 | The write is one descriptor: `O_CREAT\|O_EXCL\|O_WRONLY\|O_NOFOLLOW`, then `writeFileSync(fd)`, `fchmodSync(fd)`, `fstatSync(fd)`. The pathname is never re-resolved after the create. | `agent-human-publish-script.js` |
 | 7 | The final report derives file and line counts from `git diff --shortstat`. | this report |
 
+## Work log — Codex FINDINGS on 6074d3b (round 4), all confirmed
+
+| # | Sev | Finding | Verified how | Fix |
+| --- | --- | --- | --- | --- |
+| 1 | HIGH | The execution gate was read four times through the pathname, and the post-confirmation revalidation called `check_gate_expiry` — the **review scope** window — so an execution gate expiring or replaced during the prompt still reached `git push`. The tests hid it: the harness truncated the script before the volatile checks, and the revalidation assertion only looked for the scope check. | Read the revalidation block; counted 4 reads of `"$CBA_EXECUTION_GATE"` | Read once through one descriptor into an immutable snapshot (`exec 9<`, `stat -L /proc/self/fd/9`, `cat <&9`); all fields parsed from that snapshot; one `check_execution_gate` called before the confirmation and again immediately before the push, owning its own expiry and TTL. The harness now runs the REAL script with refusing `git`/`gh` stubs, plus a dynamic regression where `date` jumps forward once the confirmation is read — and a positive control proving the same run reaches the push with a steady clock |
+| 2 | HIGH | Live docs still contradicted the model: the gate document said push and merge are both the human owner's; comments called running it a "deliberate human act" and referenced a removed TTY check; `README.md`/`COMMANDS.md` never showed the second manifest or `CBA_EXECUTION_GATE`. | `grep`, and the guard's phrase list did not cover these variants | All surfaces updated with the concrete two-gate sequence and the exported env var; five new forbidden phrases; a new guard requiring `HUMAN_GATE_GRANTED` + execution gate + artifact digest on all nine cold-start surfaces; another forbidding the review scope from being described as authorizing anything |
+| 3 | MEDIUM | The execution-gate schema was open, `gateId` was echoed before validation, `date` accepted arbitrary expressions instead of strict RFC3339, and the gate could live inside the repository. | Read the shell validation | Closed nine-key schema compared exactly; `gateId` `^[a-z0-9][a-z0-9._-]{2,63}$`; digest `^[0-9a-f]{64}$`; commits full lowercase 40-hex; strict RFC3339 with `Z` or offset; TTL ≤ 12h; canonical out-of-repository check via `pwd -P`; refusals state the field and never echo the rejected value |
+
 ## Status
 
 Implementation complete, **local commits only, nothing published**. Next owner: **Codex**, for
-read-only review with `SCOPE: code` and `SCOPE: artifact`. After that, a Zamp `HUMAN_GATE_GRANTED`
+read-only `SCOPE: code` review; `SCOPE: artifact` follows once an artifact is prepared. After that, a Zamp `HUMAN_GATE_GRANTED`
 naming the artifact digest is required before any operation. Further findings are fix-forward: a NEW
 commit, never an amend, rebase or squash.
 
@@ -198,6 +206,9 @@ change, credential creation, cloud mutation, paid call.
   authenticated identity.
 - Neither document is consumed in the replay sense — expiry and the digest binding bound the window
   instead. Idempotent consumption is #91 Stage B.
+- The single-descriptor gate read relies on `/proc/self/fd`, so the artifact is Linux-only; it fails
+  closed elsewhere rather than guessing. Bash cannot express `O_NOFOLLOW`, so the symlink refusal
+  before the open is best-effort and the one remaining window is that single open.
 - `enforce_admins` is still `false`, so a direct `main` push remains possible.
 - The integrity guarantee holds only when the verify-and-run command is used; nothing prevents a
   bare-path invocation.

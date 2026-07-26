@@ -70,7 +70,7 @@ const SOURCES = operationalSources();
 
 /** A clause that denies, prohibits or conditions rather than permits. */
 const NEGATED =
-  /\b(never|not|no\b|cannot|can't|must not|may not|refus\w*|forbid\w*|prohibit\w*|deny|denied|without|instead of|rather than|only after|unless|fails? if|read-only)\b/i;
+  /\b(never|not|no|nothing|neither|none|cannot|can't|must not|may not|refus\w*|forbid\w*|prohibit\w*|deny|denied|without|instead of|rather than|only after|unless|fails? if|read-only)\b/i;
 
 /** Header cells that mark a markdown column as a list of prohibitions rather than permissions. */
 const PROHIBITION_COLUMN = /may never|must never|never|prohibited|forbidden|may not|what it is not/i;
@@ -500,6 +500,12 @@ const FORBIDDEN_PHRASES = [
   'human at the keyboard',
   'the human then reopened',
   'only actor who runs',
+  // Variants that survived the previous round because no phrase covered them.
+  'performed by the human owner',
+  'deliberate human act',
+  'a separate human action',
+  'human/TTY',
+  'TTY check',
 ];
 
 test('no active operational source contains a superseded-model phrase', () => {
@@ -547,9 +553,58 @@ const REQUIRED_STATEMENTS = {
   'AGENTS.md': [/MESSAGE-PROTOCOL\.md/, /HUMAN_GATE_GRANTED/, /Gemini/],
   'spec/security-rules.md': [/HUMAN_GATE_GRANTED/, /MESSAGE-PROTOCOL\.md/],
   '.claude/skills/publication-prepare/SKILL.md': [/HUMAN_GATE_GRANTED/, /CBA_EXECUTION_GATE/, /never merge/i],
-  '.agents/skills/publication-review/SKILL.md': [/read-only/i, /never implement/i, /SCOPE/],
+  '.agents/skills/publication-review/SKILL.md': [/read-only/i, /never implement/i, /SCOPE/, /CBA_EXECUTION_GATE/],
   '.agent-handoff/publish-gates/README.md': [/execution gate/i, /artifactDigest|artifact digest/i],
+  '.agent-handoff/README.md': [/CBA_EXECUTION_GATE/, /artifactDigest/],
+  '.agent-handoff/COMMANDS.md': [/CBA_EXECUTION_GATE/, /artifact digest/i],
 };
+
+/** Surfaces a cold-started agent reads before operating. Each must show the two-gate sequence. */
+const TWO_GATE_SURFACES = [
+  'AGENTS.md',
+  '.agent-handoff/README.md',
+  '.agent-handoff/COMMANDS.md',
+  '.agent-handoff/MESSAGE-PROTOCOL.md',
+  '.agent-handoff/publish-gates/README.md',
+  'spec/security-rules.md',
+  'docs/architecture/agent-publication-runbook.md',
+  '.claude/skills/publication-prepare/SKILL.md',
+  '.agents/skills/publication-review/SKILL.md',
+];
+
+test('every cold-start surface shows the two-gate sequence, not just a gate', () => {
+  // The previous round documented the execution gate only in the runbook and the artifact, so an
+  // agent booting from AGENTS.md or COMMANDS.md would never learn the second manifest exists.
+  for (const rel of TWO_GATE_SURFACES) {
+    const flat = read(rel).replace(/\s+/g, ' ');
+    assert.match(flat, /HUMAN_GATE_GRANTED/, `${rel} must name the authorizing message`);
+    assert.match(
+      flat,
+      /CBA_EXECUTION_GATE|execution gate/i,
+      `${rel} must name the execution gate, not only the review scope`,
+    );
+    assert.match(
+      flat,
+      /artifact ?[Dd]igest|digest of the artifact|artifact's digest|artifactDigest/,
+      `${rel} must say the execution gate is bound to the artifact digest`,
+    );
+  }
+});
+
+test('the review scope is never described as authorizing an operation', () => {
+  const violations = [];
+  for (const rel of SOURCES) {
+    for (const { line, text } of clausesOf(read(rel), { markdown: rel.endsWith('.md') })) {
+      const t = plain(text);
+      if (!/review scope|scope manifest/i.test(t)) continue;
+      if (!/authoriz\w*|grants?|permits?|allows?/i.test(t)) continue;
+      // "the review scope ALONE authorizes nothing" is the idiom, so `alone` reads as a limit here.
+      if (NEGATED.test(t) || /\balone\b/i.test(t)) continue;
+      violations.push(`${rel}:${line}: ${text.trim()}`);
+    }
+  }
+  assert.deepEqual(violations, [], `the review scope authorizes nothing:\n${violations.join('\n')}`);
+});
 
 test('every canonical surface makes the statements the model depends on', () => {
   for (const [rel, patterns] of Object.entries(REQUIRED_STATEMENTS)) {
@@ -580,6 +635,28 @@ test('the artifact requires and validates an execution gate before any effect', 
   ]) {
     assert.match(lib, required, `the artifact must enforce ${required}`);
   }
+});
+
+test('the execution gate is re-evaluated after the confirmation, not just the review scope', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  const confirm = lib.indexOf('IFS= read -r typed');
+  const push = lib.indexOf('git push origin');
+  const between = lib.slice(confirm, push);
+  // The defect this pins: the revalidation called check_gate_expiry, which validates the REVIEW
+  // SCOPE window, so an execution gate expiring during the prompt still reached the push.
+  assert.match(between, /check_execution_gate "after confirmation"/);
+  // And the execution-gate check must own its own expiry rather than borrowing the scope's.
+  const fn = lib.slice(lib.indexOf('check_execution_gate() {'), lib.indexOf('check_execution_gate "before publishing"'));
+  assert.match(fn, /the execution gate expired at/);
+  assert.match(fn, /window exceeds 12 hours/);
+});
+
+test('the execution gate is read once into an immutable snapshot', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  assert.match(lib, /exec 9< "\$CBA_EXECUTION_GATE"/);
+  assert.match(lib, /EXECUTION_GATE_JSON=\$\(cat <&9\)/);
+  assert.match(lib, /stat -L -c '%F' \/proc\/self\/fd\/9/);
+  assert.match(lib, /expected_keys=/); // closed schema
 });
 
 test('the verify-and-run command supplies the digest the gate must name', () => {

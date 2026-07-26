@@ -18,8 +18,9 @@
 // WHAT THIS COMMAND CANNOT DO. It performs no network call, spawns no shell, and issues no Git or
 // GitHub mutation. Its git usage is inherited from the Stage A observer (`rev-parse`, `status`,
 // `rev-list`, `merge-base`, `worktree list`, `remote get-url`) — all read verbs. Its only side
-// effect is creating one file. That file is written 0600 and WITHOUT an executable bit, so running
-// it is always a deliberate human act rather than something that can happen by accident.
+// effect is creating one file. That file is written 0600 and WITHOUT an executable bit, and it
+// refuses to do anything without Zamp's execution gate — so operating it is always a deliberate,
+// separately authorized act rather than something that can happen by accident.
 //
 // The declared role remains caller-supplied. This is a process guardrail, not authenticated role
 // separation; only Stage B makes it unforgeable.

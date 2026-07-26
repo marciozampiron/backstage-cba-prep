@@ -30,8 +30,11 @@ product/security owner approves a documented reconciliation.
    canonical in
    [`docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
    Opus prepares and, **only after an explicit `HUMAN_GATE_GRANTED` from Zamp naming the exact
-   ordered full SHAs**, operates publication using the verify-and-run command that hashes the bytes
-   it executes. Codex reviews read-only and never implements, prepares, executes, pushes, merges or
+   ordered full SHAs and the artifact digest**, operates publication using the verify-and-run command
+   that hashes the bytes it executes. Two gates are required and are not interchangeable: a review
+   scope bounds preparation and authorizes nothing; the execution gate — supplied as
+   `CBA_EXECUTION_GATE`, closed-schema, bounded to 12 hours — is validated by the artifact before the
+   operator confirmation and again immediately before the push. Codex reviews read-only and never implements, prepares, executes, pushes, merges or
    deploys. Zamp approves and decides and performs the merge. Gemini has no workflow or governance
    role. The script may do exactly two remote things — push the reviewed commit by SHA to
    `task/<issue>-<slug>` without force, and create or reuse one pull request. It may never merge,

@@ -63,13 +63,13 @@ git config core.hooksPath .githooks
 
 # 3. OPUS: advisory local validation — this is all it does
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json   # authored by Zamp OUTSIDE the worktree
+  --gate /tmp/cba-scope-<n>.json   # REVIEW SCOPE, authored by Zamp OUTSIDE the worktree
 
 # 4. OPUS: prepare the reviewed artifact. No network, no git mutation.
 #    Writes one file to /tmp, mode 0600, NOT executable, and prints its path, SHA-256
 #    and the verify-and-run command.
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json
+  --gate /tmp/cba-scope-<n>.json
 ```
 
 Then, in order and by different actors:
@@ -77,12 +77,21 @@ Then, in order and by different actors:
 - **Step 5 — Codex (`FINDINGS` or `REVIEW_APPROVED`).** Reads the file and confirms the printed
   SHA-256. Read-only: Codex never implements, prepares, executes, pushes, merges or deploys, and
   `REVIEW_APPROVED` never authorizes publication.
-- **Step 6 — Zamp (`HUMAN_GATE_GRANTED`).** Grants the exact gate: branch, ordered full SHAs,
-  digest, expiry and allowed effects. A generic "approved" is not a gate.
-- **Step 7 — Opus (`OPERATION_RESULT`).** Runs the **verify-and-run command printed in step 4**,
-  which reads the artifact once, checks its digest and executes those same bytes. There is no
-  supported bare-path invocation. The script pushes the reviewed commit by SHA and creates or
-  reuses exactly one pull request.
+- **Step 6 — Zamp (`HUMAN_GATE_GRANTED`).** Writes the **execution gate**: a second manifest,
+  outside the worktree, naming the branch, ordered full SHAs, the **artifact digest**, a bounded
+  expiry and the allowed effects. A generic "approved" is not a gate, and the review scope from
+  step 3 authorizes nothing.
+- **Step 7 — Opus (`OPERATION_RESULT`).** Supplies that gate and runs the verify-and-run command
+  printed in step 4:
+
+  ```bash
+  export CBA_EXECUTION_GATE=/tmp/cba-gate-<n>.json   # Zamp's HUMAN_GATE_GRANTED
+  # then the verify-and-run command, verbatim — it exports CBA_ARTIFACT_DIGEST
+  ```
+
+  The artifact reads that gate once into a snapshot and validates it against the digest before the
+  confirmation and again immediately before the push. There is no supported bare-path invocation. It
+  pushes the reviewed commit by SHA and creates or reuses exactly one pull request.
 - **Step 8 — Zamp (`MERGE_DECISION`).** Decides and performs the merge, after required checks.
 
 `architect` and `reviewer` are refused by **both** commands before `.env` loads, the gate is read,
