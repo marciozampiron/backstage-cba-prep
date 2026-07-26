@@ -7,7 +7,8 @@
 // THE THREE ROLES, MECHANICALLY SEPARATED IN TIME:
 //   - the implementation executor PREPARES the script (this command);
 //   - the architect/security reviewer READS it — reviewing is not implementing or executing;
-//   - the HUMAN operator runs it explicitly with `bash <path>`.
+//   - the HUMAN operator runs it explicitly with the verify-and-run command this prints, which
+//     reads the file once, checks its digest, and executes those same bytes.
 //
 // WHAT THIS COMMAND CANNOT DO. It performs no network call, spawns no shell, and issues no Git or
 // GitHub mutation. Its git usage is inherited from the Stage A observer (`rev-parse`, `status`,
@@ -27,6 +28,7 @@ import {
   assertSafeOutputPath,
   assertRepoSlug,
   buildPublicationScript,
+  verifyAndRunCommand,
   FORBIDDEN_SCRIPT_PATTERNS,
   OUTPUT_ROOT,
 } from '../lib/human-publish-script.js';
@@ -119,8 +121,33 @@ export async function runAgentHumanPublishScript(opts = {}) {
   // this very command then refuses. The documented protocol was literally unexecutable. The gate is
   // a human decision bound to SHAs; it belongs outside the branch being published, and this check
   // makes that mechanical so the documents cannot drift back.
+  //
+  // The comparison is on CANONICAL paths, and a symlinked gate is refused outright. A lexical check
+  // alone is bypassed by `/tmp/gate.json -> <repo>/gate.json`: the path looks external while the
+  // bytes read come from inside the worktree.
   const gatePath = path.resolve(cwd, opts.gate);
-  if (gatePath === repoRoot || gatePath.startsWith(`${repoRoot}${path.sep}`)) {
+  const inRepo = (p, root) => p === root || p.startsWith(`${root}${path.sep}`);
+  const canonical = (p) => {
+    try {
+      return fsImpl.realpathSync(p);
+    } catch {
+      return p; // absent or unreadable: fall back to the lexical form, which still refuses in-repo
+    }
+  };
+  let gateIsSymlink = false;
+  try {
+    gateIsSymlink = fsImpl.lstatSync(gatePath).isSymbolicLink();
+  } catch {
+    gateIsSymlink = false;
+  }
+  if (gateIsSymlink) {
+    printRefusal(CMD, {
+      code: 'GATE_PATH_SYMLINK',
+      message: 'The publish gate path is a symlink; refusing to follow it. Pass the real path.',
+    });
+    return EXIT.VALIDATION_FAILED;
+  }
+  if (inRepo(gatePath, repoRoot) || inRepo(canonical(gatePath), canonical(repoRoot))) {
     printRefusal(CMD, {
       code: 'GATE_PATH_IN_REPO',
       message:
@@ -245,8 +272,19 @@ export async function runAgentHumanPublishScript(opts = {}) {
 
   console.log(`\n${c.bold('Next, in order')}`);
   console.log('  1. the architect/security reviewer READS the script and confirms the sha256 above;');
-  console.log(`  2. the HUMAN operator runs it: ${c.bold(`bash ${outputPath}`)}`);
+  console.log('  2. the HUMAN operator runs it with the verify-and-run command below;');
   console.log('  3. the human merges the pull request separately, after checks and review.');
+
+  // NOT `bash <path>`. That would reopen the file after the reviewer hashed it, and anything
+  // running as the same user could have replaced it in between — the human would then execute
+  // arbitrary commands under their own git/gh credentials. This reads once, verifies those bytes,
+  // and runs those same bytes.
+  console.log(`\n${c.bold('Verify-and-run (the ONLY supported way to run it)')}`);
+  console.log(verifyAndRunCommand(outputPath, digest));
+  console.log(
+    c.gray('\nDo not run it with a bare `bash <path>`: that reopens the file and reintroduces the ') +
+      c.gray('gap between the review and the execution.'),
+  );
   console.log(
     `\n${c.gray('No agent may run this script. It can only push the gated branch and open or reuse one ')}` +
       `${c.gray('pull request — never merge, deploy, push main, force-push or change repository settings.')}`,

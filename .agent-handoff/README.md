@@ -74,7 +74,7 @@ Three layers exist and they must not be confused:
 | Layer | What it is | Who acts |
 | --- | --- | --- |
 | #91 Stage A — `agent-publish` | Validates a gate against local state, prints the plan, stops. | executor runs it |
-| #93 bridge — `agent-human-publish-script` | The executor **prepares** a bounded script under `/tmp`; the reviewer **reads** it; the **human** runs it with `bash <path>`. | executor prepares, reviewer reads, human runs |
+| #93 bridge — `agent-human-publish-script` | The executor **prepares** a bounded script under `/tmp`; the reviewer **reads** it; the **human** runs it with the verify-and-run command that hashes the bytes it executes. | executor prepares, reviewer reads, human runs |
 | #91 Stage B — remote enforcement | Authenticated bot identity, gate consumption, required PR, `enforce_admins`. | not built yet |
 
 Stage A is **local advisory pre-flight validation only**. It never publishes, never opens a pull
@@ -114,12 +114,14 @@ Mechanics:
    GitHub mutation.
 5. The architect/security reviewer **reads** that file and confirms the SHA-256. Reviewing is not
    implementing and not executing.
-6. The **human operator** runs it explicitly: `bash /tmp/cba-publish-<issue>-<head>.sh`. It requires
-   an interactive terminal and a typed confirmation, re-verifies local and live remote state, and
-   confirms that the `origin` remote is the same repository its `gh` queries target. It then has
-   exactly **two** bounded external effects, in order: a non-force push of the task branch, and
-   creating or reusing exactly one pull request. It can never merge, deploy, push `main`,
-   force-push, rewrite history, change repository settings or read secrets.
+6. The **human operator** runs it with the verify-and-run command printed at preparation — never a
+   bare `bash <path>`, which reopens the file after the reviewer hashed it and lets a same-user
+   process substitute it. The script requires an interactive terminal and a typed confirmation,
+   re-verifies local and live remote state (including that `origin` is the same repository its `gh`
+   queries target), and re-runs every volatile check after the confirmation, with nothing between
+   that and the push. It then has exactly **two** bounded remote effects, in order: a non-force push
+   of the task branch, and creating or reusing exactly one pull request. It can never merge, deploy,
+   push `main`, force-push, rewrite history, change repository settings or read secrets.
 7. The task worktree stays clean throughout. Bookkeeping that changes tracked files —
    `EVENTS.md`, `CURRENT.md`, `agent-refresh --record` — belongs to the main worktree or to a
    later commit, never to the task worktree before generation.

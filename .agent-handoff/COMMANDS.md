@@ -71,9 +71,17 @@ Then, in order and by different actors:
 
 - **Step 5 — reviewer.** The architect/security reviewer **reads** the file and confirms the printed
   SHA-256. Reviewing is not implementing and not executing.
-- **Step 6 — human.** The human operator runs it: `bash /tmp/cba-publish-<issue>-<head>.sh`. It needs
-  an interactive terminal and a typed confirmation, re-checks local and live remote state, then does
-  one non-force push of the task branch and creates or reuses one pull request.
+- **Step 6 — human.** The human operator runs it with the verify-and-run command printed at
+  preparation — **not** a bare `bash <path>`, which reopens the file after review:
+
+```bash
+s=$(cat /tmp/cba-publish-<issue>-<head>.sh)
+if [ "$(printf '%s\n' "$s" | sha256sum | cut -d' ' -f1)" = "<reviewed-digest>" ]; then bash -c "$s"; fi
+```
+
+  It needs an interactive terminal and a typed confirmation, re-checks local and live remote state
+  before *and* after the confirmation, then does one non-force push of the task branch and creates
+  or reuses one pull request.
 - **Step 7 — human.** Merge separately, after checks and review.
 
 `architect` and `reviewer` are refused by **both** commands before `.env` loads, the gate is read,

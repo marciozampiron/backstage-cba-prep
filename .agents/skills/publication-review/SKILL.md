@@ -25,6 +25,10 @@ Read the file. It is short and bounded by design; read all of it.
 
 1. **Integrity.** Recompute the digest — `sha256sum <path>` — and compare it with the one reported.
    A mismatch means the file changed after preparation: refuse and report it as a finding.
+   Your digest is only meaningful because the human runs the file through the verify-and-run
+   command, which re-reads it once and re-checks the same digest before executing those exact
+   bytes. Confirm that the reported command does that and embeds the digest you verified; if the
+   handover says `bash <path>`, that is a finding on its own.
 2. **Permissions.** `ls -l <path>` must show `-rw-------` and **no executable bit**. An executable
    or group/world-readable artifact is a finding.
 3. **Location.** It must be directly under `/tmp`, never inside the repository or a symlink target.
@@ -49,6 +53,11 @@ Read the file. It is short and bounded by design; read all of it.
    correct clean and exclusive worktree, require HEAD and the ordered commit set to match, re-check
    the live `origin/main` against the base, refuse a push that would discard remote commits, and
    require a typed confirmation before the push.
+8. **Re-validation after the confirmation.** Everything volatile — expiry, the origin binding, the
+   live remote base and head, the pull-request set, HEAD and worktree cleanliness — must be checked
+   AGAIN after the human types the confirmation, with nothing between that and the push. A prompt
+   can sit open for hours. Each volatile check should be a function defined once and called twice;
+   two copied blocks are a finding, because they drift.
 8. **Pull request handling.** It creates one PR, or reuses a single existing open one only after
    confirming its base and head. It must never touch a PR with a different base or head, and must
    never merge.
@@ -63,7 +72,9 @@ state the residual risk — at minimum: the declared role is caller-supplied, no
 non-cooperating agent from running the script, and `main` is still unprotected until #91 Stage B.
 
 Your review is **evidence for the human gate, never the gate itself**. End by naming the next
-action and its owner: the human operator runs `bash <path>`, and merges separately afterwards.
+action and its owner: the human operator runs the **verify-and-run command**, and merges separately
+afterwards. Never tell them to `bash <path>` — that reopens the file after you hashed it, so your
+digest would prove nothing about the bytes that actually execute.
 
 ## Hard limits
 

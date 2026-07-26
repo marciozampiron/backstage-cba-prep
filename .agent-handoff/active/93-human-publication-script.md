@@ -22,7 +22,7 @@ This issue adds the **bridge** between #91 Stage A (advisory local validation) a
 | --- | --- | --- |
 | Prepare | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate <file>` |
 | Read | architect/security reviewer | opens the file, confirms the printed SHA-256 |
-| Run | human operator | `bash /tmp/cba-publish-<issue>-<head>.sh` |
+| Run | human operator | the printed verify-and-run command, which hashes the bytes it executes |
 
 `agent-publish` is unchanged and remains advisory local validation only (#93 decision 1).
 
@@ -36,6 +36,7 @@ This issue adds the **bridge** between #91 Stage A (advisory local validation) a
 | Live remote base check | Performed **by the script**, at run time | #91 Stage B enforces it remotely |
 | Preventing a direct `main` push | **Not prevented** — `enforce_admins` is still `false` | #91 Stage B |
 | Preventing an agent from running the script | **Not prevented** — mode 0600, no exec bit and a TTY check raise the cost only | #91 Stage B |
+| Integrity of the executed bytes | Guaranteed **only** when the verify-and-run command is used; a bare `bash <path>` reopens the file | — |
 
 ## The ten binding decisions (from the human, verbatim in intent)
 
@@ -112,6 +113,18 @@ untouched; every fix is a NEW commit.
 byte and is therefore binary and unreviewable in diffs. #82 has an active owner, so it was not
 touched. The guard test lists it explicitly in `KNOWN_PRE_EXISTING` and **fails once it is fixed**,
 so the exception cannot outlive the problem. It needs a one-line fix on the #82 track.
+
+## Review round 2 — five findings, all fixed forward
+
+The four reviewed commits are untouched; every fix is a NEW commit.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| HIGH | The digest proved nothing about the executed bytes: the reviewer hashed the file and the human then reopened it with `bash <path>`, so a same-user process could substitute it | The tool prints a verify-and-run command that reads the file once, hashes those captured bytes and executes them with `bash -c`; a mismatch exits 1 from a subshell. A substitution test proves the swapped script neither runs nor leaves a side effect |
+| MEDIUM | Expiry, origin, remote base/head and the PR set were checked only before the prompt, so a terminal left open could push against stale state | Volatile checks are bash functions defined once and called twice; the second pass runs after the confirmation with nothing between it and the push, and also re-checks HEAD and worktree cleanliness |
+| MEDIUM | `GATE_PATH_IN_REPO` was lexical, so `/tmp/gate.json -> <repo>/gate.json` bypassed it | Canonical comparison via `realpathSync`, plus an outright `GATE_PATH_SYMLINK` refusal, with unit and end-to-end coverage |
+| MEDIUM | The NUL guard claimed full coverage but allowlisted extensions, missing HTML, CSS, TypeScript and Python | The scan is inverted: every tracked file except formats that are binary by nature, with an assertion that those extensions are in scope, and `.gitattributes` extended and pinned by its own test |
+| LOW | "Everything else is a read" was inaccurate — `git fetch` writes local objects and `FETCH_HEAD` | Reworded to "no other REMOTE mutation", with the local write stated explicitly |
 
 ## Status
 

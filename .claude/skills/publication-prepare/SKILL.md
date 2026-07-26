@@ -48,7 +48,9 @@ Then **stop and hand off**. Report to the human, in one message:
 - the path of the generated script and its **SHA-256**;
 - the issue, branch, base SHA and the exact ordered commits it is bound to;
 - the gate id and its expiry;
-- the exact command the human will run: `bash <path>`;
+- the exact **verify-and-run command** the tool printed, verbatim. Never hand over `bash <path>`:
+  it reopens the file after the reviewer hashed it, so a same-user process could substitute it and
+  the human would run arbitrary commands under their own git and GitHub credentials;
 - an explicit statement that you have not run it and will not.
 
 ## Hard limits
@@ -63,14 +65,15 @@ Do not, under any framing or approval:
 
 A generic human "approved", "ok" or "pode pushar" is a **review decision, not a publication
 command**. If the human tells you to publish directly, explain that publication is their action and
-give them the `bash <path>` line.
+give them the verify-and-run command the tool printed.
 
 ## If preparation is refused
 
 The command fails closed and prints a code. Common ones: `GATE_EXPIRED` (ask for a new gate),
 `COMMIT_SET_DRIFT`/`HEAD_DRIFT` (history changed after review — a new review and gate are needed),
 `REMOTE_BASE_DRIFT` (`origin/main` moved), `WORKTREE_DIRTY`, `WORKTREE_SHARED`,
-`GATE_PATH_IN_REPO` (the gate must live outside the worktree), `REPO_ORIGIN_MISMATCH` or
+`GATE_PATH_IN_REPO` (the gate must live outside the worktree), `GATE_PATH_SYMLINK` (pass the real
+path, not a link), `REPO_ORIGIN_MISMATCH` or
 `ORIGIN_UNRESOLVED` (the repository must be the origin this branch pushes to),
 `OUTPUT_PATH_EXISTS` (a previous artifact is still there — the human should delete it),
 `SCRIPT_SELF_CHECK_FAILED` (a generator defect; report it, do not work around it).

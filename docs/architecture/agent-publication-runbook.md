@@ -91,7 +91,7 @@ shape of the 2026-07-26 incident. The bridge replaces that with a **bounded, rev
 | --- | --- | --- | --- |
 | **Prepare** | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-gate-<n>.json` | not publishing; nothing leaves the machine |
 | **Read** | architect/security reviewer | open the file, confirm the printed SHA-256 | not implementing, not executing |
-| **Run** | human operator | `bash /tmp/cba-publish-<issue>-<head>.sh` | not merging |
+| **Run** | human operator | the verify-and-run command printed at preparation, which hashes the bytes it executes | not merging; never a bare `bash <path>` |
 
 `agent-publish` is unchanged and remains advisory local validation (decision 1 of #93). The
 generator is a separate command precisely so that "validate" can never quietly grow into "publish".
@@ -124,8 +124,16 @@ That file:
   rewriting and paid-service invocation. A match aborts and writes nothing: it would be a generator
   defect, and it must fail in front of the executor rather than the human operator.
 
-The command prints the SHA-256 of the exact bytes written, so the reviewer can prove that what they
-read is what the human runs.
+The command prints the SHA-256 of the exact bytes written, **and the verify-and-run command the
+human must use**. That command reads the file once into a shell variable, hashes those captured
+bytes, and executes those same bytes with `bash -c`; the path is never reopened.
+
+This matters more than it looks. A bare `bash <path>` would open the file *again*, after the
+reviewer hashed it. Anything running as the same user could replace it in between, and the human
+would then execute arbitrary commands under their own git and GitHub credentials — precisely the
+authority this design exists to constrain. Verifying and executing must act on one read, and a
+mismatch exits non-zero from a subshell rather than only printing a warning. A test performs the
+substitution and asserts that the swapped script neither runs nor leaves a side effect.
 
 ### 4.3 What the script does when the human runs it
 
@@ -154,12 +162,21 @@ then re-verifies all of it against live state:
    cross-repository, owned by the same owner, with exactly the reviewed base and head. Doing this
    *before* the push means a mismatch costs nothing — the branch is not published yet;
 9. the human types `publish <issue> <head12>` exactly;
-10. **first external effect**: `git push origin refs/heads/<branch>:refs/heads/<branch>` — no force;
-11. **second external effect**: the pull-request set is re-asserted against the state that now
+10. **everything volatile is re-checked.** Expiry, the origin binding, the live remote base and
+    head, the pull-request set, HEAD and worktree cleanliness are all state that can change while a
+    human reads a prompt — a terminal left open overnight would otherwise push against an expired
+    gate or a moved base. The volatile checks are bash functions defined once and called twice, so
+    the two passes cannot drift apart, and the second pass runs with nothing between it and the push;
+11. **first external effect**: `git push origin refs/heads/<branch>:refs/heads/<branch>` — no force;
+12. **second external effect**: the pull-request set is re-asserted against the state that now
     exists, and exactly one pull request is created or reused. It never touches a fork's pull
     request, an ambiguous set, or one with a different base or head, and it never opens a second
     one if the pre-push match disappeared;
-12. it prints redacted evidence and states that merge remains a separate human action.
+13. it prints redacted evidence and states that merge remains a separate human action.
+
+Two of those are **remote** effects; nothing else the script does mutates the remote. It is not
+purely read-only locally, though: when the branch already exists on the remote it fetches those
+objects so ancestry can be proven, which writes to the local object store and `FETCH_HEAD`.
 
 Step 7 is the first *live* remote check in this system — Stage A can only read local refs. It is
 still not Stage B: a live check performed by a script the human chose to run is not the same as a
@@ -175,6 +192,10 @@ followed to completion. `agent-human-publish-script` now refuses an in-repositor
 (`GATE_PATH_IN_REPO`) so prose cannot drift back into an impossible sequence, and an end-to-end test
 walks the documented steps in a real temporary repository to prove they produce a script.
 
+The check compares **canonical** paths and refuses a symlinked gate outright (`GATE_PATH_SYMLINK`).
+A lexical comparison alone is defeated by `/tmp/gate.json -> <repo>/gate.json`: the path looks
+external while the bytes read come from inside the worktree.
+
 The same reasoning governs bookkeeping: `EVENTS.md`, `CURRENT.md` and `agent-refresh --record` all
 write tracked files. They belong to the main worktree or to a later commit — never to the task
 worktree before generation.
@@ -185,6 +206,7 @@ worktree before generation.
 | --- | --- |
 | Authenticated role separation | `--role` is caller-supplied. An agent that ignores this document is not stopped by it. |
 | A guarantee no agent runs the script | Non-executable mode and the TTY check raise the cost and make it deliberate; they do not make it impossible. |
+| Protection if the human ignores the verify-and-run command | A bare `bash <path>` still works and still reopens the file. The integrity guarantee is only as good as the command actually used. |
 | Replay protection | The gate is validated, never consumed. Expiry and the exact-HEAD check bound the window instead. |
 | Protection of `main` | Unchanged: `enforce_admins` is still `false`. Only Stage B closes it. |
 | A single external effect | There are **two** — the push and the pull request. Both are bounded and checked before and after, but "one mutation" would be inaccurate. |

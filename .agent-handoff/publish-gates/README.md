@@ -61,7 +61,9 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 5. The executor runs `agent-human-publish-script` and *prepares* a script under `/tmp`, mode `0600`
    and non-executable, then reports its path and SHA-256. Preparing is not publishing.
 6. The architect/security reviewer *reads* the script and confirms the digest.
-7. The **human owner** runs it with `bash <path>` and merges the resulting PR separately.
+7. The **human owner** runs it with the verify-and-run command printed at preparation — which
+   reads the file once, checks its digest and executes those same bytes — and merges the resulting
+   PR separately. A bare `bash <path>` reopens the file after review and is not supported.
 
 **Stage B (not built; separate human gate):**
 

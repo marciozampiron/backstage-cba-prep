@@ -14,9 +14,9 @@ The repository policy is authoritative. Read:
 
 Publication is role-separated and human-operated (#91, #93): **no agent publishes.** As executor you
 validate with `agent-publish` and *prepare* a script with `agent-human-publish-script` — see the
-`publication-prepare` skill — and the **human** runs it with `bash <path>`. Never push, never run
-the script, never merge. Reviewed commits are immutable — a finding produces a NEW fix-forward
-commit and a new gate.
+`publication-prepare` skill — and the **human** runs it with the printed verify-and-run command.
+Never push, never run the script, never merge. Reviewed commits are immutable — a finding produces
+a NEW fix-forward commit and a new gate.
 
 As executor:
 

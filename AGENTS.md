@@ -33,10 +33,13 @@ Collaboration rules:
     executable**. Preparing is not publishing, and the executor never runs it;
   - the **architect/security reviewer** *reads* that script and confirms its SHA-256. Reviewing is
     not implementing and not executing; the reviewer never prepares or runs one;
-  - the **human operator** runs it explicitly with `bash <path>`. It requires an interactive
-    terminal and a typed confirmation, and can only push the task branch without force and open or
-    reuse one pull request — never merge, deploy, push `main`, force-push, rewrite history, change
-    repository settings or read secrets.
+  - the **human operator** runs it with the verify-and-run command printed at preparation, which
+    reads the file once, checks its digest and executes those same bytes. A bare `bash <path>`
+    reopens the file after review and is never the supported way. The script requires an interactive
+    terminal and a typed confirmation, re-checks every volatile condition after that confirmation,
+    and can only push the task branch without force and open or reuse one pull request — never
+    merge, deploy, push `main`, force-push, rewrite history, change repository settings or read
+    secrets.
 
   Merging is always a separate human action. A generic "approved" is a review decision, not a
   publication command. The declared `--role` is caller-supplied and proves nothing; this is a

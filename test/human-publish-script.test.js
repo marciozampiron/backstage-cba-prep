@@ -15,9 +15,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import {
+  verifyAndRunCommand,
   assertSafeOutputPath,
   assertRepoSlug,
   buildPublicationScript,
@@ -301,7 +302,7 @@ test('the script re-checks the LIVE remote base and refuses to discard remote co
   );
   assert.match(script, /origin\/\$TARGET_BRANCH moved since review/);
   assert.match(script, /remote_head=\$\(git ls-remote origin "refs\/heads\/\$SOURCE_BRANCH"/);
-  assert.match(script, /git merge-base --is-ancestor "\$remote_head" "\$head_sha"/);
+  assert.match(script, /git merge-base --is-ancestor "\$remote_head" "\$EXPECTED_HEAD"/);
   assert.match(script, /a force push is never performed/);
   // The only fetch is of the source branch's objects, needed to prove ancestry.
   const fetches = script.split('\n').filter((l) => /^\s*git fetch\b/.test(l));
@@ -960,15 +961,29 @@ test('the script documents two bounded external effects, not one mutation', () =
 
 test('no source file in this repository is stored as binary', () => {
   // A single NUL byte makes Git treat a file as binary: the diff collapses to "Bin 0 -> N bytes"
-  // and the whole file becomes invisible to review on GitHub. For a security test suite that is a
-  // supply-chain problem, not a cosmetic one — the reviewer cannot see what they are approving.
+  // and the whole file becomes invisible to review, on the command line and on GitHub. For a
+  // security test suite that is a supply-chain problem — a reviewer cannot approve what they
+  // cannot read.
   //
-  // The scan covers every TRACKED source file, not just this issue's directories, because a guard
-  // that only looks where the author already looked proves nothing.
+  // The scan is INVERTED on purpose: every tracked file is checked except a short list of formats
+  // that are binary by nature. An allowlist of source extensions is what let this slip the first
+  // time — it silently skipped HTML, CSS, TypeScript and Python.
+  const BINARY_BY_NATURE =
+    /\.(png|jpe?g|gif|webp|avif|ico|icns|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|woff2?|ttf|otf|eot|mp[34]|m4a|wav|ogg|webm|mov|avi|wasm|so|dylib|dll|exe|bin|class|jar|node|pyc|db|sqlite3?|keystore|jks|p12|pfx|der)$/i;
+
   const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
     .split('\0')
-    .filter((f) => /\.(js|mjs|cjs|json|md|sh|ya?ml)$/.test(f));
-  assert.ok(tracked.length > 50, 'the file list should be substantial; a broken listing would pass vacuously');
+    .filter(Boolean)
+    .filter((f) => !BINARY_BY_NATURE.test(f));
+  assert.ok(tracked.length > 100, 'the file list should be substantial; a broken listing would pass vacuously');
+  // Proof the scan reaches beyond this issue's own directories.
+  for (const ext of ['.ts', '.html', '.css', '.py']) {
+    const found = tracked.some((f) => f.endsWith(ext));
+    if (found) continue;
+    // Not every extension has to exist, but if the repository has one it must be in scope.
+    const existsAnywhere = execFileSync('git', ['ls-files', `*${ext}`], { cwd: ROOT, encoding: 'utf8' }).trim();
+    assert.equal(existsAnywhere, '', `${ext} files exist but were excluded from the scan`);
+  }
 
   // Pre-existing debt, deliberately listed rather than hidden by narrowing the scan. This file was
   // merged to main under #82 and is owned by another track, so it is reported, not silently fixed.
@@ -989,6 +1004,22 @@ test('no source file in this repository is stored as binary', () => {
       `${known} no longer contains a NUL byte — remove it from KNOWN_PRE_EXISTING`,
     );
   }
+});
+
+test('.gitattributes forces textual diffs for every non-binary tracked extension', () => {
+  // The guard above proves no NUL exists today. This proves that if one appears, the diff stays
+  // readable anyway — the two together are what keeps a file reviewable.
+  const attrs = fs.readFileSync(path.join(ROOT, '.gitattributes'), 'utf8');
+  const BINARY_BY_NATURE = /^(png|jpe?g|gif|webp|avif|ico|icns|bmp|tiff?|svgz|pdf|zip|gz|tgz|bz2|xz|7z|rar|woff2?|ttf|otf|eot|mp[34]|m4a|wav|ogg|webm|mov|avi|wasm|so|dylib|dll|exe|bin|class|jar|node|pyc|db|sqlite3?|keystore|jks|p12|pfx|der)$/i;
+  const extensions = new Set(
+    execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+      .split('\0')
+      .filter(Boolean)
+      .map((f) => path.extname(f).slice(1))
+      .filter((e) => e && !BINARY_BY_NATURE.test(e)),
+  );
+  const missing = [...extensions].filter((e) => !new RegExp(`^\\*\\.${e}\\s`, 'm').test(attrs));
+  assert.deepEqual(missing, [], `.gitattributes does not force textual diffs for: ${missing.join(', ')}`);
 });
 
 /* ================= END-TO-END: the DOCUMENTED protocol must actually produce a script ========= */
@@ -1115,4 +1146,162 @@ test('E2E: a gate written into .agent-handoff/publish-gates/ dirties the worktre
       assert.equal(fs.existsSync(out), false);
     });
   });
+});
+
+/* ================= #93 round 3: the artifact cannot be swapped after review ==================== */
+
+test('the generated script ends with exactly one newline', () => {
+  // The verify-and-run command captures the file with `$(cat ...)`, which strips trailing newlines,
+  // and rehydrates it with `printf '%s\n'`. That only reproduces the file byte-for-byte if there is
+  // exactly one trailing newline. The whole integrity guarantee rests on this.
+  const script = scriptFixture();
+  assert.ok(script.endsWith('\n'));
+  assert.equal(script.endsWith('\n\n'), false, 'a second trailing newline would break the digest check');
+});
+
+test('the verify-and-run command reads once, hashes those bytes, and never reopens the path', () => {
+  const cmd = verifyAndRunCommand('/tmp/x.sh', 'a'.repeat(64));
+  // Exactly one read of the path.
+  assert.equal((cmd.match(/\/tmp\/x\.sh/g) ?? []).length, 1, 'the path must appear exactly once');
+  assert.match(cmd, /^\(\n\s+s=\$\(cat '\/tmp\/x\.sh'\)/);
+  // The hash is computed over the captured variable, not over the file.
+  assert.match(cmd, /printf '%s\\n' "\$s" \| sha256sum/);
+  // The execution is of the captured variable, not of the path.
+  assert.match(cmd, /bash -c "\$s"/);
+  assert.equal(/bash\s+['"]?\/tmp\/x\.sh/.test(cmd), false, 'it must never run the path directly');
+});
+
+test('SUBSTITUTION ATTACK: replacing the file after review is refused and never executed', async () => {
+  // The threat is concrete: the reviewer hashes the file, and anything running as the same user
+  // replaces it before the human runs it. With `bash <path>` the human would execute the attacker's
+  // commands under their own git/gh credentials. This proves the verify-and-run command does not.
+  await withTempDir(async (dir) => {
+    const target = path.join(dir, 'artifact.sh');
+    const marker = path.join(dir, 'PWNED');
+
+    // A benign stand-in for the real script: it only proves whether execution happened.
+    const reviewed = "echo 'the reviewed script ran'\n";
+    fs.writeFileSync(target, reviewed, { mode: 0o600 });
+    const digest = createHash('sha256').update(reviewed, 'utf8').digest('hex');
+    const cmd = verifyAndRunCommand(target, digest);
+
+    // Control: unmodified, it runs and succeeds.
+    const ok = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
+    assert.equal(ok.status, 0);
+    assert.match(ok.stdout, /the reviewed script ran/);
+
+    // Now the swap. The payload would create a marker file if it ever executed.
+    fs.writeFileSync(target, `touch ${JSON.stringify(marker)}\necho 'attacker payload ran'\n`, { mode: 0o600 });
+    const swapped = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
+    assert.match(swapped.stderr, /REFUSED: the script changed after review/);
+    assert.equal(swapped.status, 1, 'a refusal must be detectable by exit status, not only by a message');
+    assert.equal(/attacker payload ran/.test(swapped.stdout), false, 'the substituted script must not execute');
+    assert.equal(fs.existsSync(marker), false, 'the substituted script must have no side effect');
+  });
+});
+
+test('the prepared-script output tells the human to verify-and-run, not to `bash <path>`', async () => {
+  await withTempDir(async (dir) => {
+    await withTmpScriptPath(async (out) => {
+      const gate = gateFileIn(dir);
+      const { value, output } = await captureAsync(() =>
+        runAgentHumanPublishScript({
+          role: 'executor',
+          executor: 'claude-opus-5',
+          gate,
+          out,
+          deps: { runGit: gitSeam(), now: () => NOW, cwd: ROOT },
+        }),
+      );
+      assert.equal(value, EXIT.OK);
+      const digest = createHash('sha256').update(fs.readFileSync(out, 'utf8'), 'utf8').digest('hex');
+      assert.ok(output.includes(verifyAndRunCommand(out, digest)), 'the exact verify-and-run command must be printed');
+      assert.match(output, /Do not run it with a bare/);
+      // And the digest it embeds must be the digest of the bytes on disk.
+      assert.ok(output.includes(digest));
+    });
+  });
+});
+
+/* ================= #93 round 3: stale state during the confirmation ========================== */
+
+test('every volatile check runs again after the confirmation and before the push', () => {
+  const script = scriptFixture();
+  const confirm = script.indexOf('read -r typed');
+  const push = script.indexOf('git push origin');
+  assert.ok(confirm > -1 && push > -1 && confirm < push);
+
+  const between = script.slice(confirm, push);
+  // Expiry, the origin binding, the live remote and the pull-request set can all change while a
+  // terminal sits at the prompt, so each is re-asserted with nothing between it and the push.
+  for (const call of ['check_gate_expiry', 'check_origin_binding', 'check_remote_state', 'assert_pr_set']) {
+    assert.ok(between.includes(call), `${call} must run again after the confirmation`);
+  }
+  assert.match(between, /HEAD changed while awaiting confirmation/);
+  assert.match(between, /the worktree changed while awaiting confirmation/);
+  assert.match(between, /the pull-request set changed while awaiting confirmation/);
+
+  // Each volatile check is defined once and called twice — not duplicated, which would let the two
+  // copies drift apart.
+  for (const fn of ['check_gate_expiry', 'check_origin_binding', 'check_remote_state']) {
+    assert.equal((script.match(new RegExp(`^${fn}\\(\\) \\{`, 'gm')) ?? []).length, 1, `${fn} must be defined once`);
+    assert.ok((script.match(new RegExp(`^\\s*${fn}$`, 'gm')) ?? []).length >= 2, `${fn} must be called at least twice`);
+  }
+});
+
+/* ================= #93 round 3: the gate path cannot be smuggled in via a symlink ============= */
+
+test('a symlinked gate path is refused instead of followed', async () => {
+  await withTempDir(async (dir) => {
+    await withTmpScriptPath(async (out) => {
+      // The lexical check alone is bypassed by a link that looks external but reads from inside the
+      // repository. `realpathSync` plus an outright symlink refusal closes it.
+      const link = path.join(dir, 'gate.json');
+      fs.symlinkSync(path.join(ROOT, '.agent-handoff', 'publish-gates', 'example.gate.json'), link);
+      const { value, output } = await captureAsync(() =>
+        runAgentHumanPublishScript({
+          role: 'executor',
+          executor: 'claude-opus-5',
+          gate: link,
+          out,
+          deps: { runGit: gitSeam(), now: () => NOW, cwd: ROOT },
+        }),
+      );
+      assert.equal(value, EXIT.VALIDATION_FAILED);
+      assert.match(output, /GATE_PATH_SYMLINK/);
+      assert.equal(fs.existsSync(out), false);
+    });
+  });
+});
+
+test('E2E: a gate reached through a symlink into the worktree is refused', async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir } = seedRepo(dir, { commits: 1 });
+    const inside = path.join(repoDir, 'gate.json');
+    fs.writeFileSync(inside, '{}');
+    const link = path.join(dir, 'outside-looking-gate.json');
+    fs.symlinkSync(inside, link);
+
+    await withTmpScriptPath(async (out) => {
+      const { value, output } = await captureAsync(() =>
+        runAgentHumanPublishScript({
+          role: 'executor',
+          executor: 'claude-opus-5',
+          gate: link,
+          out,
+          deps: { now: () => NOW, cwd: repoDir },
+        }),
+      );
+      assert.equal(value, EXIT.VALIDATION_FAILED);
+      assert.match(output, /GATE_PATH_SYMLINK|GATE_PATH_IN_REPO/);
+      assert.equal(fs.existsSync(out), false);
+    });
+  });
+});
+
+test('the script claims no other REMOTE mutation, and admits the local fetch', () => {
+  const script = scriptFixture();
+  assert.match(script, /NO OTHER REMOTE MUTATION/);
+  // `git fetch` writes local objects and FETCH_HEAD, so "everything else is a read" was inaccurate.
+  assert.match(script, /writes to the local object store and FETCH_HEAD/);
 });

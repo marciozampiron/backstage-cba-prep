@@ -29,7 +29,9 @@ product/security owner approves a documented reconciliation.
    implementation executor may validate a publish gate (`agent-publish`) and *prepare* a publication
    script (`agent-human-publish-script`, written to `/tmp`, mode `0600`, non-executable); the
    architect/security reviewer may only *read* it; only the human operator may *run* it, and only
-   with an interactive terminal and a typed confirmation. The script may do exactly two things —
+   with an interactive terminal and a typed confirmation, using the verify-and-run command that
+   hashes the bytes it executes rather than reopening the path. The script may do exactly two
+   remote things —
    push the gated `task/<issue>-<slug>` branch without force, and create or reuse one pull request.
    It may never merge, deploy, push an integration branch, force-push, rewrite history, administer
    the repository or branch protection, handle secrets, or invoke a paid service. Merge remains a
