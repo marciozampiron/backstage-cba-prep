@@ -12,6 +12,7 @@ doc does not create automation.
 | Environments, config registry, fail-fast rules | [pilot-environment-contract.md](pilot-environment-contract.md) |
 | CI lanes, no-spend policy, branch protection | [ci-cd-security-foundation.md](ci-cd-security-foundation.md) |
 | GitHub Environments, OIDC roles, secrets | [github-security-and-oidc-baseline.md](github-security-and-oidc-baseline.md) |
+| AWS logs, alarms, dashboard, notifications | [aws-observability-baseline.md](aws-observability-baseline.md) (#82) |
 | Learner API surface the smokes exercise | [web-bff-contracts.md](../product/web-bff-contracts.md) |
 | Delivery flow and handoff protocol | [Delivery-Process](../wiki/Delivery-Process.md) |
 
@@ -40,6 +41,18 @@ GO only if ALL are true:
 - [ ] `cdk diff` reviewed for any infra change in the release (only expected resources; no
       IAM/policy surprises; account id never printed).
 - [ ] Dev smokes green (§3) — for a pilot promotion.
+- [ ] Observability gates O1 and O2 from #82 are green: expected resources/configuration exist,
+      pilot notification is confirmed, API Gateway and Lambda both report positive traffic in the
+      bounded smoke window, and all required individual/composite alarms are `OK`.
+- [ ] **Notification-path live evidence is valid for this environment** (#82) — a SEPARATE item from
+      "notification is confirmed" above. A confirmed subscription proves an endpoint was registered;
+      it does **not** prove CloudWatch can actually deliver through the customer-managed KMS key,
+      because a broken key policy loses notifications without changing any alarm state. The evidence
+      is mandatory before the first `pilot` promotion, re-proven after any KMS key-policy or SNS
+      topic-policy change before the next promotion, names the policy version it attests to (so
+      staleness is detectable), and is produced human-gated outside O1/O2 under operator
+      credentials — the read-only gate role never gains publish or alarm-state permissions.
+      NO-GO if it is absent, negative, or stale relative to the current policy version.
 - [ ] Rollback target identified (SHA + deployment id) and the rollback steps in §4 are usable
       for this specific change (data-shape changes: §4.3 checked).
 - [ ] No open Sev-1 incident on the pilot.

@@ -6,6 +6,8 @@ here.
 
 - **Issues:** #36 (first pass — §1–§6) and #38 (second pass — §7–§17), part of #33; related to #16
   (data model) and #15 (MVP scope; the second pass unblocks the #11 build slices).
+- **Cross-cutting refinement:** #82 defines canonical transport request correlation without changing
+  endpoint payload semantics beyond the existing error `requestId`.
 - **Runtime base:** [`ADR-0002`](../adr/0002-cloudflare-nextjs-aws-bff.md) — Cloudflare/Next.js
   frontend; the AWS-hosted Web BFF is the **only browser-reachable backend surface**.
 - **Screens served:** [`frontend-screen-map.md`](frontend-screen-map.md) and the versioned prototype
@@ -37,6 +39,24 @@ here.
   these endpoints.
 - Pagination (list endpoints): `?cursor=` + `?limit=` request, `nextCursor` response (null when done).
 
+### Request correlation
+
+`requestId` is one opaque transport correlation id, not an application-generated business id.
+
+- In the deployed AWS runtime, API Gateway owns the canonical value. Its access log emits
+  `$context.requestId` as `requestId`; the Lambda transport reads
+  `event.requestContext.requestId` and passes it into the neutral BFF request.
+- The dispatcher reuses that exact value in the learner-safe error envelope and in the sanitized
+  request-completion event. It must not create a second deployed-runtime request id.
+- Local/in-process transports generate an opaque id before dispatch and pass it through the same
+  neutral field. Tests inject deterministic values.
+- The Lambda invocation id (`context.awsRequestId`) is not the API-to-BFF correlation key. It may
+  remain visible as a distinct AWS-managed Lambda platform-log field.
+
+Successful response bodies do not add a `requestId`; the value remains available in API access logs
+and the completion event. This keeps response shapes stable while making the observability join
+deterministic.
+
 ### Error shape (all endpoints)
 
 ```jsonc
@@ -45,7 +65,7 @@ here.
     "code": "ATTEMPT_NOT_COMPLETED",      // stable SCREAMING_SNAKE identifier
     "message": "Results are available after the attempt is submitted.",
     "details": { "attemptId": "att_9f2" }, // optional, safe-to-render context
-    "requestId": "req_01HZX"               // correlation id for support/observability
+    "requestId": "opaque-request-id"       // same transport id used by access/completion logs
   }
 }
 ```

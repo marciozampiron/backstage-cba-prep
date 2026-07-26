@@ -67,10 +67,21 @@ Project board remain the source of truth; this file summarizes local coordinatio
   post-deploy smoke gates. The current Next.js app is not a pure static export; sensitive exam data
   and correction logic remain server-side behind the AWS BFF.
 - #82 is the Phase 1 / Todo operational-observability baseline and a native sub-issue of #46.
-  It replaces the placeholder ObservabilityStack with privacy-safe logs, native alarms, dashboard,
-  SNS notifications, and optional project-scoped budget. #70 now depends on its O1 structural gate
-  before learner smokes and O2 alarm-health gate after smokes. No observability deploy has been
-  authorized.
+  Its architecture package is complete and independently reviewed: canonical baseline +
+  reproducible observability diagram, canonical API Gateway-to-BFF request correlation, positive
+  API/Lambda traffic evidence in O2, a dedicated read-only gate role, encrypted SNS notifications,
+  separate Cloudflare telemetry, and a deferred auto-instrumentation-first OTEL/Application Signals
+  path. The final review pass applied the two LOW items (diagram legibility; KMS/SNS ownership in
+  `aws-iac-foundation.md`) and hardened the contract: O2 proves telemetry ingestion and NOT
+  functional route coverage, the composite references exactly the six alarms and is the sole SNS
+  publisher, the implicit Lambda log-group adoption path is decided before the first deploy, one
+  `requestId` is provable end to end, the isolated `Resource: "*"` statement carries only the
+  documented read-only actions, and the live CloudWatch -> SNS/KMS -> subscription proof is a
+  MANDATORY promotion prerequisite executed OUTSIDE O1/O2 under operator credentials (required
+  before the first `pilot` promotion and re-proven after any key/topic policy change).
+  Implementation is queued in
+  `inbox/82-aws-observability-implementation.md`; #70 still depends on delivery. No observability
+  implementation or deploy has been authorized.
 - Phase 5 / #10 is the post-POC evolution from the CBA pilot to a multi-certification portal.
   Before the first non-CBA certification, a mandatory DDD hardening gate must make certification
   partitioning explicit, keep principals data-only, separate application ports/errors from adapters,

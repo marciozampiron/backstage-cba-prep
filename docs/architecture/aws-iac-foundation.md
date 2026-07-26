@@ -88,10 +88,20 @@ Owns:
 
 Owns:
 
-- CloudWatch log groups;
-- alarms and dashboards;
-- cost/billing signals where practical;
-- structured log retention rules.
+- a customer-managed KMS key with rotation enabled, used to encrypt the operational topic (the
+  AWS-managed `alias/aws/sns` key is not sufficient because its policy cannot be extended for
+  CloudWatch alarm publication);
+- the encrypted SNS operational-notification topic, whose resource policy admits only the
+  CloudWatch service principal for the environment's alarms;
+- CloudWatch alarms and dashboards composed from workload-native metrics;
+- an optional project-scoped budget after cost-allocation tags are activated.
+
+Workload-owned logging stays with the workload stack: `ApiStack` owns explicit Lambda/API Gateway
+log groups, structured JSON configuration, access-log allowlists, and retention. The full
+privacy, alarm, dashboard, cost, and release-gate contract is
+[`aws-observability-baseline.md`](aws-observability-baseline.md) (#82). The current
+ObservabilityStack remains a placeholder until #82 ships; observability is required before pilot
+promotion in #70.
 
 ### Security Stack
 

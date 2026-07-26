@@ -11,6 +11,7 @@ cleanup, promotion, evidence, or rollback behavior.
 | Environments, targets, config registry | [pilot-environment-contract.md](pilot-environment-contract.md) (#47) |
 | Release policy, go/no-go, rollback | [pilot-release-runbook.md](pilot-release-runbook.md) (#55) |
 | Permissions, Environments, OIDC roles | [github-security-and-oidc-baseline.md](github-security-and-oidc-baseline.md) |
+| AWS operational observability gates | [aws-observability-baseline.md](aws-observability-baseline.md) (#82) |
 | CI/no-spend posture | [ci-cd-security-foundation.md](ci-cd-security-foundation.md) |
 | Learner API the gates exercise | [web-bff-contracts.md](../product/web-bff-contracts.md) |
 
@@ -98,8 +99,10 @@ build                    build frontend + BFF artifacts once; record digests; wr
 dev-env-preflight        environment: dev — resolve + validate BASE_URL/FRONTEND_URL against
   |                      CBA_ALLOWED_*_HOST_SUFFIX (§3)
   +--> dev: deploy-frontend (Cloudflare)  --> dev: frontend-health F1 (FRONTEND_URL)
-  +--> dev: deploy-bff      (AWS OIDC)    --> dev: bff-gates 1-5      (BASE_URL, §5)
+  +--> dev: deploy-bff      (AWS OIDC)    --> dev: observability O1   (#82 structural)
+                                               --> dev: bff-gates 1-5 (BASE_URL, §5)
                                                --> dev: frontend-dynamic F2 (real ids, §5)
+                                               --> dev: observability O2 (#82 post-smoke health)
                                                      |
                                           dev: cleanup (always(), §6)
                                                      |
@@ -110,7 +113,7 @@ dev-env-preflight        environment: dev — resolve + validate BASE_URL/FRONTE
 pilot-env-preflight      environment: pilot — same validation; runs ONLY after dev green +
   |                      approval (its Environment binding withholds vars/secrets until then)
   +--> pilot: deploy-frontend (same digests) --> pilot: frontend-health F1
-  +--> pilot: deploy-bff      (same digests) --> pilot: bff-gates 1-5 --> pilot: F2
+  +--> pilot: deploy-bff      (same digests) --> pilot: O1 --> bff-gates 1-5 --> F2 --> O2
                                                      |
                                           pilot: cleanup (always())
                                                      |
@@ -139,6 +142,19 @@ step prints pass/fail + counts only (§7 masking).
 | 3 | **mock leak scan** (new requirement from #55) | B | start a mock; BEFORE submit, validate every mock-facing payload against an **allowlist JSON Schema with `additionalProperties: false`** — pre-submit mock/question objects may carry ONLY the contracted presentation fields (ids, stem/prompt, option ids+text, ordering, timing, status). ANY extra property fails the gate, so future aliases (`correctAnswer`, `solution`, …) cannot slip past a denylist. The schema derives from [web-bff-contracts.md](../product/web-bff-contracts.md) and is versioned with the smoke suite. Then submit and assert the correction fields ARE present post-submit (positive control) | attempt registered |
 | 4 | Cognito session + ownership | A + B | real sign-in (Cognito session/token) resolves the learner; learner A calling a learner-B attempt id gets the contracted ownership error; a request carrying the dev-mode `x-cba-learner` header is REJECTED (deployed fail-fast rule, #47 §3) | sessions signed out |
 | 5 | managed persistence via BFF | A | a second HTTP client alone does NOT prove another runtime (it can hit the same warm Lambda). The gate combines: (a) the readiness/config surface attests `CBA_WEB_STORE=dynamodb` and the gate **fails fast on any local adapter value**; (b) write + read back through the API; (c) a **verifiable managed-persistence evidence defined by #68** (e.g. the readiness payload exposing the persistence adapter identity/logical table). **No direct table access** | attempt registered |
+| O1 | observability structure (#82) | none | log groups/retention, structured/access-log allowlists, dashboard, SNS topic, alarm set, and missing-data posture exist; pilot additionally requires a confirmed subscription | none (read-only) |
+| O2 | observability health (#82) | none | capture the BFF smoke window; within 10 minutes require API Gateway `Count` >= 1 AND Lambda `Invocations` >= 1, then require every individual/composite alarm `OK`; `ALARM`, no traffic, or any non-`OK` state at the deadline blocks | none (read-only) |
+
+O1 and O2 are the only observability checks this workflow performs, and both are read-only. The
+notification-path live proof (#82) is deliberately outside them — see §7 — because delivery through
+the customer-managed KMS key cannot be verified by describing resources or reading alarm state.
+
+**Pilot Environment approval requirement.** Before approving the `pilot` GitHub Environment, the
+reviewer must confirm that the notification-path live evidence is CURRENT for that environment:
+present, positive, and attesting to the KMS key-policy and SNS topic-policy versions now deployed.
+Promotion is blocked when that evidence is absent, negative, or stale relative to the latest
+key/topic policy change. A confirmed subscription (checked by O1) does not satisfy this: it proves
+an endpoint is registered, not that a notification can be delivered.
 
 ## 6. Test-data isolation and cleanup
 
@@ -163,10 +179,18 @@ step prints pass/fail + counts only (§7 masking).
 
 ## 7. Permissions, secrets, and masking
 
-- Workflow-level `permissions: { contents: read }`; ONLY deploy jobs add `id-token: write`
-  (job-level), per the #52 model. No `pull-requests`, no `contents: write` anywhere.
-- AWS access is exclusively the Environment-scoped OIDC deploy role; Cloudflare exclusively the
-  Environment-scoped token. No long-lived keys, ever.
+- Workflow-level `permissions: { contents: read }`; deploy jobs and the O1/O2 observability-gate
+  job add `id-token: write` only at job level, per the #52 model. No `pull-requests` or
+  `contents: write` exists anywhere.
+- AWS deployment uses the Environment-scoped OIDC deploy role. O1/O2 use a separate
+  Environment-scoped OIDC observability-gate role with only the exact read actions in
+  `aws-observability-baseline.md` §15; it has no deploy, log-content-read, or alarm-mutation
+  permission. Cloudflare uses only the Environment-scoped token. No long-lived keys, ever.
+- **The notification-path live proof is NOT executed by this workflow.** The end-to-end
+  CloudWatch -> SNS/KMS -> subscription verification (#82) runs human-gated outside O1/O2 under
+  operator credentials. This workflow therefore receives **no write permission** for it: no
+  `sns:Publish`, no `cloudwatch:SetAlarmState`, no KMS use beyond what the read-only gate role
+  already lacks. O1 and O2 stay read-only and are unchanged by this requirement.
 - **Log/masking rules**: secrets are masked by GitHub; additionally, gate scripts must never
   print URLs, ARNs, account ids, tokens, session cookies, learner emails, or response bodies —
   outputs are pass/fail, counts, and logical names only (`dev-bff`, `pilot-frontend`). The
@@ -182,6 +206,7 @@ The `summary` job always renders, even on failure/cancellation:
 | identity | `release_sha`, artifact digests, `run_id` |
 | gates | one row per §5 gate: pass / fail / skipped (with the failing step name) |
 | cleanup | ok / FAILED (with leftover count by logical name) |
+| observability | O1/O2 pass/fail, positive-traffic evidence yes/no, and logical alarm states only |
 | promotion eligibility | `eligible` only when every gate AND cleanup passed on dev |
 | rollback target | pilot: previous good release **tag** (`pilot-vN-1`); dev: previous **validated dev manifest** (run identity) — logical names only |
 
