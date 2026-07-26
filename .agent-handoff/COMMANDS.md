@@ -45,9 +45,10 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
-## Publishing (#91)
+## Publishing (#91 Stage A + #93 human-operated bridge)
 
-Stage A is **validation only** — it never pushes, opens a PR, merges or uses a credential.
+`agent-publish` is **validation only** — it never pushes, opens a PR, merges or uses a credential.
+`agent-human-publish-script` **prepares** a script and never runs it. No agent ever publishes.
 
 ```bash
 # 1. own branch AND worktree — never share a writable main
@@ -59,12 +60,25 @@ git config core.hooksPath .githooks
 # 3. validate the human gate locally (this is the whole Stage A behaviour)
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
   --gate .agent-handoff/publish-gates/<gate>.json
+
+# 4. EXECUTOR ONLY: prepare the script the HUMAN will run. No network, no git mutation.
+#    Writes one file to /tmp, mode 0600, NOT executable, and prints its path and SHA-256.
+node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
 ```
 
-`architect` and `reviewer` are refused before `.env` loads, the gate is read or git runs. `main` is
-never a source branch. **Publishing the branch, opening the PR and merging are not performed by
-this command**: publication is Stage B (executor bot credential) and merge is always a human
-action.
+Then, in order and by different actors:
+
+- **Step 5 — reviewer.** The architect/security reviewer **reads** the file and confirms the printed
+  SHA-256. Reviewing is not implementing and not executing.
+- **Step 6 — human.** The human operator runs it: `bash /tmp/cba-publish-<issue>-<head>.sh`. It needs
+  an interactive terminal and a typed confirmation, re-checks local and live remote state, then does
+  one non-force push of the task branch and creates or reuses one pull request.
+- **Step 7 — human.** Merge separately, after checks and review.
+
+`architect` and `reviewer` are refused by **both** commands before `.env` loads, the gate is read,
+git runs or any file is written. `main` is never a source branch. The prepared script can never
+merge, deploy, push `main`, force-push, rewrite history, change repository settings or read secrets.
 
 ## Before commit
 
@@ -112,9 +126,12 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-# Agents NEVER push main. Publication is: validate the gate, then Stage B publishes the task
-# branch and opens a PR; the human owner merges. See "Publishing (executor only, #91)" above.
+# Agents NEVER push and NEVER run the prepared script. Publication is: validate the gate, prepare
+# the script, hand it to the reviewer, and the HUMAN runs it. See "Publishing" above.
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
+
+node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
   --gate .agent-handoff/publish-gates/<gate>.json
 ```
 

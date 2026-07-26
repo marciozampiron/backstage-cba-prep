@@ -25,12 +25,22 @@ Collaboration rules:
 - Do not start work when an `.agent-handoff/active/` file already owns the same issue or files.
 - Move or record task state through `inbox -> active -> done` when taking ownership.
 - Never push without explicit human approval.
-- **Publication is role-separated and PR-only (#91).** Agents never push `main`. The implementation
-  executor publishes only `task/<issue>-<slug>` through `agent-publish`, against a publish gate that
-  names the approving human, the exact executor and the exact ordered commits. The
-  architect/security reviewer may review and recommend a gate but may never publish, merge, deploy
-  or act as executor. Merging is a human action. A generic "approved" is a review decision, not a
-  publication command.
+- **Publication is role-separated, human-operated and PR-only (#91, #93).** No agent pushes anything
+  — not `main`, not a task branch. Against a publish gate naming the approving human, the exact
+  executor and the exact ordered commits:
+  - the **implementation executor** validates with `agent-publish` and then *prepares* a script with
+    `agent-human-publish-script`. The script lands in `/tmp`, mode `0600`, deliberately **not
+    executable**. Preparing is not publishing, and the executor never runs it;
+  - the **architect/security reviewer** *reads* that script and confirms its SHA-256. Reviewing is
+    not implementing and not executing; the reviewer never prepares or runs one;
+  - the **human operator** runs it explicitly with `bash <path>`. It requires an interactive
+    terminal and a typed confirmation, and can only push the task branch without force and open or
+    reuse one pull request — never merge, deploy, push `main`, force-push, rewrite history, change
+    repository settings or read secrets.
+
+  Merging is always a separate human action. A generic "approved" is a review decision, not a
+  publication command. The declared `--role` is caller-supplied and proves nothing; this is a
+  process guardrail until #91 Stage B adds authenticated identity and remote enforcement.
 - Each active agent task uses its own branch and worktree; agents do not share a writable `main`.
 - Once independent review begins, reviewed commits are immutable — findings produce a NEW
   fix-forward commit, never an amend or rebase of reviewed history.

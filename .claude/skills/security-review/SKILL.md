@@ -12,9 +12,11 @@ The repository policy is authoritative. Read:
 3. `docs/architecture/ai-agent-security-model.md` for AI/model/tool/source work;
 4. the assigned GitHub issue and `.agent-handoff/` file.
 
-Publication is role-separated (#91): only the executor publishes, only a gated
-`task/<issue>-<slug>` branch, only through `agent-publish`, and never `main`. Merging is a human
-action. Reviewed commits are immutable — a finding produces a NEW fix-forward commit.
+Publication is role-separated and human-operated (#91, #93): **no agent publishes.** As executor you
+validate with `agent-publish` and *prepare* a script with `agent-human-publish-script` — see the
+`publication-prepare` skill — and the **human** runs it with `bash <path>`. Never push, never run
+the script, never merge. Reviewed commits are immutable — a finding produces a NEW fix-forward
+commit and a new gate.
 
 As executor:
 

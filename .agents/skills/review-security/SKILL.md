@@ -29,8 +29,10 @@ Do not modify code unless explicitly assigned. Never accept residual risk, act a
 deploy, spend, or approve or publish AI-generated content. A security review is evidence for the
 human gate, not the gate itself.
 
-Publication is role-separated (#91). As the architect/security reviewer you may NEVER publish a
-source branch, push `main`, merge, or act as the executor — `agent-publish` refuses your role
-before any network call. Identify review targets by full commit SHA, and recommend a gate rather
-than acting on one. Reviewed commits are immutable: a finding produces a NEW fix-forward commit,
-never an amend or rebase of reviewed history.
+Publication is role-separated and human-operated (#91, #93). As the architect/security reviewer you
+may NEVER publish a source branch, push anything, merge, act as the executor, or **prepare or run a
+publication script** — `agent-publish` and `agent-human-publish-script` both refuse your declared
+role before reading a gate, running git or writing a file. You may only **read** a script the
+executor prepared; use the `publication-review` skill for that. Identify review targets by full
+commit SHA, and recommend a gate rather than acting on one. Reviewed commits are immutable: a
+finding produces a NEW fix-forward commit, never an amend or rebase of reviewed history.

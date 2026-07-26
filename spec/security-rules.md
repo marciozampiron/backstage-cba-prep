@@ -25,6 +25,20 @@ product/security owner approves a documented reconciliation.
    publish generated questions.
 5. Security findings are not silently suppressed. Record the finding, severity, evidence, owner,
    remediation or accepted residual risk, and review expiry.
+6. **Publication is human-operated (#91, #93).** No AI agent publishes source, in any role. The
+   implementation executor may validate a publish gate (`agent-publish`) and *prepare* a publication
+   script (`agent-human-publish-script`, written to `/tmp`, mode `0600`, non-executable); the
+   architect/security reviewer may only *read* it; only the human operator may *run* it, and only
+   with an interactive terminal and a typed confirmation. The script may do exactly two things —
+   push the gated `task/<issue>-<slug>` branch without force, and create or reuse one pull request.
+   It may never merge, deploy, push an integration branch, force-push, rewrite history, administer
+   the repository or branch protection, handle secrets, or invoke a paid service. Merge remains a
+   separate human action.
+7. The declared `--role`/`--executor` are caller-supplied and authenticate nothing. Treat #91
+   Stage A and the #93 bridge as process guardrails, and never describe them as mechanical identity
+   separation. Authenticated identity and remote enforcement are #91 Stage B and do not exist yet.
+8. Once independent review begins, reviewed commits are immutable. Findings produce a NEW
+   fix-forward commit — never an amend, rebase or squash of reviewed history — and a new gate.
 
 ## 2. Architecture Boundaries
 

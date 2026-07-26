@@ -67,21 +67,30 @@ After any meaningful state change, update `CURRENT.md` and append an entry to `E
 
 Do not hardcode published (`origin/main`) **or** unpublished/amendable local commit SHAs in `CURRENT.md` — a pinned SHA goes stale on the next push. Use `git rev-parse --short origin/main` for the current published baseline and `git log --oneline origin/main..HEAD` for exact local commits.
 
-## Publication protocol (#91)
+## Publication protocol (#91 Stage A, #93 human-operated bridge)
+
+Three layers exist and they must not be confused:
+
+| Layer | What it is | Who acts |
+| --- | --- | --- |
+| #91 Stage A — `agent-publish` | Validates a gate against local state, prints the plan, stops. | executor runs it |
+| #93 bridge — `agent-human-publish-script` | The executor **prepares** a bounded script under `/tmp`; the reviewer **reads** it; the **human** runs it with `bash <path>`. | executor prepares, reviewer reads, human runs |
+| #91 Stage B — remote enforcement | Authenticated bot identity, gate consumption, required PR, `enforce_admins`. | not built yet |
 
 Stage A is **local advisory pre-flight validation only**. It never publishes, never opens a pull
 request, never consumes a gate and never authenticates identity — the declared role and executor
-come from the caller. Authoritative separation is Stage B (executor bot credential, live remote
-checks, idempotent gate consumption, branch protection). **Until Stage B ships, publication and
-merge are human actions.** The 2026-07-26 incident — a generic
-human approval read by the architect agent as permission to `git push origin main`, followed by two
-agents racing on `git commit --amend` in a shared worktree — is the reason.
+come from the caller, and any caller can declare `executor`. The #93 bridge does not change that:
+it adds a reviewable artifact, not an authenticated identity. Both are process guardrails, and only
+Stage B makes the separation unforgeable. **Until Stage B ships, publication and merge are human
+actions.** The 2026-07-26 incident is the reason all of this exists: a generic human approval was
+read by the architect agent as permission to `git push origin main`, and two agents then raced on
+`git commit --amend` in a shared worktree.
 
 | Role | May | May never |
 | --- | --- | --- |
-| Human product/security owner | Approve a gate naming themselves; merge the PR | Delegate merge authority to an agent |
-| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish` with a valid gate | Push `main`, merge, deploy, spend, or publish without a gate |
-| Architect/security reviewer | Review by full SHA, create roadmap issues, recommend a gate | Publish any source branch, merge, or act as executor |
+| Human product/security owner | Approve a gate naming themselves; run the prepared script; merge the PR | Delegate merge or script execution to an agent |
+| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish`; **prepare** a publication script | Push, merge, deploy, spend, **run the prepared script**, or publish without a gate |
+| Architect/security reviewer | Review by full SHA, **read** a prepared script, create roadmap issues, recommend a gate | Publish, merge, act as executor, **prepare or run a script** |
 
 Mechanics:
 
@@ -93,10 +102,20 @@ Mechanics:
    loads, before the gate is read and before git runs, refuses `main` as a source, and fails closed
    on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an expired gate, a
    `reviewedShas` set that does not equal the commits, a shared worktree or a drifted `origin/main`.
-4. **Validation is not publication.** Stage A stops there. Once Stage B exists, the executor bot
-   credential pushes the task branch and opens/updates the PR; today that step is a human action.
-5. Merging is always a human action.
-6. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+4. **Validation is not publication.** To publish, the executor prepares a script:
+   `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate <file>`.
+   It re-runs the Stage A validation, writes one bash file to `/tmp` with mode `0600` and **no**
+   executable bit, and prints the path and its SHA-256. It makes no network call and no Git or
+   GitHub mutation.
+5. The architect/security reviewer **reads** that file and confirms the SHA-256. Reviewing is not
+   implementing and not executing.
+6. The **human operator** runs it explicitly: `bash /tmp/cba-publish-<issue>-<head>.sh`. It requires
+   an interactive terminal and a typed confirmation, re-verifies local and live remote state, then
+   does exactly one mutation — a non-force push of the task branch — and creates or reuses exactly
+   one pull request. It can never merge, deploy, push `main`, force-push, rewrite history, change
+   repository settings or read secrets.
+7. Merging is always a separate human action, after checks and review.
+8. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
    That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
    (#91 Stage B) is authoritative.
 
@@ -109,9 +128,10 @@ Before any push:
 1. The human must explicitly approve push in chat.
 2. The agent must append a `Human gate` event to `EVENTS.md` listing the approved commits or scope.
 3. The agent must run `npm run agent-refresh -- --record` immediately before publication.
-4. **Agents never push `main`.** The executor validates the gate with `agent-publish` and, once
-   Stage B ships, publishes only `task/<issue>-<slug>` and opens/updates a PR. Merging is a human
-   action. Until Stage B, publication to `main` is performed by the human owner alone.
+4. **Agents never push, and never run the prepared script.** The executor validates the gate with
+   `agent-publish`, then prepares a script with `agent-human-publish-script`. Only the human runs
+   it, and it can only publish `task/<issue>-<slug>` and open or reuse one PR. Merging is a human
+   action. Publication to `main` happens solely through a human-merged pull request.
 5. After push, the agent must record push and CI status in `EVENTS.md`.
 
 If any step is missing, do not push.
