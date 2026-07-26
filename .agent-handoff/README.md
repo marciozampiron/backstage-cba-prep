@@ -67,6 +67,39 @@ After any meaningful state change, update `CURRENT.md` and append an entry to `E
 
 Do not hardcode published (`origin/main`) **or** unpublished/amendable local commit SHAs in `CURRENT.md` — a pinned SHA goes stale on the next push. Use `git rev-parse --short origin/main` for the current published baseline and `git log --oneline origin/main..HEAD` for exact local commits.
 
+## Publication protocol (#91)
+
+Stage A is **local advisory pre-flight validation only**. It never publishes, never opens a pull
+request, never consumes a gate and never authenticates identity — the declared role and executor
+come from the caller. Authoritative separation is Stage B (executor bot credential, live remote
+checks, idempotent gate consumption, branch protection). **Until Stage B ships, publication and
+merge are human actions.** The 2026-07-26 incident — a generic
+human approval read by the architect agent as permission to `git push origin main`, followed by two
+agents racing on `git commit --amend` in a shared worktree — is the reason.
+
+| Role | May | May never |
+| --- | --- | --- |
+| Human product/security owner | Approve a gate naming themselves; merge the PR | Delegate merge authority to an agent |
+| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish` with a valid gate | Push `main`, merge, deploy, spend, or publish without a gate |
+| Architect/security reviewer | Review by full SHA, create roadmap issues, recommend a gate | Publish any source branch, merge, or act as executor |
+
+Mechanics:
+
+1. Each task gets its own branch AND worktree: `git worktree add ../cba-issue-<n> -b task/<n>-<slug> main`.
+2. The human owner writes a publish gate under `.agent-handoff/publish-gates/` (schema in that
+   folder's README) naming themselves, the executor, the base SHA and the exact ordered commits.
+3. The executor runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
+   It **validates locally and prints the plan** — it refuses architect/reviewer roles before `.env`
+   loads, before the gate is read and before git runs, refuses `main` as a source, and fails closed
+   on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an expired gate, a
+   `reviewedShas` set that does not equal the commits, a shared worktree or a drifted `origin/main`.
+4. **Validation is not publication.** Stage A stops there. Once Stage B exists, the executor bot
+   credential pushes the task branch and opens/updates the PR; today that step is a human action.
+5. Merging is always a human action.
+6. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+   That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
+   (#91 Stage B) is authoritative.
+
 ## Push gate
 
 `agent-refresh` and `agent-refresh --record` check technical state only. They do **not** authorize a push. Push permission is a human decision.
@@ -75,8 +108,10 @@ Before any push:
 
 1. The human must explicitly approve push in chat.
 2. The agent must append a `Human gate` event to `EVENTS.md` listing the approved commits or scope.
-3. The agent must run `npm run agent-refresh -- --record` immediately before push.
-4. The agent may push only the approved commits/scope.
+3. The agent must run `npm run agent-refresh -- --record` immediately before publication.
+4. **Agents never push `main`.** The executor validates the gate with `agent-publish` and, once
+   Stage B ships, publishes only `task/<issue>-<slug>` and opens/updates a PR. Merging is a human
+   action. Until Stage B, publication to `main` is performed by the human owner alone.
 5. After push, the agent must record push and CI status in `EVENTS.md`.
 
 If any step is missing, do not push.

@@ -28,3 +28,9 @@ Use repository policy as the source of truth:
 Do not modify code unless explicitly assigned. Never accept residual risk, act as the human approval gate for any security-sensitive work, push,
 deploy, spend, or approve or publish AI-generated content. A security review is evidence for the
 human gate, not the gate itself.
+
+Publication is role-separated (#91). As the architect/security reviewer you may NEVER publish a
+source branch, push `main`, merge, or act as the executor — `agent-publish` refuses your role
+before any network call. Identify review targets by full commit SHA, and recommend a gate rather
+than acting on one. Reviewed commits are immutable: a finding produces a NEW fix-forward commit,
+never an amend or rebase of reviewed history.

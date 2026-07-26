@@ -11,6 +11,8 @@ import { runReviewBank } from '../src/commands/review-bank.js';
 import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { runAgentCheck } from '../src/commands/agent-check.js';
 import { runAgentRefresh } from '../src/commands/agent-refresh.js';
+import { runAgentPublish } from '../src/commands/agent-publish.js';
+import { assertPublishingRole } from '../src/lib/publish-gate.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { loadEnv } from '../src/lib/env.js';
 import { c } from '../src/lib/ui.js';
@@ -59,6 +61,7 @@ const HELP = `
     bedrock-check  Validate model-tier config (dry-run); --smoke for a paid live test
     agent-check    Check AI orchestration readiness (dry-run); --smoke for a paid live run
     agent-refresh  Check agent handoff state before edit/commit/push (no network)
+    agent-publish  Validate a publish gate locally (Stage A: no push, no PR, no merge)
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -97,6 +100,13 @@ const HELP = `
     --tier NAME     fast | standard | critical  (smoke target; default fast)
     --yes           skip the smoke confirmation prompt
 
+  ${c.bold('agent-publish options:')}
+    ${c.gray('(only a DECLARED role=executor proceeds; declaration is not authentication — Stage B)')}
+    --role <role>   invoking role (or CBA_AGENT_ROLE); architect/reviewer refuse before network
+    --executor <id> invoking agent identity (or CBA_AGENT_ID); must match the gate
+    --gate <path>   publish-gate manifest naming the human approver and exact commits
+    ${c.gray('Stage A validates only: it never pushes, opens a PR, merges or uses a credential.')}
+
   ${c.bold('agent-refresh options:')}
     ${c.gray('(no network: reads .agent-handoff and local git state)')}
     --json          emit machine-readable coordination state
@@ -115,10 +125,34 @@ const HELP = `
 `;
 
 async function main() {
-  loadEnv(); // load .env (if present) before dispatch; real env vars always win
+  // #91: parse ONCE, with the real parser, before anything else. A second partial parser here was
+  // the bug: it only understood `--role x`, so `--role=architect` slipped past the pre-loadEnv
+  // refusal and was caught later — after .env had already loaded. Both syntaxes now behave
+  // identically because they go through the same code path.
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1));
+
+  // The declared-role refusal must happen before .env loads, before git runs and before any
+  // network dependency could exist. An explicit --role always wins over CBA_AGENT_ROLE, so an
+  // environment variable cannot smuggle a forbidden role past this check.
+  if (cmd === 'agent-publish') {
+    // Presence, not type: `--role` with no value parses to `true`, and treating that as "absent"
+    // silently fell back to CBA_AGENT_ROLE, letting an environment value decide after an explicit
+    // argument was given. An explicit argument ALWAYS wins, malformed or not, and the malformed
+    // value is handed to assertPublishingRole so it is refused here rather than after loadEnv().
+    const declaredRole = Object.hasOwn(args, 'role') ? args.role : process.env.CBA_AGENT_ROLE;
+    try {
+      assertPublishingRole(declaredRole);
+    } catch (err) {
+      console.error(`agent-publish refused [${err.code ?? 'ROLE_REFUSED'}]`);
+      console.error(err.message);
+      console.error('No .env was loaded, no gate was read and no git command ran.');
+      process.exit(2);
+    }
+  }
+
+  loadEnv(); // load .env (if present) before dispatch; real env vars always win
 
   switch (cmd) {
     case 'exam': {
@@ -191,6 +225,15 @@ async function main() {
       break;
     case 'agent-refresh':
       process.exit(await runAgentRefresh({ json: !!args.json, record: !!args.record }));
+      break;
+    case 'agent-publish':
+      process.exit(
+        await runAgentPublish({
+          role: args.role,
+          executor: args.executor,
+          gate: args.gate,
+        }),
+      );
       break;
     case 'history':
       runHistory({ json: !!args.json });

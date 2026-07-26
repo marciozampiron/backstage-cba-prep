@@ -45,6 +45,27 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
+## Publishing (#91)
+
+Stage A is **validation only** — it never pushes, opens a PR, merges or uses a credential.
+
+```bash
+# 1. own branch AND worktree — never share a writable main
+git worktree add ../cba-issue-<n> -b task/<n>-<slug> main
+
+# 2. local defense in depth (once per clone; not the authoritative control)
+git config core.hooksPath .githooks
+
+# 3. validate the human gate locally (this is the whole Stage A behaviour)
+node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
+```
+
+`architect` and `reviewer` are refused before `.env` loads, the gate is read or git runs. `main` is
+never a source branch. **Publishing the branch, opening the PR and merging are not performed by
+this command**: publication is Stage B (executor bot credential) and merge is always a human
+action.
+
 ## Before commit
 
 ```bash
@@ -91,11 +112,10 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-npm run agent-refresh
-npm run agent-refresh -- --record
-git status --short --branch
-git log --oneline origin/main..HEAD
-git push origin main
+# Agents NEVER push main. Publication is: validate the gate, then Stage B publishes the task
+# branch and opens a PR; the human owner merges. See "Publishing (executor only, #91)" above.
+node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
 ```
 
 After push, validate GitHub Actions:

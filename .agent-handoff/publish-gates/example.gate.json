@@ -1,0 +1,13 @@
+{
+  "gateId": "example-not-a-real-gate",
+  "issue": 91,
+  "executor": "example-executor",
+  "baseSha": "0000000000000000000000000000000000000000",
+  "commits": ["1111111111111111111111111111111111111111"],
+  "sourceBranch": "task/91-role-separated-publication",
+  "targetBranch": "main",
+  "approver": "example-human-owner",
+  "approvedAt": "2026-01-01T00:00:00Z",
+  "expiresAt": "2026-01-01T04:00:00Z",
+  "reviewedShas": ["1111111111111111111111111111111111111111"]
+}
