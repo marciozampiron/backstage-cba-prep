@@ -100,8 +100,10 @@ Before any push:
 
 1. The human must explicitly approve push in chat.
 2. The agent must append a `Human gate` event to `EVENTS.md` listing the approved commits or scope.
-3. The agent must run `npm run agent-refresh -- --record` immediately before push.
-4. The agent may push only the approved commits/scope.
+3. The agent must run `npm run agent-refresh -- --record` immediately before publication.
+4. **Agents never push `main`.** The executor validates the gate with `agent-publish` and, once
+   Stage B ships, publishes only `task/<issue>-<slug>` and opens/updates a PR. Merging is a human
+   action. Until Stage B, publication to `main` is performed by the human owner alone.
 5. After push, the agent must record push and CI status in `EVENTS.md`.
 
 If any step is missing, do not push.

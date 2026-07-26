@@ -12,6 +12,7 @@ import {
   parseGate,
   validateGate,
   assertNamedApprover,
+  evidenceFor,
   GateError,
 } from '../src/lib/publish-gate.js';
 
@@ -48,6 +49,9 @@ function repoFixture(overrides = {}) {
     baseSha: BASE,
     commits: [C1, C2],
     clean: true,
+    remoteBaseSha: BASE,
+    worktrees: [{ path: '/w/91', branch: 'task/91-role-separated-publication' }],
+    handoffPresent: true,
     ...overrides,
   };
 }
@@ -257,19 +261,6 @@ test('a dirty worktree cannot publish', () => {
     }));
 });
 
-test('a commit added after review is a stale review, not a free ride', () => {
-  expectRefusal('REVIEW_STALE', () =>
-    validateGate({
-      gate: gateFixture({ reviewedShas: [C1] }),
-      role: 'executor',
-      executor: 'claude-opus-5',
-      repo: repoFixture(),
-      nowMs: NOW,
-    }));
-});
-
-/* ================= MANIFEST SHAPE ================= */
-
 test('a malformed or incomplete manifest is refused', () => {
   expectRefusal('GATE_MALFORMED', () => parseGate('{not json'));
   expectRefusal('GATE_MALFORMED', () => parseGate('[]'));
@@ -301,67 +292,6 @@ test('the committed example gate is a schema fixture, never a usable gate', asyn
 
 /* ================= END TO END, STILL OFFLINE ================= */
 
-test('a valid gate reaches the publisher exactly once, with no merge capability', async () => {
-  const calls = [];
-  const code = await runAgentPublish({
-    role: 'executor',
-    executor: 'claude-opus-5',
-    gate: 'gate.json',
-    deps: {
-      fs: { readFileSync: () => JSON.stringify(gateFixture()) },
-      runGit: (args) => {
-        const key = args.join(' ');
-        if (key === 'rev-parse --abbrev-ref HEAD') return 'task/91-role-separated-publication';
-        if (key === 'rev-parse HEAD') return C2;
-        if (key === 'status --porcelain') return '';
-        if (key === `rev-list --reverse ${BASE}..HEAD`) return `${C1}\n${C2}`;
-        if (key === `merge-base HEAD ${BASE}`) return BASE;
-        throw new Error(`unexpected git call: ${key}`);
-      },
-      now: () => NOW,
-      publish: async (payload) => calls.push(payload),
-    },
-  });
-  assert.equal(code, EXIT.OK);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].sourceBranch, 'task/91-role-separated-publication');
-  assert.equal(calls[0].targetBranch, 'main');
-  assert.equal(calls[0].evidence.merged, false, 'the command has no merge path');
-  // Evidence carries decisions and SHAs, never credentials.
-  const serialized = JSON.stringify(calls[0].evidence);
-  for (const secret of ['token', 'ghp_', 'Bearer', 'password', 'secret']) {
-    assert.ok(!serialized.toLowerCase().includes(secret.toLowerCase()), `evidence leaked ${secret}`);
-  }
-});
-
-test('--dry-run validates without reaching the publisher at all', async () => {
-  let reached = false;
-  const code = await runAgentPublish({
-    role: 'executor',
-    executor: 'claude-opus-5',
-    gate: 'gate.json',
-    dryRun: true,
-    deps: {
-      fs: { readFileSync: () => JSON.stringify(gateFixture()) },
-      runGit: (args) => {
-        const key = args.join(' ');
-        if (key === 'rev-parse --abbrev-ref HEAD') return 'task/91-role-separated-publication';
-        if (key === 'rev-parse HEAD') return C2;
-        if (key === 'status --porcelain') return '';
-        if (key === `rev-list --reverse ${BASE}..HEAD`) return `${C1}\n${C2}`;
-        if (key === `merge-base HEAD ${BASE}`) return BASE;
-        throw new Error(`unexpected git call: ${key}`);
-      },
-      now: () => NOW,
-      publish: async () => { reached = true; },
-    },
-  });
-  assert.equal(code, EXIT.OK);
-  assert.equal(reached, false, 'a dry run must not contact the remote');
-});
-
-/* ================= THE HOOK ================= */
-
 test('the pre-push hook refuses main and master and is executable', async () => {
   const { readFileSync, statSync } = await import('node:fs');
   const hookUrl = new URL('../.githooks/pre-push', import.meta.url);
@@ -372,4 +302,160 @@ test('the pre-push hook refuses main and master and is executable', async () => 
   // Honest about its own limits: the remote control is authoritative.
   assert.match(hook, /NOT the authoritative control/);
   assert.ok(statSync(hookUrl).mode & 0o111, 'the hook must be executable');
+});
+
+/* ================= #91 fix-forward: honesty and the new rules ================= */
+
+test('declared role/identity are never presented as authenticated', async () => {
+  const { readFileSync } = await import('node:fs');
+  const lib = readFileSync(new URL('../src/lib/publish-gate.js', import.meta.url), 'utf8');
+  const cmd = readFileSync(new URL('../src/commands/agent-publish.js', import.meta.url), 'utf8');
+  for (const source of [lib, cmd]) {
+    assert.match(source, /DECLARED|declared/, 'the code must say the claim is declared');
+  }
+  assert.match(lib, /not mechanical identity separation|guard rail/i);
+  // The evidence record labels the claim rather than asserting identity.
+  const result = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW });
+  const evidence = evidenceFor(result, { role: 'executor', executor: 'claude-opus-5', at: '2026-07-26T19:00:00Z' });
+  assert.ok('declaredRole' in evidence && 'declaredExecutor' in evidence);
+  assert.equal(evidence.published, false);
+  assert.equal(evidence.stage, 'A-local-validation-only');
+});
+
+test('reviewedShas is mandatory and must equal commits exactly and in order', () => {
+  const noReview = gateFixture();
+  delete noReview.reviewedShas;
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(noReview));
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(gateFixture({ reviewedShas: [] })));
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(gateFixture({ reviewedShas: ['abc1234'] })));
+  // extra reviewed sha
+  expectRefusal('REVIEW_SET_MISMATCH', () => parseGate(gateFixture({ reviewedShas: [C1, C2, OTHER] })));
+  // missing reviewed sha -> an unreviewed commit would ride along
+  expectRefusal('REVIEW_SET_MISMATCH', () => parseGate(gateFixture({ reviewedShas: [C1] })));
+  // out of order
+  expectRefusal('REVIEW_SET_MISMATCH', () => parseGate(gateFixture({ reviewedShas: [C2, C1] })));
+});
+
+test('a newer origin/main invalidates a remote publication', () => {
+  expectRefusal('REMOTE_BASE_DRIFT', () =>
+    validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture({ remoteBaseSha: OTHER }), nowMs: NOW }));
+});
+
+test('remote-base currency and replay are DEFERRED, and say so instead of pretending', () => {
+  const first = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW });
+  assert.ok(first.advisories.some((a) => /Stage A does not consume a gate/.test(a)));
+  assert.ok(first.advisories.some((a) => /LOCAL ref and may be stale/.test(a)));
+  // Replay is genuinely NOT prevented in Stage A — this asserts the honest current behaviour so a
+  // future Stage B change that adds consumption must update this test deliberately.
+  const second = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW });
+  assert.equal(second.gate.gateId, first.gate.gateId, 'the same gate validates twice: Stage B owns consumption');
+  // With no local knowledge of the remote, that is reported rather than assumed fine.
+  const blind = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture({ remoteBaseSha: null }), nowMs: NOW });
+  assert.ok(blind.advisories.some((a) => /deferred to Stage B/.test(a)));
+});
+
+test('gateId containing credential material is refused and never echoed', () => {
+  for (const bad of ['ghp_abcdefghijklmnop', 'gate-token-91', 'bearer-gate', 'gate-secret', 'AKIAIOSFODNN7EXAMPLE'.toLowerCase()]) {
+    const err = expectRefusal('GATE_METADATA_UNSAFE', () => parseGate(gateFixture({ gateId: bad })));
+    assert.ok(!err.message.includes(bad), 'the refused value must not be echoed back');
+  }
+  // shape/length limits
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(gateFixture({ gateId: 'ab' })));
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(gateFixture({ gateId: 'A'.repeat(65) })));
+  expectRefusal('GATE_INCOMPLETE', () => parseGate(gateFixture({ gateId: 'Gate With Spaces' })));
+});
+
+test('timestamps must be strict RFC3339 and the TTL is bounded', () => {
+  for (const bad of ['2026-07-26', '2026-07-26 18:00:00', 'yesterday', '2026-07-26T18:00:00']) {
+    expectRefusal('GATE_INCOMPLETE', () =>
+      validateGate({ gate: gateFixture({ approvedAt: bad }), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW }));
+  }
+  expectRefusal('GATE_TTL_TOO_LONG', () =>
+    validateGate({
+      gate: gateFixture({ expiresAt: '2026-07-28T18:00:00Z' }),
+      role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW,
+    }));
+  // an offset form is accepted
+  validateGate({
+    gate: gateFixture({ approvedAt: '2026-07-26T15:00:00-03:00', expiresAt: '2026-07-26T19:00:00-03:00' }),
+    role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW,
+  });
+});
+
+test('a branch checked out in two worktrees fails closed', () => {
+  expectRefusal('WORKTREE_SHARED', () =>
+    validateGate({
+      gate: gateFixture(),
+      role: 'executor', executor: 'claude-opus-5',
+      repo: repoFixture({ worktrees: [
+        { path: '/w/a', branch: 'task/91-role-separated-publication' },
+        { path: '/w/b', branch: 'task/91-role-separated-publication' },
+      ] }),
+      nowMs: NOW,
+    }));
+});
+
+test('unobservable worktrees and a missing handoff are reported as convention, not claimed', () => {
+  const result = validateGate({
+    gate: gateFixture(),
+    role: 'executor', executor: 'claude-opus-5',
+    repo: repoFixture({ worktrees: undefined, handoffPresent: false }),
+    nowMs: NOW,
+  });
+  assert.ok(result.advisories.some((a) => /not observable.*local convention/i.test(a)));
+  assert.ok(result.advisories.some((a) => /ownership is by convention only/.test(a)));
+});
+
+test('the REAL CLI refuses a forbidden role before loading .env, reading a gate or running git', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cli = fileURLToPath(new URL('../bin/cli.js', import.meta.url));
+  for (const role of ['architect', 'reviewer']) {
+    let status = 0;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [cli, 'agent-publish', '--role', role, '--executor', 'x', '--gate', '/nonexistent'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      status = err.status;
+      stderr = String(err.stderr ?? '');
+    }
+    assert.equal(status, 2, `${role} must exit 2 from the real entrypoint`);
+    assert.match(stderr, /ROLE_FORBIDDEN/);
+    assert.match(stderr, /No \.env was loaded, no gate was read and no git command ran/);
+  }
+});
+
+test('Stage A promises no publisher: no push, PR or merge capability exists in the command', async () => {
+  const { readFileSync } = await import('node:fs');
+  const raw = readFileSync(new URL('../src/commands/agent-publish.js', import.meta.url), 'utf8');
+  // Strip comments so prose ABOUT the prohibition cannot satisfy or trip the check.
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+  // No git write verbs reachable as arguments.
+  for (const verb of ['push', 'commit', 'merge', 'rebase', 'reset', 'tag']) {
+    assert.ok(!new RegExp(`['\"\`]${verb}['\"\`]`).test(code), `Stage A must not invoke git ${verb}`);
+  }
+  // No GitHub API surface of any kind.
+  for (const api of ['octokit', 'api.github.com', 'pulls', 'pull_request', 'createPullRequest', 'gh pr']) {
+    assert.ok(!code.toLowerCase().includes(api.toLowerCase()), `Stage A must not reach ${api}`);
+  }
+  // No network primitives and no injected publisher seam left behind.
+  for (const net of ['fetch(', 'https.request', 'http.request', 'publish:', 'deps.publish']) {
+    assert.ok(!code.includes(net), `Stage A must not contain ${net}`);
+  }
+  // ...and it says what it is.
+  assert.match(raw, /LOCAL PRE-FLIGHT VALIDATION ONLY/);
+});
+test('documentation contains no permitted "git push origin main" instruction', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const rel of ['../.agent-handoff/COMMANDS.md', '../.agent-handoff/README.md', '../AGENTS.md']) {
+    const text = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line.includes('git push origin main')) continue;
+      // Only the incident narrative may mention it, never as an instruction.
+      assert.match(line, /incident|architect|never|refused|not allowed/i, `permitted push instruction found: ${line}`);
+    }
+  }
 });

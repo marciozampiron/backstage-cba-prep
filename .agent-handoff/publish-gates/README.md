@@ -11,7 +11,7 @@ named commits, before the expiry, can act on it.
 
 | Field | Meaning |
 | --- | --- |
-| `gateId` | stable id for the decision, used in evidence |
+| `gateId` | 3-64 chars of `[a-z0-9._-]`, echoed in evidence, refused if it looks like credential material (and never echoed when refused) |
 | `issue` | integer issue number; must match the branch |
 | `executor` | the agent identity authorized to publish — a gate is not transferable |
 | `baseSha` | full 40-char SHA the branch was cut from; drift fails closed |
@@ -19,8 +19,8 @@ named commits, before the expiry, can act on it.
 | `sourceBranch` | `task/<issue>-<slug>`; never `main` |
 | `targetBranch` | always `main` — the PR target, never a push destination |
 | `approver` | the **named** human; generic words like `approved` are refused |
-| `approvedAt` / `expiresAt` | ISO-8601; a stale decision cannot be replayed |
-| `reviewedShas` | optional; commits the independent review targeted. Any published commit missing from this list fails as a stale review |
+| `approvedAt` / `expiresAt` | strict RFC3339 with an offset; the window is capped at **12 hours** so a decision cannot authorize the next cycle |
+| `reviewedShas` | **required**, non-empty, full SHAs, and must equal `commits` exactly and in order. An unreviewed fix-forward cannot ride along, and nothing reviewed can be silently dropped |
 
 ## Why each field exists
 
@@ -44,3 +44,10 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 
 A gate is consumed by a specific commit sequence. A new commit — including a fix-forward after
 review — needs a new gate.
+
+## What a gate does NOT do (Stage A)
+
+A gate is validated, never **consumed**: the same file passes twice. Authoritative, idempotent
+consumption belongs to Stage B, together with the live-remote base check and the executor bot
+credential. Stage A validation is advisory — see
+`docs/architecture/agent-publication-runbook.md` §3 for the full list of deferred properties.

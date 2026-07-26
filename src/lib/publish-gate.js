@@ -1,48 +1,58 @@
-// Publish-gate validation (#91 Stage A) — PURE logic, no I/O, no network, no git.
+// Publish-gate validation (#91) — PURE logic, no I/O, no network, no git.
 //
-// Why this exists: on 2026-07-26 a generic human approval meant for a coordinated release was read
-// by the architect/reviewer agent as permission to run `git push origin main`. The push was in
-// scope but the wrong ROLE performed it, and two agents sharing `main` then raced on
-// `git commit --amend`. Prose in AGENTS.md could not have stopped either. Publication authority,
-// role, exact commits, branch and the human decision are bound mechanically here instead.
+// WHAT THIS IS, HONESTLY. Stage A is a LOCAL, ADVISORY pre-flight check. The role and executor
+// identity are DECLARED BY THE CALLER (`--role`, `--executor`, `CBA_AGENT_ROLE`, `CBA_AGENT_ID`):
+// nothing here authenticates them, and any caller can declare `executor`. This is therefore not
+// mechanical identity separation — it is a guard rail that makes the correct path easy and the
+// incorrect path noisy.
 //
-// This module decides; `src/commands/agent-publish.js` performs. Keeping the decision pure means
-// every abuse case is a unit test rather than a live push, and the role refusal is provably
-// evaluated before anything touches the network.
+// AUTHORITATIVE separation belongs to Stage B and lives on the remote: a dedicated executor
+// GitHub App/bot credential with no merge, administration or ruleset-bypass authority, plus branch
+// protection on `main` applied to administrators. Until Stage B ships, a direct `git push origin
+// main` remains possible and `enforce_admins` is still false — the exact condition behind the
+// 2026-07-26 incident.
 //
-// Remote branch protection (#91 Stage B) is the AUTHORITATIVE control. Everything here is the
-// local half: it fails closed, but a determined caller with credentials can bypass local code.
+// Why the incident: a generic human approval meant for the coordinated #82/#85 release was read by
+// the architect/reviewer agent as permission to push `main`; the push was in scope but the wrong
+// role performed it, and two agents sharing a writable `main` then raced on `git commit --amend`.
+// Prose in AGENTS.md was unambiguous and still did not stop it, so the decision is encoded here.
+//
+// Deliberately NOT claimed by Stage A:
+//   - authenticated role/identity (Stage B credential);
+//   - replay protection — a gate is not consumed, so the same file validates twice (Stage B owns
+//     authoritative, idempotent consumption);
+//   - remote base truth — `origin/main` is read from local refs, which are only as fresh as the
+//     last fetch (Stage B validates against the live remote at publication time);
+//   - exclusive-worktree enforcement — observed, reported, and treated as local convention.
 
-/** Roles that may never publish. Checked first, before any other work. */
+/** Roles that may proceed. DECLARED, never authenticated in Stage A. */
 export const PUBLISHING_ROLES = ['executor'];
 export const NON_PUBLISHING_ROLES = ['architect', 'reviewer', 'observer'];
 
 /** Approvals that name nobody. A review decision is not a publication command. */
 const GENERIC_APPROVALS = [
-  'approved',
-  'approve',
-  'ok',
-  'okay',
-  'lgtm',
-  'yes',
-  'go',
-  'ship it',
-  'shipit',
-  'sim',
-  'aprovado',
-  'pode',
-  'pode pushar',
-  'human',
-  'owner',
-  'the human',
-  'anyone',
-  'n/a',
-  '-',
+  'approved', 'approve', 'ok', 'okay', 'lgtm', 'yes', 'go', 'ship it', 'shipit',
+  'sim', 'aprovado', 'pode', 'pode pushar', 'human', 'owner', 'the human', 'anyone', 'n/a', '-',
 ];
 
 const SHA_FULL = /^[0-9a-f]{40}$/;
 const TASK_BRANCH = /^task\/(\d+)-[a-z0-9][a-z0-9-]*$/;
 const ACTOR = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
+
+// Gate ids are operator-authored and end up in console output and EVENTS.md, so they are bounded
+// and charset-restricted rather than free text.
+const GATE_ID = /^[a-z0-9][a-z0-9._-]{2,63}$/;
+
+// RFC3339 with an explicit offset. `Date.parse` alone accepts loose input such as "2026-07-26",
+// which would silently create an unbounded or ambiguous window.
+const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** A human decision should not authorize the next day's work. */
+export const MAX_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+// Credential shapes and words that must never ride in operator-authored metadata that we echo.
+const SECRET_MARKER =
+  /AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{8,}|gho_[A-Za-z0-9]{8,}|github_pat_|eyJ[A-Za-z0-9_-]{6,}|sk-[A-Za-z0-9]{8,}|xox[baprs]-|bearer|token|secret|password|credential|apikey|api[-_]key/i;
 
 export class GateError extends Error {
   constructor(code, message) {
@@ -57,30 +67,50 @@ function fail(code, message) {
 }
 
 /**
- * ROLE CHECK — deliberately its own exported function so callers can run it as the very first
- * statement, before reading a gate file, touching git or opening a socket. The #91 acceptance
- * criterion is that architect/reviewer fail BEFORE network access; making this callable in
- * isolation is what lets a test prove it.
+ * DECLARED-ROLE CHECK. Exported standalone so callers can run it as their very first statement,
+ * before reading a gate, running git or constructing a network dependency.
+ *
+ * This checks what the caller SAYS it is. It is a guard rail against the wrong role acting by
+ * habit or misreading, not a defence against a caller that lies. Stage B is what makes the claim
+ * unforgeable.
  */
 export function assertPublishingRole(role) {
   if (typeof role !== 'string' || role.trim() === '') {
-    fail('ROLE_MISSING', 'A role is required. Set --role or CBA_AGENT_ROLE (only "executor" may publish).');
+    fail('ROLE_MISSING', 'A declared role is required (--role or CBA_AGENT_ROLE). Only "executor" may proceed.');
   }
   const normalized = role.trim().toLowerCase();
   if (NON_PUBLISHING_ROLES.includes(normalized)) {
     fail(
       'ROLE_FORBIDDEN',
-      `Role "${normalized}" may review and recommend a gate but may never publish source branches, ` +
-        'merge, deploy or act as executor (#91 decision 3). Refused before any network call.',
+      `Declared role "${normalized}" may review and recommend a gate but may never publish source ` +
+        'branches, merge, deploy or act as executor (#91 decision 3). Refused before reading the ' +
+        'gate, running git or touching the network.',
     );
   }
   if (!PUBLISHING_ROLES.includes(normalized)) {
-    fail('ROLE_UNKNOWN', `Unknown role "${normalized}". Publishing roles: ${PUBLISHING_ROLES.join(', ')}.`);
+    fail('ROLE_UNKNOWN', `Unknown declared role "${normalized}". Publishing roles: ${PUBLISHING_ROLES.join(', ')}.`);
   }
   return normalized;
 }
 
-/** Structural validation of the manifest itself, before it is compared to repository state. */
+function assertNoSecretMarker(field, value) {
+  if (SECRET_MARKER.test(String(value))) {
+    // The offending value is NEVER echoed — that is the whole point of refusing it.
+    fail('GATE_METADATA_UNSAFE', `"${field}" looks like it contains credential material and was refused unprinted.`);
+  }
+}
+
+function assertInstant(value, field) {
+  const raw = String(value);
+  if (!RFC3339.test(raw)) {
+    fail('GATE_INCOMPLETE', `"${field}" must be a strict RFC3339 timestamp with an offset (e.g. 2026-07-26T18:00:00Z).`);
+  }
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) fail('GATE_INCOMPLETE', `"${field}" is not a valid instant.`);
+  return ms;
+}
+
+/** Structural validation of the manifest, before it is compared to repository state. */
 export function parseGate(raw) {
   let gate;
   if (typeof raw === 'string') {
@@ -97,16 +127,8 @@ export function parseGate(raw) {
   }
 
   const required = [
-    'gateId',
-    'issue',
-    'executor',
-    'baseSha',
-    'commits',
-    'sourceBranch',
-    'targetBranch',
-    'approver',
-    'approvedAt',
-    'expiresAt',
+    'gateId', 'issue', 'executor', 'baseSha', 'commits',
+    'sourceBranch', 'targetBranch', 'approver', 'approvedAt', 'expiresAt', 'reviewedShas',
   ];
   for (const key of required) {
     if (gate[key] === undefined || gate[key] === null || gate[key] === '') {
@@ -114,12 +136,21 @@ export function parseGate(raw) {
     }
   }
 
+  // gateId is echoed to the console and to EVENTS.md, so it is bounded and scanned first.
+  if (typeof gate.gateId !== 'string') fail('GATE_INCOMPLETE', '"gateId" must be a string.');
+  assertNoSecretMarker('gateId', gate.gateId);
+  if (!GATE_ID.test(gate.gateId)) {
+    fail('GATE_INCOMPLETE', '"gateId" must be 3-64 chars of [a-z0-9._-] starting alphanumeric.');
+  }
+
   if (!Number.isInteger(gate.issue) || gate.issue <= 0) {
     fail('GATE_INCOMPLETE', 'The publish gate needs an integer "issue".');
   }
+  assertNoSecretMarker('executor', gate.executor);
   if (typeof gate.executor !== 'string' || !ACTOR.test(gate.executor)) {
     fail('GATE_INCOMPLETE', 'The publish gate needs a named "executor" identity.');
   }
+  assertNoSecretMarker('approver', gate.approver);
   if (!SHA_FULL.test(String(gate.baseSha))) {
     fail('GATE_INCOMPLETE', '"baseSha" must be a full 40-character commit SHA.');
   }
@@ -127,71 +158,67 @@ export function parseGate(raw) {
     fail('GATE_INCOMPLETE', '"commits" must be a non-empty ordered array of full SHAs.');
   }
   for (const sha of gate.commits) {
-    if (!SHA_FULL.test(String(sha))) {
-      fail('GATE_INCOMPLETE', `"commits" must contain full 40-character SHAs — got "${sha}".`);
-    }
+    if (!SHA_FULL.test(String(sha))) fail('GATE_INCOMPLETE', '"commits" must contain full 40-character SHAs.');
   }
   if (new Set(gate.commits).size !== gate.commits.length) {
     fail('GATE_INCOMPLETE', '"commits" must not repeat a SHA.');
   }
-  if (gate.reviewedShas !== undefined) {
-    if (!Array.isArray(gate.reviewedShas)) fail('GATE_INCOMPLETE', '"reviewedShas" must be an array when present.');
-    for (const sha of gate.reviewedShas) {
-      if (!SHA_FULL.test(String(sha))) fail('GATE_INCOMPLETE', `"reviewedShas" must contain full SHAs — got "${sha}".`);
-    }
+
+  // reviewedShas is MANDATORY: an unreviewed fix-forward must never ride along with reviewed work.
+  if (!Array.isArray(gate.reviewedShas) || gate.reviewedShas.length === 0) {
+    fail('GATE_INCOMPLETE', '"reviewedShas" is required and must be a non-empty array of full SHAs.');
+  }
+  for (const sha of gate.reviewedShas) {
+    if (!SHA_FULL.test(String(sha))) fail('GATE_INCOMPLETE', '"reviewedShas" must contain full 40-character SHAs.');
+  }
+  const commits = gate.commits.map(String);
+  const reviewed = gate.reviewedShas.map(String);
+  if (commits.length !== reviewed.length || commits.some((sha, i) => sha !== reviewed[i])) {
+    fail(
+      'REVIEW_SET_MISMATCH',
+      '"reviewedShas" must equal "commits" exactly and in order. Every published commit must have ' +
+        'been reviewed, and nothing reviewed may be silently dropped.',
+    );
+  }
+
+  if (typeof gate.sourceBranch !== 'string' || typeof gate.targetBranch !== 'string') {
+    fail('GATE_INCOMPLETE', '"sourceBranch" and "targetBranch" must be strings.');
   }
   return gate;
 }
 
-/** A named human, not a mood. "approved" is a review decision; it is not a publication command. */
+/** A named human, not a mood. */
 export function assertNamedApprover(approver) {
   const value = String(approver).trim();
   if (GENERIC_APPROVALS.includes(value.toLowerCase())) {
-    fail(
-      'APPROVER_GENERIC',
-      `"${value}" is a generic approval, not an actor. The gate must name the approving human ` +
-        '(#91 decision 4).',
-    );
+    fail('APPROVER_GENERIC', `"${value}" is a generic approval, not an actor. The gate must name the approving human.`);
   }
-  if (!ACTOR.test(value)) {
-    fail('APPROVER_GENERIC', `"${value}" is not a valid actor identity.`);
-  }
+  if (!ACTOR.test(value)) fail('APPROVER_GENERIC', 'The approver must be a valid actor identity.');
   return value;
 }
 
-function parseInstant(value, field) {
-  const ms = Date.parse(value);
-  if (Number.isNaN(ms)) fail('GATE_INCOMPLETE', `"${field}" must be an ISO-8601 timestamp.`);
-  return ms;
-}
-
 /**
- * Full validation of a gate against observed repository state.
+ * Validate a gate against observed LOCAL repository state.
  *
  * @param {object} args
  * @param {object} args.gate parsed manifest
- * @param {string} args.role already asserted publishing role
- * @param {string} args.executor identity of the agent invoking the command
- * @param {object} args.repo observed state: { branch, headSha, baseSha, commits, clean }
+ * @param {string} args.role declared role (already asserted by the caller)
+ * @param {string} args.executor declared executor identity
+ * @param {object} args.repo { branch, headSha, baseSha, commits, clean, remoteBaseSha?, worktrees?, handoffPresent? }
  * @param {number} args.nowMs current time
- * @returns {{ gate: object, issue: number, sourceBranch: string, commits: string[] }}
+ * @returns {{ gate, issue, sourceBranch, commits, advisories: string[] }}
  */
 export function validateGate({ gate, role, executor, repo, nowMs }) {
   assertPublishingRole(role);
+  const advisories = [];
 
-  // --- branch rules: never main as a source, never main as a push destination ---
+  // --- branch rules ---
   const source = String(gate.sourceBranch);
   if (source === 'main' || source === 'master' || source === String(gate.targetBranch)) {
-    fail(
-      'SOURCE_IS_TARGET',
-      `"${source}" cannot be a source branch. Agents publish an issue branch and never push to ` +
-        'the integration branch (#91 decisions 1 and 2).',
-    );
+    fail('SOURCE_IS_TARGET', `"${source}" cannot be a source branch. Agents publish an issue branch, never the integration branch.`);
   }
   const match = TASK_BRANCH.exec(source);
-  if (!match) {
-    fail('BRANCH_SHAPE', `Source branch must look like task/<issue>-<slug> — got "${source}".`);
-  }
+  if (!match) fail('BRANCH_SHAPE', `Source branch must look like task/<issue>-<slug> — got "${source}".`);
   if (Number(match[1]) !== gate.issue) {
     fail('BRANCH_ISSUE_MISMATCH', `Branch "${source}" does not belong to issue #${gate.issue}.`);
   }
@@ -199,46 +226,31 @@ export function validateGate({ gate, role, executor, repo, nowMs }) {
     fail('TARGET_NOT_MAIN', `The pull request must target main — got "${gate.targetBranch}".`);
   }
   if (repo.branch !== source) {
-    fail(
-      'BRANCH_MISMATCH',
-      `Checked out branch "${repo.branch}" is not the gated source branch "${source}". ` +
-        'Each agent task uses its own branch and worktree (#91 decision 5).',
-    );
+    fail('BRANCH_MISMATCH', `Checked out branch "${repo.branch}" is not the gated source branch "${source}".`);
   }
 
-  // --- human decision ---
+  // --- human decision, bounded in time ---
   assertNamedApprover(gate.approver);
-  const approvedAt = parseInstant(gate.approvedAt, 'approvedAt');
-  const expiresAt = parseInstant(gate.expiresAt, 'expiresAt');
-  if (expiresAt <= approvedAt) {
-    fail('GATE_INCOMPLETE', '"expiresAt" must be after "approvedAt".');
+  const approvedAt = assertInstant(gate.approvedAt, 'approvedAt');
+  const expiresAt = assertInstant(gate.expiresAt, 'expiresAt');
+  if (expiresAt <= approvedAt) fail('GATE_INCOMPLETE', '"expiresAt" must be after "approvedAt".');
+  if (expiresAt - approvedAt > MAX_TTL_MS) {
+    fail('GATE_TTL_TOO_LONG', `A publish gate may live at most ${MAX_TTL_MS / 3600000} hours. Ask for a fresh decision instead of a long window.`);
   }
-  if (nowMs > expiresAt) {
-    fail('GATE_EXPIRED', `The publish gate expired at ${gate.expiresAt}. Ask the human owner for a new gate.`);
-  }
-  if (nowMs < approvedAt) {
-    fail('GATE_NOT_YET_VALID', `The publish gate is not valid until ${gate.approvedAt}.`);
-  }
+  if (nowMs > expiresAt) fail('GATE_EXPIRED', 'The publish gate expired. Ask the human owner for a new gate.');
+  if (nowMs < approvedAt) fail('GATE_NOT_YET_VALID', 'The publish gate is not valid yet.');
 
-  // --- identity ---
+  // --- declared identity ---
   if (String(gate.executor) !== String(executor)) {
-    fail(
-      'EXECUTOR_MISMATCH',
-      `The gate names executor "${gate.executor}" but "${executor}" is invoking it. A gate is not ` +
-        'transferable between agents or runs.',
-    );
+    fail('EXECUTOR_MISMATCH', `The gate names executor "${gate.executor}" but "${executor}" is invoking it. A gate is not transferable.`);
   }
 
-  // --- repository state ---
+  // --- local repository state ---
   if (repo.clean === false) {
     fail('WORKTREE_DIRTY', 'The worktree has uncommitted changes. Publish only reviewed, committed history.');
   }
   if (String(repo.baseSha) !== String(gate.baseSha)) {
-    fail(
-      'BASE_DRIFT',
-      `The branch base moved: gate names ${gate.baseSha.slice(0, 7)} but the repository reports ` +
-        `${String(repo.baseSha).slice(0, 7)}. Re-review against the new base.`,
-    );
+    fail('BASE_DRIFT', `The branch base moved: gate names ${gate.baseSha.slice(0, 7)} but the repository reports ${String(repo.baseSha).slice(0, 7)}.`);
   }
 
   const observed = repo.commits.map(String);
@@ -246,48 +258,66 @@ export function validateGate({ gate, role, executor, repo, nowMs }) {
   if (observed.length !== gated.length || observed.some((sha, i) => sha !== gated[i])) {
     fail(
       'COMMIT_SET_DRIFT',
-      `The commits to publish do not match the gate exactly and in order. Gate: ` +
-        `[${gated.map((s) => s.slice(0, 7)).join(', ')}]; branch: ` +
-        `[${observed.map((s) => s.slice(0, 7)).join(', ')}]. An amend, rebase, extra or reordered ` +
-        'commit invalidates the human decision.',
+      'The commits on the branch do not match the gate exactly and in order. An amend, rebase, ' +
+        'extra or reordered commit invalidates the human decision.',
     );
   }
-  if (String(repo.headSha) !== gated[gated.length - 1]) {
-    fail('HEAD_DRIFT', 'HEAD is not the last gated commit.');
-  }
+  if (String(repo.headSha) !== gated[gated.length - 1]) fail('HEAD_DRIFT', 'HEAD is not the last gated commit.');
 
-  // --- review currency: every published commit must have been reviewed ---
-  if (gate.reviewedShas !== undefined) {
-    const reviewed = new Set(gate.reviewedShas.map(String));
-    const unreviewed = gated.filter((sha) => !reviewed.has(sha));
-    if (unreviewed.length > 0) {
+  // --- remote base: LOCAL KNOWLEDGE ONLY ---
+  // `refs/remotes/origin/main` is as fresh as the last fetch. A newer remote main invalidates a
+  // remote publication, but Stage A cannot prove currency; Stage B checks the live remote.
+  if (repo.remoteBaseSha !== undefined && repo.remoteBaseSha !== null) {
+    if (String(repo.remoteBaseSha) !== String(gate.baseSha)) {
       fail(
-        'REVIEW_STALE',
-        `Commits were never reviewed: ${unreviewed.map((s) => s.slice(0, 7)).join(', ')}. ` +
-          'Reviews identify their target by full SHA (#91 decision 7).',
+        'REMOTE_BASE_DRIFT',
+        `Local knowledge of origin/main (${String(repo.remoteBaseSha).slice(0, 7)}) differs from the ` +
+          `gate base (${gate.baseSha.slice(0, 7)}). Re-review against the current base.`,
       );
     }
+    advisories.push('origin/main matched the gate base, but this is a LOCAL ref and may be stale — Stage B validates the live remote.');
+  } else {
+    advisories.push('origin/main was not observable locally; remote base currency is deferred to Stage B.');
   }
 
-  return { gate, issue: gate.issue, sourceBranch: source, commits: gated };
+  // --- worktree exclusivity and handoff ownership: OBSERVED, not enforced ---
+  if (Array.isArray(repo.worktrees)) {
+    const sharing = repo.worktrees.filter((w) => w.branch === source);
+    if (sharing.length > 1) {
+      fail('WORKTREE_SHARED', `Branch "${source}" is checked out in ${sharing.length} worktrees. Each agent task uses its own.`);
+    }
+    advisories.push('Worktree exclusivity was observed locally; it is a convention, not remote enforcement.');
+  } else {
+    advisories.push('Worktree exclusivity was not observable; treated as local convention.');
+  }
+  if (repo.handoffPresent === false) {
+    advisories.push(`No .agent-handoff/active handoff was found for issue #${gate.issue}; ownership is by convention only.`);
+  }
+
+  // --- replay: NOT prevented by Stage A ---
+  advisories.push('Stage A does not consume a gate: the same file validates again. Authoritative, idempotent consumption is Stage B.');
+
+  return { gate, issue: gate.issue, sourceBranch: source, commits: gated, advisories };
 }
 
 /**
- * Evidence line for EVENTS.md. Contains identities, SHAs and the gate id — never a token, secret,
- * administrative endpoint or credential.
+ * Evidence for EVENTS.md. Every field here has already passed validation — nothing unvalidated is
+ * copied out, and no token, secret or administrative endpoint is included.
  */
 export function evidenceFor(result, { role, executor, at }) {
   return {
     gateId: result.gate.gateId,
     issue: result.issue,
-    role,
-    executor,
+    declaredRole: role,
+    declaredExecutor: executor,
     approver: result.gate.approver,
     sourceBranch: result.sourceBranch,
     targetBranch: result.gate.targetBranch,
     baseSha: result.gate.baseSha,
     commits: result.commits,
-    publishedAt: at,
+    validatedAt: at,
+    published: false,
     merged: false,
+    stage: 'A-local-validation-only',
   };
 }

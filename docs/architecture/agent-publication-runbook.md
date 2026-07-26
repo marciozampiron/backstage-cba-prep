@@ -27,30 +27,48 @@ moves the authoritative enforcement to the remote, where a local bypass cannot r
 
 One human may hold several human roles; the workflow keeps the records separate.
 
-## 3. Stage A — what is enforced locally today
+## 3. Stage A — LOCAL PRE-FLIGHT VALIDATION ONLY
 
-- `agent-publish` refuses `architect`/`reviewer`/unknown/missing roles **before reading the gate,
-  touching git or constructing any network dependency** (exit code `2`, distinct from validation
-  failure). A test asserts the filesystem, git and publish seams are never touched.
-- `main`/`master` can never be a source branch; the target is always `main` and is never a push
-  destination.
-- The source branch must be `task/<issue>-<slug>` and the issue number must match the gate.
-- The gate must name a **human actor**; `approved`, `ok`, `lgtm`, `aprovado`, `pode pushar` and
-  similar are refused as generic.
-- The gate expires, cannot be replayed early, is bound to one executor identity, and is not
-  transferable between agents or runs.
-- Base drift, extra/missing/reordered commits, an amend-replaced commit, a dirty worktree and a
-  stale review SHA all fail closed.
-- The command has **no merge path**, no branch-protection path, no credential path, no deploy path.
-- Evidence records identities, SHAs and the gate id — never a token, secret or admin endpoint.
-- `.githooks/pre-push` refuses direct `main`/`master` pushes locally.
+Stage A is **advisory**. `agent-publish` validates a gate against local state and prints the plan.
+It does not push, open a pull request, merge, change protection, create a credential or deploy, and
+it contains no code path that could — a test asserts the absence of every git write verb, GitHub
+API surface and network primitive in the command.
 
-### Honest limits of Stage A
+**The declared role and executor identity are supplied by the caller** (`--role`, `--executor`,
+`CBA_AGENT_ROLE`, `CBA_AGENT_ID`). Nothing authenticates them. Any caller can declare `executor`.
+This is a guard rail against acting in the wrong role by habit or misreading — it is **not**
+mechanical identity separation, and it must never be described as one.
 
-A hook lives in a working copy: it is absent from a fresh clone and skippable with `--no-verify`.
-`agent-publish` is local code that a caller with credentials can simply not run. **Stage A raises
-the cost of the wrong action and makes the right one easy; it does not make the wrong one
-impossible.** Only Stage B does that.
+What Stage A does check:
+
+- the declared role, refused for `architect`/`reviewer`/unknown/missing **before `.env` loads,
+  before the gate is read and before git runs** — proven by a test against the real CLI entrypoint,
+  with a dedicated exit code `2`;
+- `main`/`master` can never be a source branch; the target is always `main`;
+- the source branch is `task/<issue>-<slug>` and its issue matches the gate;
+- the approver is a **named human** — `approved`, `ok`, `lgtm`, `aprovado`, `pode pushar` are refused;
+- timestamps are strict RFC3339 with an offset, and the gate TTL is capped at 12 hours;
+- `gateId` is charset- and length-bounded and scanned for credential material, which is refused
+  **without echoing the offending value**;
+- `reviewedShas` is **mandatory** and must equal `commits` exactly and in order, so an unreviewed
+  fix-forward cannot ride along and nothing reviewed can be silently dropped;
+- base drift, extra/missing/reordered/amend-replaced commits, a dirty worktree, an expired or
+  not-yet-valid gate, and an executor mismatch all fail closed;
+- `origin/main`, when a local ref exists, must match the gate base;
+- the gated branch must not be checked out in more than one worktree.
+
+### What Stage A explicitly does NOT do
+
+| Not provided | Why | Owner |
+| --- | --- | --- |
+| Authenticated role/identity | The claim is caller-supplied | Stage B bot credential |
+| Replay protection | A gate is never consumed; the same file validates twice | Stage B idempotent consumption |
+| Remote base truth | `origin/main` is a local ref, only as fresh as the last fetch | Stage B live-remote check |
+| Exclusive worktree / handoff ownership | Observed and reported; a convention, not enforcement | Stage B + human process |
+| Preventing a direct `main` push | A hook is absent from fresh clones and skippable; the command can simply not be run | Stage B branch protection |
+
+`enforce_admins` is still `false` today. **A direct `git push origin main` remains possible.** That
+is the exact condition behind the incident, and only Stage B closes it.
 
 ## 4. Stage B — remote enforcement (separate human gate, NOT performed)
 

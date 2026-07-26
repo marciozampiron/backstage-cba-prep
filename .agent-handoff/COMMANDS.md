@@ -112,11 +112,10 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-npm run agent-refresh
-npm run agent-refresh -- --record
-git status --short --branch
-git log --oneline origin/main..HEAD
-git push origin main
+# Agents NEVER push main. Publication is: validate the gate, then Stage B publishes the task
+# branch and opens a PR; the human owner merges. See "Publishing (executor only, #91)" above.
+node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
 ```
 
 After push, validate GitHub Actions:
