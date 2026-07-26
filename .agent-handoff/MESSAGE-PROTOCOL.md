@@ -63,10 +63,12 @@ pushar" — is review feedback and is **never** equivalent to `HUMAN_GATE_GRANTE
 
 A `REVIEW_APPROVED` with `SCOPE: code` says nothing about the artifact, and vice versa.
 
-**Two gates, not one.** The *review scope* manifest bounds what may be prepared and is consumed at
-preparation. The *execution gate* is the `HUMAN_GATE_GRANTED` itself: written after review, it names
+**Two gates, not one.** The *review scope* manifest (`/tmp/cba-scope-<n>.json`, passed as `--gate`) bounds what may be
+prepared and is **read and
+validated** at preparation — never consumed; idempotent consumption is #91 Stage B. The *execution gate* is the `HUMAN_GATE_GRANTED` itself: written after review, it names
 the **digest of the artifact** plus the exact ordered SHAs and a bounded expiry, and the artifact
-reads and validates it at run time via `CBA_EXECUTION_GATE`. A single manifest could not do both —
+reads and validates it at run time via `CBA_EXECUTION_GATE`, never as `--gate`. It is a **separate
+closed nine-key schema**, not the review scope plus extras. A single manifest could not do both —
 it must exist before the artifact, so it cannot name the artifact's digest. See
 [`publish-gates/README.md`](publish-gates/README.md) and the runbook §4.4.
 

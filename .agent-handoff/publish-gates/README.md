@@ -13,17 +13,24 @@ authorization circular.
 | --- | --- | --- |
 | Written | before preparation | after review |
 | Answers | which commits may be prepared? | may THIS artifact run, now? |
-| Extra field | — | `artifactDigest`, plus `type: "HUMAN_GATE_GRANTED"` |
-| Read by | `agent-human-publish-script` | the artifact itself, via `CBA_EXECUTION_GATE` |
+| Filename convention | `/tmp/cba-scope-<n>.json` | `/tmp/cba-gate-<n>.json` |
+| Supplied as | `--gate` | `CBA_EXECUTION_GATE` |
+| Schema | the one documented below | a **separate, closed nine-key schema** |
+| Read by | `agent-publish` and `agent-human-publish-script` | the artifact itself, at run time |
 
 Stage A does not consume a gate, and neither does the artifact: both documents are validated, and the
 same file would validate twice. Bounded expiry and the digest binding narrow the window instead.
 Idempotent consumption belongs to #91 Stage B.
 
-The schema below is the review scope. The **execution gate** adds `type`, `artifactDigest` and its
-own bounded `expiresAt`, and is validated by the artifact immediately before any effect — see
-[`../templates/message.md`](../templates/message.md) for its exact shape and the runbook §4.4 for
-why. Because it names a digest, an execution gate cannot be recycled for a regenerated artifact.
+**The two are different documents, not one document with optional extras.** The execution gate is a
+closed set of exactly nine keys — `type`, `gateId`, `issue`, `sourceBranch`, `targetBranch`,
+`approver`, `commits`, `artifactDigest`, `expiresAt` — and the artifact refuses any key outside that
+set, so a review-scope manifest is not a valid execution gate and neither is a gate carrying extra
+fields. Its exact shape is in [`../templates/message.md`](../templates/message.md); the runbook §4.4
+explains why there are two. Because it names a digest, an execution gate cannot be recycled for a
+regenerated artifact, and it is validated by the artifact immediately before any effect.
+
+The schema documented below is the **review scope**.
 
 **This folder holds the schema and its example only — never a real gate.** A gate is authored by
 the human **outside the task worktree**, for example `/tmp/cba-gate-<issue>.json`. This directory is

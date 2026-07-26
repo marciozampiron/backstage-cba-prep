@@ -224,7 +224,7 @@ export function buildPublicationScript({ result, repo, generatedAt }) {
 # Gated publication artifact for issue #${issue} — GENERATED, DO NOT EDIT.
 #
 # Generated: ${generatedAt}
-# Gate:      ${gate.gateId}
+# Review scope: ${gate.gateId}
 # Approver:  ${gate.approver}
 #
 # WHO RUNS THIS: Opus, the implementation executor and publication operator, using the
@@ -259,13 +259,17 @@ SOURCE_BRANCH=${shQuote(source)}
 TARGET_BRANCH=${shQuote(target)}
 EXPECTED_HEAD=${shQuote(head)}
 BASE_SHA=${shQuote(gate.baseSha)}
-GATE_ID=${shQuote(gate.gateId)}
+REVIEW_SCOPE_ID=${shQuote(gate.gateId)}
 GATE_APPROVER=${shQuote(gate.approver)}
 GATE_EXPIRES=${shQuote(gate.expiresAt)}
 CONFIRMATION=${shQuote(confirmation)}
 REVIEWED_SHAS=(
 ${commits.map((sha) => `  ${shQuote(sha)}`).join('\n')}
 )
+
+TMP_GATE_ERR=$(mktemp)
+cleanup() { rm -f "$TMP_GATE_ERR"; }
+trap cleanup EXIT
 
 die() { printf '%s\\n' "REFUSED: $*" >&2; exit 1; }
 note() { printf '%s\\n' "$*"; }
@@ -281,7 +285,7 @@ note() { printf '%s\\n' "$*"; }
 # This confirmation is the OPERATOR acknowledging that decision, never a second approval.
 
 # --- 0. THE EXECUTION GATE ----------------------------------------------------------------------
-# The manifest consumed at preparation time cannot be the authorization to operate: it exists BEFORE
+# The manifest read at preparation time cannot be the authorization to operate: it exists BEFORE
 # this file is generated, so it can never name this file's digest, and when it was written nothing
 # had been reviewed. Two decisions were being collapsed into one artifact. They are now separate:
 #
@@ -301,8 +305,6 @@ command -v jq >/dev/null 2>&1 || die "jq is required to validate the execution g
   || die "set CBA_EXECUTION_GATE to the path of the HUMAN_GATE_GRANTED manifest; preparation alone authorizes nothing"
 [ -n "\${CBA_ARTIFACT_DIGEST:-}" ] \\
   || die "CBA_ARTIFACT_DIGEST is unset; operate this through the verify-and-run command, which supplies it"
-[ ! -L "$CBA_EXECUTION_GATE" ] || die "the execution gate path is a symlink; refusing to follow it"
-
 # The gate must live outside this repository: inside, it would be an untracked file and the worktree
 # would be dirty, which the checks below then refuse. Compared canonically, not lexically.
 gate_dir=$(cd "$(dirname "$CBA_EXECUTION_GATE")" 2>/dev/null && pwd -P) \\
@@ -313,13 +315,43 @@ case "$gate_dir" in
   "$repo_top"|"$repo_top"/*) die "the execution gate must live outside the repository worktree" ;;
 esac
 
-# ONE open, ONE read. Checks on /proc/self/fd/9 describe the OPENED OBJECT, not the name, which is
-# how a shell gets the effect of fstat. If that is unavailable, fail closed rather than guess.
-exec 9< "$CBA_EXECUTION_GATE" || die "the execution gate cannot be opened"
-[ "$(stat -L -c '%F' /proc/self/fd/9 2>/dev/null)" = "regular file" ] \\
-  || die "the execution gate is not a regular file"
-EXECUTION_GATE_JSON=$(cat <&9)
-exec 9<&-
+# ONE open with O_NOFOLLOW, ONE fstat, ONE read — all on the same descriptor.
+#
+# A shell \`[ ! -L path ]\` test followed by \`exec 9< path\` is not enough: between the test and the
+# open, a same-user process can replace the file with a symlink, and bash will follow it. Bash cannot
+# express O_NOFOLLOW, so the open is delegated to node — the kernel then refuses a symlink at open
+# time, and there is no window at all. \`node\` is already required to have produced this artifact.
+command -v node >/dev/null 2>&1 || die "node is required to read the execution gate safely (O_NOFOLLOW)"
+EXECUTION_GATE_JSON=$(node -e '
+const fs = require("node:fs");
+const target = process.argv[1];
+let fd;
+try {
+  fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+} catch (err) {
+  process.stderr.write(err && err.code === "ELOOP" ? "symlink" : "unopenable");
+  process.exit(2);
+}
+try {
+  const st = fs.fstatSync(fd);
+  if (!st.isFile()) { process.stderr.write("not-regular"); process.exit(3); }
+  if (st.size === 0) { process.stderr.write("empty"); process.exit(4); }
+  if (st.size > 65536) { process.stderr.write("too-large"); process.exit(5); }
+  process.stdout.write(fs.readFileSync(fd, "utf8"));
+} finally {
+  try { fs.closeSync(fd); } catch { /* nothing read can change on a failed close */ }
+}
+' "$CBA_EXECUTION_GATE" 2>"$TMP_GATE_ERR") || {
+  reason=$(cat "$TMP_GATE_ERR" 2>/dev/null || true)
+  case "$reason" in
+    symlink)     die "the execution gate path is a symlink; refusing to follow it" ;;
+    not-regular) die "the execution gate is not a regular file" ;;
+    empty)       die "the execution gate is empty" ;;
+    too-large)   die "the execution gate is larger than 64 KiB; refusing to parse it" ;;
+    *)           die "the execution gate cannot be opened" ;;
+  esac
+}
+
 [ -n "$EXECUTION_GATE_JSON" ] || die "the execution gate is empty"
 
 gate_json() { printf '%s' "$EXECUTION_GATE_JSON" | jq "$@"; }
@@ -377,7 +409,8 @@ check_execution_gate() {
 }
 
 check_execution_gate "before publishing"
-note "Execution gate accepted: $gate_id approved by $GATE_APPROVER."
+EXECUTION_GATE_ID="$gate_id"
+note "Execution gate accepted: $EXECUTION_GATE_ID approved by $GATE_APPROVER."
 
 # --- 1. volatile checks, defined once and run TWICE ---------------------------------------------
 # Expiry, the origin binding, the live remote and the pull-request set are all state that can change
@@ -502,7 +535,8 @@ note "  repository : $REPO"
 note "  issue      : #$ISSUE"
 note "  branch     : $SOURCE_BRANCH -> $TARGET_BRANCH (pull request only)"
 note "  head       : \${EXPECTED_HEAD:0:12}"
-note "  gate       : $GATE_ID"
+note "  review scope   : $REVIEW_SCOPE_ID"
+note "  execution gate : $EXECUTION_GATE_ID  (this is the authorization)"
 note "  approved by: $GATE_APPROVER (human owner; merge is their decision)"
 note ""
 note "Operator, confirm by sending exactly:  $CONFIRMATION"
@@ -527,6 +561,11 @@ pr_count_now=$(assert_pr_set "after confirmation")
 # The refspec names $EXPECTED_HEAD, not HEAD and not the branch name. Pushing a symbolic ref would
 # publish whatever the branch points at when the push executes; naming the SHA means the only thing
 # that can reach the remote is the exact commit the gate approved. There is no force.
+# The gate is re-checked HERE, after every local and remote revalidation above. Those steps contact
+# the network and can block for a long time, and an execution gate that expired while they ran must
+# not still authorize a push. This call is deliberately the last statement before the mutation.
+check_execution_gate "immediately before push"
+
 note "Pushing the reviewed commit (no force)..."
 git push origin "$EXPECTED_HEAD:refs/heads/$SOURCE_BRANCH"
 
@@ -550,7 +589,7 @@ else
   note "Creating the pull request..."
   gh pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SOURCE_BRANCH" \\
     --title "Issue #$ISSUE" \\
-    --body "Publishes the reviewed commit for issue #$ISSUE under gate $GATE_ID. Merge remains Zamp's decision, after required checks and review."
+    --body "Publishes the reviewed commit for issue #$ISSUE. Authorized by execution gate $EXECUTION_GATE_ID (review scope $REVIEW_SCOPE_ID). Merge remains Zamp's decision, after required checks and review."
 fi
 
 # Final binding: the pull request that now exists must point at the reviewed commit, and the remote
@@ -567,12 +606,14 @@ pr_oid=$(gh pr view "$pr_number" --repo "$REPO" --json headRefOid --jq '.headRef
 # --- 10. redacted evidence ------------------------------------------------------------------------
 note ""
 note "Published (evidence — no credential material):"
-note "  gate       : $GATE_ID"
-note "  issue      : #$ISSUE"
-note "  branch     : $SOURCE_BRANCH"
-note "  head       : \${EXPECTED_HEAD:0:12}"
-note "  base       : \${BASE_SHA:0:12}"
-note "  commits    : \${#REVIEWED_SHAS[@]}"
-note "  merged     : no — merge is Zamp's decision"
+note "  authorized by  : execution gate $EXECUTION_GATE_ID"
+note "  review scope   : $REVIEW_SCOPE_ID  (bounded preparation; authorized nothing)"
+note "  issue          : #$ISSUE"
+note "  branch         : $SOURCE_BRANCH"
+note "  head           : \${EXPECTED_HEAD:0:12}"
+note "  base           : \${BASE_SHA:0:12}"
+note "  commits        : \${#REVIEWED_SHAS[@]}"
+note "  pull request   : #$pr_number at \${pr_oid:0:12}"
+note "  merged         : no — merge is Zamp's decision"
 `;
 }

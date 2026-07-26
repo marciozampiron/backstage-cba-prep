@@ -1653,11 +1653,11 @@ test('POSITIVE CONTROL: with a steady clock the same run reaches the push attemp
 
 test('the execution gate is read ONCE, into a snapshot, not re-read per field', () => {
   const script = scriptFixture();
-  // One open, one read. Re-reading the pathname per field would let a same-user process swap the
-  // file between reads, so the fields validated need not be the fields used.
-  assert.match(script, /exec 9< "\$CBA_EXECUTION_GATE"/);
-  assert.match(script, /EXECUTION_GATE_JSON=\$\(cat <&9\)/);
-  assert.match(script, /stat -L -c '%F' \/proc\/self\/fd\/9/);
+  // One open with O_NOFOLLOW, one fstat, one read — all on the same descriptor, so there is no
+  // window at all, and no field is parsed by resolving the pathname again.
+  assert.match(script, /O_RDONLY \| fs\.constants\.O_NOFOLLOW/);
+  assert.match(script, /fs\.fstatSync\(fd\)/);
+  assert.match(script, /EXECUTION_GATE_JSON=\$\(node -e/);
   // After the snapshot exists, the pathname must not be read again.
   const afterSnapshot = script.slice(script.indexOf('EXECUTION_GATE_JSON=$(cat <&9)') + 30);
   assert.equal(
@@ -1698,4 +1698,112 @@ test('a gate inside the repository worktree is refused at run time', async () =>
     assert.match(r.stderr, /must live outside the repository worktree/);
     assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
   });
+});
+
+/* ================= #93 round 6: the gate check must be adjacent to the push =================== */
+
+test('a gate that expires DURING remote revalidation cannot reach the push', async () => {
+  // The refined defect: `check_execution_gate "after confirmation"` ran before the origin binding,
+  // the live remote reads and the pull-request query — all of which contact the network and can
+  // block. A gate expiring in that span would previously still have reached `git push`.
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE()));
+    const stubDir = makeStubs(dir, {
+      headSha: C2,
+      baseSha: BASE,
+      branch: 'task/93-human-publication-script',
+      remoteBase: BASE,
+      commits: [C1, C2],
+    });
+
+    // The clock jumps only once the REMOTE revalidation starts — i.e. strictly after the
+    // post-confirmation gate check and strictly before the push.
+    const marker = path.join(dir, 'revalidating');
+    fs.writeFileSync(
+      path.join(stubDir, 'date'),
+      `#!/usr/bin/env bash
+if [ -f ${JSON.stringify(marker)} ]; then exec /usr/bin/date -d "+2 days" "$@"; fi
+exec /usr/bin/date "$@"
+`,
+      { mode: 0o755 },
+    );
+    // `check_remote_state` runs twice: once in the pre-flight and once in the post-confirmation
+    // revalidation. Counting the calls lets the clock advance on the SECOND pass only — strictly
+    // after `check_execution_gate "after confirmation"` and strictly before the push.
+    const counter = path.join(dir, 'ls-remote-count');
+    const git = fs
+      .readFileSync(path.join(stubDir, 'git'), 'utf8')
+      .replace(
+        '  "ls-remote origin refs/heads/main")',
+        `  "ls-remote origin refs/heads/main") printf 'x' >> ${JSON.stringify(counter)}
+    if [ "$(wc -c < ${JSON.stringify(counter)})" -ge 2 ]; then touch ${JSON.stringify(marker)}; fi;`,
+      );
+    fs.writeFileSync(path.join(stubDir, 'git'), git, { mode: 0o755 });
+
+    const r = runArtifact(scriptFixture(), {
+      gate: g,
+      digest: 'd'.repeat(64),
+      stubDir,
+      confirm: `publish 93 ${C2.slice(0, 12)}`,
+    });
+
+    assert.match(r.stderr, /immediately before push: the execution gate expired/);
+    assert.equal(/FORBIDDEN_CALL git push/.test(r.stderr), false, 'the push must never be reached');
+    assert.notEqual(r.status, 0);
+  });
+});
+
+test('the execution gate is opened with O_NOFOLLOW, closing the last window', async () => {
+  await withTempDir(async (dir) => {
+    // A symlink planted at the gate path is refused by the kernel at open time, not by an earlier
+    // `[ ! -L ]` test that a same-user process could race.
+    const real = path.join(dir, 'real.json');
+    const link = path.join(dir, 'gate.json');
+    fs.writeFileSync(real, JSON.stringify(EXEC_GATE()));
+    fs.symlinkSync(real, link);
+    const stubDir = makeStubs(dir, {
+      headSha: C2,
+      baseSha: BASE,
+      branch: 'task/93-human-publication-script',
+      remoteBase: BASE,
+      commits: [C1, C2],
+    });
+    const r = runArtifact(scriptFixture(), { gate: link, digest: 'd'.repeat(64), stubDir });
+    assert.match(r.stderr, /the execution gate path is a symlink/);
+    assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false);
+  });
+});
+
+test('an oversized or non-regular execution gate is refused by the helper', async () => {
+  await withTempDir(async (dir) => {
+    const stubDir = makeStubs(dir, {
+      headSha: C2,
+      baseSha: BASE,
+      branch: 'task/93-human-publication-script',
+      remoteBase: BASE,
+      commits: [C1, C2],
+    });
+    const big = path.join(dir, 'big.json');
+    fs.writeFileSync(big, 'x'.repeat(70 * 1024));
+    const oversized = runArtifact(scriptFixture(), { gate: big, digest: 'd'.repeat(64), stubDir });
+    assert.match(oversized.stderr, /larger than 64 KiB/);
+
+    const empty = path.join(dir, 'empty.json');
+    fs.writeFileSync(empty, '');
+    const blank = runArtifact(scriptFixture(), { gate: empty, digest: 'd'.repeat(64), stubDir });
+    assert.match(blank.stderr, /the execution gate is empty/);
+  });
+});
+
+test('publication evidence attributes authority to the execution gate', () => {
+  const script = scriptFixture();
+  // The review scope bounded preparation; recording it as the authorization would credit the wrong
+  // decision in the prompt, the pull-request body and the final evidence.
+  assert.match(script, /REVIEW_SCOPE_ID='scope-93'|REVIEW_SCOPE_ID='gate-93-001'/);
+  assert.match(script, /EXECUTION_GATE_ID="\$gate_id"/);
+  assert.equal(/^GATE_ID=/m.test(script), false, 'the ambiguous GATE_ID must be gone');
+  assert.match(script, /execution gate : \$EXECUTION_GATE_ID {2}\(this is the authorization\)/);
+  assert.match(script, /Authorized by execution gate \$EXECUTION_GATE_ID \(review scope \$REVIEW_SCOPE_ID\)/);
+  assert.match(script, /authorized by {2}: execution gate \$EXECUTION_GATE_ID/);
 });

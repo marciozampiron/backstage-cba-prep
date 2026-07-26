@@ -159,7 +159,7 @@ earlier commits stay byte-for-byte; corrections are a NEW commit.
 
 | # | Sev | Finding | Verified how |
 | --- | --- | --- | --- |
-| 1 | HIGH | The final gate is circular and never validated mechanically: the manifest must exist *before* generation, so it cannot carry the artifact digest produced afterwards, and the artifact never reads the `HUMAN_GATE_GRANTED` sent after review. Code review and artifact review also shared one `REVIEW_REQUEST`. | Read the flow: `--gate` is consumed at preparation only; nothing at run time reads a post-review gate |
+| 1 | HIGH | The final gate is circular and never validated mechanically: the manifest must exist *before* generation, so it cannot carry the artifact digest produced afterwards, and the artifact never reads the `HUMAN_GATE_GRANTED` sent after review. Code review and artifact review also shared one `REVIEW_REQUEST`. | Read the flow: `--gate` is read at preparation only; nothing at run time read a post-review gate |
 | 2 | HIGH | Documents, skills and the generated artifact still taught the superseded model: they denied that any agent could publish or operate the artifact, and required a human at a terminal. | `grep` found six live sites, including both skill `description:` frontmatters |
 | 3 | HIGH | The pull request is never bound to the reviewed SHA: `pr_query` omits `headRefOid`, and nothing re-verifies after create/reuse. | Inspected the `--json` field list |
 | 4 | MEDIUM | The governance guards have proven false negatives — any negation anywhere in a sentence exempts the whole sentence, which is why 20/20 passed while finding 2's contradictions survived. | The contradictions in finding 2 were live and green |
@@ -187,8 +187,18 @@ them from git.
 | # | Sev | Finding | Verified how | Fix |
 | --- | --- | --- | --- | --- |
 | 1 | HIGH | The execution gate was read four times through the pathname, and the post-confirmation revalidation called `check_gate_expiry` — the **review scope** window — so an execution gate expiring or replaced during the prompt still reached `git push`. The tests hid it: the harness truncated the script before the volatile checks, and the revalidation assertion only looked for the scope check. | Read the revalidation block; counted 4 reads of `"$CBA_EXECUTION_GATE"` | Read once through one descriptor into an immutable snapshot (`exec 9<`, `stat -L /proc/self/fd/9`, `cat <&9`); all fields parsed from that snapshot; one `check_execution_gate` called before the confirmation and again immediately before the push, owning its own expiry and TTL. The harness now runs the REAL script with refusing `git`/`gh` stubs, plus a dynamic regression where `date` jumps forward once the confirmation is read — and a positive control proving the same run reaches the push with a steady clock |
-| 2 | HIGH | Live docs still contradicted the model: the gate document said push and merge are both the human owner's; comments called running it a "deliberate human act" and referenced a removed TTY check; `README.md`/`COMMANDS.md` never showed the second manifest or `CBA_EXECUTION_GATE`. | `grep`, and the guard's phrase list did not cover these variants | All surfaces updated with the concrete two-gate sequence and the exported env var; five new forbidden phrases; a new guard requiring `HUMAN_GATE_GRANTED` + execution gate + artifact digest on all nine cold-start surfaces; another forbidding the review scope from being described as authorizing anything |
+| 2 | HIGH | Live docs still contradicted the model: the gate document said push and merge are both the human owner's; comments framed operating it as a human-only act and referenced a terminal requirement already removed; `README.md`/`COMMANDS.md` never showed the second manifest or `CBA_EXECUTION_GATE`. | `grep`, and the guard's phrase list did not cover these variants | All surfaces updated with the concrete two-gate sequence and the exported env var; five new forbidden phrases; a new guard requiring `HUMAN_GATE_GRANTED` + execution gate + artifact digest on all nine cold-start surfaces; another forbidding the review scope from being described as authorizing anything |
 | 3 | MEDIUM | The execution-gate schema was open, `gateId` was echoed before validation, `date` accepted arbitrary expressions instead of strict RFC3339, and the gate could live inside the repository. | Read the shell validation | Closed nine-key schema compared exactly; `gateId` `^[a-z0-9][a-z0-9._-]{2,63}$`; digest `^[0-9a-f]{64}$`; commits full lowercase 40-hex; strict RFC3339 with `Z` or offset; TTL ≤ 12h; canonical out-of-repository check via `pwd -P`; refusals state the field and never echo the rejected value |
+
+## Work log — Codex FINDINGS on 56149bb (round 5), all confirmed
+
+| # | Sev | Finding | Fix |
+| --- | --- | --- | --- |
+| 1 | HIGH | The post-confirmation gate check ran *before* the origin binding, the live remote reads and the pull-request query — all of which contact the network and can block. A gate expiring in that span still reached `git push`. | `check_execution_gate "immediately before push"` is now the last statement before the mutation, after every local and remote revalidation. A dynamic regression counts `ls-remote` calls so the stub clock advances on the second pass only — strictly between the two gate checks — and asserts the push is never reached. A guard also fails if anything network-bound is inserted between that check and the push |
+| 2 | MEDIUM | Evidence recorded the review-scope id as the authorization: the prompt, PR body and final output all printed `GATE_ID`, which came from the manifest that authorized nothing. | `GATE_ID` is gone. `REVIEW_SCOPE_ID` and `EXECUTION_GATE_ID` are separate and both reported with explicit labels; the PR body reads "Authorized by execution gate X (review scope Y)"; the evidence block leads with "authorized by: execution gate" |
+| 3 | MEDIUM | My reported `npm test` was not reproducible — 226/0 against Codex's 225/1. I edited this handoff after the last suite run and committed without re-running, and the new work-log text contained two forbidden phrases. | The narrative describes the old phrasing instead of quoting it; the guard was **not** weakened, and the claim that Stage A consumes a manifest at preparation was **added** to the forbidden list. The suite is re-run after this edit and the result below is the actual one |
+| 4 | MEDIUM | Conflicting gate instructions: the duplicate push-gate block passed the execution-gate filename to `--gate`; the gate doc said the execution gate "adds" fields to the review scope; the protocol described the review scope as being consumed rather than read and validated. | Distinct filename conventions and channels documented everywhere (`--gate` takes `cba-scope-*`; the execution gate arrives only as `CBA_EXECUTION_GATE`); the execution gate is described as a separate closed nine-key schema; "consumed" replaced by "read and validated". Four semantic documentation tests added, not word-presence checks |
+| 5 | MEDIUM | Symlink TOCTOU at the open: `[ ! -L ]` then `exec 9<` left a window, and bash follows a symlink. | The open is delegated to a small node helper using `O_RDONLY \| O_NOFOLLOW`, with `fstat`, size and content read from that same descriptor. The kernel refuses the symlink at open time, so there is no window — and the `/proc/self/fd` dependency is gone |
 
 ## Status
 
@@ -206,9 +216,10 @@ change, credential creation, cloud mutation, paid call.
   authenticated identity.
 - Neither document is consumed in the replay sense — expiry and the digest binding bound the window
   instead. Idempotent consumption is #91 Stage B.
-- The single-descriptor gate read relies on `/proc/self/fd`, so the artifact is Linux-only; it fails
-  closed elsewhere rather than guessing. Bash cannot express `O_NOFOLLOW`, so the symlink refusal
-  before the open is best-effort and the one remaining window is that single open.
+- The artifact requires `node` at operation time to open the execution gate with `O_NOFOLLOW`. That
+  removed the symlink window entirely and the `/proc/self/fd` dependency with it, at the cost of one
+  more runtime dependency — reasonable in a Node repository whose CLI produced the artifact, and it
+  fails closed if `node` is absent.
 - `enforce_admins` is still `false`, so a direct `main` push remains possible.
 - The integrity guarantee holds only when the verify-and-run command is used; nothing prevents a
   bare-path invocation.

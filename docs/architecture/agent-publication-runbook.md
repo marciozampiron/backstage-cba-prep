@@ -113,7 +113,7 @@ shape of the 2026-07-26 incident. The bridge replaces that with a **bounded, rev
 
 | # | Step | Actor | Action |
 | --- | --- | --- | --- |
-| 1 | **Prepare** | Opus | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-gate-<n>.json` — writes the artifact, publishes nothing |
+| 1 | **Prepare** | Opus | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-scope-<n>.json` — writes the artifact, publishes nothing |
 | 2 | **Review** | Codex | reads the file, confirms the printed SHA-256, reports findings — read-only |
 | 3 | **Approve** | Zamp | authors or confirms the gate naming themselves and the exact ordered commits |
 | 4 | **Execute** | Opus | runs the verify-and-run command printed in step 1, which hashes the bytes it executes |

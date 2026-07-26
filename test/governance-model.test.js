@@ -506,6 +506,9 @@ const FORBIDDEN_PHRASES = [
   'a separate human action',
   'human/TTY',
   'TTY check',
+  // The claim that Stage A consumes anything: it reads and validates, and the same file validates
+  // twice. Idempotent consumption is #91 Stage B.
+  'consumed at preparation',
 ];
 
 test('no active operational source contains a superseded-model phrase', () => {
@@ -600,6 +603,9 @@ test('the review scope is never described as authorizing an operation', () => {
       if (!/authoriz\w*|grants?|permits?|allows?/i.test(t)) continue;
       // "the review scope ALONE authorizes nothing" is the idiom, so `alone` reads as a limit here.
       if (NEGATED.test(t) || /\balone\b/i.test(t)) continue;
+      // If the same clause names the execution gate as the authorizer, authority is attributed
+      // correctly and the review scope is only being mentioned alongside it.
+      if (/execution ?gate|EXECUTION_GATE/i.test(t)) continue;
       violations.push(`${rel}:${line}: ${text.trim()}`);
     }
   }
@@ -651,12 +657,18 @@ test('the execution gate is re-evaluated after the confirmation, not just the re
   assert.match(fn, /window exceeds 12 hours/);
 });
 
-test('the execution gate is read once into an immutable snapshot', () => {
+test('the execution gate is opened with O_NOFOLLOW and read once into an immutable snapshot', () => {
   const lib = read('src/lib/human-publish-script.js');
-  assert.match(lib, /exec 9< "\$CBA_EXECUTION_GATE"/);
-  assert.match(lib, /EXECUTION_GATE_JSON=\$\(cat <&9\)/);
-  assert.match(lib, /stat -L -c '%F' \/proc\/self\/fd\/9/);
+  // A shell `[ ! -L ]` test followed by an open leaves a window a same-user process can use, and
+  // bash cannot express O_NOFOLLOW — so the open is delegated to node and the kernel refuses the
+  // symlink at open time.
+  assert.match(lib, /O_RDONLY \| fs\.constants\.O_NOFOLLOW/);
+  assert.match(lib, /fs\.fstatSync\(fd\)/);
+  assert.match(lib, /fs\.readFileSync\(fd, "utf8"\)/);
+  assert.match(lib, /EXECUTION_GATE_JSON=\$\(node -e/);
   assert.match(lib, /expected_keys=/); // closed schema
+  // The old shell-only sequence must be gone, not merely supplemented.
+  assert.equal(/exec 9< "\$CBA_EXECUTION_GATE"/.test(lib), false, 'the shell open must be replaced, not kept');
 });
 
 test('the verify-and-run command supplies the digest the gate must name', () => {
@@ -682,4 +694,91 @@ test('the artifact is written through one descriptor, never reopened by name', (
   // The name must not be re-resolved after the create.
   assert.equal(/chmodSync\(outputPath/.test(cmd), false, 'chmod must act on the descriptor, not the path');
   assert.equal(/[^l]statSync\(outputPath/.test(cmd), false, 'stat must act on the descriptor, not the path');
+});
+
+/* ================= semantic documentation tests, not word presence ============================= */
+//
+// Required-word checks proved insufficient: a surface can name `CBA_EXECUTION_GATE` and still tell
+// the reader to pass the execution gate as `--gate`, or still call the review scope "consumed". These
+// assert what the documents MEAN about the two manifests.
+
+test('no document passes the execution gate where the review scope belongs', () => {
+  const violations = [];
+  for (const rel of SOURCES) {
+    read(rel)
+      .split('\n')
+      .forEach((line, i) => {
+        // `--gate` takes the review scope. The execution gate reaches the artifact only as an env
+        // var, and its filename convention is cba-gate-*, so this pairing is always a mistake.
+        // A sentence prohibiting the pairing, or a table contrasting the two channels, is correct.
+        if (NEGATED.test(plain(line)) || /^\s*\|/.test(line)) return;
+        if (/--gate\s+\S*cba-gate-/.test(line)) violations.push(`${rel}:${i + 1}: ${line.trim()}`);
+        if (/CBA_EXECUTION_GATE[^\n]*--gate|--gate[^\n]*CBA_EXECUTION_GATE/.test(line)) {
+          violations.push(`${rel}:${i + 1}: ${line.trim()}`);
+        }
+      });
+  }
+  assert.deepEqual(violations, [], `the execution gate is never a --gate argument:\n${violations.join('\n')}`);
+});
+
+test('the two manifests keep distinct names, schemas and channels everywhere', () => {
+  for (const rel of ['.agent-handoff/COMMANDS.md', '.agent-handoff/publish-gates/README.md', '.agent-handoff/MESSAGE-PROTOCOL.md']) {
+    const flat = read(rel).replace(/\s+/g, ' ');
+    assert.match(flat, /cba-scope-/, `${rel} must name the review-scope file convention`);
+    assert.match(flat, /CBA_EXECUTION_GATE/, `${rel} must name the execution-gate channel`);
+  }
+  // The execution gate is a separate closed schema, not the review scope with extra fields.
+  const gateDoc = read('.agent-handoff/publish-gates/README.md').replace(/\s+/g, ' ');
+  assert.match(gateDoc, /separate,? closed nine-key schema/i);
+  assert.match(gateDoc, /different documents, not one document with optional extras/i);
+  assert.equal(/execution gate adds/i.test(gateDoc), false, 'the execution gate does not "add" fields to the review scope');
+});
+
+test('neither manifest is described as consumed — Stage A only reads and validates', () => {
+  const violations = [];
+  for (const rel of SOURCES) {
+    for (const { line, text } of blocksOf(read(rel), { markdown: rel.endsWith('.md') })) {
+      const t = plain(text);
+      if (!/\bconsume[sd]?\b/i.test(t)) continue;
+      // Only consumption of a GATE or MANIFEST is in scope; "consumes repo-state.js" is an import.
+      if (!/\b(gate|manifest|scope)\b/i.test(t)) continue;
+      // A deferred Stage B property, or a denial — including a list governed by one "not", as in
+      // "it does not publish, open a pull request, merge, consume a gate". The exact wrong claim
+      // ("consumed at preparation") is additionally pinned in FORBIDDEN_PHRASES, so this leniency
+      // cannot hide it.
+      if (/Stage B/i.test(t) || NEGATED.test(t)) continue;
+      violations.push(`${rel}:${line}: ${text.trim().slice(0, 140)}`);
+    }
+  }
+  assert.deepEqual(violations, [], `consumption is Stage B, not today:\n${violations.join('\n')}`);
+});
+
+test('the artifact attributes publication to the execution gate, not the review scope', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  // The review scope bounded preparation; recording it as the authorization would credit the wrong
+  // decision in the prompt, the pull-request body and the final evidence.
+  assert.match(lib, /REVIEW_SCOPE_ID=/);
+  assert.match(lib, /EXECUTION_GATE_ID="\$gate_id"/);
+  assert.equal(/^GATE_ID=/m.test(lib), false, 'the ambiguous GATE_ID must be gone');
+
+  const body = lib.slice(lib.indexOf('gh pr create'), lib.indexOf('gh pr create') + 600);
+  assert.match(body, /Authorized by execution gate \$EXECUTION_GATE_ID/);
+  assert.match(body, /review scope \$REVIEW_SCOPE_ID/);
+
+  const evidence = lib.slice(lib.indexOf('Published (evidence'));
+  assert.match(evidence, /authorized by\s+: execution gate \$EXECUTION_GATE_ID/);
+  assert.match(evidence, /review scope\s+: \$REVIEW_SCOPE_ID/);
+});
+
+test('the execution gate is re-checked immediately before the push, after every revalidation', () => {
+  const lib = read('src/lib/human-publish-script.js');
+  const push = lib.indexOf('git push origin');
+  const before = lib.lastIndexOf('check_execution_gate "immediately before push"', push);
+  assert.ok(before > -1 && before < push, 'the gate must be re-checked immediately before the push');
+
+  // Nothing that can block on the network may sit between that check and the mutation.
+  const between = lib.slice(before + 'check_execution_gate "immediately before push"'.length, push);
+  for (const slow of ['ls-remote', 'gh pr', 'git fetch', 'assert_pr_set', 'check_remote_state']) {
+    assert.equal(between.includes(slow), false, `${slow} must not run between the gate check and the push`);
+  }
 });

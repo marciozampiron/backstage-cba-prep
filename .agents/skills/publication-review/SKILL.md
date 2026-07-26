@@ -67,7 +67,7 @@ Read the file. It is short and bounded by design; read all of it.
    canonical approver, naming the reviewed commits exactly and in order, unexpired, bounded to 12
    hours, and carrying an `artifactDigest` equal to the digest of the bytes being run. A gate that
    could authorize a *different* artifact is a finding. Note that this gate is written **after** your
-   review — the manifest consumed at preparation only bounded the scope.
+   review — the manifest read at preparation only bounded the scope.
 8. **Guards.** The artifact must refuse an expired gate, require the
    correct clean and exclusive worktree, require HEAD and the ordered commit set to match, re-check
    the live `origin/main` against the base, refuse a push that would discard remote commits, and

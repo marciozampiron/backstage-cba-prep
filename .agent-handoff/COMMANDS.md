@@ -145,13 +145,18 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-# Publication requires a HUMAN_GATE_GRANTED from Zamp naming the exact ordered full SHAs.
-# Opus operates it; Codex never does; merge is always Zamp's. See "Publishing" above.
+# Publication requires a HUMAN_GATE_GRANTED from Zamp naming the exact ordered full SHAs and the
+# artifact digest. Opus operates it; Codex never does; merge is always Zamp's. See "Publishing".
+#
+# BOTH commands take the REVIEW SCOPE. The execution gate is a different manifest with a different,
+# closed schema, and it reaches the artifact as CBA_EXECUTION_GATE — never as --gate.
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
+  --gate /tmp/cba-scope-<n>.json
 
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
+  --gate /tmp/cba-scope-<n>.json
+
+export CBA_EXECUTION_GATE=/tmp/cba-gate-<n>.json   # Zamp's HUMAN_GATE_GRANTED, after review
 ```
 
 After push, validate GitHub Actions:
