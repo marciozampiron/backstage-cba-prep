@@ -14,13 +14,27 @@
 //   - CORS is only a SEAM for #69: no configuration by default; `-c corsAllowedOrigins=[...]`
 //     enables exact origins with credentials. "*" is rejected outright.
 //
+// Observability (#82 Slice A): this stack OWNS its log emission — an explicit Lambda log group and
+// an explicit API Gateway access-log group, both with environment retention (dev 7 days / pilot 30
+// days) and an allowlisted access-log format. Alarms, dashboard, SNS/KMS and the O1/O2 gates are
+// NOT here; they belong to the ObservabilityStack in a later slice.
+//
+// LOG-GROUP ADOPTION (decide BEFORE the first deploy): a Lambda whose log group is created
+// implicitly by the runtime owns `/aws/lambda/<function>` with never-expiring retention. Declaring
+// it explicitly here means CloudFormation will try to CREATE that exact name. For an environment
+// that has never been deployed (today: dev and pilot both — only the SecurityStack exists) this is
+// a plain create and needs no migration. If an environment is ever deployed before this ships, the
+// existing group must be imported/adopted (or deleted while unused) first, or the stack update
+// fails with "resource already exists". The current answer is recorded in the #82 handoff.
+//
 // Bundling (reproducible): NodejsFunction + local esbuild; the two @aws-sdk packages are
 // installed into the asset from services/bff/package-lock.json (pinned devDeps), and the exam
 // content (spec/blueprint.json + questions/) is copied into the bundle, addressed via
 // CBA_CONTENT_DIR — the Lambda never reads the repository at runtime.
 const path = require('node:path');
-const { Stack, Duration, CfnOutput } = require('aws-cdk-lib');
+const { Stack, Duration, RemovalPolicy, CfnOutput } = require('aws-cdk-lib');
 const lambda = require('aws-cdk-lib/aws-lambda');
+const logs = require('aws-cdk-lib/aws-logs');
 const { NodejsFunction, OutputFormat } = require('aws-cdk-lib/aws-lambda-nodejs');
 const apigwv2 = require('aws-cdk-lib/aws-apigatewayv2');
 const { HttpLambdaIntegration } = require('aws-cdk-lib/aws-apigatewayv2-integrations');
@@ -54,6 +68,25 @@ const ROUTES = [
 ];
 
 const PUBLIC_ROUTES = new Set(['GET /api/readiness']);
+
+// #82 Slice A: log retention is EXPLICIT per environment — no indefinite application-log
+// retention is allowed, and the group must be a real CDK resource so retention and removal
+// behaviour are testable before any deploy.
+const LOG_RETENTION = {
+  dev: logs.RetentionDays.ONE_WEEK, // 7 days
+  pilot: logs.RetentionDays.ONE_MONTH, // 30 days
+};
+
+// API Gateway access-log ALLOWLIST (`aws-observability-baseline.md` §7). Access logs may carry
+// only these fields: correlation id, route key, status, latency and integration status. No path
+// with ids, no query string, no headers, no bodies, no source IP, no user-agent.
+const ACCESS_LOG_FORMAT = JSON.stringify({
+  requestId: '$context.requestId',
+  routeKey: '$context.routeKey',
+  status: '$context.status',
+  responseLatency: '$context.responseLatency',
+  integrationStatus: '$context.integrationStatus',
+});
 
 function parseCorsOrigins(value) {
   let list = value ?? [];
@@ -91,9 +124,31 @@ class ApiStack extends Stack {
     }
     applyFoundationTags(this, environment);
 
+    const durable = environment === 'pilot';
+    const retention = LOG_RETENTION[environment];
+
+    // EXPLICIT Lambda log group (#82). Without it the runtime creates the group implicitly with
+    // NEVER-EXPIRING retention, which the observability baseline forbids. See the adoption note
+    // in the class doc: an already-deployed environment must import this group instead of letting
+    // CloudFormation try to create one that already exists.
+    this.bffLogGroup = new logs.LogGroup(this, 'BffLogGroup', {
+      logGroupName: `/aws/lambda/cba-study-coach-${environment}-bff`,
+      retention,
+      removalPolicy: durable ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
+
+    // Access logs are a SEPARATE group from the application logs: different producer (the
+    // gateway), different content (the allowlist above), same retention policy.
+    this.accessLogGroup = new logs.LogGroup(this, 'BffAccessLogGroup', {
+      logGroupName: `/aws/apigateway/cba-study-coach-${environment}-bff`,
+      retention,
+      removalPolicy: durable ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+    });
+
     const fn = new NodejsFunction(this, 'BffFunction', {
       functionName: `cba-study-coach-${environment}-bff`,
       runtime: lambda.Runtime.NODEJS_22_X,
+      logGroup: this.bffLogGroup,
       entry: path.join(BFF_DIR, 'src', 'lambda.js'),
       handler: 'handler',
       memorySize: 512,
@@ -180,6 +235,15 @@ class ApiStack extends Stack {
         ...(isPublic ? {} : { authorizer: jwtAuthorizer }),
       });
     }
+
+    // Access logging on the default stage: the HTTP API L2 has no access-log property, so this is
+    // the documented escape hatch to the underlying CfnStage.
+    const defaultStage = this.httpApi.defaultStage.node.defaultChild;
+    defaultStage.accessLogSettings = {
+      destinationArn: this.accessLogGroup.logGroupArn,
+      format: ACCESS_LOG_FORMAT,
+    };
+    defaultStage.node.addDependency(this.accessLogGroup);
 
     new CfnOutput(this, 'BffApiEndpoint', {
       value: this.httpApi.apiEndpoint,

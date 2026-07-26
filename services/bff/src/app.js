@@ -35,17 +35,40 @@ import {
   coachMessage,
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
+import { emitCompletionEvent } from './telemetry.js';
+
+/** Runtime tier for telemetry only — never throws, so a config problem cannot break a request. */
+function safeRuntimeEnv() {
+  try {
+    return resolveRuntimeConfig().runtimeEnv;
+  } catch {
+    return undefined;
+  }
+}
 
 let requestCounter = 0;
 
-function errorBody(code, message, details) {
+/**
+ * The ONE place a request id is ever minted (#82 Slice A). Transports supply the canonical id —
+ * the Lambda transport copies API Gateway's `$context.requestId`, local/in-process transports
+ * generate an opaque id BEFORE dispatch — and this only falls back for direct callers such as
+ * unit tests. A request that already has an id never receives a second one, which is exactly what
+ * makes the API-to-Lambda correlation query resolve.
+ */
+function resolveRequestId(provided) {
+  if (typeof provided === 'string' && provided.trim() !== '') return provided.trim();
   requestCounter += 1;
+  return `req_${Date.now().toString(36)}${requestCounter.toString(36)}`;
+}
+
+/** The error envelope carries the SAME canonical id as the completion event — never its own. */
+function errorBody(requestId, code, message, details) {
   return {
     error: {
       code,
       message,
       ...(details !== undefined ? { details } : {}),
-      requestId: `req_${Date.now().toString(36)}${requestCounter.toString(36)}`,
+      requestId,
     },
   };
 }
@@ -175,7 +198,9 @@ const ROUTES = [
   ],
 ].map(([method, pattern, bodyPolicy, handler, opts]) => {
   const parts = pattern.split('/').filter(Boolean);
-  return { method, parts, bodyPolicy, handler, auth: opts?.auth !== false };
+  // routeKey is the matched PATTERN, never the concrete path: telemetry stays bounded (one value
+  // per contract route) and no attempt/session/question id can leak through it.
+  return { method, pattern, routeKey: `${method} ${pattern}`, parts, bodyPolicy, handler, auth: opts?.auth !== false };
 });
 
 function matchRoute(method, path) {
@@ -203,12 +228,30 @@ function matchRoute(method, path) {
  * DynamoDB adapter and future async ports slot in without changing any runtime adapter. Never
  * rejects: every outcome is a `{ status, body }` (errors use the contract envelope).
  */
-export async function handleApiRequest({ method, path, query = {}, headers = {}, body, principal = null } = {}) {
+export async function handleApiRequest({
+  method,
+  path,
+  query = {},
+  headers = {},
+  body,
+  principal = null,
+  requestId: incomingRequestId,
+  now = () => Date.now(),
+  emit = emitCompletionEvent,
+} = {}) {
+  const requestId = resolveRequestId(incomingRequestId);
+  const startedAt = now();
+  const upperMethod = String(method ?? '').toUpperCase();
+  let routeKey;
+  let outcome;
+
   try {
-    const matched = matchRoute(String(method ?? '').toUpperCase(), path ?? '');
+    const matched = matchRoute(upperMethod, path ?? '');
     if (!matched) {
-      return { status: 404, body: errorBody('NOT_FOUND', 'Unknown API route.') };
+      outcome = { status: 404, body: errorBody(requestId, 'NOT_FOUND', 'Unknown API route.') };
+      return outcome;
     }
+    routeKey = matched.route.routeKey;
     const { learnerId } = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null };
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({
@@ -218,21 +261,41 @@ export async function handleApiRequest({ method, path, query = {}, headers = {},
       query,
       body: parsedBody,
     });
-    if (result && typeof result === 'object' && 'status' in result && 'body' in result) {
-      return result;
-    }
-    return { status: 200, body: result };
+    outcome =
+      result && typeof result === 'object' && 'status' in result && 'body' in result
+        ? result
+        : { status: 200, body: result };
+    return outcome;
   } catch (err) {
     if (err instanceof ApiError) {
-      return { status: err.status, body: errorBody(err.code, err.message, err.details) };
+      outcome = { status: err.status, body: errorBody(requestId, err.code, err.message, err.details) };
+      return outcome;
     }
     if (err instanceof RepositoryConflictError) {
-      return {
+      outcome = {
         status: 409,
-        body: errorBody('CONFLICT', 'The record was modified concurrently — retry the request.'),
+        body: errorBody(requestId, 'CONFLICT', 'The record was modified concurrently — retry the request.'),
       };
+      return outcome;
     }
-    console.error(err);
-    return { status: 500, body: errorBody('INTERNAL', 'Unexpected failure.') };
+    // The raw error may carry request data — never logged. Only the sanitized event below is.
+    outcome = { status: 500, body: errorBody(requestId, 'INTERNAL', 'Unexpected failure.') };
+    return outcome;
+  } finally {
+    // EXACTLY ONE completion event per request, emitted after the response shape is known
+    // (`finally` runs on every path, including the early 404 return). Fields come from the
+    // telemetry allowlist; the raw request/response never reaches it.
+    const status = outcome?.status ?? 500;
+    emit({
+      level: status >= 500 ? 'error' : 'info',
+      message: 'request.completed',
+      requestId,
+      routeKey,
+      method: upperMethod,
+      statusCode: status,
+      durationMs: now() - startedAt,
+      errorCode: outcome?.body?.error?.code,
+      runtimeEnv: safeRuntimeEnv(),
+    });
   }
 }

@@ -123,6 +123,81 @@ test('invalid environment and missing table both fail construction', () => {
   );
 });
 
+/* ---------------- #82 Slice A: workload-owned telemetry ---------------- */
+
+test('log groups: EXPLICIT Lambda and API access groups with environment retention', () => {
+  const t = apiTemplate('pilot');
+  const groups = Object.values(t.findResources('AWS::Logs::LogGroup'));
+  assert.equal(groups.length, 2, 'exactly the application group and the access group');
+
+  const byName = Object.fromEntries(groups.map((g) => [g.Properties.LogGroupName, g]));
+  const app = byName['/aws/lambda/cba-study-coach-pilot-bff'];
+  const access = byName['/aws/apigateway/cba-study-coach-pilot-bff'];
+  assert.ok(app, 'the Lambda group is explicit — not the implicit never-expiring one');
+  assert.ok(access, 'API Gateway access logs go to their own group');
+  for (const group of [app, access]) {
+    assert.equal(group.Properties.RetentionInDays, 30, 'pilot retains 30 days');
+    assert.equal(group.DeletionPolicy, 'Retain', 'pilot logs survive a stack delete');
+    assert.notEqual(group.Properties.RetentionInDays, undefined, 'never indefinite');
+  }
+});
+
+test('log groups: dev is 7 days and disposable', () => {
+  const t = apiTemplate('dev');
+  const groups = Object.values(t.findResources('AWS::Logs::LogGroup'));
+  assert.equal(groups.length, 2);
+  for (const group of groups) {
+    assert.equal(group.Properties.RetentionInDays, 7);
+    assert.equal(group.DeletionPolicy, 'Delete');
+    assert.match(group.Properties.LogGroupName, /cba-study-coach-dev-bff$/);
+  }
+});
+
+test('the function writes to the EXPLICIT group, so no implicit group is created', () => {
+  const t = apiTemplate('pilot');
+  const fn = Object.values(t.findResources('AWS::Lambda::Function'))[0];
+  assert.ok(fn.Properties.LoggingConfig?.LogGroup?.Ref, 'LoggingConfig references the CDK group');
+});
+
+test('access log format is the ALLOWLIST — no path, query, headers, bodies, IP or user-agent', () => {
+  const t = apiTemplate('pilot');
+  const stage = Object.values(t.findResources('AWS::ApiGatewayV2::Stage'))[0];
+  const settings = stage.Properties.AccessLogSettings;
+  assert.ok(settings, 'the default stage has access logging enabled');
+  const format = JSON.parse(settings.Format);
+  assert.deepEqual(Object.keys(format).sort(), [
+    'integrationStatus',
+    'requestId',
+    'responseLatency',
+    'routeKey',
+    'status',
+  ]);
+  // $context.requestId is the canonical correlation id the BFF copies into its completion event.
+  assert.equal(format.requestId, '$context.requestId');
+  for (const forbidden of ['$context.path', '$context.identity.sourceIp', '$context.identity.userAgent',
+    '$context.authorizer', '$context.requestBody', '$context.responseBody', '$context.domainName']) {
+    assert.ok(!settings.Format.includes(forbidden), `${forbidden} must not be logged`);
+  }
+});
+
+test('no learner/exam/credential material and no wildcard telemetry IAM in the template', () => {
+  const flat = JSON.stringify(apiTemplate('pilot').toJSON());
+  // Learner/exam material must never be configured anywhere in the stack. ("Authorization" alone
+  // is NOT checked here: `AuthorizationType` is CDK's own route property — the header itself is
+  // covered by the access-log format assertion above.)
+  for (const forbidden of ['x-cba-learner', 'correctOption', 'cba_learner', 'explanation']) {
+    assert.ok(!flat.includes(forbidden), `${forbidden} must not appear in the template`);
+  }
+  assert.ok(!/\$context\.authorizer|authorization["']?\s*:\s*["']\$context/i.test(flat), 'no auth material logged');
+  // Slice A adds no observability IAM at all: alarms/dashboard/SNS belong to a later slice.
+  assert.ok(!/cloudwatch:PutMetricData|logs:\*|cloudwatch:\*/.test(flat), 'no broad telemetry IAM');
+  assert.equal(
+    Object.keys(apiTemplate('pilot').findResources('AWS::CloudWatch::Alarm')).length,
+    0,
+    'alarms belong to the ObservabilityStack, not to Slice A',
+  );
+});
+
 /* ---------------- #69 Slice A: trusted principal boundary ---------------- */
 
 test('authorizer: exactly one JWT authorizer reading the Authorization header', () => {

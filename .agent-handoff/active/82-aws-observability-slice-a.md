@@ -1,11 +1,48 @@
-# Inbox: Implement AWS operational observability baseline (#82)
+# Task: AWS operational observability — Slice A, workload-owned telemetry (#82)
 
 ## Status
 
-- Architecture package complete and independently reviewed; the two blocking findings are resolved
-  in the canonical contracts (request correlation and positive-traffic O2 evidence).
-- Implementation owner: unassigned.
+- Architecture package published (`d46d5be`, CI green) and independently reviewed.
+- **Slice A: IMPLEMENTED locally, awaiting Codex review and the human push gate.**
+- Slices B (ObservabilityStack) and C (release evidence) remain unassigned.
 - #82 remains OPEN/Todo and is a prerequisite of #70.
+
+## Owner
+
+- Architecture owner: Codex
+- Slice A executor: Claude Opus 5
+- Human gate: required before push; NO deploy or AWS/Cloudflare mutation in this slice.
+
+## Slice A — delivered
+
+- `services/bff/src/telemetry.js` (NEW): allowlist-built completion event, `console.log` sink, no
+  CloudWatch/OTEL/X-Ray/ADOT dependency. Non-scalar and oversized values are dropped, so a leak
+  cannot ride an allowlisted key.
+- `services/bff/src/app.js`: ONE `resolveRequestId` fallback (the only place an id is ever minted),
+  `errorBody(requestId, …)` reuses the canonical value, routes carry a bounded `routeKey`
+  (`METHOD /pattern`), and a `finally` block emits EXACTLY ONE sanitized completion event per
+  request on every path — success, contract error, 404 and 500.
+- `services/bff/src/lambda.js`: copies `event.requestContext.requestId` into the neutral request.
+  `context.awsRequestId` is never read and never becomes the correlation key.
+- `web/lib/api.js`: the local/in-process transport generates an opaque id BEFORE dispatch
+  (`localRequestId`), injectable via `bffRoute(pathFor, { newRequestId })` for deterministic tests.
+- `infra/aws/lib/api-stack.js`: explicit Lambda log group + explicit API Gateway access-log group,
+  environment retention (dev 7 days / pilot 30 days), pilot RETAIN / dev DESTROY, and an
+  allowlisted access-log format (`requestId`, `routeKey`, `status`, `responseLatency`,
+  `integrationStatus`) wired onto the default stage. No alarms, dashboard, SNS or KMS — those are
+  Slice B.
+
+## Log-group adoption decision (required before any deploy)
+
+**Decision: plain create, no migration needed today.** Neither `dev` nor `pilot` has ever deployed
+the ApiStack — the SecurityStack is the only deployed application stack in the authorized account —
+so `/aws/lambda/cba-study-coach-<env>-bff` does not exist yet and CloudFormation simply creates it.
+
+If any environment is deployed BEFORE this ships, the implicit group created by the Lambda runtime
+would already own that exact name and the stack update would fail with "resource already exists".
+In that case the operator must first import/adopt the existing group into the stack (or delete it
+while unused). The rule is recorded in the `api-stack.js` header so the next executor cannot miss
+it, and #70 must re-check it at deploy time.
 
 ## Read first
 

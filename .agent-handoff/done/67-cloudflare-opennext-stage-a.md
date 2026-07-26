@@ -1,4 +1,4 @@
-# Task: Cloudflare Workers / OpenNext learner frontend (#67) — Stage A
+# Task: Cloudflare Workers / OpenNext learner frontend (#67) — Stage A (DONE)
 
 ## Owner
 
@@ -281,3 +281,21 @@ through 8 are every one refused with zero `fetchImpl` calls.
   reproduces the pinned versions.
 - NO push · NO Cloudflare deploy/preview · NO Cloudflare login or account mutation · NO AWS or
   Bedrock call · #82/#10 documents and `.vscode/` untouched · `EVENTS.md` kept OUT of this commit.
+
+## Final state — Stage A PUBLISHED
+
+- Published as `f451dfe` (`02efac4..f451dfe`), CI green: Quality (30188809394), Web Quality
+  (30188809371 — the lane ran the new `cf:build`, the Cloudflare leak scan and the scanner's
+  positive controls), CodeQL (30188809184).
+- Delivered: pinned toolchain (next 16.2.12 via lockfile only, `@opennextjs/cloudflare` 1.20.2,
+  wrangler 4.114.0), hand-written `wrangler.jsonc` + `open-next.config.ts` (no `migrate`, no
+  R2/KV/D1/DO — nothing that can provision a Cloudflare resource), runtime `CBA_BFF_BASE_URL`
+  served by `/auth/config` and consumed by the single `apiFetch` door with URL-normalizer path
+  validation, explicit `CBA_BUILD_TARGET` targets with a fail-closed BFF stub for the Worker
+  build, and a Cloudflare leak scan with automated positive controls.
+- Five Codex review rounds folded in (URL-normalizer validation, fail-closed Workers config,
+  deeply-encoded traversal, no complete secret literals in source, automated scanner self-test).
+- **#67 REMAINS OPEN**: Stage A is build/config/test only. Stage B (deploy lanes, preview,
+  runtime variables in a real Cloudflare account) is queued in
+  `inbox/67-cloudflare-opennext-stage-b.md` and lands with #70.
+- NO Cloudflare deploy/preview, NO Cloudflare login or account mutation, NO AWS/Bedrock call.

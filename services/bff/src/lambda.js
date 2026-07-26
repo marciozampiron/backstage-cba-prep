@@ -45,6 +45,11 @@ export function toNeutralRequest(event = {}) {
     query: event.queryStringParameters ?? {},
     headers,
     body: body ?? undefined,
+    // Canonical correlation id (#82): API Gateway owns it and emits the same value in its access
+    // log as `$context.requestId`, so the API-to-Lambda Logs Insights join resolves. The Lambda
+    // invocation id (`context.awsRequestId`) is a DIFFERENT identity — it stays in the AWS-managed
+    // platform logs and is never copied here nor used as the correlation key.
+    requestId: event.requestContext?.requestId,
   };
 }
 
@@ -72,6 +77,8 @@ export function principalFromEvent(event, headers) {
 /** API Gateway HTTP API (payload v2) Lambda handler. */
 export async function handler(event) {
   const neutral = toNeutralRequest(event);
+  // `requestId` rides inside the neutral request — the dispatcher reuses that exact value in the
+  // completion event and in every error envelope, so all three carry one id.
   const { status, body } = await handleApiRequest({
     ...neutral,
     principal: principalFromEvent(event, neutral.headers),

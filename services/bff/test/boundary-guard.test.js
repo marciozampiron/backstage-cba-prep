@@ -5,7 +5,7 @@
 // the rule never trips the rule.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,6 +21,13 @@ const FORBIDDEN = [
   /\bBearer\b/,
   /COGNITO_DOMAIN/,
   /from\s+['"]\.\/cognito-identity\.js['"]/,
+  // #82: observability stays native (stdout + native metrics). No telemetry SDK may enter the
+  // application/port layer — enabling OTEL/Application Signals/X-Ray/ADOT is a separate gate.
+  /@opentelemetry/i,
+  /\bcloudwatch\b/i,
+  /aws-xray/i,
+  /aws-embedded-metrics/i,
+  /\bADOT\b/,
 ];
 
 function stripComments(source) {
@@ -39,4 +46,25 @@ for (const file of APPLICATION_FILES) {
 test('boundary: only the Lambda transport imports the Cognito adapter', () => {
   const lambda = stripComments(readFileSync(path.join(SRC, 'lambda.js'), 'utf8'));
   assert.ok(/from '\.\/cognito-identity\.js'/.test(lambda), 'transport owns the adapter import');
+});
+
+test('boundary: telemetry writes to stdout only — no CloudWatch/OTEL/X-Ray SDK anywhere in src', () => {
+  const files = readdirSync(SRC).filter((f) => f.endsWith('.js'));
+  for (const file of files) {
+    const code = stripComments(readFileSync(path.join(SRC, file), 'utf8'));
+    for (const pattern of [/@opentelemetry/i, /@aws-sdk\/client-cloudwatch/i, /aws-xray/i, /aws-embedded-metrics/i]) {
+      assert.ok(!pattern.test(code), `${file} must not match ${pattern}`);
+    }
+  }
+  const telemetry = stripComments(readFileSync(path.join(SRC, 'telemetry.js'), 'utf8'));
+  assert.ok(/console\.log/.test(telemetry), 'the sink is stdout, which CloudWatch Logs ingests natively');
+  assert.ok(!/import .* from ['"][^.]/.test(telemetry), 'telemetry has no third-party dependency');
+});
+
+test('boundary: application files never mint their own request id', () => {
+  // The dispatcher owns the single fallback; a use case creating an id would break correlation.
+  for (const file of ['store.js', 'views.js', 'profile.js', 'bank.js']) {
+    const code = stripComments(readFileSync(path.join(SRC, file), 'utf8'));
+    assert.ok(!/requestId/.test(code), `${file} must not touch requestId`);
+  }
 });
