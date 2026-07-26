@@ -198,18 +198,23 @@ for i in "\${!REVIEWED_SHAS[@]}"; do
   [ "\${observed[$i]}" = "\${REVIEWED_SHAS[$i]}" ] || die "commit $((i + 1)) differs from the reviewed set (amend, rebase or reorder)"
 done
 
-# --- 5. remote state: fetch first, then verify the base has not moved ---------------------------
-note "Fetching refs (read-only)..."
-git fetch --quiet origin "$TARGET_BRANCH" "refs/heads/$SOURCE_BRANCH:refs/remotes/origin/$SOURCE_BRANCH" 2>/dev/null || git fetch --quiet origin "$TARGET_BRANCH"
-remote_base=$(git rev-parse "refs/remotes/origin/$TARGET_BRANCH")
+# --- 5. remote state: ask the REMOTE, never a local remote-tracking ref -------------------------
+# \`git ls-remote\` reads the live value over the wire and touches no local ref. A previous shape of
+# this check used \`refs/remotes/origin/main\`, which is only as fresh as the last fetch and relies on
+# the opportunistic ref update a plain \`git fetch origin main\` happens to perform. For the check
+# that decides whether the reviewed base is still the real base, "happens to" is not good enough.
+note "Reading remote state (read-only)..."
+remote_base=$(git ls-remote origin "refs/heads/$TARGET_BRANCH" | awk 'NR==1 {print $1}')
+[ -n "$remote_base" ] || die "cannot read origin/$TARGET_BRANCH from the remote"
 [ "$remote_base" = "$BASE_SHA" ] || die "origin/$TARGET_BRANCH moved since review; re-review against the new base"
 
-if git rev-parse --verify --quiet "refs/remotes/origin/$SOURCE_BRANCH" >/dev/null; then
-  remote_head=$(git rev-parse "refs/remotes/origin/$SOURCE_BRANCH")
-  if [ "$remote_head" != "$head_sha" ]; then
-    git merge-base --is-ancestor "$remote_head" "$head_sha" \\
-      || die "the remote branch has commits this push would discard; a force push is never performed"
-  fi
+remote_head=$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | awk 'NR==1 {print $1}')
+if [ -n "$remote_head" ] && [ "$remote_head" != "$head_sha" ]; then
+  # The branch already exists remotely and differs. Fetch its objects so ancestry can be proven,
+  # and refuse unless this push is a pure fast-forward — nothing reviewed elsewhere is discarded.
+  git fetch --quiet origin "refs/heads/$SOURCE_BRANCH" || die "cannot read the existing remote branch"
+  git merge-base --is-ancestor "$remote_head" "$head_sha" \\
+    || die "the remote branch has commits this push would discard; a force push is never performed"
 fi
 
 # --- 6. explicit typed confirmation -------------------------------------------------------------
