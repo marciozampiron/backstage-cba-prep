@@ -39,6 +39,13 @@ This issue delivers the bridge between #91 Stage A (advisory local validation) a
 | Preventing a direct `main` push | **Not prevented** — `enforce_admins` is still `false` | #91 Stage B |
 | Merge | Never performed here; Zamp decides and performs it | unchanged |
 
+> **About the HISTORICAL sections below.** Each records what a document or a control *used to* say,
+> as evidence that a finding was real. They are append-only records, not current guidance, and the
+> governance scanner in `test/governance-model.test.js` skips explicitly-marked historical sections
+> for exactly that reason: describing a superseded claim accurately requires writing it down, and an
+> active document must not contain it. Current guidance lives in `../MESSAGE-PROTOCOL.md` and
+> `../../docs/architecture/agent-publication-runbook.md`.
+
 ## HISTORICAL — the ten decisions that opened this issue (superseded)
 
 > **Historical record, not an instruction.** Decisions 5, 8 and 9 described the human as the script
@@ -152,7 +159,7 @@ Implemented on top of the five preserved commits, as new fix-forward work:
 | Gemini has no workflow role | stated in the contract; guard 2. Model-provider support untouched |
 | Repository-wide consistency guards | `test/governance-model.test.js` (new), 20 tests |
 
-## Work log — Codex FINDINGS on 5cead9d (round 3), all confirmed
+## HISTORICAL — work log record, round 3 (Codex FINDINGS on 5cead9d), all confirmed
 
 Received as `FINDINGS`, verdict "changes required". Every one reproduced before fixing. The six
 earlier commits stay byte-for-byte; corrections are a NEW commit.
@@ -182,7 +189,7 @@ them from git.
 | 6 | The write is one descriptor: `O_CREAT\|O_EXCL\|O_WRONLY\|O_NOFOLLOW`, then `writeFileSync(fd)`, `fchmodSync(fd)`, `fstatSync(fd)`. The pathname is never re-resolved after the create. | `agent-human-publish-script.js` |
 | 7 | The final report derives file and line counts from `git diff --shortstat`. | this report |
 
-## Work log — Codex FINDINGS on 6074d3b (round 4), all confirmed
+## HISTORICAL — work log record, round 4 (Codex FINDINGS on 6074d3b), all confirmed
 
 | # | Sev | Finding | Verified how | Fix |
 | --- | --- | --- | --- | --- |
@@ -190,7 +197,7 @@ them from git.
 | 2 | HIGH | Live docs still contradicted the model: the gate document said push and merge are both the human owner's; comments framed operating it as a human-only act and referenced a terminal requirement already removed; `README.md`/`COMMANDS.md` never showed the second manifest or `CBA_EXECUTION_GATE`. | `grep`, and the guard's phrase list did not cover these variants | All surfaces updated with the concrete two-gate sequence and the exported env var; five new forbidden phrases; a new guard requiring `HUMAN_GATE_GRANTED` + execution gate + artifact digest on all nine cold-start surfaces; another forbidding the review scope from being described as authorizing anything |
 | 3 | MEDIUM | The execution-gate schema was open, `gateId` was echoed before validation, `date` accepted arbitrary expressions instead of strict RFC3339, and the gate could live inside the repository. | Read the shell validation | Closed nine-key schema compared exactly; `gateId` `^[a-z0-9][a-z0-9._-]{2,63}$`; digest `^[0-9a-f]{64}$`; commits full lowercase 40-hex; strict RFC3339 with `Z` or offset; TTL ≤ 12h; canonical out-of-repository check via `pwd -P`; refusals state the field and never echo the rejected value |
 
-## Work log — Codex FINDINGS on 56149bb (round 5), all confirmed
+## HISTORICAL — work log record, round 5 (Codex FINDINGS on 56149bb), all confirmed
 
 | # | Sev | Finding | Fix |
 | --- | --- | --- | --- |
@@ -200,7 +207,7 @@ them from git.
 | 4 | MEDIUM | Conflicting gate instructions: the duplicate push-gate block passed the execution-gate filename to `--gate`; the gate doc said the execution gate "adds" fields to the review scope; the protocol described the review scope as being consumed rather than read and validated. | Distinct filename conventions and channels documented everywhere (`--gate` takes `cba-scope-*`; the execution gate arrives only as `CBA_EXECUTION_GATE`); the execution gate is described as a separate closed nine-key schema; "consumed" replaced by "read and validated". Four semantic documentation tests added, not word-presence checks |
 | 5 | MEDIUM | Symlink TOCTOU at the open: `[ ! -L ]` then `exec 9<` left a window, and bash follows a symlink. | The open is delegated to a small node helper using `O_RDONLY \| O_NOFOLLOW`, with `fstat`, size and content read from that same descriptor. The kernel refuses the symlink at open time, so there is no window — and the `/proc/self/fd` dependency is gone |
 
-## Work log — Codex required corrections on 3d0a91d (round 6), all confirmed
+## HISTORICAL — work log record, round 6 (Codex required corrections on 3d0a91d), all confirmed
 
 | # | Correction | Fix |
 | --- | --- | --- |
@@ -218,7 +225,7 @@ Two latent defects surfaced while fixing these, both mine:
   clock passed it, and they started failing for a reason unrelated to what they test. Runtime tests
   now build their window against the real clock via `runnableScript()`.
 
-## Work log — Codex FINDINGS on d6ea88d (round 7), confirmed
+## HISTORICAL — work log record, round 7 (Codex FINDINGS on d6ea88d), confirmed
 
 One MEDIUM, blocking because the file is normative security documentation.
 
@@ -247,7 +254,7 @@ the guard works on prose rather than on keywords.
 The #91 contract sentence "A gate is bound to a specific commit sequence" is preserved verbatim; the
 two-document precision is added around it rather than replacing it.
 
-## Work log — Codex FINDINGS on 2dc3383 (round 8), both confirmed
+## HISTORICAL — work log record, round 8 (Codex FINDINGS on 2dc3383), both confirmed
 
 **1 MEDIUM — the review-scope schema still granted publication authority.** Two rows contradicted
 the invariant the same file had just established: `executor` was described as the identity authorized
@@ -274,6 +281,47 @@ that reimplements the matcher proves nothing:
 
 Verified end to end by poisoning the document with both reproduced violations: five tests fail,
 including both new ones. Restored afterwards, and the suite is green.
+
+## Work log — round 9 (Codex FINDINGS on d29240)
+
+**Confirmed.** Moving the negation check from paragraph to sentence was only half the fix: inside a
+single sentence, a denial about something else still exempted the claim. Both inputs were reproduced
+before changing anything.
+
+The negation is now bound to the **prohibited relationship** itself. `relationshipIsNegated()`
+accepts only denials attached to the verb that carries the claim — "does not authorize", "cannot
+authorize", "never authorizes", "authorizes nothing", "grants no … authority", "confers no …" — so a
+denial about a credential or about transferability exempts nothing. The same rule replaced the
+fragment heuristic in the schema-row scanner, which had the identical defect one level down.
+
+Regressions drive `findConflations()` and `findScopeAuthorityClaims()` **directly**, on synthetic
+input, so no other assertion in the suite can account for a pass. The inputs live in
+`test/governance-model.test.js` — the two `REGRESSION:` tests carry the exact strings from the
+finding, and they are deliberately not reproduced here, because an active document containing them
+would trip the guard they define. What each asserts:
+
+| Test | Expected |
+| --- | --- |
+| unrelated denial in the same sentence | exactly 1 violation |
+| unrelated denial in another table cell | exactly 1 violation |
+| six denials bound to the relationship | 0 violations each |
+| the same denials with the negation removed | 1 violation each |
+| schema row with an unrelated denial vs. a bound denial | only the unbound row reported |
+
+The last two rows matter as much as the first two: they prove the accepted forms are accepted
+*because* of the bound negation, not because the pattern silently stopped matching.
+
+Codex was also right that poisoning the whole README proved too little — other structural assertions
+could have produced those failures. That check is kept as a smoke test, but the guarantee now comes
+from the direct regressions.
+
+### Why the round 3–8 work logs are marked HISTORICAL
+
+The stricter rule then flagged my own earlier work-log narratives, which quote what documents used to
+say. Those are append-only records of evidence, not current guidance, so each is now explicitly
+marked historical — the mechanism the contract already provides for exactly this, and the reason the
+scanner skips marked sections. Describing a superseded claim accurately requires writing it down; an
+active instruction must not contain it.
 
 ## Status
 

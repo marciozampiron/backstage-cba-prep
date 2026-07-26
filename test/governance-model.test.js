@@ -836,6 +836,37 @@ const CONFLATION_PATTERNS = [
 ];
 
 /**
+ * Is the PROHIBITED RELATIONSHIP itself negated?
+ *
+ * Co-occurrence is not enough, and moving from paragraph to sentence was only half the fix. Both of
+ * these are single sentences with an unrelated `not`, and both are claims:
+ *
+ *   "The review scope is not a credential but authorizes publication."
+ *   "| Review scope authorizes publication | it is not a credential |"
+ *
+ * So the negation has to attach to the verb that carries the claim — "does not authorize", "cannot
+ * authorize", "never authorizes", "authorizes nothing" — and a denial about something else (a
+ * credential, transferability) must not exempt anything.
+ */
+function relationshipIsNegated(text) {
+  const t = plain(text);
+  const VERB = '(authoriz|promot|grant|permit|allow|becom)';
+  return (
+    // "does not authorize", "is not promoted", "will not grant" — at most one short word intervening
+    new RegExp(`\\b(does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\\s+not\\s+(\\w{1,12}\\s+)?${VERB}`, 'i').test(t) ||
+    new RegExp(`\\b(cannot|can't|never)\\s+(\\w{1,12}\\s+)?${VERB}`, 'i').test(t) ||
+    // "authorizes nothing", "grants no authority"
+    /\b(authoriz\w*|grants?|permits?|allows?)\s+(nothing\b|no\b)/i.test(t) ||
+    /\bconfers\s+no\b/i.test(t) ||
+    /\bno field here grants\b/i.test(t) ||
+    // "is not the authorization", "is not a HUMAN_GATE_GRANTED"
+    /\bis\s+not\s+(the\s+)?authoriz/i.test(t) ||
+    /\bnot\s+a\s+HUMAN_GATE_GRANTED/i.test(t) ||
+    /\bwould be a security defect\b/i.test(t)
+  );
+}
+
+/**
  * Shared scanner, so the positive controls exercise the SAME code the repository scan does.
  *
  * A positive control that reimplements the matcher proves nothing about the guard.
@@ -846,8 +877,7 @@ function findConflations(files) {
     for (const { line, text: sentence } of sentencesOf(text, { markdown })) {
       for (const { label, re } of CONFLATION_PATTERNS) {
         if (!re.test(sentence)) continue;
-        // Judged on THIS sentence only — a denial elsewhere in the paragraph does not excuse it.
-        if (/\bnot\b|\bnever\b|\bnothing\b|would be a security defect/i.test(plain(sentence))) continue;
+        if (relationshipIsNegated(sentence)) continue;
         violations.push(`${rel}:${line}: [${label}] ${sentence.trim().slice(0, 140)}`);
       }
     }
@@ -921,10 +951,11 @@ function findScopeAuthorityClaims(text) {
     // transferable" carries a denial about something else entirely; evaluating the whole row would
     // let that excuse the authority claim, which is the same bypass one level down.
     const claims = plain(row)
-      .split(/[|;,—]|\bin order\b/)
+      .split(/[|;—]|\bin order\b/)
       .map((f) => f.trim())
       .filter((f) => /\b(authoriz\w*|may be published|publi(sh|cation)\w*)\b/i.test(f))
-      .filter((f) => !/\bno\b|\bnot\b|\bnever\b|\bnothing\b|\bcannot\b|confers no/i.test(f));
+      // Same rule as the prose scanner: the denial must attach to the claim, not merely share a cell.
+      .filter((f) => !relationshipIsNegated(f));
     if (claims.length) violations.push(`${row.trim()}  [claim: ${claims.join(' / ')}]`);
   }
   return violations;
@@ -956,4 +987,72 @@ test('the review-scope schema states plainly that it grants no publication autho
   assert.match(flat, /No field here grants publication authority/i);
   assert.match(flat, /confers no publication authority/i);
   assert.match(flat, /in scope for preparation and review/i);
+});
+
+/* ================= negation must bind to the prohibited relationship ========================== */
+//
+// Moving from paragraph to sentence was only half the fix. Within one sentence, an unrelated denial
+// still exempted the claim. These drive `findConflations()` DIRECTLY — not the repository, not a
+// poisoned file — so nothing else in the suite can account for a pass.
+
+const scan = (text) => findConflations([{ rel: 'input.md', text, markdown: true }]);
+
+test('REGRESSION: an unrelated negation in the same sentence does not exempt the claim', () => {
+  const hits = scan('The review scope is not a credential but authorizes publication.');
+  assert.equal(hits.length, 1, `expected exactly one violation, got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /authoriz/i);
+});
+
+test('REGRESSION: an unrelated negation in another table cell does not exempt the claim', () => {
+  const hits = scan('| Review scope authorizes publication | it is not a credential |');
+  assert.equal(hits.length, 1, `expected exactly one violation, got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /authoriz/i);
+});
+
+test('a negation BOUND to the relationship is still accepted, in every documented form', () => {
+  // These are the only shapes that may exempt a claim, and each must actually work — otherwise the
+  // guard becomes unusable and the next author simply deletes it.
+  for (const accepted of [
+    'The review scope does not authorize publication.',
+    'The review scope cannot authorize publication.',
+    'The review scope never authorizes publication.',
+    'The review scope authorizes nothing, in Stage A or ever.',
+    'The review scope grants no publication authority.',
+    'Stage B does not promote the review scope into an authorization.',
+  ]) {
+    assert.deepEqual(scan(accepted), [], `this denial must be accepted: ${accepted}`);
+  }
+});
+
+test('the accepted forms are not accepted for the WRONG reason', () => {
+  // Each denial above must be doing the work. Strip the negation and the same sentence must fail,
+  // which proves the exemption comes from the bound negation and not from a pattern that never
+  // matched in the first place.
+  for (const [denial, claim] of [
+    ['The review scope does not authorize publication.', 'The review scope does authorize publication.'],
+    ['The review scope never authorizes publication.', 'The review scope always authorizes publication.'],
+    ['The review scope authorizes nothing, in Stage A or ever.', 'The review scope authorizes publication, in Stage A or ever.'],
+  ]) {
+    assert.deepEqual(scan(denial), [], `denial must pass: ${denial}`);
+    assert.equal(scan(claim).length, 1, `claim must fail: ${claim}`);
+  }
+});
+
+test('REGRESSION: the schema-row scanner binds negation to the claim as well', () => {
+  const planted = [
+    '## Schema',
+    '',
+    '| Field | Meaning |',
+    '| --- | --- |',
+    // An unrelated denial about transferability must not excuse the authority claim.
+    '| `executor` | the agent identity authorized to publish — a gate is not transferable |',
+    // A bound denial must be accepted.
+    '| `executor` | the identity this scope was prepared for — it confers no publication authority |',
+    '| `expiresAt` | so a decision cannot authorize the next cycle |',
+    '',
+    '## Why each field exists',
+  ].join('\n');
+  const hits = findScopeAuthorityClaims(planted);
+  assert.equal(hits.length, 1, `only the unbound claim must be reported; got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /authorized to publish/);
 });
