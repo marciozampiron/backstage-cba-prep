@@ -224,7 +224,9 @@ test('the script performs exactly ONE push, of the task branch, without force', 
   const script = scriptFixture();
   const pushes = script.split('\n').filter((l) => /^\s*git push\b/.test(l));
   assert.equal(pushes.length, 1, `expected exactly one push, found ${pushes.length}`);
-  assert.equal(pushes[0].trim(), 'git push origin "refs/heads/$SOURCE_BRANCH:refs/heads/$SOURCE_BRANCH"');
+  // The refspec names the reviewed SHA, not a symbolic ref: pushing `refs/heads/<branch>` would
+  // publish whatever the branch points at when the push runs, not what the gate approved.
+  assert.equal(pushes[0].trim(), 'git push origin "$EXPECTED_HEAD:refs/heads/$SOURCE_BRANCH"');
 });
 
 test('the script never merges the pull request it creates', () => {
@@ -259,9 +261,16 @@ test('no secret-shaped material reaches the generated script', () => {
 
 /* ================= SCRIPT GUARDS ================= */
 
-test('the script refuses a non-interactive stdin, so the confirmation cannot be piped in', () => {
+test('the confirmation is an operator acknowledgement, not a terminal check', () => {
   const script = scriptFixture();
-  assert.match(script, /\[ -t 0 \] \|\| die/);
+  // The executor operates publication in the definitive model, so requiring a TTY would block the
+  // actor that is supposed to run this. What stays deliberate is the exact phrase.
+  assert.equal(/\[ -t 0 \]/.test(script), false, 'a TTY requirement would block the operator');
+  assert.match(script, /IFS= read -r typed \|\| die "no confirmation was supplied/);
+  assert.match(script, /\[ "\$typed" = "\$CONFIRMATION" \] \|\| die/);
+  // The human decision is the gate, and it is shown at the confirmation so operation cannot be
+  // mistaken for approval.
+  assert.match(script, /approved by: \$GATE_APPROVER \(human owner; merge is their decision\)/);
 });
 
 test('the script refuses an expired gate and carries the exact expiry', () => {
@@ -680,11 +689,17 @@ test('the generated script parses as bash without executing it', async () => {
 
 const docText = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-test('every document names the same three verbs and the same three actors', () => {
+test('every operational surface names the flow or links to the canonical contract', () => {
+  // Duplication is what let the protocol drift before, so surfaces are allowed to carry a short
+  // summary and a pointer instead of a full restatement. What is NOT allowed is silence.
   const files = [
     'AGENTS.md',
     '.agent-handoff/README.md',
     '.agent-handoff/COMMANDS.md',
+    '.agent-handoff/MESSAGE-PROTOCOL.md',
+    '.agent-handoff/publish-gates/README.md',
+    '.agent-handoff/templates/task.md',
+    '.agent-handoff/templates/message.md',
     'spec/security-rules.md',
     'docs/architecture/agent-publication-runbook.md',
     '.claude/skills/publication-prepare/SKILL.md',
@@ -692,10 +707,9 @@ test('every document names the same three verbs and the same three actors', () =
   ];
   for (const rel of files) {
     const text = docText(rel);
-    assert.match(text, /agent-human-publish-script/, `${rel} must name the generator command`);
-    assert.match(text, /executor/i, `${rel} must name the executor role`);
-    assert.match(text, /reviewer/i, `${rel} must name the reviewer role`);
-    assert.match(text, /human/i, `${rel} must name the human operator`);
+    const linksCanonical = /MESSAGE-PROTOCOL\.md|agent-publication-runbook\.md/.test(text);
+    const namesFlow = /agent-human-publish-script|HUMAN_GATE_GRANTED|Opus prepares/.test(text);
+    assert.ok(linksCanonical || namesFlow, `${rel} must name the flow or link to a canonical source`);
   }
 });
 
@@ -727,27 +741,29 @@ test('no document claims an agent publishes, or that this is authenticated separ
   assert.match(runbook, /process\s+guardrail/);
 });
 
-test('the executor skill forbids running, and the reviewer skill forbids preparing and running', () => {
+test('the operator skill gates operation, and the reviewer skill stays read-only', () => {
   const prepare = docText('.claude/skills/publication-prepare/SKILL.md');
-  assert.match(prepare, /never publish|never run/i);
+  assert.match(prepare, /HUMAN_GATE_GRANTED/);
   assert.match(prepare, /agent-human-publish-script/);
-  assert.match(prepare, /bash <path>/);
-  assert.equal(/\bgit push\b/.test(prepare.replace(/never push[^.]*/gi, '')), false);
+  assert.match(prepare, /verify-and-run/);
+  // Opus operates, but may never approve its own work or merge.
+  assert.match(prepare, /never do[^.]*approve your own work, and merge/i);
+  assert.match(prepare, /REVIEW_APPROVED[^.]*never a gate|never a gate/i);
 
   const review = docText('.agents/skills/publication-review/SKILL.md');
-  assert.match(review, /never prepare and you never run/i);
+  assert.match(review, /never implement, never prepare and never execute/i);
   assert.match(review, /sha256sum/);
   assert.match(review, /-rw-------/);
   assert.match(review, /read-only/i);
 });
 
-test('the security rules record who may prepare, read and run, and that merge stays human', () => {
+test('the security rules point at the canonical contract and keep merge with Zamp', () => {
   const rules = docText('spec/security-rules.md');
-  assert.match(rules, /No AI agent publishes source,\s+in any role/);
-  assert.match(rules, /agent-human-publish-script/);
-  assert.match(rules, /0600/);
-  assert.match(rules, /non-executable/);
-  assert.match(rules, /Merge remains a\s+separate human action/);
+  assert.match(rules, /MESSAGE-PROTOCOL\.md/);
+  assert.match(rules, /agent-publication-runbook\.md/);
+  assert.match(rules, /HUMAN_GATE_GRANTED/);
+  assert.match(rules, /agent-human-publish-script|verify-and-run/);
+  assert.match(rules, /Zamp approves and decides and performs the merge/);
   assert.match(rules, /fix-forward/);
 });
 
@@ -820,7 +836,10 @@ test('the CLI help documents the command as preparation, not publication', () =>
   const { status, stdout } = runCli(['help']);
   assert.equal(status, 0);
   assert.match(stdout, /agent-human-publish-script/);
-  assert.match(stdout, /never executed here|HUMAN to run/i);
+  assert.match(stdout, /prepares only/i);
+  assert.match(stdout, /never runs it/i);
+  assert.match(stdout, /HUMAN_GATE_GRANTED/);
+  assert.match(stdout, /MESSAGE-PROTOCOL\.md/);
 });
 
 /* ================= #93 round 2: repository binding, gate location, source hygiene ================= */

@@ -17,7 +17,12 @@ In **Stage B** the same gate becomes the input to real publication under the exe
 credential, with live remote checks and authoritative, idempotent consumption.
 
 A gate is **evidence of a decision**, not a credential: it contains no token, no account id and no
-administrative endpoint.
+administrative endpoint. It is the machine-readable form of a `HUMAN_GATE_GRANTED` message — see
+[`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md), the canonical role and message contract.
+
+The `approver` must be a named human who is **not** the operator: `agent-human-publish-script`
+refuses a gate whose approver equals the invoking executor (`APPROVER_IS_OPERATOR`) or looks like an
+agent identity (`APPROVER_NOT_HUMAN`). Approval and operation are different actors.
 
 ## Schema
 
@@ -58,12 +63,15 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 
 **The #93 bridge (today, how publication actually happens):**
 
-5. The executor runs `agent-human-publish-script` and *prepares* a script under `/tmp`, mode `0600`
-   and non-executable, then reports its path and SHA-256. Preparing is not publishing.
-6. The architect/security reviewer *reads* the script and confirms the digest.
-7. The **human owner** runs it with the verify-and-run command printed at preparation — which
-   reads the file once, checks its digest and executes those same bytes — and merges the resulting
-   PR separately. A bare `bash <path>` reopens the file after review and is not supported.
+5. **Opus** runs `agent-human-publish-script` and *prepares* a script under `/tmp`, mode `0600`
+   and non-executable, then reports its path and SHA-256 in a `REVIEW_REQUEST`. Preparing is not
+   publishing.
+6. **Codex** *reads* the script and confirms the digest, then sends `FINDINGS` or
+   `REVIEW_APPROVED`. A `REVIEW_APPROVED` never authorizes publication.
+7. **Zamp** sends `HUMAN_GATE_GRANTED` with the exact branch, ordered full SHAs, digest, expiry and
+   allowed effects. **Opus** then operates it with the verify-and-run command printed at
+   preparation, which reads the file once, checks its digest and executes those same bytes. There
+   is no supported bare-path invocation. **Zamp** decides and performs the merge.
 
 **Stage B (not built; separate human gate):**
 

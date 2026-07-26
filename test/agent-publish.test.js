@@ -487,8 +487,12 @@ test('documentation never claims Stage A publishes, authenticates or consumes a 
   // Wrapped prose: normalise whitespace before matching so a line break cannot hide the contract.
   const flat = readme.replace(/\s+/g, ' ');
   assert.match(flat, /local advisory pre-flight validation only/i);
-  assert.match(flat, /publication and merge are human actions/i);
   assert.match(flat, /never publishes, never opens a pull request, never consumes a gate and never authenticates identity/i);
+  // #93 superseded "publication and merge are human actions": Opus now performs the push, after an
+  // exact human gate, and Zamp performs the merge. The invariant that survives is that nothing is
+  // authorized without that gate — keeping the old sentence would force the document to lie.
+  assert.match(flat, /no operation is authorized without an explicit `HUMAN_GATE_GRANTED`/i);
+  assert.match(flat, /merge is always Zamp's/i);
 });
 
 /* ================= #91 round 2: redaction and CLI parsing ================= */

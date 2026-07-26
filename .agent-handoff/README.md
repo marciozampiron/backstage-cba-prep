@@ -12,10 +12,11 @@ context packet.
 Every agent must read, in order:
 
 1. `AGENTS.md`;
-2. `.agent-handoff/README.md`;
-3. `.agent-handoff/CURRENT.md`;
-4. `.agent-handoff/COMMANDS.md`;
-5. any relevant task file under `.agent-handoff/inbox/` or `.agent-handoff/active/`.
+2. `.agent-handoff/MESSAGE-PROTOCOL.md` — **canonical** roles and message contract;
+3. `.agent-handoff/README.md`;
+4. `.agent-handoff/CURRENT.md`;
+5. `.agent-handoff/COMMANDS.md`;
+6. any relevant task file under `.agent-handoff/inbox/` or `.agent-handoff/active/`.
 
 If those files disagree with local git state or the GitHub issue, stop and report the mismatch
 before editing.
@@ -26,6 +27,7 @@ before editing.
 | --- | --- |
 | `CURRENT.md` | Short repo coordination state for agents entering cold. |
 | `EVENTS.md` | Append-only log of meaningful state changes. |
+| `MESSAGE-PROTOCOL.md` | **Canonical** actors, authority and the `AGENT-HANDOFF v1` message contract. |
 | `COMMANDS.md` | Operational command checklist for boot, validation, commit, and push gate. |
 | `inbox/` | Tasks prepared for an agent to pick up. |
 | `active/` | Tasks currently owned by an agent. Do not duplicate ownership. |
@@ -67,88 +69,93 @@ After any meaningful state change, update `CURRENT.md` and append an entry to `E
 
 Do not hardcode published (`origin/main`) **or** unpublished/amendable local commit SHAs in `CURRENT.md` — a pinned SHA goes stale on the next push. Use `git rev-parse --short origin/main` for the current published baseline and `git log --oneline origin/main..HEAD` for exact local commits.
 
-## Publication protocol (#91 Stage A, #93 human-operated bridge)
+## Publication protocol (#91 Stage A, #93 operator bridge)
+
+Roles and messages are canonical in [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md). The mechanism is
+canonical in
+[`../docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
+This section is the short operational summary; it does not restate either.
+
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`
 
 Three layers exist and they must not be confused:
 
-| Layer | What it is | Who acts |
-| --- | --- | --- |
-| #91 Stage A — `agent-publish` | Validates a gate against local state, prints the plan, stops. | executor runs it |
-| #93 bridge — `agent-human-publish-script` | The executor **prepares** a bounded script under `/tmp`; the reviewer **reads** it; the **human** runs it with the verify-and-run command that hashes the bytes it executes. | executor prepares, reviewer reads, human runs |
-| #91 Stage B — remote enforcement | Authenticated bot identity, gate consumption, required PR, `enforce_admins`. | not built yet |
+| Layer | What it is |
+| --- | --- |
+| #91 Stage A — `agent-publish` | Validates a gate against local state, prints the plan, stops. |
+| #93 bridge — `agent-human-publish-script` | Opus prepares a bounded artifact under `/tmp`; Codex reads it; Zamp gates it; Opus then operates it with the printed verify-and-run command. |
+| #91 Stage B — remote enforcement | Authenticated operator identity, gate consumption, required PR, `enforce_admins`. Not built yet. |
 
 Stage A is **local advisory pre-flight validation only**. It never publishes, never opens a pull
 request, never consumes a gate and never authenticates identity — the declared role and executor
 come from the caller, and any caller can declare `executor`. The #93 bridge does not change that:
-it adds a reviewable artifact, not an authenticated identity. Both are process guardrails, and only
-Stage B makes the separation unforgeable. **Until Stage B ships, publication and merge are human
-actions.** The 2026-07-26 incident is the reason all of this exists: a generic human approval was
-read by the architect agent as permission to `git push origin main`, and two agents then raced on
-`git commit --amend` in a shared worktree.
-
-| Role | May | May never |
-| --- | --- | --- |
-| Human product/security owner | Approve a gate naming themselves; run the prepared script; merge the PR | Delegate merge or script execution to an agent |
-| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish`; **prepare** a publication script | Push, merge, deploy, spend, **run the prepared script**, or publish without a gate |
-| Architect/security reviewer | Review by full SHA, **read** a prepared script, create roadmap issues, recommend a gate | Publish, merge, act as executor, **prepare or run a script** |
+it adds a reviewable artifact and a gate, not an authenticated identity. Both are process
+guardrails, and only Stage B makes the separation unforgeable. **Until Stage B ships, no operation
+is authorized without an explicit `HUMAN_GATE_GRANTED` naming the exact ordered full SHAs, and
+merge is always Zamp's.** The 2026-07-26 incident is the reason all of this exists: a generic
+approval was read by the architect agent as permission to `git push origin main`, and two agents
+then raced on `git commit --amend` in a shared worktree.
 
 Mechanics:
 
 1. Each task gets its own branch AND worktree: `git worktree add ../cba-issue-<n> -b task/<n>-<slug> main`.
-2. The human owner writes a publish gate **outside the task worktree** — for example
+2. Zamp writes the publish gate **outside the task worktree** — for example
    `/tmp/cba-gate-<issue>.json` — naming themselves, the executor, the base SHA and the exact
-   ordered commits. The schema lives in `.agent-handoff/publish-gates/README.md`, but that folder
-   holds the schema and its example only. A gate written inside the repository would be an
-   untracked file, which makes the worktree dirty, which validation then refuses; the commands
-   refuse an in-repository gate path (`GATE_PATH_IN_REPO`) so the protocol cannot drift back into
-   being unexecutable.
-3. The executor runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
+   ordered commits. The schema lives in `publish-gates/README.md`, but that folder holds the schema
+   and its example only. A gate written inside the repository would be an untracked file, which
+   makes the worktree dirty, which validation then refuses; an in-repository or symlinked gate path
+   is refused outright so the protocol cannot drift back into being unexecutable.
+3. Opus runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
    It **validates locally and prints the plan** — it refuses architect/reviewer roles before `.env`
    loads, before the gate is read and before git runs, refuses `main` as a source, and fails closed
    on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an expired gate, a
    `reviewedShas` set that does not equal the commits, a shared worktree or a drifted `origin/main`.
-4. **Validation is not publication.** To publish, the executor prepares a script:
+4. **Validation is not publication.** Opus prepares the artifact:
    `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate <file>`.
-   It re-runs the Stage A validation, writes one bash file to `/tmp` with mode `0600` and **no**
-   executable bit, and prints the path and its SHA-256. It makes no network call and no Git or
-   GitHub mutation.
-5. The architect/security reviewer **reads** that file and confirms the SHA-256. Reviewing is not
-   implementing and not executing.
-6. The **human operator** runs it with the verify-and-run command printed at preparation — never a
-   bare `bash <path>`, which reopens the file after the reviewer hashed it and lets a same-user
-   process substitute it. The script requires an interactive terminal and a typed confirmation,
-   re-verifies local and live remote state (including that `origin` is the same repository its `gh`
-   queries target), and re-runs every volatile check after the confirmation, with nothing between
-   that and the push. It then has exactly **two** bounded remote effects, in order: a non-force push
-   of the task branch, and creating or reusing exactly one pull request. It can never merge, deploy,
-   push `main`, force-push, rewrite history, change repository settings or read secrets.
-7. The task worktree stays clean throughout. Bookkeeping that changes tracked files —
+   It re-runs the Stage A validation, refuses a gate whose approver is the operator, writes one bash
+   file to `/tmp` with mode `0600` and **no** executable bit, and prints the path, its SHA-256 and
+   the verify-and-run command. It makes no network call and no Git or GitHub mutation.
+5. Codex **reads** that file, confirms the SHA-256, and sends `FINDINGS` or `REVIEW_APPROVED`.
+   Reviewing is not implementing and not executing, and `REVIEW_APPROVED` is never a gate.
+6. Zamp sends `HUMAN_GATE_GRANTED` with the exact branch, ordered full SHAs, digest, expiry and
+   allowed effects.
+7. Opus operates it with the **verify-and-run command printed in step 4**, which reads the artifact
+   once, checks its digest and executes those same bytes. There is no supported bare-path
+   invocation. The artifact re-verifies local and live remote state before *and* after the operator
+   confirmation, then has exactly **two** bounded remote effects: pushing the reviewed commit by
+   SHA, and creating or reusing exactly one pull request. It can never merge, deploy, push `main`,
+   force-push, rewrite history, change repository settings or read secrets.
+8. The task worktree stays clean throughout. Bookkeeping that changes tracked files —
    `EVENTS.md`, `CURRENT.md`, `agent-refresh --record` — belongs to the main worktree or to a
    later commit, never to the task worktree before generation.
-8. Merging is always a separate human action, after checks and review.
-9. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
-   That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
-   (#91 Stage B) is authoritative.
+9. **Zamp decides and performs the merge**, after required checks.
+10. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+    That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
+    (#91 Stage B) is authoritative.
 
 ## Push gate
 
-`agent-refresh` and `agent-refresh --record` check technical state only. They do **not** authorize a push. Push permission is a human decision.
+`agent-refresh` and `agent-refresh --record` check technical state only. They do **not** authorize
+an operation. Authorization is a `HUMAN_GATE_GRANTED` from Zamp naming the exact ordered full SHAs;
+see [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md).
 
-Before any push:
+Before any operation:
 
-1. The human must explicitly approve push in chat and author the gate outside the task worktree.
-2. **Agents never push, and never run the prepared script.** The executor validates the gate with
-   `agent-publish`, then prepares a script with `agent-human-publish-script`. Only the human runs
-   it, and it can only publish `task/<issue>-<slug>` and open or reuse one PR. Merging is a human
-   action. Publication to `main` happens solely through a human-merged pull request.
-3. `EVENTS.md` bookkeeping — the `Human gate` entry and `npm run agent-refresh -- --record` — is
-   recorded in the **main worktree**, or in a later commit on the task branch. It must not happen
-   in the task worktree before generation: those files are tracked, so writing them there makes the
-   worktree dirty and validation then refuses. Recording the gate does not authorize the push; the
-   human's explicit approval does.
-4. After publication, record push and CI status in `EVENTS.md` from the main worktree.
+1. Zamp must send `HUMAN_GATE_GRANTED` and author the gate manifest outside the task worktree. A
+   generic "approved", or a Codex `REVIEW_APPROVED`, is review feedback and never a gate.
+2. No agent operates without that gate, and no agent merges. Opus validates with `agent-publish`,
+   prepares with `agent-human-publish-script`, and operates only the prepared artifact — which can
+   publish only `task/<issue>-<slug>` and open or reuse one PR.
+3. `EVENTS.md` bookkeeping — the gate entry and `npm run agent-refresh -- --record` — is recorded in
+   the **main worktree**, or in a later commit on the task branch. It must not happen in the task
+   worktree before generation: those files are tracked, so writing them there makes the worktree
+   dirty and validation then refuses. Recording the gate does not authorize anything; Zamp's
+   `HUMAN_GATE_GRANTED` does.
+4. After operating, Opus reports an `OPERATION_RESULT` with branch/PR/CI evidence and no secrets,
+   and records it in `EVENTS.md` from the main worktree.
+5. Zamp decides and performs the merge (`MERGE_DECISION`).
 
-If any step is missing, do not push.
+If any step is missing, do not operate.
 
 ## Task lifecycle
 

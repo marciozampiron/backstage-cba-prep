@@ -1,44 +1,51 @@
-# Task: Human-operated publication scripts and role-specific skills (#93)
+# Task: operator-run publication artifact and versioned message protocol (#93)
+
+Roles and messages are canonical in [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md); the
+mechanism is canonical in
+[`../../docs/architecture/agent-publication-runbook.md`](../../docs/architecture/agent-publication-runbook.md).
+This file does not restate either.
 
 ## Ownership
 
-- Implementation executor: Claude Opus 5 (worktree `../cba-issue-93`, branch
+- Implementation executor and publication operator: **Opus** (worktree `../cba-issue-93`, branch
   `task/93-human-publication-script`, cut from `origin/main`)
-- Architect/security reviewer: Codex — **read-only review**
-- Human gate: required before ANY publication. The human is the only actor who runs the generated
-  script and the only actor who merges.
+- Architect / independent technical and security reviewer, read-only: **Codex**
+- Approval, risk acceptance and merge authority: **Zamp**
+- Next owner: **Codex** (read-only review)
 
 Do not touch `active/82-*`, `active/85-*` or `active/91-*`, or the main working tree — #82 has an
 active owner with local changes.
 
 ## CANONICAL CURRENT STATE (read this first)
 
-This issue adds the **bridge** between #91 Stage A (advisory local validation) and #91 Stage B
-(authenticated identity and remote enforcement, which does not exist).
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`
 
-**No agent publishes.** Three verbs, three actors, three moments:
+This issue delivers the bridge between #91 Stage A (advisory local validation) and #91 Stage B
+(authenticated operator identity and remote enforcement, which does not exist), plus the versioned
+`AGENT-HANDOFF v1` message contract.
 
-| Verb | Actor | How |
-| --- | --- | --- |
-| Prepare | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate <file>` |
-| Read | architect/security reviewer | opens the file, confirms the printed SHA-256 |
-| Run | human operator | the printed verify-and-run command, which hashes the bytes it executes |
-
-`agent-publish` is unchanged and remains advisory local validation only (#93 decision 1).
+`agent-publish` is unchanged and remains advisory local validation only.
 
 | Property | Today | Owner when it exists |
 | --- | --- | --- |
-| Role / executor identity | **Declared by the caller**, never authenticated | #91 Stage B |
-| Who publishes | The **human**, by running the prepared script | unchanged |
+| Role / operator identity | **Declared by the caller**, never authenticated | #91 Stage B |
+| Authorization to operate | `HUMAN_GATE_GRANTED` from Zamp, naming exact ordered full SHAs | unchanged |
+| Approval separated from operation | Enforced: a gate approved by the operator, or by an agent-shaped identity, is refused | unchanged |
 | Generator network access | **None** — no network call, no Git/GitHub mutation | — |
-| Script credentials | **None** — uses the human's existing `git`/`gh` session | — |
+| Artifact credentials | **None** — uses the operator's existing `git`/`gh` session | — |
+| Integrity of the executed bytes | Guaranteed by the verify-and-run command, which hashes what it executes; a bare-path invocation is never supported | — |
 | Replay protection | **Not provided** — the gate is validated, never consumed | #91 Stage B |
-| Live remote base check | Performed **by the script**, at run time | #91 Stage B enforces it remotely |
+| Live remote base check | Performed by the artifact, at run time | #91 Stage B enforces it remotely |
 | Preventing a direct `main` push | **Not prevented** — `enforce_admins` is still `false` | #91 Stage B |
-| Preventing an agent from running the script | **Not prevented** — mode 0600, no exec bit and a TTY check raise the cost only | #91 Stage B |
-| Integrity of the executed bytes | Guaranteed **only** when the verify-and-run command is used; a bare `bash <path>` reopens the file | — |
+| Merge | Never performed here; Zamp decides and performs it | unchanged |
 
-## The ten binding decisions (from the human, verbatim in intent)
+## HISTORICAL — the ten decisions that opened this issue (superseded)
+
+> **Historical record, not an instruction.** Decisions 5, 8 and 9 described the human as the script
+> operator and Opus as never executing. The binding comments of 2026-07-26 replaced that model with
+> `Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`.
+> Kept because the early commits on this branch were written against it. The canonical contract is
+> [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md).
 
 1. `agent-publish` stays advisory local validation only.
 2. A separate command generates the human script.
@@ -94,7 +101,7 @@ This issue adds the **bridge** between #91 Stage A (advisory local validation) a
 No push, no PR creation or mutation, no merge, no deploy, no branch-protection change, no credential
 creation, no cloud mutation, no paid call. #91 Stage B remains a separate human gate.
 
-## Review round 1 — five findings, all fixed forward
+## HISTORICAL — review round 1, five findings, all fixed forward
 
 Codex reviewed the first three commits and reported five findings. The three reviewed commits are
 untouched; every fix is a NEW commit.
@@ -114,7 +121,7 @@ byte and is therefore binary and unreviewable in diffs. #82 has an active owner,
 touched. The guard test lists it explicitly in `KNOWN_PRE_EXISTING` and **fails once it is fixed**,
 so the exception cannot outlive the problem. It needs a one-line fix on the #82 track.
 
-## Review round 2 — five findings, all fixed forward
+## HISTORICAL — review round 2, five findings, all fixed forward
 
 The four reviewed commits are untouched; every fix is a NEW commit.
 
@@ -126,7 +133,30 @@ The four reviewed commits are untouched; every fix is a NEW commit.
 | MEDIUM | The NUL guard claimed full coverage but allowlisted extensions, missing HTML, CSS, TypeScript and Python | The scan is inverted: every tracked file except formats that are binary by nature, with an assertion that those extensions are in scope, and `.gitattributes` extended and pinned by its own test |
 | LOW | "Everything else is a read" was inaccurate — `git fetch` writes local objects and `FETCH_HEAD` | Reworded to "no other REMOTE mutation", with the local write stated explicitly |
 
+## Round 3 — definitive role model and versioned message protocol
+
+Implemented on top of the five preserved commits, as new fix-forward work:
+
+| Requirement | Where |
+| --- | --- |
+| Canonical `AGENT-HANDOFF v1` contract | `../MESSAGE-PROTOCOL.md` (new), in the mandatory boot sequence |
+| Copyable message template | `../templates/message.md` (new); `../templates/task.md` aligned |
+| Push the reviewed commit by SHA | refspec is `$EXPECTED_HEAD:refs/heads/$SOURCE_BRANCH` |
+| Refuse a landed ref that is not `EXPECTED_HEAD` | read back with `git ls-remote` after the push |
+| No bare-path operational instruction | removed everywhere; guard 7 fails if one reappears |
+| Gate read through one `O_NOFOLLOW` FD | `readGateThroughOneFd` — open, `fstat`, read on the same descriptor |
+| Operator acknowledgement instead of a terminal check | the TTY requirement is gone; the exact phrase remains |
+| Verify-and-run same-bytes guarantee preserved | unchanged, with its substitution test |
+| Opus cannot self-approve | `assertApproverIsNotOperator` — `APPROVER_IS_OPERATOR`, `APPROVER_NOT_HUMAN` |
+| Codex cannot implement, prepare or execute | declared-role refusal in both commands, plus guard 3 |
+| Gemini has no workflow role | stated in the contract; guard 2. Model-provider support untouched |
+| Repository-wide consistency guards | `test/governance-model.test.js` (new), 20 tests |
+
 ## Status
 
-Implementation complete, local commits only, no push. **Awaiting Codex re-review.** Any further
-finding is fix-forward: a NEW commit, never an amend, rebase or squash of reviewed history.
+Implementation complete, **local commits only, nothing published**. Awaiting Codex read-only
+review, then a Zamp `HUMAN_GATE_GRANTED` before any operation. Any further finding is fix-forward:
+a NEW commit, never an amend, rebase or squash of reviewed history.
+
+**Prohibited by this state:** push, PR creation or mutation, merge, deploy, branch-protection
+change, credential creation, cloud mutation, paid call.

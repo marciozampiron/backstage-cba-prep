@@ -10,6 +10,7 @@ GitHub Issues and the Project board remain the source of truth for scope and pri
 Run these commands before taking any task:
 
 ```bash
+cat .agent-handoff/MESSAGE-PROTOCOL.md   # canonical roles and message contract
 git pull
 npm run agent-refresh
 npm run agent-refresh -- --record
@@ -21,6 +22,7 @@ Read these files before editing:
 
 ```bash
 cat AGENTS.md
+cat .agent-handoff/MESSAGE-PROTOCOL.md
 cat .agent-handoff/README.md
 cat .agent-handoff/CURRENT.md
 cat .agent-handoff/EVENTS.md
@@ -45,10 +47,12 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
-## Publishing (#91 Stage A + #93 human-operated bridge)
+## Publishing (#91 Stage A + #93 operator bridge)
 
-`agent-publish` is **validation only** — it never pushes, opens a PR, merges or uses a credential.
-`agent-human-publish-script` **prepares** a script and never runs it. No agent ever publishes.
+Roles and messages: [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md). Mechanism:
+[`../docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
+
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`
 
 ```bash
 # 1. own branch AND worktree — never share a writable main
@@ -57,36 +61,34 @@ git worktree add ../cba-issue-<n> -b task/<n>-<slug> main
 # 2. local defense in depth (once per clone; not the authoritative control)
 git config core.hooksPath .githooks
 
-# 3. validate the human gate locally (this is the whole Stage A behaviour)
+# 3. OPUS: advisory local validation — this is all it does
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
+  --gate /tmp/cba-gate-<n>.json   # authored by Zamp OUTSIDE the worktree
 
-# 4. EXECUTOR ONLY: prepare the script the HUMAN will run. No network, no git mutation.
-#    Writes one file to /tmp, mode 0600, NOT executable, and prints its path and SHA-256.
+# 4. OPUS: prepare the reviewed artifact. No network, no git mutation.
+#    Writes one file to /tmp, mode 0600, NOT executable, and prints its path, SHA-256
+#    and the verify-and-run command.
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
+  --gate /tmp/cba-gate-<n>.json
 ```
 
 Then, in order and by different actors:
 
-- **Step 5 — reviewer.** The architect/security reviewer **reads** the file and confirms the printed
-  SHA-256. Reviewing is not implementing and not executing.
-- **Step 6 — human.** The human operator runs it with the verify-and-run command printed at
-  preparation — **not** a bare `bash <path>`, which reopens the file after review:
-
-```bash
-s=$(cat /tmp/cba-publish-<issue>-<head>.sh)
-if [ "$(printf '%s\n' "$s" | sha256sum | cut -d' ' -f1)" = "<reviewed-digest>" ]; then bash -c "$s"; fi
-```
-
-  It needs an interactive terminal and a typed confirmation, re-checks local and live remote state
-  before *and* after the confirmation, then does one non-force push of the task branch and creates
-  or reuses one pull request.
-- **Step 7 — human.** Merge separately, after checks and review.
+- **Step 5 — Codex (`FINDINGS` or `REVIEW_APPROVED`).** Reads the file and confirms the printed
+  SHA-256. Read-only: Codex never implements, prepares, executes, pushes, merges or deploys, and
+  `REVIEW_APPROVED` never authorizes publication.
+- **Step 6 — Zamp (`HUMAN_GATE_GRANTED`).** Grants the exact gate: branch, ordered full SHAs,
+  digest, expiry and allowed effects. A generic "approved" is not a gate.
+- **Step 7 — Opus (`OPERATION_RESULT`).** Runs the **verify-and-run command printed in step 4**,
+  which reads the artifact once, checks its digest and executes those same bytes. There is no
+  supported bare-path invocation. The script pushes the reviewed commit by SHA and creates or
+  reuses exactly one pull request.
+- **Step 8 — Zamp (`MERGE_DECISION`).** Decides and performs the merge, after required checks.
 
 `architect` and `reviewer` are refused by **both** commands before `.env` loads, the gate is read,
-git runs or any file is written. `main` is never a source branch. The prepared script can never
-merge, deploy, push `main`, force-push, rewrite history, change repository settings or read secrets.
+git runs or any file is written. `main` is never a source branch. A gate whose approver is the
+operator, or looks like an agent identity, is refused. The prepared script can never merge, deploy,
+push `main`, force-push, rewrite history, change repository settings or read secrets.
 
 ## Before commit
 
@@ -134,8 +136,8 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-# Agents NEVER push and NEVER run the prepared script. Publication is: validate the gate, prepare
-# the script, hand it to the reviewer, and the HUMAN runs it. See "Publishing" above.
+# Publication requires a HUMAN_GATE_GRANTED from Zamp naming the exact ordered full SHAs.
+# Opus operates it; Codex never does; merge is always Zamp's. See "Publishing" above.
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
   --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
 
@@ -200,8 +202,13 @@ explicitly approved.
 
 ## Role split
 
-- Executor agent: implements, validates, and commits.
-- Codex: architect/reviewer/gate.
-- Human: authorizes push.
+Canonical: [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md).
 
-Push only after explicit human approval for the current commit or scope.
+- **Opus**: implements, validates, commits, prepares the artifact, and operates publication after an
+  exact gate. Never self-approves, merges, deploys, pushes `main` or force-pushes.
+- **Codex**: architect and independent technical/security reviewer, read-only. Never implements,
+  prepares, executes, pushes, merges or deploys.
+- **Zamp**: grants the exact gate, accepts risk, and decides and performs the merge.
+- **Gemini**: no workflow or governance role (model-provider support is unaffected).
+
+Operate only after a `HUMAN_GATE_GRANTED` naming the exact ordered full SHAs.

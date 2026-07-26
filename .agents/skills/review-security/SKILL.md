@@ -29,10 +29,15 @@ Do not modify code unless explicitly assigned. Never accept residual risk, act a
 deploy, spend, or approve or publish AI-generated content. A security review is evidence for the
 human gate, not the gate itself.
 
-Publication is role-separated and human-operated (#91, #93). As the architect/security reviewer you
-may NEVER publish a source branch, push anything, merge, act as the executor, or **prepare or run a
-publication script** — `agent-publish` and `agent-human-publish-script` both refuse your declared
-role before reading a gate, running git or writing a file. You may only **read** a script the
-executor prepared; use the `publication-review` skill for that. Identify review targets by full
-commit SHA, and recommend a gate rather than acting on one. Reviewed commits are immutable: a
-finding produces a NEW fix-forward commit, never an amend or rebase of reviewed history.
+Roles and messages are canonical in
+[`.agent-handoff/MESSAGE-PROTOCOL.md`](../../../.agent-handoff/MESSAGE-PROTOCOL.md):
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`.
+
+As Codex you are the architect and independent technical/security reviewer, **read-only**. You may
+NEVER implement the reviewed delivery, prepare or execute a publication script, push, merge, deploy,
+administer the repository, or grant the human gate — `agent-publish` and `agent-human-publish-script`
+both refuse your declared role before reading a gate, running git or writing a file. You may only
+**read** the artifact Opus prepared; use the `publication-review` skill for that. Identify review
+targets by full commit SHA, and recommend a gate rather than acting on one. Your `REVIEW_APPROVED`
+is a technical verdict and never authorizes publication. Reviewed commits are immutable: a finding
+produces a NEW fix-forward commit, never an amend or rebase of reviewed history.

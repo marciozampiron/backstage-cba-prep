@@ -1,22 +1,24 @@
-// Human-operated publication script generator (#93) — PURE logic, no I/O, no network, no git.
+// Publication artifact generator (#93) — PURE logic, no I/O, no network, no git.
 //
 // WHERE THIS SITS. Three layers exist and a cold-started agent must not confuse them:
 //
 //   1. #91 Stage A — `agent-publish`: advisory LOCAL gate validation. Validates, prints, stops.
-//   2. THIS bridge — the executor PREPARES a short-lived script, the architect/security reviewer
-//      READS it, and the HUMAN runs it with a verify-and-run command that hashes the bytes it
-//      executes. No agent ever executes it.
-//   3. #91 Stage B — authenticated bot/App identity, remote replay consumption, required PR and
+//   2. THIS bridge — Opus PREPARES a short-lived artifact, Codex READS it, Zamp APPROVES with a
+//      HUMAN_GATE_GRANTED, and only then Opus OPERATES it with a verify-and-run command that hashes
+//      the bytes it executes. Zamp decides and performs the merge.
+//   3. #91 Stage B — authenticated operator identity, remote replay consumption, required PR and
 //      administrator enforcement. Only Stage B makes any of this unforgeable.
 //
-// The script and the declared roles are PROCESS guardrails, not authenticated role separation. A
-// caller declares its own role; nothing here proves it. The bridge exists because the human needs
-// a reviewable, bounded artifact instead of typing publication commands from memory — which is how
-// the 2026-07-26 incident happened.
+// Canonical contract: `.agent-handoff/MESSAGE-PROTOCOL.md`.
+//
+// The artifact and the declared roles are PROCESS guardrails, not authenticated role separation. A
+// caller declares its own role; nothing here proves it. The bridge exists so the operation is a
+// reviewed, bounded, digest-verified artifact rather than publication commands typed from memory —
+// which is how the 2026-07-26 incident happened.
 //
 // The generator is deliberately incapable of acting: it produces text and a path. It performs no
-// network call and no Git/GitHub mutation, and the file it writes is non-executable by design so
-// running it is always an explicit human decision.
+// network call and no Git/GitHub mutation, and the file it writes is non-executable by design, so
+// operating it is always an explicit, separately gated decision.
 import { safeLabel, GateError } from './publish-gate.js';
 
 /** Directory the artifact may live in. A repository path would make it look like project code. */
@@ -36,6 +38,10 @@ export const FORBIDDEN_SCRIPT_PATTERNS = [
   { label: 'history rewriting', re: /\bgit\s+(rebase|reset\s+--hard|commit\s+--amend|filter-branch|push\s+--mirror)\b/ },
   { label: 'paid service invocation', re: /bedrock|invoke-model|openai\.com|anthropic\.com\/v1/i },
 ];
+
+/** Identities that are agents, never approvers. Matched case-insensitively on the whole value. */
+export const AGENT_IDENTITY =
+  /^(claude|opus|sonnet|haiku|fable|codex|gpt|o[0-9]|gemini|bard|llama|mistral|copilot|bot)\b|[-_](bot|agent|ai)$/i;
 
 function fail(code, message) {
   throw new GateError(code, message);
@@ -93,6 +99,38 @@ export function assertRepoSlug(slug) {
   return slug;
 }
 
+/**
+ * Refuse a gate whose approver is the operator.
+ *
+ * In the definitive model the executor (Opus) also OPERATES publication, so the one thing that must
+ * never collapse is approval into operation. The gate is the human decision; if the actor named as
+ * approver is the same actor that runs the script, there is no decision left — only an agent
+ * agreeing with itself. Agent-shaped approver identities are refused for the same reason: `#91`
+ * already refuses generic words like "approved", and this refuses a plausible-looking but
+ * non-human name.
+ *
+ * @param {{approver: string, executor: string}} gate
+ * @param {string} declaredExecutor the identity invoking the command
+ */
+export function assertApproverIsNotOperator(gate, declaredExecutor) {
+  const approver = String(gate.approver ?? '');
+  const norm = (v) => String(v ?? '').trim().toLowerCase();
+  if (norm(approver) === norm(gate.executor) || norm(approver) === norm(declaredExecutor)) {
+    fail(
+      'APPROVER_IS_OPERATOR',
+      'The gate approver is the same actor that operates publication. Approval and operation must ' +
+        'be different actors: the human owner approves, the executor operates.',
+    );
+  }
+  if (AGENT_IDENTITY.test(approver)) {
+    fail(
+      'APPROVER_NOT_HUMAN',
+      'The gate approver looks like an AI agent identity. Only a named human may approve publication.',
+    );
+  }
+  return approver;
+}
+
 function shQuote(value) {
   // Single-quote for the shell. Every interpolated value has already passed a strict validator, so
   // this is belt-and-braces rather than the primary defence.
@@ -100,12 +138,13 @@ function shQuote(value) {
 }
 
 /**
- * The command the human actually runs.
+ * The command the operator actually runs.
  *
- * `bash <path>` was wrong, and subtly so: the reviewer verifies a digest, and then the human opens
- * the path AGAIN. Anything running as the same user can replace the file in between, and the human
- * would then execute arbitrary commands under their own git/gh credentials — the exact authority
- * this whole design exists to constrain. Verifying and executing must act on ONE read.
+ * A bare-path invocation is never supported, and the reason is subtle: the reviewer verifies a
+ * digest, and then the operator would open the path AGAIN. Anything running as the same user can
+ * replace the file in between, so arbitrary commands would execute under the operator's own git/gh
+ * credentials — the exact authority this design exists to constrain. Verifying and executing must
+ * act on ONE read.
  *
  * This reads the file once into a shell variable, hashes those captured bytes, and only then runs
  * them with `bash -c`. The path is never reopened, so no window exists between the check and the
@@ -197,6 +236,7 @@ TARGET_BRANCH=${shQuote(target)}
 EXPECTED_HEAD=${shQuote(head)}
 BASE_SHA=${shQuote(gate.baseSha)}
 GATE_ID=${shQuote(gate.gateId)}
+GATE_APPROVER=${shQuote(gate.approver)}
 GATE_EXPIRES=${shQuote(gate.expiresAt)}
 CONFIRMATION=${shQuote(confirmation)}
 REVIEWED_SHAS=(
@@ -206,11 +246,15 @@ ${commits.map((sha) => `  ${shQuote(sha)}`).join('\n')}
 die() { printf '%s\\n' "REFUSED: $*" >&2; exit 1; }
 note() { printf '%s\\n' "$*"; }
 
-# --- 0. a human must be at the keyboard ---------------------------------------------------------
-# Not decoration: without a terminal the typed confirmation below could be fed from a pipe or a
-# here-string by an automated caller. Refusing a non-interactive stdin keeps the confirmation a
-# human act rather than a string an agent can supply.
-[ -t 0 ] || die "this script must be run interactively by a human operator, not from a pipe or an agent"
+# --- 0. the operator must confirm deliberately ---------------------------------------------------
+# This is NOT a "someone at the keyboard" check, and there is deliberately no terminal requirement.
+# In the definitive model the implementation executor operates publication after an exact gate, so
+# demanding a TTY would only block the very actor meant to run this. What must stay deliberate is
+# the confirmation itself: the exact phrase below is bound to this issue and this reviewed head, so
+# it cannot be produced by habit, reused from another run, or satisfied by a generic "approved".
+#
+# The decision lives in the gate — authored by the approver, naming them, bound to these commits.
+# This confirmation is the OPERATOR acknowledging that decision, never a second approval.
 
 # --- 1. volatile checks, defined once and run TWICE ---------------------------------------------
 # Expiry, the origin binding, the live remote and the pull-request set are all state that can change
@@ -321,7 +365,7 @@ check_origin_binding
 check_remote_state
 pr_count_before=$(assert_pr_set "before publishing")
 
-# --- 6. explicit typed confirmation -------------------------------------------------------------
+# --- 6. explicit operator confirmation ----------------------------------------------------------
 note ""
 note "About to publish:"
 note "  repository : $REPO"
@@ -329,10 +373,11 @@ note "  issue      : #$ISSUE"
 note "  branch     : $SOURCE_BRANCH -> $TARGET_BRANCH (pull request only)"
 note "  head       : \${EXPECTED_HEAD:0:12}"
 note "  gate       : $GATE_ID"
+note "  approved by: $GATE_APPROVER (human owner; merge is their decision)"
 note ""
-note "Type exactly:  $CONFIRMATION"
+note "Operator, confirm by sending exactly:  $CONFIRMATION"
 printf 'confirmation> '
-read -r typed
+IFS= read -r typed || die "no confirmation was supplied; nothing was published"
 [ "$typed" = "$CONFIRMATION" ] || die "confirmation did not match; nothing was published"
 
 # --- 7. REVALIDATION: the same checks again, with nothing between them and the push --------------
@@ -347,9 +392,19 @@ check_remote_state
 pr_count_now=$(assert_pr_set "after confirmation")
 [ "$pr_count_now" = "$pr_count_before" ] || die "the pull-request set changed while awaiting confirmation"
 
-# --- 8. FIRST external effect: a normal push of the gated branch ------------------------------------
-note "Pushing $SOURCE_BRANCH (no force)..."
-git push origin "refs/heads/$SOURCE_BRANCH:refs/heads/$SOURCE_BRANCH"
+# --- 8. FIRST external effect: push the REVIEWED COMMIT, by SHA ---------------------------------
+# The refspec names $EXPECTED_HEAD, not HEAD and not the branch name. Pushing a symbolic ref would
+# publish whatever the branch points at when the push executes; naming the SHA means the only thing
+# that can reach the remote is the exact commit the gate approved. There is no force.
+note "Pushing the reviewed commit (no force)..."
+git push origin "$EXPECTED_HEAD:refs/heads/$SOURCE_BRANCH"
+
+# The remote ref must now be exactly the reviewed commit. If it is anything else, something raced
+# this push and the branch on the remote is not what was approved — stop before opening a pull
+# request that would describe the wrong thing.
+landed=$(git ls-remote origin "refs/heads/$SOURCE_BRANCH" | awk 'NR==1 {print $1}')
+[ "$landed" = "$EXPECTED_HEAD" ] \\
+  || die "origin/$SOURCE_BRANCH is $landed, not the reviewed commit $EXPECTED_HEAD; refusing to continue"
 
 # --- 9. SECOND external effect: create or reuse EXACTLY one pull request -----------------------
 # Re-queried after the push, not trusted from before it: the remote may have changed in between,

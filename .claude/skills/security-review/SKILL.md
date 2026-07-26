@@ -12,10 +12,14 @@ The repository policy is authoritative. Read:
 3. `docs/architecture/ai-agent-security-model.md` for AI/model/tool/source work;
 4. the assigned GitHub issue and `.agent-handoff/` file.
 
-Publication is role-separated and human-operated (#91, #93): **no agent publishes.** As executor you
-validate with `agent-publish` and *prepare* a script with `agent-human-publish-script` — see the
-`publication-prepare` skill — and the **human** runs it with the printed verify-and-run command.
-Never push, never run the script, never merge. Reviewed commits are immutable — a finding produces
+Roles and messages are canonical in
+[`.agent-handoff/MESSAGE-PROTOCOL.md`](../../../.agent-handoff/MESSAGE-PROTOCOL.md):
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`.
+
+As Opus you validate with `agent-publish`, *prepare* the artifact with `agent-human-publish-script`
+(see the `publication-prepare` skill), and operate it only after an exact `HUMAN_GATE_GRANTED` from
+Zamp, using the printed verify-and-run command. Never approve your own work, never merge, never
+deploy, never push `main` and never force-push. Reviewed commits are immutable — a finding produces
 a NEW fix-forward commit and a new gate.
 
 As executor:

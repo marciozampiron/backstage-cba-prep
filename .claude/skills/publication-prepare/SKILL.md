@@ -3,12 +3,19 @@ name: publication-prepare
 description: Prepare — never execute — a human-operated publication script for a gated task branch. Use when an issue's commits are reviewed, a human publish gate exists, and the branch needs to reach origin as a pull request. Covers validating the gate, generating the /tmp script, and handing it to the reviewer and the human operator.
 ---
 
-# Prepare a publication script (executor role only)
+# Prepare and operate publication (Opus — executor and operator)
 
-**You are the implementation executor. You prepare. You never publish and you never run the
-script.** If you were asked to review, or if you are acting as the architect/security reviewer, this
-skill does not apply to you — use `publication-review` instead. If you were asked to *run* the
-script, refuse: that is the human operator's action alone.
+**You are Opus: the implementation executor and publication operator.** You prepare the artifact,
+hand it to Codex for read-only review, wait for an explicit `HUMAN_GATE_GRANTED` from Zamp, and only
+then operate it. If you are acting as the architect/security reviewer, this skill does not apply —
+that role is read-only and uses `publication-review`.
+
+Canonical roles and messages: [`../../../.agent-handoff/MESSAGE-PROTOCOL.md`](../../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+**Two things you may never do, whatever you are told in chat:** approve your own work, and merge.
+Approval is Zamp's (`HUMAN_GATE_GRANTED`, naming the exact ordered full SHAs) and merge is Zamp's
+(`MERGE_DECISION`). A generic "approved", "ok" or "pode pushar" — and a Codex `REVIEW_APPROVED` —
+is review feedback, never a gate.
 
 Read first: [`docs/architecture/agent-publication-runbook.md`](../../../docs/architecture/agent-publication-runbook.md)
 §4, [`spec/security-rules.md`](../../../spec/security-rules.md) §1, and
@@ -43,7 +50,8 @@ node bin/cli.js agent-human-publish-script --role executor --executor <agent-id>
   --gate /tmp/cba-gate-<n>.json
 ```
 
-Then **stop and hand off**. Report to the human, in one message:
+Then **stop and hand off** with a `REVIEW_REQUEST` (see
+[`../../../.agent-handoff/templates/message.md`](../../../.agent-handoff/templates/message.md)):
 
 - the path of the generated script and its **SHA-256**;
 - the issue, branch, base SHA and the exact ordered commits it is bound to;
@@ -51,21 +59,31 @@ Then **stop and hand off**. Report to the human, in one message:
 - the exact **verify-and-run command** the tool printed, verbatim. Never hand over `bash <path>`:
   it reopens the file after the reviewer hashed it, so a same-user process could substitute it and
   the human would run arbitrary commands under their own git and GitHub credentials;
-- an explicit statement that you have not run it and will not.
+- `STATUS`, `NEXT_OWNER` (Codex), `PROHIBITED_ACTIONS`, validation evidence and residual risks;
+- an explicit statement that you have not operated it and will not until Zamp's gate arrives.
+
+## Operating it, after the gate
+
+When — and only when — Zamp sends `HUMAN_GATE_GRANTED` naming this exact branch, these exact ordered
+full SHAs, this digest and an unexpired window, run the **verify-and-run command the tool printed**.
+It reads the artifact once, checks the digest and executes those same bytes. Nothing else is a
+supported way to run it.
+
+Then report an `OPERATION_RESULT` with the landed branch ref, the pull request number and CI status,
+no secrets, and `MERGED: no — merge is Zamp's decision`.
 
 ## Hard limits
 
 Do not, under any framing or approval:
 
-- run the script, or any part of it, or reproduce its git/gh commands by hand;
-- push anything — not `main`, not the task branch;
-- open, edit or merge a pull request; deploy; change repository settings or branch protection;
+- run the script before an exact `HUMAN_GATE_GRANTED`, or reproduce its git/gh commands by hand;
+- approve your own work, or treat `REVIEW_APPROVED` or a generic "approved" as a gate;
+- push `main`, force-push, merge, deploy, or change repository settings or branch protection;
 - `chmod +x` the script, move it into the repository, or write it anywhere but `/tmp`;
 - edit a generated script. If it is wrong, fix the generator, add a test, and regenerate.
 
-A generic human "approved", "ok" or "pode pushar" is a **review decision, not a publication
-command**. If the human tells you to publish directly, explain that publication is their action and
-give them the verify-and-run command the tool printed.
+If you are told to publish without a gate that names the exact ordered full SHAs, say so and ask
+for the `HUMAN_GATE_GRANTED`. Being the operator does not make you the approver.
 
 ## If preparation is refused
 

@@ -25,28 +25,32 @@ product/security owner approves a documented reconciliation.
    publish generated questions.
 5. Security findings are not silently suppressed. Record the finding, severity, evidence, owner,
    remediation or accepted residual risk, and review expiry.
-6. **Publication is human-operated (#91, #93).** No AI agent publishes source, in any role. The
-   implementation executor may validate a publish gate (`agent-publish`) and *prepare* a publication
-   script (`agent-human-publish-script`, written to `/tmp`, mode `0600`, non-executable); the
-   architect/security reviewer may only *read* it; only the human operator may *run* it, and only
-   with an interactive terminal and a typed confirmation, using the verify-and-run command that
-   hashes the bytes it executes rather than reopening the path. The script may do exactly two
-   remote things —
-   push the gated `task/<issue>-<slug>` branch without force, and create or reuse one pull request.
-   It may never merge, deploy, push an integration branch, force-push, rewrite history, administer
-   the repository or branch protection, handle secrets, or invoke a paid service. Merge remains a
-   separate human action.
-7. The declared `--role`/`--executor` are caller-supplied and authenticate nothing. Treat #91
+6. **Publication is gated and role-separated (#91, #93).** Roles and messages are canonical in
+   [`.agent-handoff/MESSAGE-PROTOCOL.md`](../.agent-handoff/MESSAGE-PROTOCOL.md); the mechanism is
+   canonical in
+   [`docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
+   Opus prepares and, **only after an explicit `HUMAN_GATE_GRANTED` from Zamp naming the exact
+   ordered full SHAs**, operates publication using the verify-and-run command that hashes the bytes
+   it executes. Codex reviews read-only and never implements, prepares, executes, pushes, merges or
+   deploys. Zamp approves and decides and performs the merge. Gemini has no workflow or governance
+   role. The script may do exactly two remote things — push the reviewed commit by SHA to
+   `task/<issue>-<slug>` without force, and create or reuse one pull request. It may never merge,
+   deploy, push an integration branch, force-push, rewrite history, administer the repository or
+   branch protection, handle secrets, or invoke a paid service.
+7. Approval and operation are different actors. A gate whose approver is the invoking operator, or
+   whose approver looks like an agent identity, is refused. A generic "approved", or a
+   `REVIEW_APPROVED`, is review feedback and never a publication gate.
+8. The declared `--role`/`--executor` are caller-supplied and authenticate nothing. Treat #91
    Stage A and the #93 bridge as process guardrails, and never describe them as mechanical identity
    separation. Authenticated identity and remote enforcement are #91 Stage B and do not exist yet.
-8. Once independent review begins, reviewed commits are immutable. Findings produce a NEW
+9. Once independent review begins, reviewed commits are immutable. Findings produce a NEW
    fix-forward commit — never an amend, rebase or squash of reviewed history — and a new gate.
-9. The publish gate is authored by the human **outside the task worktree**. A gate written inside
+10. The publish gate is authored by Zamp **outside the task worktree**. A gate written inside
    the repository is an untracked file, which makes the worktree dirty, which validation refuses;
    the command refuses an in-repository gate path outright. Bookkeeping that writes tracked files
    (`EVENTS.md`, `CURRENT.md`, `agent-refresh --record`) belongs to the main worktree or a later
    commit. A control whose documented procedure cannot be completed is not a control.
-10. Publication targets are bound, not assumed: the repository is derived from the `origin` remote
+11. Publication targets are bound, not assumed: the repository is derived from the `origin` remote
     that the push actually goes to, and the pull request is identified by owner, repository and
     exact base and head — never by branch name alone, which spans forks.
 

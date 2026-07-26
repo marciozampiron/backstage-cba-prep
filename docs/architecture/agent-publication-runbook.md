@@ -21,20 +21,40 @@ control against a caller who declines to run it. Stage A checks role, branch, ex
 human decision against machine-readable state as a **local advisory pre-flight**; Stage B places the
 authoritative enforcement on the remote, where a local bypass cannot reach it.
 
-## 2. Roles
+## 2. Roles — the definitive model
 
-| Role | May | May never |
+**Zamp approves. Opus operates. Codex reviews. Nobody holds two of those at once.**
+
+| Actor | May | May never |
 | --- | --- | --- |
-| Human product/security owner | Write a gate naming themselves; **run** the prepared script; merge the PR | Delegate script execution or merge authority to an agent |
-| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish`; **prepare** a publication script | Push anything, merge, deploy, spend, **run the prepared script**, publish without a gate |
-| Architect/security reviewer | Review by full SHA, **read** a prepared script, create roadmap issues, recommend a gate | Publish any source branch, merge, act as executor, **prepare or run a script** |
-| Independent reviewer | Reproduce evidence, report findings by severity | Repair findings silently; publish |
+| **Zamp** — human product/security owner | Author a gate naming themselves; approve; accept residual risk; **decide and perform the merge** | Delegate approval, risk acceptance or merge to any agent |
+| **Opus** — implementation executor and publication operator | Commit on `task/<issue>-<slug>`; validate; prepare the publication script; **run it after an exact human gate** | Approve its own work, author its own gate, merge, deploy, push an integration branch, force-push, administer the repository |
+| **Codex** — architect and security reviewer | Read-only architecture and security review; identify commits by full SHA; recommend a gate | Implement, prepare a script, execute anything, push, merge, deploy |
+| **Gemini** | Nothing in this workflow | Hold any workflow or governance role |
 
-The three verbs are the point: **prepare**, **read**, **run** are held by three different actors and
-happen at three different times. That separation is by process and by artifact, not by credential —
-see §3 and §4.
+The sequence is fixed: **Opus prepares → Codex reviews → Zamp approves → Opus executes → Zamp
+decides and performs the merge.**
 
-One human may hold several human roles; the workflow keeps the records separate.
+Three separations carry the weight, and each is worth stating plainly:
+
+- **Approval is separate from operation.** Opus runs the publication, so the gate must come from
+  someone else. `agent-human-publish-script` refuses a gate whose approver is the invoking executor
+  (`APPROVER_IS_OPERATOR`) or whose approver looks like an agent identity (`APPROVER_NOT_HUMAN`),
+  on top of #91's refusal of generic approvals like "approved" or "lgtm". An agent agreeing with
+  itself is not a decision.
+- **Review is separate from implementation.** Codex reads; it never writes, prepares or runs. Both
+  publication commands refuse its declared role before reading a gate, running git, or writing a
+  file.
+- **Publication is separate from merge.** The script can push the reviewed commit and open one pull
+  request. Merge is Zamp's, always, and no code path here can perform it.
+
+**Gemini has no role in this workflow or in governance.** It remains a supported model provider for
+question authoring (`src/lib/llm.js`, `src/commands/generate.js`) and a supported CLI for tutoring
+— those are product features and are unaffected. It simply never appears as an actor in
+preparation, review, approval, publication or merge.
+
+One human may hold several human roles; the workflow keeps the records separate. What no one may do
+is hold both an approving role and an operating role for the same publication.
 
 ## 3. Stage A — LOCAL PRE-FLIGHT VALIDATION ONLY
 
@@ -85,13 +105,19 @@ Stage A validates and stops, and Stage B does not exist yet. The gap in between 
 a human typing publication commands from memory against a chat approval — which is precisely the
 shape of the 2026-07-26 incident. The bridge replaces that with a **bounded, reviewable artifact**.
 
-### 4.1 The three verbs, three actors, three moments
+### 4.1 Five steps, four actors, one direction
 
-| Verb | Actor | Command / action | What it is not |
+| # | Step | Actor | Action |
 | --- | --- | --- | --- |
-| **Prepare** | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-gate-<n>.json` | not publishing; nothing leaves the machine |
-| **Read** | architect/security reviewer | open the file, confirm the printed SHA-256 | not implementing, not executing |
-| **Run** | human operator | the verify-and-run command printed at preparation, which hashes the bytes it executes | not merging; never a bare `bash <path>` |
+| 1 | **Prepare** | Opus | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-gate-<n>.json` — writes the artifact, publishes nothing |
+| 2 | **Review** | Codex | reads the file, confirms the printed SHA-256, reports findings — read-only |
+| 3 | **Approve** | Zamp | authors or confirms the gate naming themselves and the exact ordered commits |
+| 4 | **Execute** | Opus | runs the verify-and-run command printed in step 1, which hashes the bytes it executes |
+| 5 | **Merge** | Zamp | decides and performs the merge, after required checks |
+
+Steps 1 and 4 are both Opus, and that is deliberate — but step 3 sits between them and cannot be
+supplied by Opus. A finding in step 2 sends the work back to step 1 as a **new** commit; reviewed
+commits are never amended.
 
 `agent-publish` is unchanged and remains advisory local validation (decision 1 of #93). The
 generator is a separate command precisely so that "validate" can never quietly grow into "publish".
@@ -135,9 +161,9 @@ authority this design exists to constrain. Verifying and executing must act on o
 mismatch exits non-zero from a subshell rather than only printing a warning. A test performs the
 substitution and asserts that the swapped script neither runs nor leaves a side effect.
 
-### 4.3 What the script does when the human runs it
+### 4.3 What the artifact does when the operator runs it
 
-Everything the script may touch is bound at generation time from the validated gate — repository,
+Everything the artifact may touch is bound at generation time from the validated gate — repository,
 issue, source branch, target branch, the ordered reviewed SHAs, the expected HEAD, the expiry. It
 then re-verifies all of it against live state:
 
@@ -161,13 +187,23 @@ then re-verifies all of it against live state:
    would otherwise look like the right one. The script requires zero or exactly one open match, not
    cross-repository, owned by the same owner, with exactly the reviewed base and head. Doing this
    *before* the push means a mismatch costs nothing — the branch is not published yet;
-9. the human types `publish <issue> <head12>` exactly;
+9. **the operator confirms.** The exact phrase `publish <issue> <head12>` is bound to this issue
+   and this reviewed head, so it cannot be produced by habit, reused from another run, or satisfied
+   by a generic "approved". This is an acknowledgement by the operator, **not** a second approval —
+   the human decision is the gate, and the approver's name is displayed at this prompt so the two
+   cannot be confused. There is deliberately no terminal check: requiring a TTY would block the
+   executor, which is the actor meant to run this;
 10. **everything volatile is re-checked.** Expiry, the origin binding, the live remote base and
     head, the pull-request set, HEAD and worktree cleanliness are all state that can change while a
     human reads a prompt — a terminal left open overnight would otherwise push against an expired
     gate or a moved base. The volatile checks are bash functions defined once and called twice, so
     the two passes cannot drift apart, and the second pass runs with nothing between it and the push;
-11. **first external effect**: `git push origin refs/heads/<branch>:refs/heads/<branch>` — no force;
+11. **first external effect**: `git push origin <EXPECTED_HEAD>:refs/heads/<branch>` — the refspec
+    names the reviewed **SHA**, not a symbolic ref. Pushing `refs/heads/<branch>` would publish
+    whatever the branch points at when the push executes; naming the commit means only the approved
+    commit can reach the remote. There is no force. The landed ref is then read back and must equal
+    `EXPECTED_HEAD` exactly, or the script stops before opening a pull request that would describe
+    something else;
 12. **second external effect**: the pull-request set is re-asserted against the state that now
     exists, and exactly one pull request is created or reused. It never touches a fork's pull
     request, an ambiguous set, or one with a different base or head, and it never opens a second
@@ -206,7 +242,7 @@ worktree before generation.
 | --- | --- |
 | Authenticated role separation | `--role` is caller-supplied. An agent that ignores this document is not stopped by it. |
 | A guarantee no agent runs the script | Non-executable mode and the TTY check raise the cost and make it deliberate; they do not make it impossible. |
-| Protection if the human ignores the verify-and-run command | A bare `bash <path>` still works and still reopens the file. The integrity guarantee is only as good as the command actually used. |
+| Protection if the operator ignores the verify-and-run command | A bare-path invocation is never supported, but nothing prevents one; it would reopen the file. The integrity guarantee is only as good as the command actually used. |
 | Replay protection | The gate is validated, never consumed. Expiry and the exact-HEAD check bound the window instead. |
 | Protection of `main` | Unchanged: `enforce_admins` is still `false`. Only Stage B closes it. |
 | A single external effect | There are **two** — the push and the pull request. Both are bounded and checked before and after, but "one mutation" would be inaccurate. |

@@ -63,7 +63,7 @@ const HELP = `
     agent-check    Check AI orchestration readiness (dry-run); --smoke for a paid live run
     agent-refresh  Check agent handoff state before edit/commit/push (no network)
     agent-publish  Validate a publish gate locally (Stage A: no push, no PR, no merge)
-    agent-human-publish-script  Prepare a /tmp script for a HUMAN to run (never executed here)
+    agent-human-publish-script  Prepare the reviewed publication artifact (prepares only; never runs it)
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -103,6 +103,7 @@ const HELP = `
     --yes           skip the smoke confirmation prompt
 
   ${c.bold('agent-publish options:')}
+    ${c.gray('(validation only: no push, no PR, no merge, no credential)')}
     ${c.gray('(only a DECLARED role=executor proceeds; declaration is not authentication — Stage B)')}
     --role <role>   invoking role (or CBA_AGENT_ROLE); architect/reviewer refuse before network
     --executor <id> invoking agent identity (or CBA_AGENT_ID); must match the gate
@@ -110,13 +111,17 @@ const HELP = `
     ${c.gray('Stage A validates only: it never pushes, opens a PR, merges or uses a credential.')}
 
   ${c.bold('agent-human-publish-script options:')}
-    ${c.gray('(prepares a script; it is NEVER executed here — the human runs it with bash <path>)')}
+    ${c.gray('(prepares only; it never runs the artifact. Opus prepares -> Codex reviews ->')}
+    ${c.gray(' Zamp approves -> Opus executes -> Zamp decides/performs merge.')}
+    ${c.gray(' Canonical contract: .agent-handoff/MESSAGE-PROTOCOL.md)')}
     --role <role>   invoking role (or CBA_AGENT_ROLE); only a declared executor may prepare
     --executor <id> invoking agent identity (or CBA_AGENT_ID); must match the gate
-    --gate <path>   publish-gate manifest naming the human approver and exact commits
-    --repo <o/r>    owner/repo (default: derived from the origin remote)
+    --gate <path>   publish-gate manifest, authored by Zamp OUTSIDE the worktree, naming the
+                    approving human and the exact ordered commits
+    --repo <o/r>    owner/repo (must match the origin remote; derived from it by default)
     --out <path>    output path under /tmp (default: /tmp/cba-publish-<issue>-<head>.sh)
-    ${c.gray('the file is written 0600 and non-executable; no network call is made')}
+    ${c.gray('written 0600 and non-executable; no network call. Operate it only after an')}
+    ${c.gray('explicit HUMAN_GATE_GRANTED, using the printed verify-and-run command.')}
 
   ${c.bold('agent-refresh options:')}
     ${c.gray('(no network: reads .agent-handoff and local git state)')}

@@ -12,8 +12,8 @@
 // network dependency could exist. That ordering is the control; the honesty about what the check
 // proves (a declared claim, not an authenticated identity) is part of it.
 //
-// #93 note: the interim bridge to actual publication is `agent-human-publish-script`, which PREPARES
-// a script for a HUMAN to run. This command stays validation-only and gained no publish path.
+// #93 note: the interim bridge to actual publication is `agent-human-publish-script`, which only
+// PREPARES the reviewed artifact. This command stays validation-only and gained no publish path.
 import fs from 'node:fs';
 import path from 'node:path';
 import { c } from '../lib/ui.js';
@@ -52,7 +52,7 @@ export async function runAgentPublish(opts = {}) {
   } catch (err) {
     if (!(err instanceof GateError)) throw err;
     printRefusal(err);
-    console.error(c.gray('No gate was read and no git command ran. Ask the executor to validate, or the human owner to merge.'));
+    console.error(c.gray('No gate was read and no git command ran. Validation is the executor\'s; merge is Zamp\'s.'));
     return EXIT.ROLE_REFUSED;
   }
 
@@ -108,7 +108,8 @@ export async function runAgentPublish(opts = {}) {
 
   console.log(
     `\n${c.gray('Stage A is validation only: nothing was pushed, no pull request was touched and no ')}` +
-      `${c.gray('credential was used. Publication and merge belong to Stage B and to the human owner.')}`,
+      `${c.gray('credential was used. To publish, prepare the artifact with agent-human-publish-script ')}` +
+      `${c.gray('and operate it only after a HUMAN_GATE_GRANTED. Merge is always Zamp\'s decision.')}`,
   );
   return EXIT.OK;
 }

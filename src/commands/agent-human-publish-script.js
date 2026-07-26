@@ -1,14 +1,19 @@
-// `agent-human-publish-script` (#93) — PREPARE a publication script for a HUMAN to run.
+// `agent-human-publish-script` (#93) — PREPARE the reviewed publication artifact.
 //
 // This command is the interim bridge between #91 Stage A (advisory local validation) and #91
-// Stage B (authenticated bot identity plus remote enforcement). It writes a short-lived, bounded,
-// reviewable bash script to /tmp and stops. It does not run it.
+// Stage B (authenticated operator identity plus remote enforcement). It writes a short-lived,
+// bounded, reviewable bash artifact to /tmp and stops. It never runs it.
 //
-// THE THREE ROLES, MECHANICALLY SEPARATED IN TIME:
-//   - the implementation executor PREPARES the script (this command);
-//   - the architect/security reviewer READS it — reviewing is not implementing or executing;
-//   - the HUMAN operator runs it explicitly with the verify-and-run command this prints, which
-//     reads the file once, checks its digest, and executes those same bytes.
+// FOUR ROLES, SEPARATED IN TIME — canonical in .agent-handoff/MESSAGE-PROTOCOL.md:
+//   Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge
+//   - Opus PREPARES the artifact (this command), and later operates it, but only after an explicit
+//     HUMAN_GATE_GRANTED from Zamp naming the exact ordered full SHAs;
+//   - Codex READS it — reviewing is never implementing or executing, and a REVIEW_APPROVED never
+//     authorizes publication;
+//   - Zamp approves, and decides and performs the merge.
+//
+// Approval is separated from operation mechanically, not only by prose: a gate whose approver is
+// the invoking operator, or looks like an agent identity, is refused.
 //
 // WHAT THIS COMMAND CANNOT DO. It performs no network call, spawns no shell, and issues no Git or
 // GitHub mutation. Its git usage is inherited from the Stage A observer (`rev-parse`, `status`,
@@ -25,6 +30,7 @@ import { c } from '../lib/ui.js';
 import { assertPublishingRole, parseGate, validateGate, GateError } from '../lib/publish-gate.js';
 import { defaultRunGit, readRepoState, deriveRepoSlug } from '../lib/repo-state.js';
 import {
+  assertApproverIsNotOperator,
   assertSafeOutputPath,
   assertRepoSlug,
   buildPublicationScript,
@@ -45,6 +51,42 @@ export const SCRIPT_MODE = 0o600;
 function printRefusal(command, err) {
   console.error(`${c.bold(`${command} refused`)} [${err.code ?? 'REFUSED'}]`);
   console.error(err.message);
+}
+
+/**
+ * Read the gate through ONE file descriptor.
+ *
+ * The path checks earlier in this command are checks on a NAME. Between checking the name and
+ * reading it, the name can be repointed — the classic time-of-check/time-of-use gap. Opening once
+ * with `O_NOFOLLOW`, verifying the open descriptor with `fstat`, and reading from that same
+ * descriptor means the bytes parsed are provably the bytes of the object that was inspected.
+ * `O_NOFOLLOW` makes the kernel refuse a symlink outright rather than trusting an earlier `lstat`.
+ */
+function readGateThroughOneFd(fsImpl, gatePath) {
+  const C = fsImpl.constants ?? fs.constants;
+  let fd;
+  try {
+    fd = fsImpl.openSync(gatePath, C.O_RDONLY | C.O_NOFOLLOW);
+  } catch (err) {
+    if (err?.code === 'ELOOP' || err?.code === 'EMLINK') {
+      throw new GateError('GATE_PATH_SYMLINK', 'The publish gate path is a symlink; refusing to follow it. Pass the real path.');
+    }
+    throw err;
+  }
+  try {
+    const st = fsImpl.fstatSync(fd);
+    if (!st.isFile()) {
+      throw new GateError('GATE_NOT_REGULAR_FILE', 'The publish gate must be a regular file.');
+    }
+    // Read from the SAME descriptor — never re-open by path.
+    return fsImpl.readFileSync(fd, 'utf8');
+  } finally {
+    try {
+      fsImpl.closeSync(fd);
+    } catch {
+      /* closing is best effort; a failure here cannot change what was already read */
+    }
+  }
 }
 
 function defaultOutputPath(issue, head) {
@@ -162,8 +204,11 @@ export async function runAgentHumanPublishScript(opts = {}) {
   let result;
   let gate;
   try {
-    const raw = fsImpl.readFileSync(gatePath, 'utf8');
+    const raw = readGateThroughOneFd(fsImpl, gatePath);
     gate = parseGate(raw);
+    // Approval and operation must be different actors. The executor operates publication, so a gate
+    // it could have approved itself would be no decision at all.
+    assertApproverIsNotOperator(gate, executor);
     const repoState = readRepoState(runGit, fsImpl, cwd, gate);
     result = validateGate({ gate, role, executor, repo: repoState, nowMs: now() });
   } catch (err) {
@@ -270,10 +315,12 @@ export async function runAgentHumanPublishScript(opts = {}) {
   console.log(`  script         : ${outputPath} ${c.gray('(mode 600, not executable)')}`);
   console.log(`  sha256         : ${digest}`);
 
-  console.log(`\n${c.bold('Next, in order')}`);
-  console.log('  1. the architect/security reviewer READS the script and confirms the sha256 above;');
-  console.log('  2. the HUMAN operator runs it with the verify-and-run command below;');
-  console.log('  3. the human merges the pull request separately, after checks and review.');
+  console.log(`\n${c.bold('Next, in order')} ${c.gray('(canonical: .agent-handoff/MESSAGE-PROTOCOL.md)')}`);
+  console.log('  1. Opus -> Codex   REVIEW_REQUEST      hand over these SHAs and the sha256 above;');
+  console.log('  2. Codex -> Opus   FINDINGS or REVIEW_APPROVED   read-only; never a publication gate;');
+  console.log('  3. Zamp -> Opus    HUMAN_GATE_GRANTED  exact branch, ordered full SHAs, digest, expiry;');
+  console.log('  4. Opus            operate it with the verify-and-run command below — only after step 3;');
+  console.log('  5. Zamp            MERGE_DECISION      merge is Zamp\'s, after required checks.');
 
   // NOT `bash <path>`. That would reopen the file after the reviewer hashed it, and anything
   // running as the same user could have replaced it in between — the human would then execute
@@ -286,8 +333,9 @@ export async function runAgentHumanPublishScript(opts = {}) {
       c.gray('gap between the review and the execution.'),
   );
   console.log(
-    `\n${c.gray('No agent may run this script. It can only push the gated branch and open or reuse one ')}` +
-      `${c.gray('pull request — never merge, deploy, push main, force-push or change repository settings.')}`,
+    `\n${c.gray('This artifact can only push the reviewed commit to the gated branch and open or reuse ')}` +
+      `${c.gray('one pull request — never merge, deploy, push main, force-push or change repository ')}` +
+      `${c.gray('settings. A generic "approved", or a REVIEW_APPROVED, is not a gate.')}`,
   );
   return EXIT.OK;
 }
