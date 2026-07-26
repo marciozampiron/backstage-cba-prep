@@ -218,6 +218,35 @@ Two latent defects surfaced while fixing these, both mine:
   clock passed it, and they started failing for a reason unrelated to what they test. Runtime tests
   now build their window against the real clock via `runnableScript()`.
 
+## Work log — Codex FINDINGS on d6ea88d (round 7), confirmed
+
+One MEDIUM, blocking because the file is normative security documentation.
+
+`publish-gates/README.md` still carried three sentences written before the two-document model and
+never revisited: it opened by calling "a publish gate" the machine-readable form of a publication
+decision, said that "in **Stage B** the same gate becomes the input to real publication", and
+described "A gate" generically as the machine-readable form of a `HUMAN_GATE_GRANTED`. Each had the
+right vocabulary and the wrong meaning, which is why every presence-based check passed. No runtime
+bypass — the implementation fails closed — but it would have trained a Stage B implementation to
+authorize publication with the manifest that authorizes nothing.
+
+Fixed: Stage A is attributed to the **review scope manifest** by name and stated to authorize
+nothing, ever; Stage B is attributed to an **authenticated execution gate**, with an explicit note
+that it does *not* promote the review scope and that doing so would be a security defect; only the
+execution gate is called the machine-readable `HUMAN_GATE_GRANTED`, and the review scope is stated
+not to be one. The lifecycle step and the opening paragraph were corrected the same way.
+
+Three semantic regressions were added rather than more presence checks: a conflation scan over all
+active sources, a per-stage attribution assertion, and a **positive control that feeds the guard the
+two sentences that actually shipped**, so if the matchers ever stop flagging them the test fails
+instead of going quiet. The four patterns the scan matches live in
+`test/governance-model.test.js` (`CONFLATION_PATTERNS`) and are deliberately **not** restated here:
+writing them out in an active document trips the guard they define, which is itself evidence that
+the guard works on prose rather than on keywords.
+
+The #91 contract sentence "A gate is bound to a specific commit sequence" is preserved verbatim; the
+two-document precision is added around it rather than replacing it.
+
 ## Status
 
 Implementation complete, **local commits only, nothing published**. Next owner: **Codex**, for

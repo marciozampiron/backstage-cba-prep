@@ -1,6 +1,8 @@
 # Publish Gates (#91, #93)
 
-A publish gate is the machine-readable form of a human publication decision.
+This folder documents the **review scope manifest**. It is not the authorization to publish — that
+is the **execution gate**, the machine-readable form of a `HUMAN_GATE_GRANTED`, described below and
+in [`../templates/message.md`](../templates/message.md).
 
 ## Two documents, not one
 
@@ -40,21 +42,29 @@ tracked and not ignored, so a gate written here would be an untracked file, whic
 dirty, which validation then refuses. `agent-human-publish-script` refuses an in-repository gate
 path outright (`GATE_PATH_IN_REPO`) so the protocol cannot drift back into being unexecutable.
 
-In **Stage A** the gate is only ever *validated*: `agent-publish` refuses to VALIDATE without one
-and refuses anything the gate does not name exactly. It does not publish, does not open a pull
-request and does not consume the gate. The `executor` field is compared against a **caller-declared**
-identity — nothing authenticates it, so the field expresses intent, not proof.
+In **Stage A** the **review scope manifest** is only ever *validated*: `agent-publish` refuses to
+VALIDATE without one and refuses anything the review scope does not name exactly. It does not
+publish, does not open a pull request and does not consume anything. The `executor` field is compared
+against a **caller-declared** identity — nothing authenticates it, so the field expresses intent, not
+proof. **The review scope authorizes nothing**, in Stage A or ever.
 
-In **Stage B** the same gate becomes the input to real publication under the executor bot
-credential, with live remote checks and authoritative, idempotent consumption.
+In **Stage B** publication is authorized by an **authenticated execution gate**, consumed
+idempotently under the executor bot credential with live remote checks. Stage B does *not* promote
+the review scope into an authorization — that conflation is exactly what made the first version of
+this bridge circular, and a Stage B implementation that publishes on the strength of a review scope
+would be a security defect.
 
-A gate is **evidence of a decision**, not a credential: it contains no token, no account id and no
-administrative endpoint. It is the machine-readable form of a `HUMAN_GATE_GRANTED` message — see
-[`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md), the canonical role and message contract.
+An **execution gate** is **evidence of a decision**, not a credential: it contains no token, no
+account id and no administrative endpoint. It is the machine-readable form of a
+`HUMAN_GATE_GRANTED` message — see [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md), the canonical
+role and message contract. The review scope manifest is **not** a `HUMAN_GATE_GRANTED` and is never
+its machine-readable form.
 
-The `approver` must be a named human who is **not** the operator: `agent-human-publish-script`
-refuses a gate whose approver equals the invoking executor (`APPROVER_IS_OPERATOR`) or looks like an
-agent identity (`APPROVER_NOT_HUMAN`). Approval and operation are different actors.
+In both documents the `approver` must be the canonical human approver and **not** the operator:
+`agent-human-publish-script` refuses a review scope whose approver equals the invoking executor
+(`APPROVER_IS_OPERATOR`), looks like an agent identity (`APPROVER_NOT_HUMAN`) or is not the canonical
+approver (`APPROVER_NOT_CANONICAL`), and the artifact applies the same requirement to the execution
+gate. Approval and operation are different actors.
 
 ## Schema
 
@@ -89,7 +99,7 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 
 1. The executor finishes work on `task/<issue>-<slug>` in its own worktree.
 2. An independent reviewer reads the branch and reports findings, identifying commits by full SHA.
-3. The **human owner** writes the gate outside the worktree, naming themselves as `approver`.
+3. **Zamp** writes the **review scope** outside the worktree, naming themselves as `approver`.
 4. The executor runs `agent-publish` — it **validates locally and stops**. Validation fails closed
    on any drift.
 
@@ -113,8 +123,9 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 Until Stage B exists, Opus performs the push under Zamp's execution gate, and Zamp performs the
 merge. Neither is authorized by the review scope alone.
 
-A gate is bound to a specific commit sequence. A new commit — including a fix-forward after
-review — needs a new gate.
+A gate is bound to a specific commit sequence, and that holds for both documents. A new commit —
+including a fix-forward after review — needs a new review scope and a new execution gate, and because
+the execution gate names the artifact digest, regenerating the artifact invalidates it too.
 
 ## What a gate does NOT do (Stage A)
 

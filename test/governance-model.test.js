@@ -789,3 +789,61 @@ test('the execution gate is re-checked immediately before the push, after every 
     `the gate check and the push must be consecutive statements; found: ${executable.join(' | ')}`,
   );
 });
+
+/* ================= the two manifests must not be conflated, semantically ======================= */
+//
+// Presence checks passed while `publish-gates/README.md` still said "in Stage B the same gate becomes
+// the input to real publication" and described "A gate" as the machine-readable form of
+// HUMAN_GATE_GRANTED. Both sentences contained the right vocabulary and the wrong meaning. These
+// tests judge the CLAIM: which document authorizes, and which one Stage B will consume.
+
+/** Sentences that promote the review scope into an authorization, however they are phrased. */
+const CONFLATION_PATTERNS = [
+  { label: 'the same gate carried into Stage B', re: /\bthe same gate\b/i },
+  { label: 'the review scope becoming a publication input', re: /review scope[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b/i },
+  { label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED', re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i },
+  { label: 'the review scope authorizing an operation', re: /review scope[^.]{0,60}\bauthoriz\w+\b(?![^.]{0,40}\bnothing\b)/i },
+];
+
+test('no document promotes the review scope into an authorization', () => {
+  const violations = [];
+  for (const rel of SOURCES) {
+    for (const { line, text } of blocksOf(read(rel), { markdown: rel.endsWith('.md') })) {
+      for (const { label, re } of CONFLATION_PATTERNS) {
+        if (!re.test(text)) continue;
+        // A sentence that explicitly denies the conflation is the fix, not the defect.
+        if (/\bnot\b|\bnever\b|\bnothing\b|\bwould be a security defect\b/i.test(plain(text))) continue;
+        violations.push(`${rel}:${line}: [${label}] ${text.trim().slice(0, 140)}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, [], `the two manifests are conflated:\n${violations.join('\n')}`);
+});
+
+test('POSITIVE CONTROL: the conflation patterns catch the exact sentences that shipped', () => {
+  // These are verbatim from the version this test was written against. If the matchers ever stop
+  // flagging them, the guard has become decorative.
+  const shipped = [
+    'In **Stage B** the same gate becomes the input to real publication under the executor bot credential.',
+    'A gate is **evidence of a decision**, not a credential: it is the machine-readable form of a `HUMAN_GATE_GRANTED` message.',
+  ];
+  for (const sentence of shipped) {
+    const hit = CONFLATION_PATTERNS.some(({ re }) => re.test(sentence));
+    assert.ok(hit, `no pattern flags: ${sentence}`);
+  }
+});
+
+test('the gate document attributes each stage to the right manifest', () => {
+  const flat = read('.agent-handoff/publish-gates/README.md').replace(/\s+/g, ' ');
+  // Stage A validates the review scope, by that name.
+  assert.match(flat, /In \*\*Stage A\*\* the \*\*review scope manifest\*\* is only ever \*validated\*/);
+  assert.match(flat, /The review scope authorizes nothing/i);
+  // Stage B authorizes with an authenticated EXECUTION gate, not "the same gate".
+  assert.match(flat, /In \*\*Stage B\*\* publication is authorized by an \*\*authenticated execution gate\*\*/);
+  assert.match(flat, /Stage B does \*not\* promote the review scope into an authorization/i);
+  // Only the execution gate is the machine-readable HUMAN_GATE_GRANTED.
+  assert.match(flat, /An \*\*execution gate\*\*[\s\S]{0,240}machine-readable form of a `HUMAN_GATE_GRANTED`/);
+  // The opening line must not make the same generic claim about "a publish gate".
+  assert.match(flat, /This folder documents the \*\*review scope manifest\*\*\. It is not the authorization to publish/);
+  assert.match(flat, /The review scope manifest is \*\*not\*\* a `HUMAN_GATE_GRANTED`/);
+});
