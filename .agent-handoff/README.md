@@ -69,7 +69,11 @@ Do not hardcode published (`origin/main`) **or** unpublished/amendable local com
 
 ## Publication protocol (#91)
 
-Publication authority is bound mechanically, not by prose. The 2026-07-26 incident — a generic
+Stage A is **local advisory pre-flight validation only**. It never publishes, never opens a pull
+request, never consumes a gate and never authenticates identity — the declared role and executor
+come from the caller. Authoritative separation is Stage B (executor bot credential, live remote
+checks, idempotent gate consumption, branch protection). **Until Stage B ships, publication and
+merge are human actions.** The 2026-07-26 incident — a generic
 human approval read by the architect agent as permission to `git push origin main`, followed by two
 agents racing on `git commit --amend` in a shared worktree — is the reason.
 
@@ -85,12 +89,16 @@ Mechanics:
 2. The human owner writes a publish gate under `.agent-handoff/publish-gates/` (schema in that
    folder's README) naming themselves, the executor, the base SHA and the exact ordered commits.
 3. The executor runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
-   It refuses architect/reviewer roles *before any network call*, refuses `main` as a source, and
-   fails closed on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an
-   expired gate or a stale review SHA.
-4. The command opens or updates a pull request. **It has no merge path.**
-5. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
-   That hook is defense in depth; remote branch protection (#91 Stage B) is authoritative.
+   It **validates locally and prints the plan** — it refuses architect/reviewer roles before `.env`
+   loads, before the gate is read and before git runs, refuses `main` as a source, and fails closed
+   on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an expired gate, a
+   `reviewedShas` set that does not equal the commits, a shared worktree or a drifted `origin/main`.
+4. **Validation is not publication.** Stage A stops there. Once Stage B exists, the executor bot
+   credential pushes the task branch and opens/updates the PR; today that step is a human action.
+5. Merging is always a human action.
+6. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+   That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
+   (#91 Stage B) is authoritative.
 
 ## Push gate
 

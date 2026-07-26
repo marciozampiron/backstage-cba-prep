@@ -13,6 +13,7 @@ import {
   validateGate,
   assertNamedApprover,
   evidenceFor,
+  safeLabel,
   GateError,
 } from '../src/lib/publish-gate.js';
 
@@ -448,14 +449,131 @@ test('Stage A promises no publisher: no push, PR or merge capability exists in t
   // ...and it says what it is.
   assert.match(raw, /LOCAL PRE-FLIGHT VALIDATION ONLY/);
 });
-test('documentation contains no permitted "git push origin main" instruction', async () => {
+test('documentation never claims Stage A publishes, authenticates or consumes a gate', async () => {
   const { readFileSync } = await import('node:fs');
-  for (const rel of ['../.agent-handoff/COMMANDS.md', '../.agent-handoff/README.md', '../AGENTS.md']) {
+  const docs = {
+    'COMMANDS.md': '../.agent-handoff/COMMANDS.md',
+    'README.md': '../.agent-handoff/README.md',
+    'AGENTS.md': '../AGENTS.md',
+    'publish-gates/README.md': '../.agent-handoff/publish-gates/README.md',
+    'runbook': '../docs/architecture/agent-publication-runbook.md',
+  };
+  // Forbidden CONCEPTS, not just one string: each is a capability Stage A does not have.
+  const forbidden = [
+    { label: 'agent pushing main', re: /agent[^.\n]{0,40}(may|can|must)[^.\n]{0,20}push[^.\n]{0,20}main/i },
+    { label: 'stage A opening a PR', re: /(command|agent-publish)[^.\n]{0,40}opens? (or updates? )?a pull request/i },
+    { label: 'publication authority bound mechanically', re: /publication authority is bound mechanically/i },
+    { label: 'removed --dry-run flag', re: /agent-publish[^\n]{0,80}--dry-run/i },
+    { label: 'agent-publish refusing to publish (implies it can)', re: /agent-publish[^.\n]{0,30}refuses to publish/i },
+  ];
+  for (const [name, rel] of Object.entries(docs)) {
     const text = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    for (const { label, re } of forbidden) {
+      assert.ok(!re.test(text), `${name} still claims: ${label}`);
+    }
     for (const line of text.split('\n')) {
       if (!line.includes('git push origin main')) continue;
-      // Only the incident narrative may mention it, never as an instruction.
-      assert.match(line, /incident|architect|never|refused|not allowed/i, `permitted push instruction found: ${line}`);
+      // A line may MENTION the command when narrating the incident, prohibiting it, or warning
+      // that it is still possible until Stage B. It may never INSTRUCT it.
+      assert.match(
+        line,
+        /incident|architect|never|refused|not allowed|remains possible|must not/i,
+        `${name}: permitted push instruction: ${line}`,
+      );
     }
+  }
+  // ...and the honest contract is stated where an agent will actually read it.
+  const readme = readFileSync(new URL(docs['README.md'], import.meta.url), 'utf8');
+  // Wrapped prose: normalise whitespace before matching so a line break cannot hide the contract.
+  const flat = readme.replace(/\s+/g, ' ');
+  assert.match(flat, /local advisory pre-flight validation only/i);
+  assert.match(flat, /publication and merge are human actions/i);
+  assert.match(flat, /never publishes, never opens a pull request, never consumes a gate and never authenticates identity/i);
+});
+
+/* ================= #91 round 2: redaction and CLI parsing ================= */
+
+test('caller-supplied values are never echoed in refusals', () => {
+  const TOKEN = ['ghp', '_', 'FAKESECRET123456'].join('');
+  // role
+  const roleErr = expectRefusal('ROLE_UNKNOWN', () => assertPublishingRole(TOKEN));
+  assert.ok(!roleErr.message.includes('FAKESECRET'), 'role value echoed');
+  // executor
+  const execErr = expectRefusal('EXECUTOR_MISMATCH', () =>
+    validateGate({ gate: gateFixture(), role: 'executor', executor: TOKEN, repo: repoFixture(), nowMs: NOW }));
+  assert.ok(!execErr.message.includes('FAKESECRET'), 'executor value echoed');
+  // sourceBranch / targetBranch / observed branch
+  const srcErr = expectRefusal('BRANCH_SHAPE', () =>
+    validateGate({ gate: gateFixture({ sourceBranch: `feature/${TOKEN}` }), role: 'executor', executor: 'claude-opus-5', repo: repoFixture({ branch: `feature/${TOKEN}` }), nowMs: NOW }));
+  assert.ok(!srcErr.message.includes('FAKESECRET'), 'source branch echoed');
+  const tgtErr = expectRefusal('TARGET_NOT_MAIN', () =>
+    validateGate({ gate: gateFixture({ targetBranch: TOKEN }), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW }));
+  assert.ok(!tgtErr.message.includes('FAKESECRET'), 'target branch echoed');
+  const obsErr = expectRefusal('BRANCH_MISMATCH', () =>
+    validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture({ branch: `task/91-${TOKEN}` }), nowMs: NOW }));
+  assert.ok(!obsErr.message.includes('FAKESECRET'), 'observed branch echoed');
+});
+
+test('safeLabel keeps validated detail and drops anything else', () => {
+  assert.equal(safeLabel('task/91-role-separated-publication'), 'task/91-role-separated-publication');
+  assert.equal(safeLabel('claude-opus-5'), 'claude-opus-5');
+  for (const bad of [['ghp', '_', 'abcdefghij'].join(''), 'a b', 'x'.repeat(65), '', null, 42, 'has;semicolon', 'bearer-thing']) {
+    assert.equal(safeLabel(bad), '<redacted>', `safeLabel leaked ${String(bad).slice(0, 20)}`);
+  }
+});
+
+test('evidence never carries an unsanitized declared identity', () => {
+  const TOKEN = ['ghp', '_', 'FAKESECRET123456'].join('');
+  const result = validateGate({ gate: gateFixture(), role: 'executor', executor: 'claude-opus-5', repo: repoFixture(), nowMs: NOW });
+  const evidence = evidenceFor(result, { role: 'executor', executor: TOKEN, at: '2026-07-26T19:00:00Z' });
+  assert.equal(evidence.declaredExecutor, '<redacted>');
+  assert.ok(!JSON.stringify(evidence).includes('FAKESECRET'));
+});
+
+test('the real CLI redacts a credential-shaped role on stderr', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cli = fileURLToPath(new URL('../bin/cli.js', import.meta.url));
+  const TOKEN = ['ghp', '_', 'FAKESECRET123456'].join('');
+  let stderr = '';
+  let status = 0;
+  try {
+    execFileSync(process.execPath, [cli, 'agent-publish', '--role', TOKEN, '--executor', 'codex', '--gate', '/does-not-exist'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    status = err.status;
+    stderr = `${String(err.stdout ?? '')}${String(err.stderr ?? '')}`;
+  }
+  assert.equal(status, 2);
+  assert.match(stderr, /ROLE_UNKNOWN/);
+  assert.ok(!stderr.includes('FAKESECRET'), 'the CLI echoed the credential-shaped role');
+});
+
+test('--role=<value> and --role <value> refuse identically, before .env, gate or git', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const cli = fileURLToPath(new URL('../bin/cli.js', import.meta.url));
+  for (const argv of [
+    ['agent-publish', '--role=architect', '--executor=codex', '--gate=/does-not-exist'],
+    ['agent-publish', '--role', 'architect', '--executor', 'codex', '--gate', '/does-not-exist'],
+  ]) {
+    let status = 0;
+    let stderr = '';
+    try {
+      // CBA_AGENT_ROLE=executor proves the ARGUMENT wins: an environment variable cannot smuggle a
+      // forbidden role past the pre-loadEnv refusal.
+      execFileSync(process.execPath, [cli, ...argv], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, CBA_AGENT_ROLE: 'executor' },
+      });
+    } catch (err) {
+      status = err.status;
+      stderr = String(err.stderr ?? '');
+    }
+    assert.equal(status, 2, `${argv[1]} must exit 2`);
+    assert.match(stderr, /ROLE_FORBIDDEN/, `${argv[1]} must be refused`);
+    // This exact line only exists in the pre-loadEnv path.
+    assert.match(stderr, /No \.env was loaded, no gate was read and no git command ran/, `${argv[1]} was refused too late`);
   }
 });

@@ -45,26 +45,26 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
-## Publishing (executor only, #91)
+## Publishing (#91)
+
+Stage A is **validation only** — it never pushes, opens a PR, merges or uses a credential.
 
 ```bash
 # 1. own branch AND worktree — never share a writable main
 git worktree add ../cba-issue-<n> -b task/<n>-<slug> main
 
-# 2. local defense in depth (once per clone)
+# 2. local defense in depth (once per clone; not the authoritative control)
 git config core.hooksPath .githooks
 
-# 3. validate the human gate without touching the remote
-node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json --dry-run
-
-# 4. publish the branch and open/update the PR (never merges)
+# 3. validate the human gate locally (this is the whole Stage A behaviour)
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
   --gate .agent-handoff/publish-gates/<gate>.json
 ```
 
-`architect` and `reviewer` roles are refused before any network call. `main` is never a source
-branch and is never a push destination. Merging the pull request is a human action.
+`architect` and `reviewer` are refused before `.env` loads, the gate is read or git runs. `main` is
+never a source branch. **Publishing the branch, opening the PR and merging are not performed by
+this command**: publication is Stage B (executor bot credential) and merge is always a human
+action.
 
 ## Before commit
 

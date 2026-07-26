@@ -27,7 +27,8 @@ wrong ROLE performed it; separately, two agents sharing a writable `main` raced 
 - `src/commands/agent-publish.js` — the only sanctioned publication path. Role is refused BEFORE
   the gate is read and before any network dependency is constructed (dedicated exit code `2`).
   No merge path, no branch-protection path, no credential path, no deploy path.
-- `bin/cli.js` — `agent-publish` wired with `--role`, `--executor`, `--gate`, `--dry-run`.
+- `bin/cli.js` — `agent-publish` wired with `--role`, `--executor`, `--gate` (the `--dry-run` flag
+  from this first commit was removed by the fix-forward: validation is the whole behaviour).
 - `.agent-handoff/publish-gates/` — manifest schema, rationale mapping each field to a way the
   incident could repeat, and a deliberately unusable example fixture.
 - `.githooks/pre-push` — local refusal of direct `main`/`master` pushes, explicitly documented as
@@ -117,3 +118,69 @@ no-publisher contract.
 - Exclusive worktree and handoff ownership — observed, not enforced.
 - **Preventing a direct `main` push** — the hook is absent from fresh clones and skippable, and the
   command can simply not be run. `enforce_admins` is still `false`; the incident condition is open.
+
+## Codex review round 2 — three findings, fixed forward
+
+`8a71865…` and `77cf5bc…` are reviewed and IMMUTABLE. This is a THIRD commit on the same branch;
+no amend, rebase, squash or replacement was performed.
+
+### 1. Documentary contract still contradictory (HIGH)
+
+Round 1 fixed the code contract but left publication claims in four documents. Reconciled:
+
+- `.agent-handoff/README.md` — "Publication authority is bound mechanically" and "The command opens
+  or updates a pull request" are gone. It now opens with Stage A being *local advisory pre-flight
+  validation only* that never publishes, never opens a PR, never consumes a gate and never
+  authenticates identity, and states that publication and merge are human actions until Stage B.
+  The lifecycle separates Stage A validation from Stage B publication explicitly.
+- `.agent-handoff/COMMANDS.md` — the `--dry-run` example is gone (validation is the whole
+  behaviour) and the publish/PR step is replaced by a note that Stage A stops at validation.
+- `.agent-handoff/publish-gates/README.md` — "refuses to publish" is now "refuses to VALIDATE";
+  the `executor` field is described as compared against a **caller-declared** identity that nothing
+  authenticates; the lifecycle is split into Stage A (steps 1-4, local) and Stage B (steps 5-6, not
+  built), noting that today the human owner performs both.
+- `docs/architecture/agent-publication-runbook.md` — "Stage A binds publication authority" is
+  replaced by an accurate sentence that also concedes local code is not a control against a caller
+  who declines to run it. The verification section no longer implies replay protection or
+  authenticated role separation, and says plainly which properties the suite does NOT prove.
+
+The documentation test now checks forbidden CONCEPTS across five documents — agent-may-push-main,
+the command opening a PR, "publication authority is bound mechanically", the removed `--dry-run`
+flag, and "agent-publish refuses to publish" — plus the positive assertion that the honest contract
+is stated where an agent will read it. A line may MENTION a direct push when narrating the
+incident, prohibiting it, or warning it is still possible; it may never instruct it.
+
+### 2. Sensitive values echoed in refusals (MEDIUM)
+
+Reproduced: `--role ghp_FAKESECRET123456` was echoed back as `Unknown declared role "ghp_…"`.
+
+`safeLabel()` now gates every interpolation of caller-controlled input: a value is printed only if
+it is ≤64 chars, matches a safe charset AND carries no credential marker; otherwise `<redacted>`.
+`ROLE_UNKNOWN` no longer echoes the role at all. Sanitised: the caller's executor in
+`EXECUTOR_MISMATCH`, `sourceBranch`, `targetBranch`, the observed branch, and
+`evidence.declaredExecutor`. Already-validated values (gate `executor`, `approver`, `gateId`,
+truncated SHAs) are still shown — redaction should not destroy the diagnostic.
+
+### 3. `--role=<value>` bypassed the pre-loadEnv refusal (MEDIUM)
+
+Reproduced exactly: the preflight scanned only for `--role x`, so `--role=architect` fell through
+to `loadEnv()` and was refused later by the command. Both paths exit 2, which masked it.
+
+Root cause was a second, partial parser. `bin/cli.js` now runs the REAL `parseArgs` once, before
+`loadEnv()`, and the refusal uses its result — so both syntaxes behave identically by construction
+rather than by duplicated logic. An explicit `--role` always wins over `CBA_AGENT_ROLE`.
+
+### Tests: 27 -> 32
+
+Added: documentation forbidden-concepts scan across five files; caller-supplied values redacted in
+role, executor, sourceBranch, targetBranch and observed branch; `safeLabel` keeping validated
+detail and dropping everything else; evidence never carrying an unsanitised identity; the real CLI
+redacting a credential-shaped role on stderr; and both `--role=x` and `--role x` refused before
+`.env`/gate/git with `CBA_AGENT_ROLE=executor` set, proving the argument wins and exit 2 is
+preserved.
+
+### Still deferred to Stage B (unchanged)
+
+Authenticated role/identity, replay protection, live-remote base truth, exclusive worktree and
+handoff ownership enforcement, and preventing a direct `main` push. `enforce_admins` remains
+`false`: the incident condition is still open.

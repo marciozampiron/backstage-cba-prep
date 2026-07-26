@@ -54,6 +54,21 @@ export const MAX_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 const SECRET_MARKER =
   /AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{8,}|gho_[A-Za-z0-9]{8,}|github_pat_|eyJ[A-Za-z0-9_-]{6,}|sk-[A-Za-z0-9]{8,}|xox[baprs]-|bearer|token|secret|password|credential|apikey|api[-_]key/i;
 
+/**
+ * Caller-controlled values must never be echoed raw: a refusal message is the one place an
+ * operator reliably reads, and a mistyped credential in `--role` or `--executor` would land in a
+ * terminal, a CI log and possibly a paste. A value is shown only when it is short, matches a safe
+ * charset AND carries no credential marker; otherwise the message stays generic and the offending
+ * value is dropped entirely.
+ */
+export function safeLabel(value) {
+  if (typeof value !== 'string') return '<redacted>';
+  if (value.length === 0 || value.length > 64) return '<redacted>';
+  if (SECRET_MARKER.test(value)) return '<redacted>';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/.test(value)) return '<redacted>';
+  return value;
+}
+
 export class GateError extends Error {
   constructor(code, message) {
     super(message);
@@ -88,7 +103,8 @@ export function assertPublishingRole(role) {
     );
   }
   if (!PUBLISHING_ROLES.includes(normalized)) {
-    fail('ROLE_UNKNOWN', `Unknown declared role "${normalized}". Publishing roles: ${PUBLISHING_ROLES.join(', ')}.`);
+    // The raw value is caller-controlled and never echoed — it may be a mistyped credential.
+    fail('ROLE_UNKNOWN', `Unknown declared role. Publishing roles: ${PUBLISHING_ROLES.join(', ')}.`);
   }
   return normalized;
 }
@@ -215,18 +231,18 @@ export function validateGate({ gate, role, executor, repo, nowMs }) {
   // --- branch rules ---
   const source = String(gate.sourceBranch);
   if (source === 'main' || source === 'master' || source === String(gate.targetBranch)) {
-    fail('SOURCE_IS_TARGET', `"${source}" cannot be a source branch. Agents publish an issue branch, never the integration branch.`);
+    fail('SOURCE_IS_TARGET', `"${safeLabel(source)}" cannot be a source branch. Agents publish an issue branch, never the integration branch.`);
   }
   const match = TASK_BRANCH.exec(source);
-  if (!match) fail('BRANCH_SHAPE', `Source branch must look like task/<issue>-<slug> — got "${source}".`);
+  if (!match) fail('BRANCH_SHAPE', `Source branch must look like task/<issue>-<slug> — got "${safeLabel(source)}".`);
   if (Number(match[1]) !== gate.issue) {
-    fail('BRANCH_ISSUE_MISMATCH', `Branch "${source}" does not belong to issue #${gate.issue}.`);
+    fail('BRANCH_ISSUE_MISMATCH', `Branch "${safeLabel(source)}" does not belong to issue #${gate.issue}.`);
   }
   if (String(gate.targetBranch) !== 'main') {
-    fail('TARGET_NOT_MAIN', `The pull request must target main — got "${gate.targetBranch}".`);
+    fail('TARGET_NOT_MAIN', `The pull request must target main — got "${safeLabel(String(gate.targetBranch))}".`);
   }
   if (repo.branch !== source) {
-    fail('BRANCH_MISMATCH', `Checked out branch "${repo.branch}" is not the gated source branch "${source}".`);
+    fail('BRANCH_MISMATCH', `Checked out branch "${safeLabel(String(repo.branch))}" is not the gated source branch "${safeLabel(source)}".`);
   }
 
   // --- human decision, bounded in time ---
@@ -242,7 +258,7 @@ export function validateGate({ gate, role, executor, repo, nowMs }) {
 
   // --- declared identity ---
   if (String(gate.executor) !== String(executor)) {
-    fail('EXECUTOR_MISMATCH', `The gate names executor "${gate.executor}" but "${executor}" is invoking it. A gate is not transferable.`);
+    fail('EXECUTOR_MISMATCH', `The gate names executor "${gate.executor}" but "${safeLabel(String(executor))}" is invoking it. A gate is not transferable.`);
   }
 
   // --- local repository state ---
@@ -309,7 +325,7 @@ export function evidenceFor(result, { role, executor, at }) {
     gateId: result.gate.gateId,
     issue: result.issue,
     declaredRole: role,
-    declaredExecutor: executor,
+    declaredExecutor: safeLabel(String(executor)),
     approver: result.gate.approver,
     sourceBranch: result.sourceBranch,
     targetBranch: result.gate.targetBranch,

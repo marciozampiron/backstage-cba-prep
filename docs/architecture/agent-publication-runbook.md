@@ -12,9 +12,10 @@ and the content was correct — but the wrong role performed it. In the same cyc
 a writable `main` raced around `git commit --amend`, which needed reflog recovery and byte-identical
 commit reconstruction.
 
-Nothing in `AGENTS.md` was ambiguous. Prose was simply not a control. Stage A binds publication
-authority, role, branch, exact commits and the human decision to machine-checked state; Stage B
-moves the authoritative enforcement to the remote, where a local bypass cannot reach it.
+Nothing in `AGENTS.md` was ambiguous. Prose was simply not a control — but neither is local code a
+control against a caller who declines to run it. Stage A checks role, branch, exact commits and the
+human decision against machine-readable state as a **local advisory pre-flight**; Stage B places the
+authoritative enforcement on the remote, where a local bypass cannot reach it.
 
 ## 2. Roles
 
@@ -111,11 +112,19 @@ the last step first, with no working PR path, leaves the human owner unable to p
 
 ## 6. Verification
 
-Stage A is covered by `test/agent-publish.test.js` on the Node 20/22 matrix: a positive control
-plus abuse cases for role spoofing, pre-network refusal, generic approval, expiry and replay,
-executor mismatch, branch shape/issue mismatch, `main`-as-source, extra/missing/reordered/amended
-commits, base drift, dirty worktree, stale review, malformed manifest, and the hook's own content
-and executable bit.
+Stage A is covered by `test/agent-publish.test.js` on the Node 20/22 matrix. The suite proves what
+the LOCAL checks do: a positive control; refusal of a **declared** architect/reviewer role before
+`.env`, the gate or git (both `--role x` and `--role=x`, and with `CBA_AGENT_ROLE=executor` set, to
+prove the argument wins); generic approval; expiry and TTL bounds; executor mismatch against the
+declared identity; branch shape/issue mismatch; `main`-as-source; extra/missing/reordered/amended
+commits; base drift; `origin/main` drift from local refs; dirty worktree; shared worktree; a
+`reviewedShas` set that does not equal the commits; malformed metadata including credential-shaped
+`gateId`; redaction of caller-supplied values in refusals; the absence of any publish path; and the
+hook's content and executable bit.
+
+The suite does **not** prove authenticated role separation or replay protection, because Stage A
+provides neither: the declared role is caller-supplied, and a gate is validated rather than
+consumed. A test pins the replay behaviour so Stage B must change it deliberately.
 
 Stage B is verified by the non-production self-test in §4.7 and is not claimed until that test
 passes.

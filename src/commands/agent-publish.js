@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { c } from '../lib/ui.js';
-import { assertPublishingRole, parseGate, validateGate, evidenceFor, GateError } from '../lib/publish-gate.js';
+import { assertPublishingRole, parseGate, validateGate, evidenceFor, GateError, safeLabel } from '../lib/publish-gate.js';
 
 export const EXIT = {
   OK: 0,
@@ -123,7 +123,7 @@ export async function runAgentPublish(opts = {}) {
     raw = fsImpl.readFileSync(path.resolve(cwd, opts.gate), 'utf8');
   } catch {
     console.error(`${c.bold('agent-publish refused')} [GATE_MISSING]`);
-    console.error('No publish gate at the given path.');
+    console.error('No publish gate at the given path.'); // the path itself is never echoed
     return EXIT.VALIDATION_FAILED;
   }
 

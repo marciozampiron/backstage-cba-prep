@@ -125,15 +125,19 @@ const HELP = `
 `;
 
 async function main() {
-  // #91: the declared-role refusal must happen before ANYTHING else — before .env is loaded,
-  // before git runs and before any network dependency could exist. Dispatching normally would put
-  // loadEnv() first, so agent-publish is short-circuited here on purpose.
-  const rawArgv = process.argv.slice(2);
-  if (rawArgv[0] === 'agent-publish') {
-    const declaredRole = (() => {
-      const i = rawArgv.indexOf('--role');
-      return i >= 0 ? rawArgv[i + 1] : process.env.CBA_AGENT_ROLE;
-    })();
+  // #91: parse ONCE, with the real parser, before anything else. A second partial parser here was
+  // the bug: it only understood `--role x`, so `--role=architect` slipped past the pre-loadEnv
+  // refusal and was caught later — after .env had already loaded. Both syntaxes now behave
+  // identically because they go through the same code path.
+  const argv = process.argv.slice(2);
+  const cmd = argv[0];
+  const args = parseArgs(argv.slice(1));
+
+  // The declared-role refusal must happen before .env loads, before git runs and before any
+  // network dependency could exist. An explicit --role always wins over CBA_AGENT_ROLE, so an
+  // environment variable cannot smuggle a forbidden role past this check.
+  if (cmd === 'agent-publish') {
+    const declaredRole = typeof args.role === 'string' ? args.role : process.env.CBA_AGENT_ROLE;
     try {
       assertPublishingRole(declaredRole);
     } catch (err) {
@@ -145,9 +149,6 @@ async function main() {
   }
 
   loadEnv(); // load .env (if present) before dispatch; real env vars always win
-  const argv = process.argv.slice(2);
-  const cmd = argv[0];
-  const args = parseArgs(argv.slice(1));
 
   switch (cmd) {
     case 'exam': {
