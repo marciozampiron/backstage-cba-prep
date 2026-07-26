@@ -282,7 +282,7 @@ that reimplements the matcher proves nothing:
 Verified end to end by poisoning the document with both reproduced violations: five tests fail,
 including both new ones. Restored afterwards, and the suite is green.
 
-## Work log — round 9 (Codex FINDINGS on d29240)
+## HISTORICAL — work log record, round 9 (Codex FINDINGS on d29240)
 
 **Confirmed.** Moving the negation check from paragraph to sentence was only half the fix: inside a
 single sentence, a denial about something else still exempted the claim. Both inputs were reproduced
@@ -322,6 +322,38 @@ say. Those are append-only records of evidence, not current guidance, so each is
 marked historical — the mechanism the contract already provides for exactly this, and the reason the
 scanner skips marked sections. Describing a superseded claim accurately requires writing it down; an
 active instruction must not contain it.
+
+## Work log — round 10 (Codex FINDINGS on 4a0039b)
+
+**Confirmed, and reproduced before changing anything.** Binding the negation to a verb was still not
+binding it to the *relationship*: three sentences with a claim about the review scope and a denial
+about something else all passed. The dead matcher was real too — `plain()` strips underscores, so a
+matcher spelled with them behind it could never fire.
+
+Two things replaced the heuristic:
+
+- **`scopeAuthorityIsDenied()`** attaches the denial to the **first authority-bearing verb after the
+  subject**. That is the verb the claim is about, so a negation belonging to a later clause or a
+  different subject cannot reach it. A character window was wrong in both directions — too wide and a
+  denial about another component counted; too narrow, or blocking `and`, and a legitimate coordinated
+  sentence was reported as a violation. First-verb attachment has neither failure mode.
+- **`STAGE_B_DOES_NOT_PROMOTE`** handles the one denial whose subject is Stage B rather than the
+  review scope, as a separate named rule instead of a generic escape.
+
+Removed: `confers no` and `would be a security defect` as free-standing exemptions, and the
+`HUMAN_GATE_GRANTED` matcher — no live sentence needed it, so it is deleted rather than repaired.
+
+The schema-row scanner got the same treatment: its denials must now be about that field's publication
+authority, not any negation sharing the row.
+
+New direct positive controls through the same scanner: the three reproduced sentences; a
+different-subject `does not authorize`; seven subject-bound denials that must pass; the same denials
+with the negation stripped, which must fail; a coordinated sentence that must pass; and three
+later-clause claims joined by `while`, `and` and `;` that must all be reported. Two behavioural
+assertions cover the underscore issue from both sides: `plain()` does strip them, and the denial
+matcher does not.
+
+Round 9's record is now marked historical, since this round supersedes its description of the scanner.
 
 ## Status
 

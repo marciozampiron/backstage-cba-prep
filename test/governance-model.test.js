@@ -825,45 +825,95 @@ test('the execution gate is re-checked immediately before the push, after every 
 // HUMAN_GATE_GRANTED. Both sentences contained the right vocabulary and the wrong meaning. These
 // tests judge the CLAIM: which document authorizes, and which one Stage B will consume.
 
-/** Sentences that promote the review scope into an authorization, however they are phrased. */
+/**
+ * Sentences that promote the review scope into an authorization, however they are phrased.
+ *
+ * Each pattern carries the denials that may exempt IT, and every denial names the subject. A denial
+ * that merely contains a negated verb is not enough — these were all reproducible false negatives:
+ *
+ *   "The review scope authorizes publication while another component confers no authority."
+ *   "The review scope authorizes publication; missing audit evidence would be a security defect."
+ *   "The review scope authorizes publication while deployment does not authorize billing."
+ *
+ * In each, the denial is about something else entirely. So `confers no` and
+ * `would be a security defect` are gone as free-standing exemptions, and every remaining denial must
+ * bind the review scope (or the named subject) to the negated verb.
+ */
+const SCOPE = String.raw`review[- ]scope`;
+const AUX = String.raw`(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)`;
+/**
+ * Is the review scope's authority denied, with the denial attached to the claim itself?
+ *
+ * A character-window between subject and negation was still wrong in both directions. Too wide, and
+ * "the review scope authorizes publication WHILE another component confers no authority" read as a
+ * denial. Too narrow — or blocking `and` — and a legitimate coordinated sentence like "a review scope
+ * bounds preparation AND authorizes nothing" was reported as a violation.
+ *
+ * The claim is about the FIRST authority-bearing verb after the subject, so that is the only verb a
+ * denial may attach to. A negation belonging to any later clause, or to a different subject, cannot
+ * reach it.
+ */
+function scopeAuthorityIsDenied(sentence) {
+  const t = sentence.replace(/[*`]/g, ''); // emphasis only; underscores are part of identifiers
+  const subject = /review[- ]scope/i.exec(t);
+  if (!subject) return false;
+  const after = t.slice(subject.index + subject[0].length);
+  const verb = /\b(authoriz\w*|grants?|confers?|promot\w*|becomes?)\b/i.exec(after);
+  if (!verb) return false;
+  const before = after.slice(0, verb.index);
+  const tail = after.slice(verb.index);
+  return (
+    // "the review scope does not authorize", "... is not promoted"
+    /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+    // "the review scope cannot authorize", "... never authorizes"
+    /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+    // "authorizes nothing", "grants no publication authority", "confers no authority"
+    /^\w+\s+(?:nothing\b|no\b)/i.test(tail)
+  );
+}
+
+/** Stage B is the other actor that may be said not to promote the scope into an authorization. */
+const STAGE_B_DOES_NOT_PROMOTE = /\bStage B\b[^.]{0,40}\bdoes\s+not\s+promote\b[^.]{0,40}review[- ]scope/i;
+
 const CONFLATION_PATTERNS = [
-  // "the same gate validates twice" is about replay, not conflation, so the pattern requires the
-  // publication sense to be present.
-  { label: 'the same gate carried into Stage B', re: /\bthe same gate\b[^.]{0,80}\b(becomes|is the input|input to|publish\w*|publication)\b/i },
-  { label: 'the review scope becoming a publication input', re: /review scope[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b/i },
-  { label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED', re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i },
-  { label: 'the review scope authorizing an operation', re: /review scope[^.]{0,60}\bauthoriz\w+\b(?![^.]{0,40}\bnothing\b)/i },
+  {
+    label: 'the same gate carried into Stage B',
+    // "the same gate validates twice" is replay, not conflation, so the publication sense is required.
+    re: /\bthe same gate\b[^.]{0,80}\b(becomes|is the input|input to|publish\w*|publication)\b/i,
+    denials: [new RegExp(String.raw`\bthe same gate\b[^.]{0,40}\b(?:${AUX}\s+not|cannot|never)\b`, 'i')],
+  },
+  {
+    label: 'the review scope becoming a publication input',
+    re: new RegExp(String.raw`${SCOPE}[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b`, 'i'),
+    denials: [scopeAuthorityIsDenied, STAGE_B_DOES_NOT_PROMOTE],
+  },
+  {
+    label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED',
+    re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i,
+    denials: [/\bA gate\b[^.]{0,40}\bis\s+not\b/i],
+  },
+  {
+    label: 'the review scope authorizing an operation',
+    re: new RegExp(String.raw`${SCOPE}[^.]{0,60}\bauthoriz\w+`, 'i'),
+    denials: [scopeAuthorityIsDenied, STAGE_B_DOES_NOT_PROMOTE],
+  },
 ];
 
 /**
- * Is the PROHIBITED RELATIONSHIP itself negated?
+ * Is the prohibited relationship denied, with the SUBJECT bound?
  *
- * Co-occurrence is not enough, and moving from paragraph to sentence was only half the fix. Both of
- * these are single sentences with an unrelated `not`, and both are claims:
+ * Binding to the verb alone was still a bypass: a negated verb anywhere in the sentence exempted the
+ * claim, so a denial about a different component, a different obligation, or a different subject all
+ * worked. Each pattern therefore brings its own denials, and every one of them names the subject.
  *
- *   "The review scope is not a credential but authorizes publication."
- *   "| Review scope authorizes publication | it is not a credential |"
- *
- * So the negation has to attach to the verb that carries the claim — "does not authorize", "cannot
- * authorize", "never authorizes", "authorizes nothing" — and a denial about something else (a
- * credential, transferability) must not exempt anything.
+ * Note the deliberate absence of `plain()` on the underscore class: `plain()` strips `_`, which had
+ * silently killed a `HUMAN_GATE_GRANTED` matcher here. That matcher was unnecessary — no live
+ * sentence needs it — so it is removed rather than repaired, and emphasis is stripped without
+ * touching underscores.
  */
-function relationshipIsNegated(text) {
-  const t = plain(text);
-  const VERB = '(authoriz|promot|grant|permit|allow|becom)';
-  return (
-    // "does not authorize", "is not promoted", "will not grant" — at most one short word intervening
-    new RegExp(`\\b(does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\\s+not\\s+(\\w{1,12}\\s+)?${VERB}`, 'i').test(t) ||
-    new RegExp(`\\b(cannot|can't|never)\\s+(\\w{1,12}\\s+)?${VERB}`, 'i').test(t) ||
-    // "authorizes nothing", "grants no authority"
-    /\b(authoriz\w*|grants?|permits?|allows?)\s+(nothing\b|no\b)/i.test(t) ||
-    /\bconfers\s+no\b/i.test(t) ||
-    /\bno field here grants\b/i.test(t) ||
-    // "is not the authorization", "is not a HUMAN_GATE_GRANTED"
-    /\bis\s+not\s+(the\s+)?authoriz/i.test(t) ||
-    /\bnot\s+a\s+HUMAN_GATE_GRANTED/i.test(t) ||
-    /\bwould be a security defect\b/i.test(t)
-  );
+function denialBindsSubject(sentence, denials) {
+  const t = sentence.replace(/[*`]/g, ''); // emphasis only — underscores are part of identifiers
+  return (denials ?? []).some((d) => (typeof d === 'function' ? d(sentence) : d.test(t)));
 }
 
 /**
@@ -875,9 +925,9 @@ function findConflations(files) {
   const violations = [];
   for (const { rel, text, markdown } of files) {
     for (const { line, text: sentence } of sentencesOf(text, { markdown })) {
-      for (const { label, re } of CONFLATION_PATTERNS) {
+      for (const { label, re, denials } of CONFLATION_PATTERNS) {
         if (!re.test(sentence)) continue;
-        if (relationshipIsNegated(sentence)) continue;
+        if (denialBindsSubject(sentence, denials)) continue;
         violations.push(`${rel}:${line}: [${label}] ${sentence.trim().slice(0, 140)}`);
       }
     }
@@ -954,8 +1004,16 @@ function findScopeAuthorityClaims(text) {
       .split(/[|;—]|\bin order\b/)
       .map((f) => f.trim())
       .filter((f) => /\b(authoriz\w*|may be published|publi(sh|cation)\w*)\b/i.test(f))
-      // Same rule as the prose scanner: the denial must attach to the claim, not merely share a cell.
-      .filter((f) => !relationshipIsNegated(f));
+      // The denial must be about THIS field's authority, in this fragment — not a negation about
+      // transferability, or about some other component, sharing the row.
+      .filter(
+        (f) =>
+          !/\b(grants?|confers?)\s+no\s+publication\s+authority\b/i.test(f) &&
+          !/\b(?:does|is|are|would|will|may|can|could)\s+not\s+(?:\w{1,12}\s+)?(?:authoriz|publi)/i.test(f) &&
+          !/\b(cannot|can't|never)\s+(?:\w{1,12}\s+)?(?:authoriz|publi)/i.test(f) &&
+          !/\bno field here grants publication authority\b/i.test(f) &&
+          !/\bauthoriz\w*\s+nothing\b/i.test(f),
+      );
     if (claims.length) violations.push(`${row.trim()}  [claim: ${claims.join(' / ')}]`);
   }
   return violations;
@@ -1055,4 +1113,77 @@ test('REGRESSION: the schema-row scanner binds negation to the claim as well', (
   const hits = findScopeAuthorityClaims(planted);
   assert.equal(hits.length, 1, `only the unbound claim must be reported; got ${JSON.stringify(hits)}`);
   assert.match(hits[0], /authorized to publish/);
+});
+
+/* ================= denials must bind the SUBJECT, not just a verb ============================== */
+//
+// Binding to the verb was still a bypass. Each of these is a claim about the review scope with a
+// denial about something else, and all three were reproducible false negatives. They run through
+// `findConflations()` directly.
+
+test('REGRESSION: a denial about another component does not exempt the review scope', () => {
+  const hits = scan('The review scope authorizes publication while another component confers no authority.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('REGRESSION: an unrelated security-defect clause does not exempt the review scope', () => {
+  const hits = scan('The review scope authorizes publication; missing audit evidence would be a security defect.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('REGRESSION: a negated verb about a DIFFERENT subject does not exempt the review scope', () => {
+  const hits = scan('The review scope authorizes publication while deployment does not authorize billing.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('only subject-bound denials exempt a claim, and each documented form works', () => {
+  // The accepted set is deliberately small. Every entry must pass, or authors cannot state the truth
+  // and will delete the guard instead.
+  for (const accepted of [
+    'The review scope does not authorize publication.',
+    'The review scope cannot authorize publication.',
+    'The review scope never authorizes publication.',
+    'The review scope authorizes nothing, in Stage A or ever.',
+    'The review scope grants no publication authority.',
+    'The review scope confers no publication authority.',
+    'Stage B does not promote the review scope into an authorization.',
+  ]) {
+    assert.deepEqual(scan(accepted), [], `must be accepted: ${accepted}`);
+  }
+});
+
+test('a subject-bound denial for the WRONG subject does not carry over', () => {
+  // "deployment does not authorize" is a perfectly good denial — about deployment. It must not
+  // launder a claim about the review scope sitting in the same sentence.
+  assert.equal(scan('Deployment does not authorize billing.').length, 0);
+  assert.equal(
+    scan('Deployment does not authorize billing, but the review scope authorizes publication.').length,
+    1,
+  );
+});
+
+test('underscored identifiers survive the denial matcher — the dead matcher is really gone', () => {
+  // `plain()` strips underscores, which is why a HUMAN_GATE_GRANTED matcher hidden behind it could
+  // never fire. Asserted behaviourally, on both sides, rather than by grepping this file.
+  assert.equal(/HUMAN_GATE_GRANTED/.test(plain('not a HUMAN_GATE_GRANTED')), false, 'plain() removes underscores');
+  assert.equal(
+    denialBindsSubject('X is not a HUMAN_GATE_GRANTED', [/is not a HUMAN_GATE_GRANTED/]),
+    true,
+    'the denial matcher must preserve underscores',
+  );
+  // Emphasis is still stripped, so `**not**` reads as `not`.
+  assert.equal(denialBindsSubject('the review scope does **not** authorize publication', [/does not authorize/i]), true);
+});
+
+test('the denial must attach to the FIRST authority verb after the subject', () => {
+  // Coordination keeps the subject, so this must be accepted…
+  assert.deepEqual(scan('A review scope manifest bounds what may be prepared and authorizes nothing.'), []);
+  // …while a later clause with its own subject must not launder the claim, however it is joined.
+  for (const claim of [
+    'The review scope authorizes publication while another component confers no authority.',
+    'The review scope authorizes publication and deployment does not authorize billing.',
+    'The review scope authorizes publication; the execution gate authorizes nothing.',
+  ]) {
+    assert.equal(scan(claim).length, 1, `must be reported: ${claim}`);
+  }
 });
