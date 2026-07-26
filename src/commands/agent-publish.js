@@ -11,70 +11,20 @@
 // The declared role is checked FIRST — before the gate is read, before git runs, before any
 // network dependency could exist. That ordering is the control; the honesty about what the check
 // proves (a declared claim, not an authenticated identity) is part of it.
+//
+// #93 note: the interim bridge to actual publication is `agent-human-publish-script`, which PREPARES
+// a script for a HUMAN to run. This command stays validation-only and gained no publish path.
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { c } from '../lib/ui.js';
-import { assertPublishingRole, parseGate, validateGate, evidenceFor, GateError, safeLabel } from '../lib/publish-gate.js';
+import { assertPublishingRole, parseGate, validateGate, evidenceFor, GateError } from '../lib/publish-gate.js';
+import { defaultRunGit, readRepoState } from '../lib/repo-state.js';
 
 export const EXIT = {
   OK: 0,
   VALIDATION_FAILED: 1,
   ROLE_REFUSED: 2, // distinct so a refusal is provably not a validation failure
 };
-
-function defaultRunGit(args, { cwd }) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-}
-
-function tryGit(runGit, args, cwd) {
-  try {
-    return runGit(args, { cwd });
-  } catch {
-    return null;
-  }
-}
-
-/** Observes local state. Reads only — no writes, no fetch, no remote contact. */
-function readRepoState(runGit, fsImpl, cwd, gate) {
-  const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
-  const headSha = runGit(['rev-parse', 'HEAD'], { cwd });
-  const status = runGit(['status', '--porcelain'], { cwd });
-  const listed = runGit(['rev-list', '--reverse', `${gate.baseSha}..HEAD`], { cwd });
-  const commits = listed === '' ? [] : listed.split('\n').map((s) => s.trim()).filter(Boolean);
-  const mergeBase = runGit(['merge-base', 'HEAD', gate.baseSha], { cwd });
-
-  // Local knowledge of the remote. Absent (null) when there is no such ref — never fetched here.
-  const remoteBaseSha = tryGit(runGit, ['rev-parse', 'refs/remotes/origin/main'], cwd);
-
-  // Worktree observation: which branch is checked out where.
-  const raw = tryGit(runGit, ['worktree', 'list', '--porcelain'], cwd);
-  let worktrees;
-  if (raw !== null) {
-    worktrees = [];
-    let current = {};
-    for (const line of raw.split('\n')) {
-      if (line.startsWith('worktree ')) current = { path: line.slice(9) };
-      else if (line.startsWith('branch ')) current.branch = line.slice(7).replace('refs/heads/', '');
-      else if (line.trim() === '') {
-        if (current.path) worktrees.push(current);
-        current = {};
-      }
-    }
-    if (current.path) worktrees.push(current);
-  }
-
-  let handoffPresent = false;
-  try {
-    handoffPresent = fsImpl
-      .readdirSync(path.join(cwd, '.agent-handoff', 'active'))
-      .some((name) => name.startsWith(`${gate.issue}-`));
-  } catch {
-    handoffPresent = false;
-  }
-
-  return { branch, headSha, clean: status === '', commits, baseSha: mergeBase, remoteBaseSha, worktrees, handoffPresent };
-}
 
 function printRefusal(err) {
   console.error(`${c.bold('agent-publish refused')} [${err.code}]`);

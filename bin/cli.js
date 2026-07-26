@@ -12,6 +12,7 @@ import { runBedrockCheck } from '../src/commands/bedrock-check.js';
 import { runAgentCheck } from '../src/commands/agent-check.js';
 import { runAgentRefresh } from '../src/commands/agent-refresh.js';
 import { runAgentPublish } from '../src/commands/agent-publish.js';
+import { runAgentHumanPublishScript } from '../src/commands/agent-human-publish-script.js';
 import { assertPublishingRole } from '../src/lib/publish-gate.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { loadEnv } from '../src/lib/env.js';
@@ -62,6 +63,7 @@ const HELP = `
     agent-check    Check AI orchestration readiness (dry-run); --smoke for a paid live run
     agent-refresh  Check agent handoff state before edit/commit/push (no network)
     agent-publish  Validate a publish gate locally (Stage A: no push, no PR, no merge)
+    agent-human-publish-script  Prepare a /tmp script for a HUMAN to run (never executed here)
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -107,6 +109,15 @@ const HELP = `
     --gate <path>   publish-gate manifest naming the human approver and exact commits
     ${c.gray('Stage A validates only: it never pushes, opens a PR, merges or uses a credential.')}
 
+  ${c.bold('agent-human-publish-script options:')}
+    ${c.gray('(prepares a script; it is NEVER executed here — the human runs it with bash <path>)')}
+    --role <role>   invoking role (or CBA_AGENT_ROLE); only a declared executor may prepare
+    --executor <id> invoking agent identity (or CBA_AGENT_ID); must match the gate
+    --gate <path>   publish-gate manifest naming the human approver and exact commits
+    --repo <o/r>    owner/repo (default: derived from the origin remote)
+    --out <path>    output path under /tmp (default: /tmp/cba-publish-<issue>-<head>.sh)
+    ${c.gray('the file is written 0600 and non-executable; no network call is made')}
+
   ${c.bold('agent-refresh options:')}
     ${c.gray('(no network: reads .agent-handoff and local git state)')}
     --json          emit machine-readable coordination state
@@ -136,7 +147,7 @@ async function main() {
   // The declared-role refusal must happen before .env loads, before git runs and before any
   // network dependency could exist. An explicit --role always wins over CBA_AGENT_ROLE, so an
   // environment variable cannot smuggle a forbidden role past this check.
-  if (cmd === 'agent-publish') {
+  if (cmd === 'agent-publish' || cmd === 'agent-human-publish-script') {
     // Presence, not type: `--role` with no value parses to `true`, and treating that as "absent"
     // silently fell back to CBA_AGENT_ROLE, letting an environment value decide after an explicit
     // argument was given. An explicit argument ALWAYS wins, malformed or not, and the malformed
@@ -145,9 +156,15 @@ async function main() {
     try {
       assertPublishingRole(declaredRole);
     } catch (err) {
-      console.error(`agent-publish refused [${err.code ?? 'ROLE_REFUSED'}]`);
+      console.error(`${cmd} refused [${err.code ?? 'ROLE_REFUSED'}]`);
       console.error(err.message);
-      console.error('No .env was loaded, no gate was read and no git command ran.');
+      // agent-publish keeps its #91 wording verbatim — a reviewed test pins it. The generator adds
+      // the one fact that is only true of it: nothing was written to disk either.
+      console.error(
+        cmd === 'agent-publish'
+          ? 'No .env was loaded, no gate was read and no git command ran.'
+          : 'No .env was loaded, no gate was read, no git command ran and no file was written.',
+      );
       process.exit(2);
     }
   }
@@ -232,6 +249,17 @@ async function main() {
           role: args.role,
           executor: args.executor,
           gate: args.gate,
+        }),
+      );
+      break;
+    case 'agent-human-publish-script':
+      process.exit(
+        await runAgentHumanPublishScript({
+          role: args.role,
+          executor: args.executor,
+          gate: args.gate,
+          repo: args.repo,
+          out: args.out,
         }),
       );
       break;
