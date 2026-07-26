@@ -18,24 +18,29 @@ Read first: [`docs/architecture/agent-publication-runbook.md`](../../../docs/arc
 
 - Your commits are on `task/<issue>-<slug>` in **your own worktree**, and independent review of
   those exact commits has finished.
-- A human publish gate exists under `.agent-handoff/publish-gates/`, written by the human owner,
-  naming themselves, you, the base SHA and the exact ordered commits (`reviewedShas` must equal
-  `commits`). You never write your own gate.
+- A human publish gate exists **outside the task worktree** (for example `/tmp/cba-gate-<n>.json`),
+  written by the human owner, naming themselves, you, the base SHA and the exact ordered commits
+  (`reviewedShas` must equal `commits`). You never write your own gate. A gate inside the repository
+  is refused (`GATE_PATH_IN_REPO`): it would be an untracked file, and the dirty worktree it creates
+  is itself a refusal. `.agent-handoff/publish-gates/` holds the schema and its example only.
 - The reviewed commits are unchanged. **No amend, rebase or squash after review** — a finding
   produces a NEW fix-forward commit and a NEW gate.
-- The worktree is clean and `npm test` passes.
+- The worktree is clean and `npm test` passes. Do **not** append to `EVENTS.md`, update
+  `CURRENT.md` or run `agent-refresh --record` in this worktree first — those files are tracked, so
+  writing them here dirties the worktree and validation then refuses. That bookkeeping belongs to
+  the main worktree or to a later commit.
 
 ## Steps
 
 ```bash
 # 1. advisory local validation — this is all it does
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json
 
 # 2. PREPARE the script. Writes one file to /tmp (0600, NOT executable) and prints its SHA-256.
 #    No network call, no git or GitHub mutation.
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json
 ```
 
 Then **stop and hand off**. Report to the human, in one message:
@@ -65,6 +70,8 @@ give them the `bash <path>` line.
 The command fails closed and prints a code. Common ones: `GATE_EXPIRED` (ask for a new gate),
 `COMMIT_SET_DRIFT`/`HEAD_DRIFT` (history changed after review — a new review and gate are needed),
 `REMOTE_BASE_DRIFT` (`origin/main` moved), `WORKTREE_DIRTY`, `WORKTREE_SHARED`,
+`GATE_PATH_IN_REPO` (the gate must live outside the worktree), `REPO_ORIGIN_MISMATCH` or
+`ORIGIN_UNRESOLVED` (the repository must be the origin this branch pushes to),
 `OUTPUT_PATH_EXISTS` (a previous artifact is still there — the human should delete it),
 `SCRIPT_SELF_CHECK_FAILED` (a generator defect; report it, do not work around it).
 

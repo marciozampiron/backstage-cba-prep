@@ -89,7 +89,7 @@ shape of the 2026-07-26 incident. The bridge replaces that with a **bounded, rev
 
 | Verb | Actor | Command / action | What it is not |
 | --- | --- | --- | --- |
-| **Prepare** | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate <file>` | not publishing; nothing leaves the machine |
+| **Prepare** | implementation executor | `node bin/cli.js agent-human-publish-script --role executor --executor <id> --gate /tmp/cba-gate-<n>.json` | not publishing; nothing leaves the machine |
 | **Read** | architect/security reviewer | open the file, confirm the printed SHA-256 | not implementing, not executing |
 | **Run** | human operator | `bash /tmp/cba-publish-<issue>-<head>.sh` | not merging |
 
@@ -101,6 +101,12 @@ generator is a separate command precisely so that "validate" can never quietly g
 The generator makes **no network call** and issues **no Git or GitHub mutation**. Its git usage is
 the Stage A read set (`rev-parse`, `status`, `rev-list`, `merge-base`, `worktree list`,
 `remote get-url`). Its only side effect is creating one file.
+
+The repository is **derived** from the `origin` remote, never merely accepted from `--repo`. A
+supplied `--repo` is only ever a confirmation: if it disagrees with origin the command refuses
+(`REPO_ORIGIN_MISMATCH`), and if origin is missing or not a canonical GitHub URL it refuses rather
+than falling back (`ORIGIN_UNRESOLVED`). A remote URL carrying userinfo fails the pattern instead of
+being parsed and stripped, so a credential in a remote can never reach the script or a message.
 
 That file:
 
@@ -135,17 +141,43 @@ then re-verifies all of it against live state:
    out in a second worktree;
 5. HEAD must be exactly the reviewed commit, and the commit list must match the reviewed set
    exactly and in order — an amend, rebase or reorder fails closed;
-6. it fetches (read-only) and requires the **live** `origin/main` to still equal the gate base; if a
+6. **the push target and the API target must be the same repository.** The push goes to `origin`
+   while every `gh` query goes to the embedded `REPO`; if those named different repositories the
+   branch would land in one place while the pull request was inspected in another. `git remote
+   get-url origin` is checked against `REPO` at run time;
+7. it reads the **live** remote with `git ls-remote` — never a local remote-tracking ref, which is
+   only as fresh as the last fetch — and requires `origin/main` to still equal the gate base. If a
    remote branch already exists, the push must be a fast-forward, never discarding remote commits;
-7. the human types `publish <issue> <head12>` exactly;
-8. **the one mutation**: `git push origin refs/heads/<branch>:refs/heads/<branch>` — no force;
-9. it creates a pull request, or reuses the single existing open one after confirming its base and
-   head. It never touches a PR with a different base or head;
-10. it prints redacted evidence and states that merge remains a separate human action.
+8. **the pull-request set is asserted before anything is published.** `gh pr list --head` matches by
+   branch *name* and spans forks, so a pull request opened from a fork with the same branch name
+   would otherwise look like the right one. The script requires zero or exactly one open match, not
+   cross-repository, owned by the same owner, with exactly the reviewed base and head. Doing this
+   *before* the push means a mismatch costs nothing — the branch is not published yet;
+9. the human types `publish <issue> <head12>` exactly;
+10. **first external effect**: `git push origin refs/heads/<branch>:refs/heads/<branch>` — no force;
+11. **second external effect**: the pull-request set is re-asserted against the state that now
+    exists, and exactly one pull request is created or reused. It never touches a fork's pull
+    request, an ambiguous set, or one with a different base or head, and it never opens a second
+    one if the pre-push match disappeared;
+12. it prints redacted evidence and states that merge remains a separate human action.
 
-Step 6 is the first *live* remote check in this system — Stage A can only read local refs. It is
+Step 7 is the first *live* remote check in this system — Stage A can only read local refs. It is
 still not Stage B: a live check performed by a script the human chose to run is not the same as a
 constraint the remote enforces.
+
+### 4.3.1 Where the gate lives, and why the worktree stays clean
+
+The gate is authored by the human **outside the task worktree** — for example
+`/tmp/cba-gate-<issue>.json`. This is not a preference. `.agent-handoff/publish-gates/` is tracked
+and not ignored, so a gate written there is an untracked file; that makes the worktree dirty; and a
+dirty worktree is exactly what step 4 refuses. The protocol as originally documented could not be
+followed to completion. `agent-human-publish-script` now refuses an in-repository gate path
+(`GATE_PATH_IN_REPO`) so prose cannot drift back into an impossible sequence, and an end-to-end test
+walks the documented steps in a real temporary repository to prove they produce a script.
+
+The same reasoning governs bookkeeping: `EVENTS.md`, `CURRENT.md` and `agent-refresh --record` all
+write tracked files. They belong to the main worktree or to a later commit — never to the task
+worktree before generation.
 
 ### 4.4 What the bridge does NOT provide
 
@@ -155,6 +187,7 @@ constraint the remote enforces.
 | A guarantee no agent runs the script | Non-executable mode and the TTY check raise the cost and make it deliberate; they do not make it impossible. |
 | Replay protection | The gate is validated, never consumed. Expiry and the exact-HEAD check bound the window instead. |
 | Protection of `main` | Unchanged: `enforce_admins` is still `false`. Only Stage B closes it. |
+| A single external effect | There are **two** — the push and the pull request. Both are bounded and checked before and after, but "one mutation" would be inaccurate. |
 
 The bridge narrows *what can go wrong when the right actor acts*. It does not prevent a
 non-cooperating actor. That is Stage B's job, and until Stage B ships this remains a process
@@ -221,10 +254,21 @@ an existing file; drift refusal for commit set, base, branch, HEAD and a shared 
 expiry and the typed confirmation appearing in the generated text; the absence of every forbidden
 operation — force push, pushing an integration branch, merge, deploy, repository administration,
 credential handling, history rewriting and paid-service invocation — asserted against the real
-generated script and against the generator source; that the generator source contains no network
+generated script and against the generator source, with each pattern proven to match its own sample
+so a "no match" assertion cannot pass vacuously; that the generator source contains no network
 primitive and no Git or GitHub write verb; that the written file is mode `0600` with no executable
-bit; that no secret-shaped material reaches the script; and that the documents, `spec/security-rules.md`
-and both skills agree on who may prepare, read and run.
+bit; that no secret-shaped material reaches the script; that the repository is bound to the origin
+remote and a diverging or unresolvable one refuses; that the pull-request set is asserted before the
+push and re-asserted after it; that a gate inside the worktree refuses; that a failed gate read
+echoes neither the caller-supplied path nor a raw error; that no source file in the repository
+contains a NUL byte, which would make it binary and therefore unreviewable in a diff; and that the
+documents, `spec/security-rules.md` and both skills agree on who may prepare, read and run.
+
+Two end-to-end tests build a real temporary git repository and walk the documented protocol: one
+proves that following it literally produces a script and leaves the worktree clean, and one proves
+that a gate written into `.agent-handoff/publish-gates/` dirties the worktree and is refused. They
+exist because the protocol was, at one point, impossible to follow to completion, and prose alone
+had not revealed it.
 
 What the suite cannot prove is that a non-cooperating agent will not run the script anyway. Nothing
 local can. Stage B is verified by the non-production self-test in §5.7 and is not claimed until that

@@ -32,8 +32,14 @@ Read the file. It is short and bounded by design; read all of it.
    `EXPECTED_HEAD` and `REVIEWED_SHAS` must match the gate and the commits you actually reviewed —
    same SHAs, same order, no extras. `SOURCE_BRANCH` is `task/<issue>-<slug>`; `TARGET_BRANCH` is
    `main`.
-5. **The single mutation.** Exactly one push, of `refs/heads/<branch>:refs/heads/<branch>`, without
-   force. Anything else is a finding.
+5. **Two bounded external effects, in order.** Exactly one push, of
+   `refs/heads/<branch>:refs/heads/<branch>` and without force, then exactly one pull request
+   created or reused. Anything else is a finding.
+   - the script must bind its push target to its API target: `git remote get-url origin` is checked
+     against the embedded `REPO` before either effect;
+   - the open-pull-request set must be asserted **before** the push and re-asserted after it, with
+     zero or exactly one match, not cross-repository, same owner, and exact base and head. `gh pr
+     list --head` matches by branch name across forks, so identity has to be proven, not assumed.
 6. **Forbidden operations, by reading rather than by trust.** There must be no merge, no deploy or
    workflow dispatch, no push to `main`/`master`, no `--force`/`--force-with-lease`/`+refs/`, no
    `rebase`/`reset --hard`/`commit --amend`/`filter-branch`, no `gh api` against branches, rulesets,

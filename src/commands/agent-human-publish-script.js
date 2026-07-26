@@ -107,11 +107,35 @@ export async function runAgentHumanPublishScript(opts = {}) {
     return EXIT.VALIDATION_FAILED;
   }
 
+  let repoRoot;
+  try {
+    repoRoot = runGit(['rev-parse', '--show-toplevel'], { cwd });
+  } catch {
+    repoRoot = cwd;
+  }
+
+  // The gate may NOT live inside this worktree. `.agent-handoff/publish-gates/` is tracked and not
+  // ignored, so a gate written there is an untracked file — which makes the worktree dirty, which
+  // this very command then refuses. The documented protocol was literally unexecutable. The gate is
+  // a human decision bound to SHAs; it belongs outside the branch being published, and this check
+  // makes that mechanical so the documents cannot drift back.
+  const gatePath = path.resolve(cwd, opts.gate);
+  if (gatePath === repoRoot || gatePath.startsWith(`${repoRoot}${path.sep}`)) {
+    printRefusal(CMD, {
+      code: 'GATE_PATH_IN_REPO',
+      message:
+        'The publish gate must live outside the repository worktree. A gate written inside it is an ' +
+        'untracked file, which makes the worktree dirty and is then refused. Write it to a path ' +
+        'outside the repository, for example under /tmp.',
+    });
+    return EXIT.VALIDATION_FAILED;
+  }
+
   // --- STEP 2: the same Stage A validation. A script is never built from an unvalidated gate. ---
   let result;
   let gate;
   try {
-    const raw = fsImpl.readFileSync(path.resolve(cwd, opts.gate), 'utf8');
+    const raw = fsImpl.readFileSync(gatePath, 'utf8');
     gate = parseGate(raw);
     const repoState = readRepoState(runGit, fsImpl, cwd, gate);
     result = validateGate({ gate, role, executor, repo: repoState, nowMs: now() });
@@ -120,21 +144,37 @@ export async function runAgentHumanPublishScript(opts = {}) {
       printRefusal(CMD, err);
       return EXIT.VALIDATION_FAILED;
     }
-    printRefusal(CMD, { code: 'REPO_UNREADABLE', message: err?.message ?? String(err) });
+    // The raw error is NOT printed: a failed `readFileSync` embeds the path it was given, and that
+    // path is caller-supplied. Refusals name what went wrong, never the value that caused it.
+    printRefusal(CMD, {
+      code: 'REPO_UNREADABLE',
+      message: 'The gate could not be read, or the repository state could not be observed. No path or raw error is echoed.',
+    });
     return EXIT.VALIDATION_FAILED;
   }
 
   // --- STEP 3: repository slug and output path. ---
   let repoSlug;
   let outputPath;
-  let repoRoot = null;
   try {
-    repoSlug = assertRepoSlug(opts.repo ?? deriveRepoSlug(runGit, cwd) ?? '');
-    try {
-      repoRoot = runGit(['rev-parse', '--show-toplevel'], { cwd });
-    } catch {
-      repoRoot = cwd;
+    // The repository is DERIVED from the origin remote, never merely accepted. The script pushes
+    // to `origin` but queries `$REPO` through `gh`; if those two named different repositories the
+    // branch would land in one place while the pull request was inspected in another. A supplied
+    // `--repo` is therefore only ever a confirmation of what origin already says.
+    const derived = deriveRepoSlug(runGit, cwd);
+    if (!derived) {
+      throw new GateError(
+        'ORIGIN_UNRESOLVED',
+        'The origin remote is missing or is not a canonical GitHub URL, so the repository cannot be bound to the push target.',
+      );
     }
+    if (opts.repo != null && opts.repo !== derived) {
+      throw new GateError(
+        'REPO_ORIGIN_MISMATCH',
+        'The requested repository is not the origin remote of this worktree. Publication must target the repository this branch is pushed to.',
+      );
+    }
+    repoSlug = assertRepoSlug(derived);
     const headSha = result.commits[result.commits.length - 1];
     const requested = opts.out ?? defaultOutputPath(gate.issue, headSha);
     outputPath = assertSafeOutputPath(requested, observePath(fsImpl, requested, repoRoot));

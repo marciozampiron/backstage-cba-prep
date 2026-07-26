@@ -45,7 +45,13 @@ Collaboration rules:
 - Once independent review begins, reviewed commits are immutable — findings produce a NEW
   fix-forward commit, never an amend or rebase of reviewed history.
 - `agent-refresh --record` is only a technical checkpoint; it never grants push permission.
-- Before pushing, append a `Human gate` event to `.agent-handoff/EVENTS.md`, run `npm run agent-refresh -- --record`, and push only the approved commits.
+- The publish gate is authored by the human **outside the task worktree** (for example
+  `/tmp/cba-gate-<issue>.json`). A gate written inside the repository is an untracked file, which
+  makes the worktree dirty and is refused; `.agent-handoff/publish-gates/` holds only the schema
+  and its example.
+- The task worktree stays clean until publication. `EVENTS.md`/`CURRENT.md` bookkeeping and
+  `npm run agent-refresh -- --record` belong to the main worktree or a later commit — never to the
+  task worktree before a script is generated.
 - Record final validation, commit SHA, unresolved risks, and follow-ups in the handoff file.
 - Refresh coordination state before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
 - Preferred refresh command: `npm run agent-refresh` (or `node bin/cli.js agent-refresh --json` for machine-readable output); use `npm run agent-refresh -- --record` only when an explicit audit event is required.

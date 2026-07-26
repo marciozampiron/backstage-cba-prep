@@ -39,6 +39,14 @@ product/security owner approves a documented reconciliation.
    separation. Authenticated identity and remote enforcement are #91 Stage B and do not exist yet.
 8. Once independent review begins, reviewed commits are immutable. Findings produce a NEW
    fix-forward commit — never an amend, rebase or squash of reviewed history — and a new gate.
+9. The publish gate is authored by the human **outside the task worktree**. A gate written inside
+   the repository is an untracked file, which makes the worktree dirty, which validation refuses;
+   the command refuses an in-repository gate path outright. Bookkeeping that writes tracked files
+   (`EVENTS.md`, `CURRENT.md`, `agent-refresh --record`) belongs to the main worktree or a later
+   commit. A control whose documented procedure cannot be completed is not a control.
+10. Publication targets are bound, not assumed: the repository is derived from the `origin` remote
+    that the push actually goes to, and the pull request is identified by owner, repository and
+    exact base and head — never by branch name alone, which spans forks.
 
 ## 2. Architecture Boundaries
 

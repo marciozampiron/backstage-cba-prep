@@ -95,8 +95,13 @@ read by the architect agent as permission to `git push origin main`, and two age
 Mechanics:
 
 1. Each task gets its own branch AND worktree: `git worktree add ../cba-issue-<n> -b task/<n>-<slug> main`.
-2. The human owner writes a publish gate under `.agent-handoff/publish-gates/` (schema in that
-   folder's README) naming themselves, the executor, the base SHA and the exact ordered commits.
+2. The human owner writes a publish gate **outside the task worktree** — for example
+   `/tmp/cba-gate-<issue>.json` — naming themselves, the executor, the base SHA and the exact
+   ordered commits. The schema lives in `.agent-handoff/publish-gates/README.md`, but that folder
+   holds the schema and its example only. A gate written inside the repository would be an
+   untracked file, which makes the worktree dirty, which validation then refuses; the commands
+   refuse an in-repository gate path (`GATE_PATH_IN_REPO`) so the protocol cannot drift back into
+   being unexecutable.
 3. The executor runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
    It **validates locally and prints the plan** — it refuses architect/reviewer roles before `.env`
    loads, before the gate is read and before git runs, refuses `main` as a source, and fails closed
@@ -110,12 +115,16 @@ Mechanics:
 5. The architect/security reviewer **reads** that file and confirms the SHA-256. Reviewing is not
    implementing and not executing.
 6. The **human operator** runs it explicitly: `bash /tmp/cba-publish-<issue>-<head>.sh`. It requires
-   an interactive terminal and a typed confirmation, re-verifies local and live remote state, then
-   does exactly one mutation — a non-force push of the task branch — and creates or reuses exactly
-   one pull request. It can never merge, deploy, push `main`, force-push, rewrite history, change
-   repository settings or read secrets.
-7. Merging is always a separate human action, after checks and review.
-8. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+   an interactive terminal and a typed confirmation, re-verifies local and live remote state, and
+   confirms that the `origin` remote is the same repository its `gh` queries target. It then has
+   exactly **two** bounded external effects, in order: a non-force push of the task branch, and
+   creating or reusing exactly one pull request. It can never merge, deploy, push `main`,
+   force-push, rewrite history, change repository settings or read secrets.
+7. The task worktree stays clean throughout. Bookkeeping that changes tracked files —
+   `EVENTS.md`, `CURRENT.md`, `agent-refresh --record` — belongs to the main worktree or to a
+   later commit, never to the task worktree before generation.
+8. Merging is always a separate human action, after checks and review.
+9. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
    That hook is defense in depth — absent from fresh clones and skippable. Remote branch protection
    (#91 Stage B) is authoritative.
 
@@ -125,14 +134,17 @@ Mechanics:
 
 Before any push:
 
-1. The human must explicitly approve push in chat.
-2. The agent must append a `Human gate` event to `EVENTS.md` listing the approved commits or scope.
-3. The agent must run `npm run agent-refresh -- --record` immediately before publication.
-4. **Agents never push, and never run the prepared script.** The executor validates the gate with
+1. The human must explicitly approve push in chat and author the gate outside the task worktree.
+2. **Agents never push, and never run the prepared script.** The executor validates the gate with
    `agent-publish`, then prepares a script with `agent-human-publish-script`. Only the human runs
    it, and it can only publish `task/<issue>-<slug>` and open or reuse one PR. Merging is a human
    action. Publication to `main` happens solely through a human-merged pull request.
-5. After push, the agent must record push and CI status in `EVENTS.md`.
+3. `EVENTS.md` bookkeeping — the `Human gate` entry and `npm run agent-refresh -- --record` — is
+   recorded in the **main worktree**, or in a later commit on the task branch. It must not happen
+   in the task worktree before generation: those files are tracked, so writing them there makes the
+   worktree dirty and validation then refuses. Recording the gate does not authorize the push; the
+   human's explicit approval does.
+4. After publication, record push and CI status in `EVENTS.md` from the main worktree.
 
 If any step is missing, do not push.
 

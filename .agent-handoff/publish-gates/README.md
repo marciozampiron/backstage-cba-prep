@@ -1,6 +1,12 @@
-# Publish Gates (#91)
+# Publish Gates (#91, #93)
 
 A publish gate is the machine-readable form of a human publication decision.
+
+**This folder holds the schema and its example only — never a real gate.** A gate is authored by
+the human **outside the task worktree**, for example `/tmp/cba-gate-<issue>.json`. This directory is
+tracked and not ignored, so a gate written here would be an untracked file, which makes the worktree
+dirty, which validation then refuses. `agent-human-publish-script` refuses an in-repository gate
+path outright (`GATE_PATH_IN_REPO`) so the protocol cannot drift back into being unexecutable.
 
 In **Stage A** the gate is only ever *validated*: `agent-publish` refuses to VALIDATE without one
 and refuses anything the gate does not name exactly. It does not publish, does not open a pull
@@ -46,17 +52,23 @@ Every field maps to a way the 2026-07-26 incident could repeat:
 
 1. The executor finishes work on `task/<issue>-<slug>` in its own worktree.
 2. An independent reviewer reads the branch and reports findings, identifying commits by full SHA.
-3. The **human owner** writes the gate, naming themselves as `approver`.
+3. The **human owner** writes the gate outside the worktree, naming themselves as `approver`.
 4. The executor runs `agent-publish` — it **validates locally and stops**. Validation fails closed
    on any drift.
 
+**The #93 bridge (today, how publication actually happens):**
+
+5. The executor runs `agent-human-publish-script` and *prepares* a script under `/tmp`, mode `0600`
+   and non-executable, then reports its path and SHA-256. Preparing is not publishing.
+6. The architect/security reviewer *reads* the script and confirms the digest.
+7. The **human owner** runs it with `bash <path>` and merges the resulting PR separately.
+
 **Stage B (not built; separate human gate):**
 
-5. The executor bot credential pushes the task branch and opens/updates the PR, after a live remote
-   base check and authoritative gate consumption.
-6. The **human owner** merges. Merge is never an agent action.
+8. An executor bot credential performs the push and PR under an authenticated identity, with
+   authoritative, idempotent gate consumption and remote branch protection.
 
-Until Stage B exists, steps 5 and 6 are both performed by the human owner.
+Until Stage B exists, the push and the merge are both performed by the human owner.
 
 A gate is bound to a specific commit sequence. A new commit — including a fix-forward after
 review — needs a new gate.

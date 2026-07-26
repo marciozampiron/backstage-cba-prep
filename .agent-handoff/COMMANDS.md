@@ -59,12 +59,12 @@ git config core.hooksPath .githooks
 
 # 3. validate the human gate locally (this is the whole Stage A behaviour)
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
 
 # 4. EXECUTOR ONLY: prepare the script the HUMAN will run. No network, no git mutation.
 #    Writes one file to /tmp, mode 0600, NOT executable, and prints its path and SHA-256.
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
 ```
 
 Then, in order and by different actors:
@@ -129,10 +129,10 @@ Push is allowed only after explicit human approval for the exact commit or scope
 # Agents NEVER push and NEVER run the prepared script. Publication is: validate the gate, prepare
 # the script, hand it to the reviewer, and the HUMAN runs it. See "Publishing" above.
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
 
 node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-gate-<n>.json   # authored by the human OUTSIDE the worktree
 ```
 
 After push, validate GitHub Actions:

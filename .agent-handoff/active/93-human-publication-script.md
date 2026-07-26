@@ -77,7 +77,9 @@ This issue adds the **bridge** between #91 Stage A (advisory local validation) a
 | `.claude/skills/publication-prepare/SKILL.md` | NEW — Claude/executor: preparation only. |
 | `.agents/skills/publication-review/SKILL.md` | NEW — Codex/reviewer: read-only review. |
 | `.claude/skills/security-review/SKILL.md`, `.agents/skills/review-security/SKILL.md` | Aligned with the bridge. |
-| `test/human-publish-script.test.js` | NEW — offline suite. |
+| `test/human-publish-script.test.js` | NEW — offline suite, including two end-to-end tests that walk the documented protocol in a real temporary repository. |
+| `.gitattributes` | NEW — forces textual diffs for source files so a stray NUL byte cannot hide a file from review. |
+| `.agent-handoff/publish-gates/README.md` | Gate authored outside the worktree; the folder holds the schema and example only. |
 
 ## Validation
 
@@ -91,7 +93,27 @@ This issue adds the **bridge** between #91 Stage A (advisory local validation) a
 No push, no PR creation or mutation, no merge, no deploy, no branch-protection change, no credential
 creation, no cloud mutation, no paid call. #91 Stage B remains a separate human gate.
 
+## Review round 1 — five findings, all fixed forward
+
+Codex reviewed the first three commits and reported five findings. The three reviewed commits are
+untouched; every fix is a NEW commit.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| HIGH | `--repo` could diverge from `origin`, and the PR was identified by `.[0]` on branch name only, after the push | The repository is derived from `origin` and a supplied `--repo` is only a confirmation (`REPO_ORIGIN_MISMATCH`, `ORIGIN_UNRESOLVED`); the script binds `git remote get-url origin` to `REPO` at run time; the open-PR set is asserted **before** the push and re-asserted after, requiring zero or exactly one match, not cross-repository, same owner, exact base and head |
+| HIGH | The documented protocol made the worktree dirty before generation, so it could never complete | The gate is authored outside the worktree, `GATE_PATH_IN_REPO` makes it mechanical, bookkeeping moves to the main worktree, and two end-to-end tests walk the real protocol in a temporary repository |
+| MEDIUM | A failed gate read printed the raw error, leaking the caller-supplied path | Generic refusal; neither the path nor the raw error is echoed |
+| MEDIUM | A literal NUL byte made the security test file binary and invisible in diffs | The NUL is built at runtime; a guard test scans **all** tracked sources; `.gitattributes` forces textual diffs |
+| LOW | "one mutation" was inaccurate — the PR creation is a second effect | Reworded to two bounded external effects throughout code, docs and skills |
+
+### Reported, not fixed — belongs to another track
+
+`services/bff/test/telemetry.test.js` (merged to `main` under #82) contains the same literal NUL
+byte and is therefore binary and unreviewable in diffs. #82 has an active owner, so it was not
+touched. The guard test lists it explicitly in `KNOWN_PRE_EXISTING` and **fails once it is fixed**,
+so the exception cannot outlive the problem. It needs a one-line fix on the #82 track.
+
 ## Status
 
-Implementation complete, local commits only. **Awaiting Codex read-only review.** Any finding is
-fix-forward: a NEW commit, never an amend, rebase or squash of reviewed history.
+Implementation complete, local commits only, no push. **Awaiting Codex re-review.** Any further
+finding is fix-forward: a NEW commit, never an amend, rebase or squash of reviewed history.

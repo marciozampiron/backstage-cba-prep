@@ -1,0 +1,15 @@
+# Source files are always diffed as text.
+#
+# A single NUL byte otherwise makes Git classify a file as binary: the diff collapses to
+# "Bin 0 -> N bytes" and the content becomes invisible to review, on the command line and on
+# GitHub. That is a review and supply-chain problem, not a display preference — a security test
+# suite that cannot be read cannot be approved. `diff` forces textual diffs regardless of content;
+# `test/human-publish-script.test.js` asserts that no tracked source actually contains a NUL.
+*.js    diff
+*.mjs   diff
+*.cjs   diff
+*.json  diff
+*.md    diff
+*.sh    diff
+*.yml   diff
+*.yaml  diff

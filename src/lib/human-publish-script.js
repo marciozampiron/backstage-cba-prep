@@ -103,9 +103,10 @@ function shQuote(value) {
  *
  * Everything the script may touch is bound at generation time from an already-validated gate:
  * repository, issue, source branch, target branch, the exact ordered reviewed SHAs, the expected
- * HEAD and the gate expiry. The script re-verifies all of it against live state before doing the
- * one thing it can do — a normal push of the gated branch — and then creates or reuses exactly one
- * pull request.
+ * HEAD and the gate expiry. The script re-verifies all of it against live state — including that
+ * its push target and its API target are the same repository, and that the open pull-request set is
+ * unambiguous and not a fork's — before its two bounded external effects: a non-force push of the
+ * gated branch, then creating or reusing exactly one pull request.
  *
  * @param {object} args
  * @param {object} args.result output of Stage A `validateGate`
@@ -134,8 +135,9 @@ export function buildPublicationScript({ result, repo, generatedAt }) {
 # No agent may execute it. The file is mode 0600 and deliberately NOT executable so running it is
 # always a deliberate act. It uses only your existing git/gh session — it holds no credential.
 #
-# WHAT IT MAY DO: verify local and remote state, push the gated branch ${source} without force,
-# and create or reuse exactly one pull request into ${target}.
+# WHAT IT MAY DO — exactly two bounded external effects, in this order: push the gated branch
+# ${source} without force, and then create or reuse exactly one pull
+# request into ${target}. Everything else it does is a read.
 #
 # WHAT IT MAY NEVER DO: merge, deploy, push ${target}, force-push, rewrite history, change
 # repository settings or branch protection, read or administer secrets, or call a paid service.
@@ -198,7 +200,17 @@ for i in "\${!REVIEWED_SHAS[@]}"; do
   [ "\${observed[$i]}" = "\${REVIEWED_SHAS[$i]}" ] || die "commit $((i + 1)) differs from the reviewed set (amend, rebase or reorder)"
 done
 
-# --- 5. remote state: ask the REMOTE, never a local remote-tracking ref -------------------------
+# --- 5. the push target and the API target must be the SAME repository --------------------------
+# The push goes to \`origin\`; every \`gh\` query goes to \$REPO. If those two ever name different
+# repositories, the branch lands in one place while the pull request is inspected in another. They
+# are bound here, at run time, against the remote actually configured on this machine.
+origin_url=$(git remote get-url origin)
+case "$origin_url" in
+  "https://github.com/$REPO"|"https://github.com/$REPO.git"|"git@github.com:$REPO"|"git@github.com:$REPO.git") ;;
+  *) die "the origin remote does not match the repository this script was generated for" ;;
+esac
+
+# --- 6. remote state: ask the REMOTE, never a local remote-tracking ref -------------------------
 # \`git ls-remote\` reads the live value over the wire and touches no local ref. A previous shape of
 # this check used \`refs/remotes/origin/main\`, which is only as fresh as the last fetch and relies on
 # the opportunistic ref update a plain \`git fetch origin main\` happens to perform. For the check
@@ -217,7 +229,40 @@ if [ -n "$remote_head" ] && [ "$remote_head" != "$head_sha" ]; then
     || die "the remote branch has commits this push would discard; a force push is never performed"
 fi
 
-# --- 6. explicit typed confirmation -------------------------------------------------------------
+# --- 7. pull-request pre-flight, BEFORE anything is published ----------------------------------
+# \`gh pr list --head\` matches by BRANCH NAME and spans forks, so a pull request opened from a fork
+# whose branch happens to share this name would otherwise look like "the" pull request. Everything
+# is checked here, before the push, so a mismatch costs nothing: the branch is not published yet.
+pr_query() {
+  gh pr list --repo "$REPO" --head "$SOURCE_BRANCH" --state open \\
+    --json number,baseRefName,headRefName,isCrossRepository,headRepositoryOwner
+}
+REPO_OWNER=\${REPO%%/*}
+
+# Refuses unless the open pull requests for this head are zero, or exactly one that belongs to this
+# repository, is not from a fork, and targets exactly the reviewed base and head.
+assert_pr_set() {
+  local when="$1" json count
+  json=$(pr_query)
+  count=$(printf '%s' "$json" | jq 'length')
+  [ "$count" -le 1 ] || die "$when: $count open pull requests share this head branch; refusing to guess which one is correct"
+  if [ "$count" -eq 1 ]; then
+    [ "$(printf '%s' "$json" | jq -r '.[0].isCrossRepository')" = "false" ] \\
+      || die "$when: the open pull request comes from a fork; refusing to touch it"
+    [ "$(printf '%s' "$json" | jq -r '.[0].headRepositoryOwner.login')" = "$REPO_OWNER" ] \\
+      || die "$when: the open pull request is headed from another owner; refusing to touch it"
+    [ "$(printf '%s' "$json" | jq -r '.[0].baseRefName')" = "$TARGET_BRANCH" ] \\
+      || die "$when: the open pull request targets a different base; refusing to touch it"
+    [ "$(printf '%s' "$json" | jq -r '.[0].headRefName')" = "$SOURCE_BRANCH" ] \\
+      || die "$when: the open pull request has a different head; refusing to touch it"
+  fi
+  printf '%s' "$count"
+}
+
+command -v jq >/dev/null 2>&1 || die "jq is required to inspect pull requests safely"
+pr_count_before=$(assert_pr_set "before publishing")
+
+# --- 8. explicit typed confirmation -------------------------------------------------------------
 note ""
 note "About to publish:"
 note "  repository : $REPO"
@@ -231,26 +276,26 @@ printf 'confirmation> '
 read -r typed
 [ "$typed" = "$CONFIRMATION" ] || die "confirmation did not match; nothing was published"
 
-# --- 7. the ONE mutation: a normal push of the gated branch ------------------------------------
+# --- 9. FIRST external effect: a normal push of the gated branch ------------------------------------
 note "Pushing $SOURCE_BRANCH (no force)..."
 git push origin "refs/heads/$SOURCE_BRANCH:refs/heads/$SOURCE_BRANCH"
 
-# --- 8. create or reuse EXACTLY one pull request ------------------------------------------------
-existing_number=$(gh pr list --repo "$REPO" --head "$SOURCE_BRANCH" --state open --json number --jq '.[0].number // empty')
-if [ -n "$existing_number" ]; then
-  existing_base=$(gh pr view "$existing_number" --repo "$REPO" --json baseRefName --jq '.baseRefName')
-  existing_head=$(gh pr view "$existing_number" --repo "$REPO" --json headRefName --jq '.headRefName')
-  [ "$existing_base" = "$TARGET_BRANCH" ] || die "open pull request #$existing_number targets a different base; refusing to touch it"
-  [ "$existing_head" = "$SOURCE_BRANCH" ] || die "open pull request #$existing_number has a different head; refusing to touch it"
+# --- 10. SECOND external effect: create or reuse EXACTLY one pull request -----------------------
+# Re-queried after the push, not trusted from before it: the remote may have changed in between,
+# and the same assertions must hold against the state that actually exists now.
+pr_count_after=$(assert_pr_set "after publishing")
+if [ "$pr_count_after" -eq 1 ]; then
+  existing_number=$(pr_query | jq -r '.[0].number')
   note "Reusing existing pull request #$existing_number (its branch was updated by the push above)."
 else
+  [ "$pr_count_before" -eq 0 ] || die "the pull request that existed before the push is gone; stopping rather than opening a second one"
   note "Creating the pull request..."
   gh pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SOURCE_BRANCH" \\
     --title "Issue #$ISSUE" \\
     --body "Publishes the reviewed branch for issue #$ISSUE under gate $GATE_ID. Merge remains a separate human action after required checks and review."
 fi
 
-# --- 9. redacted evidence ------------------------------------------------------------------------
+# --- 11. redacted evidence ------------------------------------------------------------------------
 note ""
 note "Published (evidence — no credential material):"
 note "  gate       : $GATE_ID"
