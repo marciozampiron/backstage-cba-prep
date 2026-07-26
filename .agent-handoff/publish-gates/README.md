@@ -72,20 +72,21 @@ gate. Approval and operation are different actors.
 | --- | --- |
 | `gateId` | 3-64 chars of `[a-z0-9._-]`, echoed in evidence, refused if it looks like credential material (and never echoed when refused) |
 | `issue` | integer issue number; must match the branch |
-| `executor` | the agent identity authorized to publish — a gate is not transferable |
+| `executor` | the agent identity this scope was prepared for — the scope is not transferable, and it confers no publication authority |
 | `baseSha` | full 40-char SHA the branch was cut from; drift fails closed |
-| `commits` | full 40-char SHAs, **ordered**, exactly what may be published |
+| `commits` | full 40-char SHAs, **ordered**, exactly what is in scope for preparation and review |
 | `sourceBranch` | `task/<issue>-<slug>`; never `main` |
+| — | **No field here grants publication authority.** That is the execution gate's job alone; see the two-document table above. |
 | `targetBranch` | always `main` — the PR target, never a push destination |
 | `approver` | the **named** human; generic words like `approved` are refused |
 | `approvedAt` / `expiresAt` | strict RFC3339 with an offset; the window is capped at **12 hours** so a decision cannot authorize the next cycle |
-| `reviewedShas` | **required**, non-empty, full SHAs, and must equal `commits` exactly and in order. An unreviewed fix-forward cannot ride along, and nothing reviewed can be silently dropped |
+| `reviewedShas` | **required**, non-empty, full SHAs, and must equal `commits` exactly and in order. An unreviewed fix-forward cannot enter the scope, and nothing reviewed can be silently dropped |
 
 ## Why each field exists
 
 Every field maps to a way the 2026-07-26 incident could repeat:
 
-- `executor` + role → the architect agent pushed when only the executor should have;
+- `executor` + role → the architect agent pushed when only the executor should have prepared;
 - `sourceBranch` + `targetBranch` → the push went to `main` instead of an issue branch;
 - `commits` + `baseSha` → two agents amended shared history, so "the approved commits" became
   ambiguous;

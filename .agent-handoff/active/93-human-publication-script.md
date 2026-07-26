@@ -247,6 +247,34 @@ the guard works on prose rather than on keywords.
 The #91 contract sentence "A gate is bound to a specific commit sequence" is preserved verbatim; the
 two-document precision is added around it rather than replacing it.
 
+## Work log — Codex FINDINGS on 2dc3383 (round 8), both confirmed
+
+**1 MEDIUM — the review-scope schema still granted publication authority.** Two rows contradicted
+the invariant the same file had just established: `executor` was described as the identity authorized
+to publish, and `commits` as exactly what may be published. Rewritten as preparation and review
+scope, with an explicit row stating that no field there grants publication authority, and the
+"why each field exists" line corrected the same way. Authority belongs to the execution gate alone.
+
+**2 MEDIUM — the semantic guard had a paragraph-wide negation bypass, reproducible.** Judging
+negation over a whole block meant one denial excused every later claim in the same paragraph. Fixed
+by adding a sentence-scoped view: wrapped lines are still joined first, but the negation is judged
+against the sentence that matched and nothing wider.
+
+The same defect existed one level further down, and the positive control found it: the schema-row
+check evaluated the negation across the entire row, so a row reading "authorized to publish — a gate
+is not transferable" was excused by a denial about transferability. Rows are now judged per fragment.
+
+Four positive controls added, all driving the **same** scanner the repository scan uses — a control
+that reimplements the matcher proves nothing:
+
+1. the exact two-sentence bypass, asserted to report exactly one violation;
+2. a same-sentence denial, asserted to report none;
+3. a negation wrapped across a line break, asserted to report none;
+4. the two schema rows that actually shipped, asserted to report both.
+
+Verified end to end by poisoning the document with both reproduced violations: five tests fail,
+including both new ones. Restored afterwards, and the suite is green.
+
 ## Status
 
 Implementation complete, **local commits only, nothing published**. Next owner: **Codex**, for

@@ -128,6 +128,34 @@ function blocksOf(text, { markdown = true } = {}) {
   return blocks;
 }
 
+/**
+ * Blocks split into SENTENCES, each reported with the line its block started on.
+ *
+ * Evaluating negation over a whole paragraph is a real bypass, and it was reproducible:
+ *
+ *   "The review scope is not a credential. The review scope authorizes publication."
+ *
+ * The first sentence contains `not`, so a paragraph-wide check excused the second. Wrapped lines
+ * still have to be joined first — that is what `blocksOf` is for — but the negation must then be
+ * judged against the sentence that actually matched, and nothing wider.
+ *
+ * @returns {Array<{line: number, text: string}>}
+ */
+function sentencesOf(text, opts) {
+  const out = [];
+  for (const { line, text: block } of blocksOf(text, opts)) {
+    // Table rows are their own sentences; splitting a row on `.` would sever a cell mid-thought.
+    if (/^\s*\|/.test(block)) {
+      out.push({ line, text: block });
+      continue;
+    }
+    for (const sentence of block.split(/(?<=[.!?])\s+/)) {
+      if (sentence.trim()) out.push({ line, text: sentence.trim() });
+    }
+  }
+  return out;
+}
+
 /** Markdown emphasis must not hide a word: `**only** after` has to read as `only after`. */
 const plain = (t) => t.replace(/[*_`]/g, '');
 
@@ -799,25 +827,36 @@ test('the execution gate is re-checked immediately before the push, after every 
 
 /** Sentences that promote the review scope into an authorization, however they are phrased. */
 const CONFLATION_PATTERNS = [
-  { label: 'the same gate carried into Stage B', re: /\bthe same gate\b/i },
+  // "the same gate validates twice" is about replay, not conflation, so the pattern requires the
+  // publication sense to be present.
+  { label: 'the same gate carried into Stage B', re: /\bthe same gate\b[^.]{0,80}\b(becomes|is the input|input to|publish\w*|publication)\b/i },
   { label: 'the review scope becoming a publication input', re: /review scope[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b/i },
   { label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED', re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i },
   { label: 'the review scope authorizing an operation', re: /review scope[^.]{0,60}\bauthoriz\w+\b(?![^.]{0,40}\bnothing\b)/i },
 ];
 
-test('no document promotes the review scope into an authorization', () => {
+/**
+ * Shared scanner, so the positive controls exercise the SAME code the repository scan does.
+ *
+ * A positive control that reimplements the matcher proves nothing about the guard.
+ */
+function findConflations(files) {
   const violations = [];
-  for (const rel of SOURCES) {
-    for (const { line, text } of blocksOf(read(rel), { markdown: rel.endsWith('.md') })) {
+  for (const { rel, text, markdown } of files) {
+    for (const { line, text: sentence } of sentencesOf(text, { markdown })) {
       for (const { label, re } of CONFLATION_PATTERNS) {
-        if (!re.test(text)) continue;
-        // A sentence that explicitly denies the conflation is the fix, not the defect.
-        if (/\bnot\b|\bnever\b|\bnothing\b|\bwould be a security defect\b/i.test(plain(text))) continue;
-        violations.push(`${rel}:${line}: [${label}] ${text.trim().slice(0, 140)}`);
+        if (!re.test(sentence)) continue;
+        // Judged on THIS sentence only — a denial elsewhere in the paragraph does not excuse it.
+        if (/\bnot\b|\bnever\b|\bnothing\b|would be a security defect/i.test(plain(sentence))) continue;
+        violations.push(`${rel}:${line}: [${label}] ${sentence.trim().slice(0, 140)}`);
       }
     }
   }
-  assert.deepEqual(violations, [], `the two manifests are conflated:\n${violations.join('\n')}`);
+  return violations;
+}
+
+test('no document promotes the review scope into an authorization', () => {
+  assert.deepEqual(findConflations(SOURCES.map((rel) => ({ rel, text: read(rel), markdown: rel.endsWith('.md') }))), []);
 });
 
 test('POSITIVE CONTROL: the conflation patterns catch the exact sentences that shipped', () => {
@@ -846,4 +885,75 @@ test('the gate document attributes each stage to the right manifest', () => {
   // The opening line must not make the same generic claim about "a publish gate".
   assert.match(flat, /This folder documents the \*\*review scope manifest\*\*\. It is not the authorization to publish/);
   assert.match(flat, /The review scope manifest is \*\*not\*\* a `HUMAN_GATE_GRANTED`/);
+});
+
+/* ================= the negation bypass, and the schema's authority wording ====================== */
+
+test('POSITIVE CONTROL: an unrelated negation no longer excuses a later claim', () => {
+  // Reproduced by review, verbatim: a paragraph-wide negation check skipped this whole block because
+  // the FIRST sentence contains "not". The scanner now judges the sentence that matched.
+  const planted = 'The review scope is not a credential. The review scope authorizes publication.';
+  const hits = findConflations([{ rel: 'planted.md', text: planted, markdown: true }]);
+  assert.equal(hits.length, 1, `the second sentence must be reported; got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /authoriz/i);
+
+  // And a genuine denial in the SAME sentence is still not a violation.
+  const denied = 'The review scope authorizes nothing, in Stage A or ever.';
+  assert.deepEqual(findConflations([{ rel: 'denied.md', text: denied, markdown: true }]), []);
+});
+
+test('POSITIVE CONTROL: a wrapped sentence is still judged as one sentence', () => {
+  // Joining wrapped lines must survive the change: a negation split across a line break still
+  // covers its own sentence.
+  const wrapped = 'The review scope does\nnot authorize publication.';
+  assert.deepEqual(findConflations([{ rel: 'wrapped.md', text: wrapped, markdown: true }]), []);
+});
+
+/** The review-scope schema table must not describe any field as granting publication authority. */
+function findScopeAuthorityClaims(text) {
+  const start = text.indexOf('## Schema');
+  const end = text.indexOf('## Why each field exists');
+  if (start < 0 || end < 0) return ['the Schema section could not be located'];
+  const violations = [];
+  for (const row of text.slice(start, end).split('\n')) {
+    if (!/^\s*\|/.test(row)) continue;
+    // Judged per FRAGMENT, not per row. A row like "…authorized to publish — a gate is not
+    // transferable" carries a denial about something else entirely; evaluating the whole row would
+    // let that excuse the authority claim, which is the same bypass one level down.
+    const claims = plain(row)
+      .split(/[|;,—]|\bin order\b/)
+      .map((f) => f.trim())
+      .filter((f) => /\b(authoriz\w*|may be published|publi(sh|cation)\w*)\b/i.test(f))
+      .filter((f) => !/\bno\b|\bnot\b|\bnever\b|\bnothing\b|\bcannot\b|confers no/i.test(f));
+    if (claims.length) violations.push(`${row.trim()}  [claim: ${claims.join(' / ')}]`);
+  }
+  return violations;
+}
+
+test('no review-scope schema field grants publication authority', () => {
+  const violations = findScopeAuthorityClaims(read('.agent-handoff/publish-gates/README.md'));
+  assert.deepEqual(violations, [], `the review scope authorizes nothing:\n${violations.join('\n')}`);
+});
+
+test('POSITIVE CONTROL: a schema row granting publication authority is caught', () => {
+  // The exact shape that shipped: the `executor` row described as authorized to publish.
+  const planted = [
+    '## Schema',
+    '',
+    '| Field | Meaning |',
+    '| --- | --- |',
+    '| `executor` | the agent identity authorized to publish — a gate is not transferable |',
+    '| `commits` | full 40-char SHAs, **ordered**, exactly what may be published |',
+    '',
+    '## Why each field exists',
+  ].join('\n');
+  const hits = findScopeAuthorityClaims(planted);
+  assert.equal(hits.length, 2, `both rows must be reported; got ${JSON.stringify(hits)}`);
+});
+
+test('the review-scope schema states plainly that it grants no publication authority', () => {
+  const flat = read('.agent-handoff/publish-gates/README.md').replace(/\s+/g, ' ');
+  assert.match(flat, /No field here grants publication authority/i);
+  assert.match(flat, /confers no publication authority/i);
+  assert.match(flat, /in scope for preparation and review/i);
 });
