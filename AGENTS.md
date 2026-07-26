@@ -25,6 +25,15 @@ Collaboration rules:
 - Do not start work when an `.agent-handoff/active/` file already owns the same issue or files.
 - Move or record task state through `inbox -> active -> done` when taking ownership.
 - Never push without explicit human approval.
+- **Publication is role-separated and PR-only (#91).** Agents never push `main`. The implementation
+  executor publishes only `task/<issue>-<slug>` through `agent-publish`, against a publish gate that
+  names the approving human, the exact executor and the exact ordered commits. The
+  architect/security reviewer may review and recommend a gate but may never publish, merge, deploy
+  or act as executor. Merging is a human action. A generic "approved" is a review decision, not a
+  publication command.
+- Each active agent task uses its own branch and worktree; agents do not share a writable `main`.
+- Once independent review begins, reviewed commits are immutable — findings produce a NEW
+  fix-forward commit, never an amend or rebase of reviewed history.
 - `agent-refresh --record` is only a technical checkpoint; it never grants push permission.
 - Before pushing, append a `Human gate` event to `.agent-handoff/EVENTS.md`, run `npm run agent-refresh -- --record`, and push only the approved commits.
 - Record final validation, commit SHA, unresolved risks, and follow-ups in the handoff file.

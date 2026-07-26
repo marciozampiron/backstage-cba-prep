@@ -67,6 +67,31 @@ After any meaningful state change, update `CURRENT.md` and append an entry to `E
 
 Do not hardcode published (`origin/main`) **or** unpublished/amendable local commit SHAs in `CURRENT.md` — a pinned SHA goes stale on the next push. Use `git rev-parse --short origin/main` for the current published baseline and `git log --oneline origin/main..HEAD` for exact local commits.
 
+## Publication protocol (#91)
+
+Publication authority is bound mechanically, not by prose. The 2026-07-26 incident — a generic
+human approval read by the architect agent as permission to `git push origin main`, followed by two
+agents racing on `git commit --amend` in a shared worktree — is the reason.
+
+| Role | May | May never |
+| --- | --- | --- |
+| Human product/security owner | Approve a gate naming themselves; merge the PR | Delegate merge authority to an agent |
+| Implementation executor | Commit on `task/<issue>-<slug>`; run `agent-publish` with a valid gate | Push `main`, merge, deploy, spend, or publish without a gate |
+| Architect/security reviewer | Review by full SHA, create roadmap issues, recommend a gate | Publish any source branch, merge, or act as executor |
+
+Mechanics:
+
+1. Each task gets its own branch AND worktree: `git worktree add ../cba-issue-<n> -b task/<n>-<slug> main`.
+2. The human owner writes a publish gate under `.agent-handoff/publish-gates/` (schema in that
+   folder's README) naming themselves, the executor, the base SHA and the exact ordered commits.
+3. The executor runs `node bin/cli.js agent-publish --role executor --executor <id> --gate <file>`.
+   It refuses architect/reviewer roles *before any network call*, refuses `main` as a source, and
+   fails closed on executor mismatch, base drift, extra/reordered commits, a dirty worktree, an
+   expired gate or a stale review SHA.
+4. The command opens or updates a pull request. **It has no merge path.**
+5. `git config core.hooksPath .githooks` enables a local pre-push refusal for direct `main` pushes.
+   That hook is defense in depth; remote branch protection (#91 Stage B) is authoritative.
+
 ## Push gate
 
 `agent-refresh` and `agent-refresh --record` check technical state only. They do **not** authorize a push. Push permission is a human decision.

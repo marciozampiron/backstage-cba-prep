@@ -1,0 +1,27 @@
+#!/bin/sh
+# Local defense in depth (#91 Stage A). NOT the authoritative control.
+#
+# The authoritative control is remote branch protection (#91 Stage B): a hook lives in the working
+# copy, can be skipped with --no-verify and does not exist in a fresh clone. This exists so the
+# 2026-07-26 failure mode — an agent running `git push origin main` from a shared worktree — is
+# caught locally instead of reaching the remote.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+
+remote_ref_blocked() {
+  case "$1" in
+    refs/heads/main|refs/heads/master) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if remote_ref_blocked "$remote_ref"; then
+    echo "pre-push refused: direct push to ${remote_ref} is not allowed." >&2
+    echo "Agents publish task/<issue>-<slug> and open a pull request; merging is a human action (#91)." >&2
+    echo "If you are the human owner performing an authorized merge, use the PR merge path." >&2
+    exit 1
+  fi
+done
+
+exit 0

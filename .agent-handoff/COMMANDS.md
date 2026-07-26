@@ -45,6 +45,27 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
+## Publishing (executor only, #91)
+
+```bash
+# 1. own branch AND worktree — never share a writable main
+git worktree add ../cba-issue-<n> -b task/<n>-<slug> main
+
+# 2. local defense in depth (once per clone)
+git config core.hooksPath .githooks
+
+# 3. validate the human gate without touching the remote
+node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json --dry-run
+
+# 4. publish the branch and open/update the PR (never merges)
+node bin/cli.js agent-publish --role executor --executor <agent-id> \
+  --gate .agent-handoff/publish-gates/<gate>.json
+```
+
+`architect` and `reviewer` roles are refused before any network call. `main` is never a source
+branch and is never a push destination. Merging the pull request is a human action.
+
 ## Before commit
 
 ```bash
