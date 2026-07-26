@@ -825,129 +825,126 @@ test('the execution gate is re-checked immediately before the push, after every 
 // HUMAN_GATE_GRANTED. Both sentences contained the right vocabulary and the wrong meaning. These
 // tests judge the CLAIM: which document authorizes, and which one Stage B will consume.
 
-/**
- * Sentences that promote the review scope into an authorization, however they are phrased.
- *
- * Each pattern carries the denials that may exempt IT, and every denial names the subject. A denial
- * that merely contains a negated verb is not enough — these were all reproducible false negatives:
- *
- *   "The review scope authorizes publication while another component confers no authority."
- *   "The review scope authorizes publication; missing audit evidence would be a security defect."
- *   "The review scope authorizes publication while deployment does not authorize billing."
- *
- * In each, the denial is about something else entirely. So `confers no` and
- * `would be a security defect` are gone as free-standing exemptions, and every remaining denial must
- * bind the review scope (or the named subject) to the negated verb.
- */
 const SCOPE = String.raw`review[- ]scope`;
-const AUX = String.raw`(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)`;
-/** Every verb that can carry an authority claim in prose. Enumerated, not searched once. */
-const AUTHORITY_VERB = /\b(authoriz\w*|grants?|granted|confers?|promot\w*|becomes?)\b/gi;
 
 /**
- * Schema rows say it a third way — "exactly what may be published" — so the row vocabulary adds the
- * publish verbs. Keeping the two lists separate stops prose sentences about publishing in general
- * from being read as authority claims.
+ * Schema rows say it a third way — "exactly what may be published" — so rows carry their own verb
+ * list. Keeping the lists separate stops ordinary prose about publishing from reading as an authority
+ * claim.
  */
 const ROW_CLAIM_VERB = /\b(authoriz\w*|grants?|granted|confers?|publish\w*)\b/gi;
 
-/**
- * A denial neutralizes ONLY its own predicate.
- *
- * Attaching the denial to the first authority verb was still wrong, because a sentence carries more
- * than one predicate. Both of these were reproducible false negatives:
- *
- *   "The review scope does not authorize deployment but authorizes publication."
- *   "The review scope authorizes nothing except publication."
- *
- * In the first, denying the first predicate hid a second, positive one. In the second, the denial is
- * reversed by an exception. So every predicate attributed to the subject is enumerated and judged on
- * its own, and an exception ("nothing EXCEPT publication") disqualifies the denial that precedes it.
- *
- * @returns {string[]} the predicates that remain positive claims
- */
-function undeniedScopePredicates(sentence) {
-  const t = sentence.replace(/[*`]/g, ''); // emphasis only; underscores belong to identifiers
-  const subject = /review[- ]scope/i.exec(t);
-  if (!subject) return [];
-  const after = t.slice(subject.index + subject[0].length);
-
-  const found = [];
-  for (const m of after.matchAll(AUTHORITY_VERB)) {
-    const before = after.slice(0, m.index);
-    const tail = after.slice(m.index);
-
-    // A clause that introduces its own subject owns its predicate — "…; the execution gate
-    // authorizes publication" is a true statement about the execution gate, not about the scope.
-    if (OTHER_SUBJECT_OWNS_IT.test(before)) continue;
-
-    const deniedBefore =
-      /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
-      /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
-      // "No field here grants…", "no manifest confers…"
-      /\bno\s+(?:\w+\s+){0,3}$/i.test(before);
-    // "authorizes nothing" / "grants no authority" — unless an exception carves a claim back out.
-    const deniedAfter = /^\w+\s+(?:nothing\b|no\b)/i.test(tail) && !QUALIFIED_DENIAL.test(tail);
-
-    if (deniedBefore || deniedAfter) continue;
-    found.push(m[0]);
-  }
-  return found;
-}
-
 /** A denial undone by an exception is not a denial. */
-const QUALIFIED_DENIAL = /^\w+\s+(?:nothing|no)\b[^.]{0,60}\b(?:except|other than|apart from|besides|save for|but for)\b/i;
+const QUALIFIED_DENIAL = /^[\w-]+\s+(?:nothing|no)\b[^.]{0,60}\b(?:except|other than|apart from|besides|save for|but for)\b/i;
 
 /** A clause boundary followed by a different named subject, immediately before the predicate. */
 const OTHER_SUBJECT_OWNS_IT =
   /(?:[;|]|\b(?:but|while|and|whereas|however|although)\b)\s+(?:the\s+|a\s+|an\s+)?(?:execution gate|artifact|pull request|hook|bot credential|Stage B|human gate|operator|approver|reviewer|Codex|Opus|Zamp)\s+(?:\w+\s+){0,2}$/i;
 
-/** No predicate left unclaimed. */
-const scopeAuthorityIsDenied = (sentence) => undeniedScopePredicates(sentence).length === 0;
+/** Is a negation attached to THIS predicate occurrence, rather than merely nearby? */
+function occurrenceIsDenied(before, tail) {
+  return (
+    /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+    /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+    /\bno\s+(?:\w+\s+){0,3}$/i.test(before) ||
+    (/^[\w-]+\s+(?:nothing\b|no\b)/i.test(tail) && !QUALIFIED_DENIAL.test(tail))
+  );
+}
+
+/**
+ * Every predicate of ONE relationship that remains a positive claim.
+ *
+ * A denial neutralizes only its own predicate, so each occurrence is judged separately. And a
+ * relationship with no recognized predicate is **not** a denied relationship — treating an empty
+ * predicate set as "all denied" silently suppressed a real claim, because absence of evidence is not
+ * evidence of a denial.
+ *
+ * @param {string} sentence
+ * @param {{subject: RegExp, verbs: RegExp}} relationship
+ * @returns {{predicates: string[], undenied: string[]}}
+ */
+function relationshipPredicates(sentence, { subject, verbs }) {
+  const t = sentence.replace(/[*`]/g, ''); // emphasis only; underscores belong to identifiers
+  const found = { predicates: [], undenied: [] };
+  const at = subject.exec(t);
+  if (!at) return found;
+  const after = t.slice(at.index + at[0].length);
+
+  for (const m of after.matchAll(new RegExp(verbs.source, 'gi'))) {
+    const before = after.slice(0, m.index);
+    const tail = after.slice(m.index);
+    if (OTHER_SUBJECT_OWNS_IT.test(before)) continue; // a clause with its own subject owns it
+    found.predicates.push(m[0]);
+    if (!occurrenceIsDenied(before, tail)) found.undenied.push(m[0]);
+  }
+  return found;
+}
+
+/** Denied only when predicates exist AND every one of them is denied. */
+function relationshipIsFullyDenied(sentence, relationship) {
+  const { predicates, undenied } = relationshipPredicates(sentence, relationship);
+  return predicates.length > 0 && undenied.length === 0;
+}
+
+/** The review-scope authorization relationship, asserted on directly by several tests. */
+const SCOPE_AUTHORITY = {
+  subject: new RegExp(SCOPE, 'i'),
+  verbs: /\b(authoriz\w*|grants?|granted|confers?|promot\w*|becomes?)\b/,
+};
+const undeniedScopePredicates = (sentence) => relationshipPredicates(sentence, SCOPE_AUTHORITY).undenied;
 
 /** Stage B is the other actor that may be said not to promote the scope into an authorization. */
 const STAGE_B_DOES_NOT_PROMOTE = /\bStage B\b[^.]{0,40}\bdoes\s+not\s+promote\b[^.]{0,40}review[- ]scope/i;
 
+/** A filler that cannot cross a clause boundary, so a denial cannot reach past "but" or "while". */
+const SAME_CLAUSE = String.raw`(?:(?!\b(?:but|while|however|whereas|although|though|except)\b)[\w'-]+\s+){0,3}`;
+const NEG_AUX = String.raw`(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)`;
+
+/**
+ * Sentences that promote the review scope into an authorization, however they are phrased.
+ *
+ * Each entry binds its denials to ITS OWN relationship. Pattern-specific matchers that merely looked
+ * for a nearby negation were themselves bypasses — "The same gate is not immutable but becomes the
+ * publication input" and "A gate is not optional but is the machine-readable form of
+ * HUMAN_GATE_GRANTED" each denied something irrelevant and were exempted — so every denial below
+ * names the subject, the negation and the predicate, and none may cross a clause boundary.
+ *
+ * The review-scope authority entry keeps the predicate ENUMERATION instead, because that relationship
+ * genuinely carries several predicates in one sentence and each must be judged separately.
+ */
 const CONFLATION_PATTERNS = [
   {
     label: 'the same gate carried into Stage B',
     // "the same gate validates twice" is replay, not conflation, so the publication sense is required.
     re: /\bthe same gate\b[^.]{0,80}\b(becomes|is the input|input to|publish\w*|publication)\b/i,
-    denials: [new RegExp(String.raw`\bthe same gate\b[^.]{0,40}\b(?:${AUX}\s+not|cannot|never)\b`, 'i')],
+    denials: [
+      new RegExp(String.raw`\bthe same gate\b\s+${SAME_CLAUSE}${NEG_AUX}\s+not\s+${SAME_CLAUSE}(?:become|be|serve|act|input|publish)`, 'i'),
+      new RegExp(String.raw`\bthe same gate\b\s+${SAME_CLAUSE}(?:${NEG_AUX}\s+)?(?:never|cannot|can't)\s+${SAME_CLAUSE}(?:become|be|serve|act|the|input|publish)`, 'i'),
+    ],
   },
   {
     label: 'the review scope becoming a publication input',
     re: new RegExp(String.raw`${SCOPE}[^.]{0,80}\b(becomes|promoted|serves as|acts as)\b`, 'i'),
-    denials: [scopeAuthorityIsDenied, STAGE_B_DOES_NOT_PROMOTE],
+    denials: [
+      new RegExp(String.raw`${SCOPE}\b\s+${SAME_CLAUSE}${NEG_AUX}\s+not\s+${SAME_CLAUSE}(?:become|be|serve|act|promot|input)`, 'i'),
+      new RegExp(String.raw`${SCOPE}\b\s+${SAME_CLAUSE}(?:${NEG_AUX}\s+)?(?:never|cannot|can't)\s+${SAME_CLAUSE}(?:become|be|serve|act|promot|the|input)`, 'i'),
+      STAGE_B_DOES_NOT_PROMOTE,
+    ],
   },
   {
     label: 'a generic "gate" as the machine-readable HUMAN_GATE_GRANTED',
     re: /(^|[^n])\bA gate\b[^.]{0,120}machine-readable form of a? ?`?HUMAN_GATE_GRANTED/i,
-    denials: [/\bA gate\b[^.]{0,40}\bis\s+not\b/i],
+    denials: [
+      new RegExp(String.raw`\bA gate\b\s+${SAME_CLAUSE}${NEG_AUX}\s+(?:not|never)\s+${SAME_CLAUSE}machine-readable`, 'i'),
+    ],
   },
   {
     label: 'the review scope authorizing an operation',
     re: new RegExp(String.raw`${SCOPE}[^.]{0,60}\bauthoriz\w+`, 'i'),
-    denials: [scopeAuthorityIsDenied, STAGE_B_DOES_NOT_PROMOTE],
+    relationship: SCOPE_AUTHORITY,
+    denials: [STAGE_B_DOES_NOT_PROMOTE],
   },
 ];
-
-/**
- * Is the prohibited relationship denied, with the SUBJECT bound?
- *
- * Binding to the verb alone was still a bypass: a negated verb anywhere in the sentence exempted the
- * claim, so a denial about a different component, a different obligation, or a different subject all
- * worked. Each pattern therefore brings its own denials, and every one of them names the subject.
- *
- * Note the deliberate absence of `plain()` on the underscore class: `plain()` strips `_`, which had
- * silently killed a `HUMAN_GATE_GRANTED` matcher here. That matcher was unnecessary — no live
- * sentence needs it — so it is removed rather than repaired, and emphasis is stripped without
- * touching underscores.
- */
-function denialBindsSubject(sentence, denials) {
-  const t = sentence.replace(/[*`]/g, ''); // emphasis only — underscores are part of identifiers
-  return (denials ?? []).some((d) => (typeof d === 'function' ? d(sentence) : d.test(t)));
-}
 
 /**
  * Shared scanner, so the positive controls exercise the SAME code the repository scan does.
@@ -958,9 +955,12 @@ function findConflations(files) {
   const violations = [];
   for (const { rel, text, markdown } of files) {
     for (const { line, text: sentence } of sentencesOf(text, { markdown })) {
-      for (const { label, re, denials } of CONFLATION_PATTERNS) {
+      for (const { label, re, relationship, denials } of CONFLATION_PATTERNS) {
         if (!re.test(sentence)) continue;
-        if (denialBindsSubject(sentence, denials)) continue;
+        // Enumeration where a relationship carries several predicates; otherwise bound denials only.
+        // Either way, finding nothing is never treated as a denial.
+        if (relationship && relationshipIsFullyDenied(sentence, relationship)) continue;
+        if ((denials ?? []).some((d) => d.test(sentence.replace(/[*`]/g, '')))) continue;
         violations.push(`${rel}:${line}: [${label}] ${sentence.trim().slice(0, 140)}`);
       }
     }
@@ -972,16 +972,15 @@ test('no document promotes the review scope into an authorization', () => {
   assert.deepEqual(findConflations(SOURCES.map((rel) => ({ rel, text: read(rel), markdown: rel.endsWith('.md') }))), []);
 });
 
-test('POSITIVE CONTROL: the conflation patterns catch the exact sentences that shipped', () => {
-  // These are verbatim from the version this test was written against. If the matchers ever stop
-  // flagging them, the guard has become decorative.
-  const shipped = [
+test('POSITIVE CONTROL: findConflations reports the exact sentences that shipped', () => {
+  // Previously this only asserted `re.test(sentence)`, which cannot see a denial matcher suppressing
+  // the claim — precisely the failure mode of the last three rounds. It now goes through the real
+  // scanner, so it exercises claim matching AND denial handling together.
+  for (const shipped of [
     'In **Stage B** the same gate becomes the input to real publication under the executor bot credential.',
     'A gate is **evidence of a decision**, not a credential: it is the machine-readable form of a `HUMAN_GATE_GRANTED` message.',
-  ];
-  for (const sentence of shipped) {
-    const hit = CONFLATION_PATTERNS.some(({ re }) => re.test(sentence));
-    assert.ok(hit, `no pattern flags: ${sentence}`);
+  ]) {
+    assert.ok(scan(shipped).length >= 1, `findConflations must report: ${shipped}`);
   }
 });
 
@@ -1207,17 +1206,21 @@ test('a subject-bound denial for the WRONG subject does not carry over', () => {
   );
 });
 
-test('underscored identifiers survive the denial matcher — the dead matcher is really gone', () => {
+test('underscored identifiers survive the scanners — the dead matcher is really gone', () => {
   // `plain()` strips underscores, which is why a HUMAN_GATE_GRANTED matcher hidden behind it could
-  // never fire. Asserted behaviourally, on both sides, rather than by grepping this file.
+  // never fire. Asserted behaviourally from both sides rather than by grepping this file.
   assert.equal(/HUMAN_GATE_GRANTED/.test(plain('not a HUMAN_GATE_GRANTED')), false, 'plain() removes underscores');
-  assert.equal(
-    denialBindsSubject('X is not a HUMAN_GATE_GRANTED', [/is not a HUMAN_GATE_GRANTED/]),
-    true,
-    'the denial matcher must preserve underscores',
+  const rel = { subject: /\bA gate\b/i, verbs: /\bmachine-readable\b/ };
+  assert.deepEqual(
+    relationshipPredicates('A gate is not the machine-readable form of a HUMAN_GATE_GRANTED', rel).undenied,
+    [],
+    'a complete denial about an underscored identifier must be recognised',
   );
   // Emphasis is still stripped, so `**not**` reads as `not`.
-  assert.equal(denialBindsSubject('the review scope does **not** authorize publication', [/does not authorize/i]), true);
+  assert.deepEqual(
+    relationshipPredicates('A gate is **not** the machine-readable form of a HUMAN_GATE_GRANTED', rel).undenied,
+    [],
+  );
 });
 
 test('the denial must attach to the FIRST authority verb after the subject', () => {
@@ -1308,4 +1311,52 @@ test('schema rows accept only field-bound complete denials', () => {
     '## Why each field exists',
   ].join('\n');
   assert.deepEqual(findScopeAuthorityClaims(accepted), []);
+});
+
+/* ================= a relationship with no predicate is NOT a denied relationship =============== */
+//
+// The suppression these cover is structural rather than linguistic: when the scanner could not find a
+// predicate it counted zero undenied predicates and read that as "all denied". Absence of evidence
+// was treated as evidence of a denial, which is the wrong default for a security guard.
+
+test('REGRESSION: a claim whose verb the enumerator does not know is still reported', () => {
+  // "serves as" was recognised by the claim pattern but absent from the predicate list.
+  const hits = scan('The review scope serves as the publication input.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+  // Same shape, other phrasing.
+  assert.equal(scan('The review scope acts as the publication input.').length, 1);
+});
+
+test('REGRESSION: a denial about a different property does not exempt the same gate', () => {
+  const hits = scan('The same gate is not immutable but becomes the publication input.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('REGRESSION: a denial about optionality does not exempt the machine-readable claim', () => {
+  const hits = scan('A gate is not optional but is the machine-readable form of HUMAN_GATE_GRANTED.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('every pattern still accepts a denial bound to its own relationship', () => {
+  // One complete denial per pattern. Without these the guard would be unusable and an author would
+  // remove it rather than phrase around it.
+  for (const accepted of [
+    'The same gate does not become the publication input.',
+    'The same gate is never the publication input.',
+    'The review scope does not become the publication input.',
+    'The review scope is not promoted into a publication input.',
+    'A gate is not the machine-readable form of a HUMAN_GATE_GRANTED.',
+    'The review scope does not authorize publication.',
+    'Stage B does not promote the review scope into an authorization.',
+  ]) {
+    assert.deepEqual(scan(accepted), [], `must be accepted: ${accepted}`);
+  }
+});
+
+test('an empty predicate set never counts as a denial, for any pattern', () => {
+  // Asserted on the primitive, so a future pattern cannot reintroduce the default-exempt behaviour.
+  const noSuchVerb = { subject: /\bthe same gate\b/i, verbs: /\bnever-appears-here\b/ };
+  assert.equal(relationshipIsFullyDenied('The same gate becomes the publication input.', noSuchVerb), false);
+  const realVerb = { subject: /\bthe same gate\b/i, verbs: /\bbecomes?\b/ };
+  assert.equal(relationshipIsFullyDenied('The same gate does not become the publication input.', realVerb), true);
 });

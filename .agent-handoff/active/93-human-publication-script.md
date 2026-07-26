@@ -355,7 +355,7 @@ matcher does not.
 
 Round 9's record is now marked historical, since this round supersedes its description of the scanner.
 
-## Work log — round 11 (Codex FINDINGS on 2217ce5)
+## HISTORICAL — work log record, round 11 (Codex FINDINGS on 2217ce5)
 
 **Confirmed; both reproduced before any change.** First-verb attachment was still relation-wide: a
 sentence carries more than one predicate, and denying one covered the rest. Two shapes got through —
@@ -383,6 +383,38 @@ assertion on the exact predicate list returned, and a schema table whose every r
 field-bound denial.
 
 Round 10's record is marked historical, since this round supersedes its description of the scanner.
+
+## Work log — round 12 (Codex FINDINGS on 324e4b2)
+
+**All three confirmed and reproduced before any change.**
+
+**Finding 1 was structural, not linguistic.** The scanner counted zero undenied predicates when it
+recognized none, and read zero as "all denied" — so a claim whose verb was missing from the shared
+list was suppressed. Absence of evidence was being treated as evidence of a denial, which is the
+wrong default for a guard. `relationshipIsFullyDenied()` now requires that predicates were actually
+found, and a primitive-level test pins that so no future pattern can reintroduce the default-exempt
+behaviour.
+
+**Finding 2:** the per-pattern denials for "the same gate" and "A gate" only looked for a nearby
+negation, so a denial about immutability or about optionality exempted the real claim. Every denial
+now names the subject, the negation and the predicate, and none may cross a clause boundary —
+`SAME_CLAUSE` blocks `but`, `while`, `however`, `whereas`, `although`, `though` and `except`.
+
+**Finding 3:** the "sentences that shipped" control only asserted `re.test(sentence)`, which cannot
+see a denial suppressing a claim — the exact failure mode of the last four rounds. It now goes through
+`findConflations()`, so it exercises claim matching and denial handling together.
+
+One design correction along the way: I first tried enumerating predicates for all four patterns, and
+it produced false positives, because "publication" and "input" are objects in these sentences rather
+than predicates. Enumeration is right where a relationship genuinely carries several predicates —
+review-scope authority — and bound denials are right where it carries one. Both are now used
+deliberately instead of one mechanism stretched over both shapes.
+
+Twelve `REGRESSION:` tests now cover every shape reported across rounds 9–12, alongside seven
+per-pattern complete denials that must pass and a primitive assertion that an empty predicate set is
+never a denial.
+
+Round 11's record is marked historical, since this round supersedes its description of the scanner.
 
 ## Status
 
