@@ -323,7 +323,7 @@ marked historical — the mechanism the contract already provides for exactly th
 scanner skips marked sections. Describing a superseded claim accurately requires writing it down; an
 active instruction must not contain it.
 
-## Work log — round 10 (Codex FINDINGS on 4a0039b)
+## HISTORICAL — work log record, round 10 (Codex FINDINGS on 4a0039b)
 
 **Confirmed, and reproduced before changing anything.** Binding the negation to a verb was still not
 binding it to the *relationship*: three sentences with a claim about the review scope and a denial
@@ -354,6 +354,35 @@ assertions cover the underscore issue from both sides: `plain()` does strip them
 matcher does not.
 
 Round 9's record is now marked historical, since this round supersedes its description of the scanner.
+
+## Work log — round 11 (Codex FINDINGS on 2217ce5)
+
+**Confirmed; both reproduced before any change.** First-verb attachment was still relation-wide: a
+sentence carries more than one predicate, and denying one covered the rest. Two shapes got through —
+a denial about one object followed by a positive claim about another, and a denial reversed by an
+exception. The schema-row scanner had the identical defect at cell level.
+
+The scanners no longer ask "is this sentence denied?" They **enumerate every authority predicate
+attributed to the subject** and judge each on its own. A predicate is denied only by a negation on
+itself (`does not authorize`, `cannot authorize`, `never authorizes`, `no field here grants`) or by
+`nothing`/`no` immediately after it — and an exception (`except`, `other than`, `apart from`,
+`besides`, `save for`, `but for`) disqualifies the denial it follows. `undeniedScopePredicates()`
+returns the predicates that remain claims, so the failure message names them.
+
+Attribution is explicit rather than positional: a clause boundary followed by a different named
+subject transfers ownership of its predicate, which keeps a true statement about the execution gate
+from being read as a claim about the review scope.
+
+One vocabulary detail: schema rows say it a third way — "exactly what may be published" — so rows use
+their own verb list including the publish forms. Keeping the lists separate stops ordinary prose about
+publishing from being read as an authority claim.
+
+Nine `REGRESSION:` tests now drive the real scanners on synthetic input, covering every shape reported
+across rounds 9–11, plus ten complete denials that must pass, four phrasings of the exception, an
+assertion on the exact predicate list returned, and a schema table whose every row is a legitimate
+field-bound denial.
+
+Round 10's record is marked historical, since this round supersedes its description of the scanner.
 
 ## Status
 

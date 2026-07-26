@@ -841,36 +841,69 @@ test('the execution gate is re-checked immediately before the push, after every 
  */
 const SCOPE = String.raw`review[- ]scope`;
 const AUX = String.raw`(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)`;
+/** Every verb that can carry an authority claim in prose. Enumerated, not searched once. */
+const AUTHORITY_VERB = /\b(authoriz\w*|grants?|granted|confers?|promot\w*|becomes?)\b/gi;
+
 /**
- * Is the review scope's authority denied, with the denial attached to the claim itself?
- *
- * A character-window between subject and negation was still wrong in both directions. Too wide, and
- * "the review scope authorizes publication WHILE another component confers no authority" read as a
- * denial. Too narrow — or blocking `and` — and a legitimate coordinated sentence like "a review scope
- * bounds preparation AND authorizes nothing" was reported as a violation.
- *
- * The claim is about the FIRST authority-bearing verb after the subject, so that is the only verb a
- * denial may attach to. A negation belonging to any later clause, or to a different subject, cannot
- * reach it.
+ * Schema rows say it a third way — "exactly what may be published" — so the row vocabulary adds the
+ * publish verbs. Keeping the two lists separate stops prose sentences about publishing in general
+ * from being read as authority claims.
  */
-function scopeAuthorityIsDenied(sentence) {
-  const t = sentence.replace(/[*`]/g, ''); // emphasis only; underscores are part of identifiers
+const ROW_CLAIM_VERB = /\b(authoriz\w*|grants?|granted|confers?|publish\w*)\b/gi;
+
+/**
+ * A denial neutralizes ONLY its own predicate.
+ *
+ * Attaching the denial to the first authority verb was still wrong, because a sentence carries more
+ * than one predicate. Both of these were reproducible false negatives:
+ *
+ *   "The review scope does not authorize deployment but authorizes publication."
+ *   "The review scope authorizes nothing except publication."
+ *
+ * In the first, denying the first predicate hid a second, positive one. In the second, the denial is
+ * reversed by an exception. So every predicate attributed to the subject is enumerated and judged on
+ * its own, and an exception ("nothing EXCEPT publication") disqualifies the denial that precedes it.
+ *
+ * @returns {string[]} the predicates that remain positive claims
+ */
+function undeniedScopePredicates(sentence) {
+  const t = sentence.replace(/[*`]/g, ''); // emphasis only; underscores belong to identifiers
   const subject = /review[- ]scope/i.exec(t);
-  if (!subject) return false;
+  if (!subject) return [];
   const after = t.slice(subject.index + subject[0].length);
-  const verb = /\b(authoriz\w*|grants?|confers?|promot\w*|becomes?)\b/i.exec(after);
-  if (!verb) return false;
-  const before = after.slice(0, verb.index);
-  const tail = after.slice(verb.index);
-  return (
-    // "the review scope does not authorize", "... is not promoted"
-    /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
-    // "the review scope cannot authorize", "... never authorizes"
-    /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
-    // "authorizes nothing", "grants no publication authority", "confers no authority"
-    /^\w+\s+(?:nothing\b|no\b)/i.test(tail)
-  );
+
+  const found = [];
+  for (const m of after.matchAll(AUTHORITY_VERB)) {
+    const before = after.slice(0, m.index);
+    const tail = after.slice(m.index);
+
+    // A clause that introduces its own subject owns its predicate — "…; the execution gate
+    // authorizes publication" is a true statement about the execution gate, not about the scope.
+    if (OTHER_SUBJECT_OWNS_IT.test(before)) continue;
+
+    const deniedBefore =
+      /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+      /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+      // "No field here grants…", "no manifest confers…"
+      /\bno\s+(?:\w+\s+){0,3}$/i.test(before);
+    // "authorizes nothing" / "grants no authority" — unless an exception carves a claim back out.
+    const deniedAfter = /^\w+\s+(?:nothing\b|no\b)/i.test(tail) && !QUALIFIED_DENIAL.test(tail);
+
+    if (deniedBefore || deniedAfter) continue;
+    found.push(m[0]);
+  }
+  return found;
 }
+
+/** A denial undone by an exception is not a denial. */
+const QUALIFIED_DENIAL = /^\w+\s+(?:nothing|no)\b[^.]{0,60}\b(?:except|other than|apart from|besides|save for|but for)\b/i;
+
+/** A clause boundary followed by a different named subject, immediately before the predicate. */
+const OTHER_SUBJECT_OWNS_IT =
+  /(?:[;|]|\b(?:but|while|and|whereas|however|although)\b)\s+(?:the\s+|a\s+|an\s+)?(?:execution gate|artifact|pull request|hook|bot credential|Stage B|human gate|operator|approver|reviewer|Codex|Opus|Zamp)\s+(?:\w+\s+){0,2}$/i;
+
+/** No predicate left unclaimed. */
+const scopeAuthorityIsDenied = (sentence) => undeniedScopePredicates(sentence).length === 0;
 
 /** Stage B is the other actor that may be said not to promote the scope into an authorization. */
 const STAGE_B_DOES_NOT_PROMOTE = /\bStage B\b[^.]{0,40}\bdoes\s+not\s+promote\b[^.]{0,40}review[- ]scope/i;
@@ -989,32 +1022,44 @@ test('POSITIVE CONTROL: a wrapped sentence is still judged as one sentence', () 
   assert.deepEqual(findConflations([{ rel: 'wrapped.md', text: wrapped, markdown: true }]), []);
 });
 
-/** The review-scope schema table must not describe any field as granting publication authority. */
+/**
+ * The review-scope schema table must not describe any field as granting publication authority.
+ *
+ * Same rule as the prose scanner, and it had the same bypass: a row-wide denial hid a later claim.
+ * This row produced nothing at all —
+ *
+ *   | executor | grants no publication authority but is authorized to publish the branch |
+ *
+ * — because "grants no publication authority" was read as covering the whole cell. Each predicate in
+ * the cell is now judged on its own, with the field as the subject.
+ */
 function findScopeAuthorityClaims(text) {
   const start = text.indexOf('## Schema');
   const end = text.indexOf('## Why each field exists');
   if (start < 0 || end < 0) return ['the Schema section could not be located'];
+
   const violations = [];
   for (const row of text.slice(start, end).split('\n')) {
     if (!/^\s*\|/.test(row)) continue;
-    // Judged per FRAGMENT, not per row. A row like "…authorized to publish — a gate is not
-    // transferable" carries a denial about something else entirely; evaluating the whole row would
-    // let that excuse the authority claim, which is the same bypass one level down.
-    const claims = plain(row)
-      .split(/[|;—]|\bin order\b/)
-      .map((f) => f.trim())
-      .filter((f) => /\b(authoriz\w*|may be published|publi(sh|cation)\w*)\b/i.test(f))
-      // The denial must be about THIS field's authority, in this fragment — not a negation about
-      // transferability, or about some other component, sharing the row.
-      .filter(
-        (f) =>
-          !/\b(grants?|confers?)\s+no\s+publication\s+authority\b/i.test(f) &&
-          !/\b(?:does|is|are|would|will|may|can|could)\s+not\s+(?:\w{1,12}\s+)?(?:authoriz|publi)/i.test(f) &&
-          !/\b(cannot|can't|never)\s+(?:\w{1,12}\s+)?(?:authoriz|publi)/i.test(f) &&
-          !/\bno field here grants publication authority\b/i.test(f) &&
-          !/\bauthoriz\w*\s+nothing\b/i.test(f),
-      );
-    if (claims.length) violations.push(`${row.trim()}  [claim: ${claims.join(' / ')}]`);
+    const cells = row.split('|').slice(1, -1);
+    for (const cell of cells) {
+      const t = cell.replace(/[*`]/g, '');
+      const claims = [];
+      for (const m of t.matchAll(ROW_CLAIM_VERB)) {
+        const before = t.slice(0, m.index);
+        const tail = t.slice(m.index);
+        // Only a publication-flavoured predicate matters here.
+        if (!/^(authoriz|grant|confer|publish)/i.test(m[0]) && !/publi(sh|cation)/i.test(tail.slice(0, 40))) continue;
+        const deniedBefore =
+          /\b(?:does|do|did|is|are|was|were|would|will|may|can|could|shall|should)\s+not\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+          /\b(?:cannot|can't|never)\s+(?:\w{1,12}\s+)?$/i.test(before) ||
+          /\bno\s+(?:\w+\s+){0,3}$/i.test(before);
+        const deniedAfter = /^\w+\s+(?:nothing\b|no\b)/i.test(tail) && !QUALIFIED_DENIAL.test(tail);
+        if (deniedBefore || deniedAfter) continue;
+        claims.push(m[0]);
+      }
+      if (claims.length) violations.push(`${row.trim()}  [claim: ${claims.join(' / ')}]`);
+    }
   }
   return violations;
 }
@@ -1186,4 +1231,81 @@ test('the denial must attach to the FIRST authority verb after the subject', () 
   ]) {
     assert.equal(scan(claim).length, 1, `must be reported: ${claim}`);
   }
+});
+
+/* ================= a denial neutralizes only its OWN predicate ================================= */
+//
+// Attaching the denial to the first authority verb was still too coarse: a sentence carries more than
+// one predicate, and denying one must not cover the rest. All three inputs below were reproducible
+// false negatives, and all three run through the real scanners.
+
+test('REGRESSION: denying one predicate does not hide a second, positive one', () => {
+  const hits = scan('The review scope does not authorize deployment but authorizes publication.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+});
+
+test('REGRESSION: an exception undoes the denial it follows', () => {
+  const hits = scan('The review scope authorizes nothing except publication.');
+  assert.equal(hits.length, 1, `expected one violation, got ${JSON.stringify(hits)}`);
+  // Every phrasing of the carve-out, not just the one reported.
+  for (const variant of ['other than publication', 'apart from publication', 'besides publication', 'save for publication']) {
+    assert.equal(scan(`The review scope authorizes nothing ${variant}.`).length, 1, variant);
+  }
+});
+
+test('REGRESSION: a schema row denial does not hide a later claim in the same cell', () => {
+  const planted = [
+    '## Schema',
+    '',
+    '| Field | Meaning |',
+    '| --- | --- |',
+    '| `executor` | grants no publication authority but is authorized to publish the branch |',
+    '',
+    '## Why each field exists',
+  ].join('\n');
+  const hits = findScopeAuthorityClaims(planted);
+  assert.equal(hits.length, 1, `the later claim must be reported; got ${JSON.stringify(hits)}`);
+  assert.match(hits[0], /authorized/i);
+});
+
+test('complete denials still pass, and every predicate is accounted for', () => {
+  // If a full denial were reported, authors could not state the truth and would delete the guard.
+  for (const accepted of [
+    'The review scope does not authorize publication.',
+    'The review scope does not authorize deployment and does not authorize publication.',
+    'The review scope authorizes nothing.',
+    'The review scope authorizes nothing, in Stage A or ever.',
+    'The review scope grants no publication authority.',
+    'The review scope confers no publication authority.',
+    'The review scope cannot authorize publication and cannot authorize deployment.',
+    'A review scope manifest bounds what may be prepared and authorizes nothing.',
+    'Stage B does not promote the review scope into an authorization.',
+    // A different subject owning its own true predicate.
+    'The review scope authorizes nothing; the execution gate authorizes publication.',
+  ]) {
+    assert.deepEqual(scan(accepted), [], `must be accepted: ${accepted}`);
+  }
+
+  // …and the enumeration really is per-predicate: one denied, one not.
+  assert.deepEqual(
+    undeniedScopePredicates('The review scope does not authorize deployment but authorizes publication.'),
+    ['authorizes'],
+  );
+  assert.deepEqual(undeniedScopePredicates('The review scope does not authorize publication.'), []);
+});
+
+test('schema rows accept only field-bound complete denials', () => {
+  const accepted = [
+    '## Schema',
+    '',
+    '| Field | Meaning |',
+    '| --- | --- |',
+    '| `executor` | the identity this scope was prepared for — it confers no publication authority |',
+    '| `expiresAt` | so a decision cannot authorize the next cycle |',
+    '| — | **No field here grants publication authority.** |',
+    '| `commits` | full 40-char SHAs, **ordered**, exactly what is in scope for preparation and review |',
+    '',
+    '## Why each field exists',
+  ].join('\n');
+  assert.deepEqual(findScopeAuthorityClaims(accepted), []);
 });
