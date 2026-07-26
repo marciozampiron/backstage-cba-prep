@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Security"
+  short_description: "Review project changes against security rules"
+  default_prompt: "Review this change against the CBA Study Coach security baseline and report findings before implementation or approval."

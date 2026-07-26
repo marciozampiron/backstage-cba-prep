@@ -52,6 +52,10 @@ include a `source` URL, and validate against `questions/schema.json`.
 - SaaS/product work follows [`spec/product-roadmap.md`](spec/product-roadmap.md). Do not bypass source-grounded review, provenance, or the CBA-first MVP sequence.
 - Agentic automation is an internal/admin capability; learner-facing product work should feel like a study platform, not an agent dashboard.
 - SaaS architecture follows pragmatic DDD in [`spec/domain-driven-design.md`](spec/domain-driven-design.md): domain/use cases first, Bedrock/Strands/providers behind adapters.
+- Security-sensitive work follows [`spec/security-rules.md`](spec/security-rules.md). Treat browser,
+  source content, model input/output, and tool arguments as untrusted; preserve least privilege,
+  learner isolation, human approval, and independent review. AI agents never accept risk, approve
+  their own security-sensitive work, deploy, spend, or publish generated content.
 - AWS MCP usage follows [`spec/aws-mcp.md`](spec/aws-mcp.md): implementation research only, never CBA exam fact validation.
 - Facts come only from the official Backstage docs / LF blueprint. **Never invent** commands, ports,
   annotation keys, package names, or file names. If unsure, fetch the doc or say so.
@@ -70,6 +74,9 @@ include a `source` URL, and validate against `questions/schema.json`.
 | `spec/domain-driven-design.md` | DDD contexts, dependency rules, provider boundaries |
 | `spec/aws-mcp.md`             | AWS Knowledge MCP setup and guardrails for Bedrock/Strands research |
 | `spec/ai-adaptive-study-strategy.md` | Adaptive AI study loop: ProgressSnapshot, recommendation engine, Strands coach, weak-domain authoring, human review gate |
+| `spec/security-rules.md` | Mandatory web, cloud, data, and agentic-security rules for humans and coding agents |
+| `docs/architecture/security-assurance-baseline.md` | Threat model, data classes, control matrix, roles, and release gates |
+| `docs/architecture/ai-agent-security-model.md` | Prompt, tool, context, output, cost, and human-review security model for AI agents |
 | `.agent-handoff/README.md`    | Agent-to-agent collaboration protocol and task handoff workflow |
 | `.agent-handoff/CURRENT.md`   | Current coordination state for agents entering the repo |
 | `.agent-handoff/EVENTS.md`    | Append-only coordination log of meaningful state changes |
