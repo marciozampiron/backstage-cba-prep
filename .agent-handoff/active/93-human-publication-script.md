@@ -522,7 +522,7 @@ sentences naming a governed document. The prose scanner beside it is advisory an
 
 Round 13's record is marked historical.
 
-## Work log — round 15 (Codex FINDINGS on 912930f)
+## HISTORICAL — work log record, round 15 (Codex FINDINGS on 912930f)
 
 ### 1 HIGH — the validator closed vocabulary but not assignments
 
@@ -573,6 +573,36 @@ whose value is failing closed on change. `link-only` is enforced mechanically bu
 judgement recorded in the policy. And no document control constrains behaviour.
 
 Round 14's record is marked historical.
+
+## Work log — round 16 (artifact review FAILED on digest 3269dadd)
+
+The first artifact review found a real gap, and it is the more interesting kind: the control was
+present and simply guarded the wrong number of things.
+
+`check_execution_gate "immediately before push"` protected the push. It did not protect the **second**
+external effect. Between that check and `gh pr create` sat seven executable statements — the landed-ref
+read, the pull-request set assertion, two of them network calls that can block — so a gate expiring in
+that span still opened a pull request. My own adjacency guard passed because it only knew about one
+mutation.
+
+Fixed: the gate is re-checked immediately before `gh pr create` as well, with nothing executable
+between the two. The reuse path needs no check — it prints a note and mutates nothing.
+
+The guard now iterates over **every** external effect rather than naming the push, and requires zero
+executable statements before each. Verified by removing the new check (the guard fails) and by
+inserting a single `note` between check and mutation (the guard fails).
+
+The dynamic regression needed a second harness. The existing stubs abort on `git push`, which is right
+for every test that must never publish, but a test for the window *after* the push cannot stop there.
+`makePostPushStubs` lets the push succeed and makes `gh pr create` the tripwire, with `date` jumping
+forward on the fifth `ls-remote` — the landed-ref read, which is after the push and before the pull
+request. A positive control proves the same run reaches `gh pr create` with a steady clock, and the
+regression fails if the new check is removed, so neither passes by accident.
+
+The rejected artifact `/tmp/cba-publish-93-3e2901d8ed33.sh` was deleted rather than left in place, so
+it cannot be reused; no execution gate was created.
+
+Round 15's record is marked historical.
 
 ## Status
 

@@ -268,6 +268,8 @@
       "| 1 | Two gates. The review-scope manifest bounds preparation; a separate HUMAN_GATE_GRANTED — written after review, naming artifactDigest — is read and validated by the artifact at run time via CBA_EXECUTION_GATE, immediately before any effect. The verify-and-run command exports CBA_ARTIFACT_DIGEST so the gate is bound to the exact bytes. REVIEW_REQUEST/FINDINGS/REVIEW_APPROVED now carry SCOPE: code \\| artifact. | artifact §0; runbook §4.4; MESSAGE-PROTOCOL.md §3; publish-gates/README.md; templates/message.md |",
       "test/governance-model.test.js enforces it in both directions: an unlisted statement fails, and a stale allowance fails, so editing any sentence naming the review scope, the execution gate or \"a gate\" requires a human to put it in the policy deliberately.",
       "My first version of the collector kept an authority-word filter, and a planted sentence — \"The review scope may serve as sufficient basis for publication in urgent cases\" — walked straight past it, because it contains no word from the list.",
+      "Between that check and gh pr create sat seven executable statements — the landed-ref read, the pull-request set assertion, two of them network calls that can block — so a gate expiring in that span still opened a pull request.",
+      "The rejected artifact /tmp/cba-publish-93-3e2901d8ed33.sh was deleted rather than left in place, so it cannot be reused; no execution gate was created.",
       "- The artifact requires node at operation time to open the execution gate with O_NOFOLLOW."
     ],
     "spec/security-rules.md": [

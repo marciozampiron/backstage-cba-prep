@@ -1938,3 +1938,125 @@ test('the gate documents reserve each filename for exactly one channel', () => {
   assert.match(doc, /review scope as `\/tmp\/cba-scope-<issue>\.json`/);
   assert.match(doc, /reserved for `CBA_EXECUTION_GATE` and is\s+never passed to `--gate`/);
 });
+
+/* ================= #93 round 8: the gate guards BOTH external effects ========================== */
+
+/**
+ * Stubs that let the push succeed, so the pull-request path can be reached.
+ *
+ * The other stub set aborts on `git push`, which is right for every test that must never publish.
+ * This one has to get past it: the defect under test lives between the push and `gh pr create`, and a
+ * harness that stops at the push cannot see it. `gh pr create` is still the tripwire.
+ */
+function makePostPushStubs(dir, { head, base, branch, expireAfterLsRemote }) {
+  const bin = path.join(dir, 'bin');
+  const repoRoot = path.join(dir, 'repo');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.mkdirSync(repoRoot, { recursive: true });
+  const counter = path.join(dir, 'ls-remote-count');
+  const marker = path.join(dir, 'expired');
+
+  fs.writeFileSync(
+    path.join(bin, 'git'),
+    `#!/usr/bin/env bash
+case "$*" in
+  "rev-parse --show-toplevel") echo ${JSON.stringify(repoRoot)} ;;
+  "rev-parse --abbrev-ref HEAD") echo ${JSON.stringify(branch)} ;;
+  "rev-parse HEAD") echo ${JSON.stringify(head)} ;;
+  "status --porcelain") ;;
+  "worktree list --porcelain") echo "worktree ${repoRoot}"; echo "branch refs/heads/${branch}" ;;
+  "rev-list --reverse"*) echo ${JSON.stringify(head)} ;;
+  "remote get-url origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
+  "ls-remote origin refs/heads/main")
+    printf 'x' >> ${JSON.stringify(counter)}
+    if [ "$(wc -c < ${JSON.stringify(counter)})" -ge ${expireAfterLsRemote} ]; then touch ${JSON.stringify(marker)}; fi
+    echo -e ${JSON.stringify(base)}"\\trefs/heads/main" ;;
+  "ls-remote origin refs/heads/"*)
+    printf 'x' >> ${JSON.stringify(counter)}
+    if [ "$(wc -c < ${JSON.stringify(counter)})" -ge ${expireAfterLsRemote} ]; then touch ${JSON.stringify(marker)}; fi
+    # After the push the branch exists at the reviewed head; before it, it does not.
+    if [ -f ${JSON.stringify(path.join(dir, 'pushed'))} ]; then echo -e ${JSON.stringify(head)}"\\trefs/heads/x"; fi ;;
+  "push"*) touch ${JSON.stringify(path.join(dir, 'pushed'))}; echo "PUSH_HAPPENED" ;;
+  "fetch"*) ;;
+  "merge-base"*) exit 0 ;;
+  *) echo "UNSTUBBED git $*" >&2; exit 98 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'gh'),
+    `#!/usr/bin/env bash
+case "$*" in
+  "pr list"*) printf '%s' '[]' ;;
+  "pr create"*) echo "FORBIDDEN_CALL gh $*" >&2; exit 99 ;;
+  *) echo "FORBIDDEN_CALL gh $*" >&2; exit 99 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'date'),
+    `#!/usr/bin/env bash
+if [ -f ${JSON.stringify(marker)} ]; then exec /usr/bin/date -d "+2 days" "$@"; fi
+exec /usr/bin/date "$@"
+`,
+    { mode: 0o755 },
+  );
+  return bin;
+}
+
+test('POSITIVE CONTROL: with a steady clock the run reaches the pull-request creation', () => {
+  // Proof the harness gets past the push at all — without this, the test below could pass for the
+  // wrong reason.
+  return withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ commits: [C2] })));
+    const stubDir = makePostPushStubs(dir, {
+      head: C2,
+      base: BASE,
+      branch: 'task/93-human-publication-script',
+      expireAfterLsRemote: 99, // never
+    });
+    const r = runArtifact(runnableScript({ commits: [C2], reviewedShas: [C2] }, { commits: [C2] }), {
+      gate: g,
+      digest: 'd'.repeat(64),
+      stubDir,
+      confirm: `publish 93 ${C2.slice(0, 12)}`,
+    });
+    assert.match(r.stdout, /PUSH_HAPPENED/, `the push must be reached: ${r.stderr}`);
+    assert.match(r.stderr, /FORBIDDEN_CALL gh pr create/, `the pull request must be reached: ${r.stderr}`);
+  });
+});
+
+test('a gate that expires AFTER the push cannot reach the pull-request creation', async () => {
+  // The reported defect: seven statements, two of them network calls, sat between the pre-push gate
+  // check and `gh pr create`. A gate expiring in that span still opened a pull request.
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ commits: [C2] })));
+    // Five ls-remote calls precede the post-push one: two in the pre-flight, two in the
+    // post-confirmation revalidation, and the fifth is the landed-ref read after the push.
+    const stubDir = makePostPushStubs(dir, {
+      head: C2,
+      base: BASE,
+      branch: 'task/93-human-publication-script',
+      expireAfterLsRemote: 5,
+    });
+    const r = runArtifact(runnableScript({ commits: [C2], reviewedShas: [C2] }, { commits: [C2] }), {
+      gate: g,
+      digest: 'd'.repeat(64),
+      stubDir,
+      confirm: `publish 93 ${C2.slice(0, 12)}`,
+    });
+
+    assert.match(r.stdout, /PUSH_HAPPENED/, 'the push is expected to have happened by then');
+    assert.match(r.stderr, /immediately before the pull request: the execution gate expired/);
+    assert.equal(
+      /FORBIDDEN_CALL gh pr create/.test(r.stderr),
+      false,
+      'the pull request must never be created once the gate has expired',
+    );
+    assert.notEqual(r.status, 0);
+  });
+});

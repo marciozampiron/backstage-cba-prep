@@ -803,24 +803,33 @@ test('the artifact attributes publication to the execution gate, not the review 
   assert.match(evidence, /review scope\s+: \$REVIEW_SCOPE_ID/);
 });
 
-test('the execution gate is re-checked immediately before the push, after every revalidation', () => {
+test('the execution gate is re-checked immediately before EVERY external effect', () => {
   const lib = read('src/lib/human-publish-script.js');
-  const push = lib.indexOf('git push origin');
-  const before = lib.lastIndexOf('check_execution_gate "immediately before push"', push);
-  assert.ok(before > -1 && before < push, 'the gate must be re-checked immediately before the push');
+  // Both effects, not only the push. Seven statements — two of them network calls that can block —
+  // sat between the pre-push check and `gh pr create`, so a gate expiring in that span would still
+  // have opened a pull request.
+  for (const [label, mutation] of [
+    ['immediately before push', 'git push origin'],
+    ['immediately before the pull request', 'gh pr create'],
+  ]) {
+    const at = lib.indexOf(mutation);
+    assert.ok(at > -1, `${mutation} must exist in the template`);
+    const check = lib.lastIndexOf(`check_execution_gate "${label}"`, at);
+    assert.ok(check > -1 && check < at, `the gate must be re-checked immediately before ${mutation}`);
 
-  // They must be CONSECUTIVE executable statements. "Nothing network-bound in between" was too weak
-  // a rule: a printed line still sits in the window, and any statement can be widened later.
-  const between = lib.slice(before + 'check_execution_gate "immediately before push"'.length, push);
-  const executable = between
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l !== '' && !l.startsWith('#'));
-  assert.deepEqual(
-    executable,
-    [],
-    `the gate check and the push must be consecutive statements; found: ${executable.join(' | ')}`,
-  );
+    // CONSECUTIVE executable statements: a printed line still sits in the window, and any statement
+    // left there can be widened later.
+    const executable = lib
+      .slice(check + `check_execution_gate "${label}"`.length, at)
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '' && !l.startsWith('#'));
+    assert.deepEqual(
+      executable,
+      [],
+      `nothing executable may sit between the gate check and ${mutation}; found: ${executable.join(' | ')}`,
+    );
+  }
 });
 
 /* ================= the two manifests must not be conflated, semantically ======================= */

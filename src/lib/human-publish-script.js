@@ -597,6 +597,12 @@ if [ "$pr_count_after" -eq 1 ]; then
 else
   [ "$pr_count_now" -eq 0 ] || die "the pull request that existed before the push is gone; stopping rather than opening a second one"
   note "Creating the pull request..."
+
+  # The gate is re-checked HERE too. The push is not the only external effect: seven statements sat
+  # between the previous check and this one, two of them network calls that can block, so a gate
+  # expiring in that span would still have opened a pull request. Nothing executable follows this
+  # line before the mutation.
+  check_execution_gate "immediately before the pull request"
   gh pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SOURCE_BRANCH" \\
     --title "Issue #$ISSUE" \\
     --body "Publishes the reviewed commit for issue #$ISSUE. Authorized by execution gate $EXECUTION_GATE_ID (review scope $REVIEW_SCOPE_ID). Merge remains Zamp's decision, after required checks and review."
