@@ -13,7 +13,7 @@
 export const SUPPORTED_VERSIONS = [1];
 
 /** Exact top-level keys. */
-const TOP_LEVEL = ['$comment', 'version', 'actors', 'documents', 'effects', 'governedSurfaces', 'allowedAuthorityStatements'];
+const TOP_LEVEL = ['$comment', 'version', 'actors', 'documents', 'effects', 'governedSurfaces', 'surfaceClassification', 'allowedAuthorityStatements'];
 
 /** Exact actor set and their exact keys. */
 const ACTORS = ['opus', 'codex', 'zamp', 'gemini'];
@@ -76,17 +76,67 @@ export const NEVER_GRANTABLE = [
 ];
 
 /**
- * Prohibitions every implementing/reviewing agent must carry explicitly.
+ * The EXACT authority matrix.
  *
- * The canonical rules say Opus may never access secrets or invoke a paid service through the
- * publication script, and that Codex may never implement, operate or grant the gate. Requiring them
- * here means the policy cannot quietly drop one.
+ * A closed vocabulary is not a closed policy. Checking only that each capability is a known word left
+ * the assignments wide open, and five adversarial mutations were accepted: `grant-execution-gate`
+ * added to Opus, `authorize-spend` added to Codex, the execution gate written by Opus, the pull
+ * request performed by Codex, and deploy performed by Opus. Each of those transfers human authority or
+ * an operational effect while every word in the document remains legal.
+ *
+ * So the assignments themselves are pinned here, exactly. Widening a role now requires editing this
+ * file — which is code, reviewed as code — rather than editing a data file the code merely spellchecks.
  */
-const REQUIRED_PROHIBITIONS = {
-  opus: ['self-review', 'self-approve', 'merge', 'deploy', 'push-integration-branch', 'force-push', 'administer-repository', 'rewrite-reviewed-history', 'access-secrets', 'invoke-paid-service'],
-  codex: ['implement', 'prepare-artifact', 'operate-artifact', 'push', 'merge', 'deploy', 'grant-human-gate', 'access-secrets', 'invoke-paid-service'],
-  zamp: ['delegate-approval', 'delegate-merge'],
-  gemini: ['any-workflow-or-governance-role'],
+const EXPECTED_ACTORS = {
+  opus: {
+    role: 'implementation executor and publication operator',
+    may: ['commit-on-task-branch', 'validate', 'prepare-artifact', 'operate-artifact-under-execution-gate'],
+    mayNever: ['self-review', 'self-approve', 'merge', 'deploy', 'push-integration-branch', 'force-push', 'administer-repository', 'rewrite-reviewed-history', 'access-secrets', 'invoke-paid-service'],
+  },
+  codex: {
+    role: 'architect and independent technical/security reviewer',
+    may: ['review-read-only', 'report-findings', 'recommend-gate'],
+    mayNever: ['implement', 'prepare-artifact', 'operate-artifact', 'push', 'merge', 'deploy', 'grant-human-gate', 'access-secrets', 'invoke-paid-service'],
+  },
+  zamp: {
+    role: 'approval, risk acceptance and merge authority',
+    may: ['author-review-scope', 'grant-execution-gate', 'accept-risk', 'authorize-spend', 'merge'],
+    mayNever: ['delegate-approval', 'delegate-merge'],
+  },
+  gemini: {
+    role: 'none in this workflow',
+    may: [],
+    mayNever: ['any-workflow-or-governance-role'],
+  },
+};
+
+/** The EXACT document matrix — every field value, not only the key set. */
+const EXPECTED_DOCUMENTS = {
+  'review-scope': {
+    writtenBy: 'zamp',
+    writtenWhen: 'before preparation',
+    suppliedAs: '--gate',
+    filenameConvention: '/tmp/cba-scope-<issue>.json',
+    bounds: ['preparation', 'review'],
+    authorizes: [],
+  },
+  'execution-gate': {
+    writtenBy: 'zamp',
+    writtenWhen: 'after review',
+    suppliedAs: 'CBA_EXECUTION_GATE',
+    filenameConvention: '/tmp/cba-gate-<issue>.json',
+    messageType: 'HUMAN_GATE_GRANTED',
+    boundTo: 'artifactDigest',
+    authorizes: ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request'],
+  },
+};
+
+/** The EXACT effect matrix — who authorizes it and who performs it. */
+const EXPECTED_EFFECTS = {
+  'push-reviewed-commit-to-task-branch': { authorizedBy: 'execution-gate', performedBy: 'opus' },
+  'create-or-reuse-one-pull-request': { authorizedBy: 'execution-gate', performedBy: 'opus' },
+  merge: { authorizedBy: 'MERGE_DECISION', performedBy: 'zamp' },
+  deploy: { authorizedBy: 'separate-human-gate', performedBy: 'zamp' },
 };
 
 /** Exact document set and keys. */
@@ -116,16 +166,29 @@ export const REQUIRED_SURFACES = [
   '.agent-handoff/MESSAGE-PROTOCOL.md',
   '.agent-handoff/README.md',
   '.agent-handoff/COMMANDS.md',
+  '.agent-handoff/CURRENT.md',
   '.agent-handoff/publish-gates/README.md',
   '.agent-handoff/templates/task.md',
   '.agent-handoff/templates/message.md',
+  '.agent-handoff/templates/decision.md',
+  '.agent-handoff/active/93-human-publication-script.md',
   'spec/security-rules.md',
   'docs/architecture/agent-publication-runbook.md',
+  'bin/cli.js',
   '.claude/skills/publication-prepare/SKILL.md',
   '.claude/skills/security-review/SKILL.md',
   '.agents/skills/publication-review/SKILL.md',
   '.agents/skills/review-security/SKILL.md',
 ];
+
+/**
+ * How an operational source relates to authority.
+ *
+ * Every discovered operational source must be exactly one of these. A source with no classification is
+ * a failure, not a default — that gap is how `CURRENT.md`, the active #93 handoff and the CLI help sat
+ * outside the authoritative allowlist while looking covered.
+ */
+export const SURFACE_CLASSES = ['canonical-authority', 'link-only', 'historical'];
 
 export class PolicyError extends Error {
   constructor(message) {
@@ -153,10 +216,17 @@ function assertKeys(label, obj, required, optional = []) {
 
 /** Exact member comparison for a set of names. */
 function assertMembers(label, actual, expected) {
-  const a = [...actual].sort();
-  const e = [...expected].sort();
-  if (a.length !== e.length || a.some((v, i) => v !== e[i])) {
-    fail(`${label} must be exactly [${e.join(', ')}] but was [${a.join(', ')}].`);
+  const a = new Set(actual);
+  const e = new Set(expected);
+  const missing = [...e].filter((v) => !a.has(v));
+  const extra = [...a].filter((v) => !e.has(v));
+  if (missing.length || extra.length) {
+    // Naming the difference rather than dumping both lists: a maintainer needs to know which item to
+    // add or remove, not to diff two sorted arrays by eye.
+    const parts = [];
+    if (missing.length) parts.push(`missing ${missing.join(', ')}`);
+    if (extra.length) parts.push(`unexpected ${extra.join(', ')}`);
+    fail(`${label} must be exactly the declared set — ${parts.join('; ')}.`);
   }
 }
 
@@ -180,66 +250,98 @@ export function validateAuthorityPolicy(policy) {
   }
   assertStringArray('policy.$comment', policy.$comment);
 
-  // --- actors ---------------------------------------------------------------------------------
+  // --- actors: exact assignments, not merely known words --------------------------------------
   assertMembers('policy.actors', Object.keys(policy.actors ?? {}), ACTORS);
   const capabilities = new Set(CAPABILITIES);
   const neverGrantable = new Set(NEVER_GRANTABLE);
 
   for (const name of ACTORS) {
     const actor = policy.actors[name];
+    const expected = EXPECTED_ACTORS[name];
     assertKeys(`policy.actors.${name}`, actor, ACTOR_KEYS, ACTOR_OPTIONAL_KEYS);
-    if (typeof actor.role !== 'string' || actor.role.trim() === '') fail(`policy.actors.${name}.role must be a non-empty string.`);
     assertStringArray(`policy.actors.${name}.may`, actor.may);
     assertStringArray(`policy.actors.${name}.mayNever`, actor.mayNever);
 
+    // Vocabulary first, so an unknown word is reported as such rather than as a mismatch.
     for (const cap of [...actor.may, ...actor.mayNever]) {
       if (!capabilities.has(cap)) fail(`policy.actors.${name} references unknown capability "${cap}".`);
     }
     for (const cap of actor.may) {
       if (neverGrantable.has(cap)) fail(`policy.actors.${name}.may contains "${cap}", which no actor may ever be granted.`);
     }
-    // A capability cannot be both permitted and forbidden for the same actor.
     const both = actor.may.filter((cap) => actor.mayNever.includes(cap));
     if (both.length) fail(`policy.actors.${name} lists ${both.join(', ')} as both may and mayNever.`);
 
-    for (const cap of REQUIRED_PROHIBITIONS[name]) {
-      if (!actor.mayNever.includes(cap)) fail(`policy.actors.${name}.mayNever must include "${cap}".`);
+    // Then the assignments themselves.
+    if (actor.role !== expected.role) {
+      fail(`policy.actors.${name}.role must be exactly "${expected.role}".`);
     }
+    assertMembers(`policy.actors.${name}.may`, actor.may, expected.may);
+    assertMembers(`policy.actors.${name}.mayNever`, actor.mayNever, expected.mayNever);
   }
 
-  // --- documents ------------------------------------------------------------------------------
+  // --- documents: exact field VALUES, not only their keys --------------------------------------
   assertMembers('policy.documents', Object.keys(policy.documents ?? {}), DOCUMENTS);
   for (const name of DOCUMENTS) {
     const doc = policy.documents[name];
+    const expected = EXPECTED_DOCUMENTS[name];
     assertKeys(`policy.documents.${name}`, doc, DOCUMENT_KEYS[name]);
-    if (!ACTORS.includes(doc.writtenBy)) fail(`policy.documents.${name}.writtenBy must be a declared actor.`);
     assertStringArray(`policy.documents.${name}.authorizes`, doc.authorizes);
+    // Unknown references first, so an unknown effect is reported as unknown rather than as a mismatch.
     for (const effect of doc.authorizes) {
       if (!EFFECTS.includes(effect)) fail(`policy.documents.${name}.authorizes references unknown effect "${effect}".`);
     }
+    if (name === 'review-scope' && doc.authorizes.length !== 0) {
+      fail('policy.documents.review-scope.authorizes must be empty: the review scope authorizes nothing.');
+    }
+    // A document may only authorize an effect that names it back — checked before exact comparison so
+    // a dangling authority is reported as dangling.
+    for (const effect of doc.authorizes) {
+      const declared = policy.effects?.[effect]?.authorizedBy;
+      if (declared !== undefined && declared !== name) {
+        fail(`policy.effects.${effect}.authorizedBy must be "${name}" because that document authorizes it.`);
+      }
+    }
+    for (const [field, want] of Object.entries(expected)) {
+      const got = doc[field];
+      if (Array.isArray(want)) {
+        assertStringArray(`policy.documents.${name}.${field}`, got);
+        // Order matters for `authorizes`: it is the order the artifact performs them in.
+        if (got.length !== want.length || got.some((v, i) => v !== want[i])) {
+          fail(`policy.documents.${name}.${field} must be exactly [${want.join(', ')}].`);
+        }
+      } else if (got !== want) {
+        fail(`policy.documents.${name}.${field} must be exactly "${want}" but was ${JSON.stringify(got)}.`);
+      }
+    }
   }
-  // The invariant the whole bridge rests on, as data.
-  if (policy.documents['review-scope'].authorizes.length !== 0) {
-    fail('policy.documents.review-scope.authorizes must be empty: the review scope authorizes nothing.');
-  }
-  assertStringArray('policy.documents.review-scope.bounds', policy.documents['review-scope'].bounds);
 
-  // --- effects --------------------------------------------------------------------------------
+  // --- effects: exact authorizer AND exact performer ------------------------------------------
   assertMembers('policy.effects', Object.keys(policy.effects ?? {}), EFFECTS);
   for (const name of EFFECTS) {
     const effect = policy.effects[name];
+    const expected = EXPECTED_EFFECTS[name];
     assertKeys(`policy.effects.${name}`, effect, EFFECT_KEYS, EFFECT_OPTIONAL_KEYS);
     if (!AUTHORIZATION_SOURCES.includes(effect.authorizedBy)) {
       fail(`policy.effects.${name}.authorizedBy must be one of ${AUTHORIZATION_SOURCES.join(', ')} but was "${effect.authorizedBy}".`);
     }
     if (!ACTORS.includes(effect.performedBy)) fail(`policy.effects.${name}.performedBy must be a declared actor.`);
-  }
-  // Merge and deploy each need their own human decision, and neither is a document-authorized effect.
-  if (policy.effects.merge.authorizedBy !== 'MERGE_DECISION' || policy.effects.merge.performedBy !== 'zamp') {
-    fail('policy.effects.merge must be authorized by MERGE_DECISION and performed by zamp.');
-  }
-  if (policy.effects.deploy.authorizedBy !== 'separate-human-gate') {
-    fail('policy.effects.deploy must require a separate human gate.');
+    if (name === 'merge' && effect.authorizedBy !== 'MERGE_DECISION') {
+      fail("policy.effects.merge must be authorized by MERGE_DECISION — recording it otherwise reads as no gate needed.");
+    }
+    if (name === 'deploy' && effect.authorizedBy !== 'separate-human-gate') {
+      fail('policy.effects.deploy must require a separate human gate.');
+    }
+    if (effect.authorizedBy !== expected.authorizedBy) {
+      fail(`policy.effects.${name}.authorizedBy must be exactly "${expected.authorizedBy}".`);
+    }
+    if (effect.performedBy !== expected.performedBy) {
+      fail(`policy.effects.${name}.performedBy must be exactly "${expected.performedBy}".`);
+    }
+    // Defence in depth: an actor forbidden from an effect cannot be recorded as performing it.
+    if (policy.actors[effect.performedBy].mayNever.includes(name)) {
+      fail(`policy.effects.${name}.performedBy is "${effect.performedBy}", which may never ${name}.`);
+    }
   }
   // Every effect a document authorizes must name that document back — no dangling authority.
   for (const name of DOCUMENTS) {
@@ -250,15 +352,44 @@ export function validateAuthorityPolicy(policy) {
     }
   }
 
-  // --- governed surfaces ----------------------------------------------------------------------
+  // --- governed surfaces and their classification ----------------------------------------------
   assertStringArray('policy.governedSurfaces', policy.governedSurfaces);
-  assertMembers('policy.governedSurfaces', policy.governedSurfaces, REQUIRED_SURFACES);
+  // A SUPERSET of the required set, not an equal set. The required list is what must always be
+  // governed; discovery adds transient operational sources — another track's active handoff, a queued
+  // inbox task — and those must be governed too while they exist, without being pinned in code where a
+  // completed task would break the policy.
+  {
+    const governedNow = new Set(policy.governedSurfaces);
+    const missing = REQUIRED_SURFACES.filter((s) => !governedNow.has(s));
+    if (missing.length) fail(`policy.governedSurfaces is missing required surface(s): ${missing.join(', ')}.`);
+    if (governedNow.size !== policy.governedSurfaces.length) fail('policy.governedSurfaces contains a duplicate.');
+  }
+
+  assertKeys('policy.surfaceClassification', policy.surfaceClassification, SURFACE_CLASSES);
+  const classified = new Map();
+  for (const cls of SURFACE_CLASSES) {
+    const list = policy.surfaceClassification[cls];
+    assertStringArray(`policy.surfaceClassification["${cls}"]`, list);
+    for (const surface of list) {
+      if (classified.has(surface)) {
+        fail(`"${surface}" is classified as both ${classified.get(surface)} and ${cls}; each source has exactly one class.`);
+      }
+      classified.set(surface, cls);
+    }
+  }
+  // The canonical class IS the governed set — the exact allowlist applies to precisely those files.
+  assertMembers('policy.surfaceClassification["canonical-authority"]', policy.surfaceClassification['canonical-authority'], policy.governedSurfaces);
 
   // --- allowlist ------------------------------------------------------------------------------
   if (!isPlainObject(policy.allowedAuthorityStatements)) fail('policy.allowedAuthorityStatements must be an object.');
   const governed = new Set(policy.governedSurfaces);
-  for (const [surface, statements] of Object.entries(policy.allowedAuthorityStatements)) {
+  for (const surface of Object.keys(policy.allowedAuthorityStatements)) {
     if (!governed.has(surface)) fail(`policy.allowedAuthorityStatements has an entry for "${surface}", which is not a governed surface.`);
+  }
+  // Keys must MATCH the governed set: a missing key would silently permit a whole surface to go
+  // unchecked, which is the same fail-open shape as an unclassified source.
+  assertMembers('policy.allowedAuthorityStatements keys', Object.keys(policy.allowedAuthorityStatements), policy.governedSurfaces);
+  for (const [surface, statements] of Object.entries(policy.allowedAuthorityStatements)) {
     assertStringArray(`policy.allowedAuthorityStatements["${surface}"]`, statements);
     const seen = new Set();
     for (const s of statements) {

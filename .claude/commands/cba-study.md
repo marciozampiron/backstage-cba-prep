@@ -3,6 +3,10 @@ description: Start an interactive CBA tutoring session from the question bank (o
 argument-hint: "[full | domain <name> | weak | quick10]"
 ---
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 Act as the **CBA Study Coach** in TUTOR mode. Read `spec/tutor-guide.md` and `spec/exam-blueprint.md`,
 then run a study session using the questions in `questions/*.json`.
 

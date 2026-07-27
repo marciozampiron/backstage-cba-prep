@@ -464,7 +464,7 @@ behaviour: it constrains what the repository says.
 
 Round 12's record is marked historical.
 
-## Work log — round 14 (Codex ARCHITECTURE_DIRECTION on e4a72ed)
+## HISTORICAL — work log record, round 14 (Codex ARCHITECTURE_DIRECTION on e4a72ed)
 
 Taken as the architectural reset it is, not another narrowing round. All three findings confirmed.
 
@@ -521,6 +521,58 @@ remains a baseline of already-reviewed text whose value is failing closed on cha
 sentences naming a governed document. The prose scanner beside it is advisory and labelled as such.
 
 Round 13's record is marked historical.
+
+## Work log — round 15 (Codex FINDINGS on 912930f)
+
+### 1 HIGH — the validator closed vocabulary but not assignments
+
+All five adversarial mutations were accepted, and I reproduced each before changing anything: a closed
+capability *list* says nothing about **who holds which capability**. The policy could hand Opus the
+power to grant its own gate, or record Codex as performing the pull request, while every word in the
+document stayed legal.
+
+Fixed by pinning the exact matrix in code — `EXPECTED_ACTORS`, `EXPECTED_DOCUMENTS`, `EXPECTED_EFFECTS`
+— covering role, `may`, `mayNever`, every document field *value* (not only its key), and both
+`authorizedBy` and `performedBy` for every effect. Plus a cross-check that an effect's performer is not
+prohibited from that effect, and `allowedAuthorityStatements` keys that must match the governed set so
+a missing key cannot leave a whole surface unchecked. Widening a role now means editing code that is
+reviewed as code, not a data file the code merely spellchecks.
+
+Mismatch messages name the missing or unexpected item rather than printing two lists to diff.
+
+### 2 MEDIUM — mandatory operational inputs were outside the authoritative set
+
+`CURRENT.md`, the active #93 handoff, the CLI help and the decision template were covered only by the
+advisory scanner. Every discovered operational source now carries exactly one classification, and an
+**unclassified source is a failure rather than a default** — that gap is precisely how these four
+looked covered.
+
+- **canonical-authority** (28): the required set plus other tracks' active/inbox handoffs, the example
+  gate manifest and the `src/` modules that implement the mechanism. Their statements are allowlisted.
+- **link-only** (7): `CLAUDE.md`, the four `/cba-*` commands, the question-generator skill and the
+  Codex agent descriptor. Each is mechanically required to make no authority statement **and** to link
+  to `MESSAGE-PROTOCOL.md`; the pointer was added to all seven.
+- **historical** (2): `EVENTS.md` and `inconsistencias.md`.
+
+`governedSurfaces` became a **superset** of the code-pinned required list rather than an equal set:
+transient sources such as another track's active handoff must be governed while they exist, without a
+completed task breaking the policy. The collector also skips explicitly-historical sections, so an
+append-only record does not bloat the allowlist — 151 statements across 28 surfaces.
+
+### Verification
+
+Sixteen negative policy tests plus five new ones for the reproduced mutations, six for classification,
+and four regressions proving the **authoritative allowlist** — not merely the advisory scanner — fails
+when an authority claim is planted in `CURRENT.md`, the active #93 handoff, the CLI help or the
+decision template.
+
+### What this still does not guarantee
+
+Its scope remains what the repository *says*. The allowlist is a baseline of already-reviewed text
+whose value is failing closed on change. `link-only` is enforced mechanically but its membership is a
+judgement recorded in the policy. And no document control constrains behaviour.
+
+Round 14's record is marked historical.
 
 ## Status
 

@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 This project follows **[AGENTS.md](AGENTS.md)** — read it first. It defines your role as a **CBA coach**
 (TUTOR + AUTHOR) and points to the engine-neutral `spec/` and the `questions/` bank.
 

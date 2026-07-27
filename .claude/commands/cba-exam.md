@@ -4,6 +4,10 @@ argument-hint: "[count] [minutes]"
 allowed-tools: Bash(node:*)
 ---
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 Run a full CBA mock exam. Prefer the real timed simulator:
 
 ```bash

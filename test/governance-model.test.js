@@ -63,7 +63,11 @@ function operationalSources() {
   ];
 
   return tracked.filter(
-    (f) => OPERATIONAL.some((re) => re.test(f)) && !HISTORICAL.some((re) => re.test(f)),
+    (f) =>
+      OPERATIONAL.some((re) => re.test(f)) &&
+      !HISTORICAL.some((re) => re.test(f)) &&
+      // `.gitkeep` placeholders hold no instructions; they are directory markers.
+      !/(^|\/)\.gitkeep$/.test(f),
   );
 }
 
@@ -1453,6 +1457,7 @@ function authorityStatements(text) {
   const out = [];
   let paragraph = [];
   let inFence = false;
+  let historical = false;
 
   const flush = () => {
     if (!paragraph.length) return;
@@ -1471,6 +1476,16 @@ function authorityStatements(text) {
       continue;
     }
     if (inFence) continue; // fenced code is example text, not a statement about authority
+
+    // A section explicitly marked historical is an append-only record of what a document USED to say.
+    // The contract allows those to keep former wording; describing a superseded claim accurately
+    // requires writing it down, and an active instruction must not contain it.
+    if (/^\s*#/.test(line)) {
+      flush();
+      historical = /\b(historical|superseded)\b/i.test(line);
+      continue;
+    }
+    if (historical) continue;
     if (line.trim() === '') {
       flush();
       continue;
@@ -1641,15 +1656,17 @@ test('a may/mayNever contradiction is rejected', () => {
 });
 
 test('a dropped canonical prohibition is rejected', () => {
+  // The exact-set comparison subsumes a "must include" rule, and it names the missing item, so the
+  // maintainer is told which prohibition was lost rather than being handed two lists to diff.
   expectRejected((p) => {
     p.actors.opus.mayNever = p.actors.opus.mayNever.filter((c) => c !== 'access-secrets');
-  }, /policy\.actors\.opus\.mayNever must include "access-secrets"/);
+  }, /policy\.actors\.opus\.mayNever must be exactly the declared set — missing access-secrets/);
   expectRejected((p) => {
     p.actors.opus.mayNever = p.actors.opus.mayNever.filter((c) => c !== 'invoke-paid-service');
-  }, /must include "invoke-paid-service"/);
+  }, /missing invoke-paid-service/);
   expectRejected((p) => {
     p.actors.codex.mayNever = p.actors.codex.mayNever.filter((c) => c !== 'grant-human-gate');
-  }, /policy\.actors\.codex\.mayNever must include "grant-human-gate"/);
+  }, /policy\.actors\.codex\.mayNever must be exactly the declared set — missing grant-human-gate/);
 });
 
 test('an unresolved reference is rejected', () => {
@@ -1706,12 +1723,22 @@ test('a dangling document-to-effect authority is rejected', () => {
 });
 
 test('an incomplete governed-surface list is rejected', () => {
+  // The required set must always be governed…
   expectRejected((p) => {
     p.governedSurfaces = p.governedSurfaces.filter((s) => s !== '.agents/skills/review-security/SKILL.md');
-  }, /policy\.governedSurfaces must be exactly/);
+  }, /governedSurfaces is missing required surface\(s\): \.agents\/skills\/review-security\/SKILL\.md/);
+  // …and anything added to it must also be classified canonical and carry an allowlist entry, so a
+  // surface cannot be governed in name only.
   expectRejected((p) => {
     p.governedSurfaces.push('docs/README.md');
-  }, /policy\.governedSurfaces must be exactly/);
+  }, /canonical-authority.*missing docs\/README\.md/s);
+  expectRejected((p) => {
+    p.governedSurfaces.push('docs/README.md');
+    p.surfaceClassification['canonical-authority'].push('docs/README.md');
+  }, /allowedAuthorityStatements keys.*missing docs\/README\.md/s);
+  expectRejected((p) => {
+    p.governedSurfaces.push('AGENTS.md');
+  }, /governedSurfaces contains a duplicate/);
 });
 
 test('the governed-surface list covers every cold-start document, template and review skill', () => {
@@ -1779,4 +1806,102 @@ test('fenced code is not read as an authority statement', () => {
   // Command examples name the gate files constantly; they are illustrations, not claims.
   const text = ['```bash', 'node bin/cli.js agent-publish --gate /tmp/cba-scope-93.json', '```'].join('\n');
   assert.deepEqual(authorityStatements(text), []);
+});
+
+/* ================= every operational source has exactly one classification ===================== */
+//
+// The gap this closes: `CURRENT.md`, the active #93 handoff and the CLI help are mandatory cold-start
+// inputs, and they sat outside the authoritative allowlist while looking covered by the advisory
+// scanner. A source with no classification is now a failure rather than a default.
+
+test('every discovered operational source is classified, exactly once', () => {
+  const classification = POLICY.surfaceClassification ?? {};
+  const classOf = new Map();
+  for (const [cls, list] of Object.entries(classification)) {
+    for (const surface of list ?? []) classOf.set(surface, cls);
+  }
+
+  // `operationalSources()` discovers from the tree, so a new skill or handoff appears here the moment
+  // it exists — and must then be classified before the suite passes.
+  const unclassified = SOURCES.filter((rel) => !classOf.has(rel));
+  assert.deepEqual(
+    unclassified,
+    [],
+    'these operational sources have no classification in spec/authority-policy.json.\n' +
+      'Classify each as canonical-authority, link-only or historical:\n' +
+      unclassified.join('\n'),
+  );
+});
+
+test('the mandatory cold-start inputs are canonical-authority, not merely advisory', () => {
+  const canonical = new Set(POLICY.surfaceClassification?.['canonical-authority'] ?? []);
+  for (const required of [
+    '.agent-handoff/CURRENT.md',
+    '.agent-handoff/active/93-human-publication-script.md',
+    'bin/cli.js',
+    '.agent-handoff/templates/decision.md',
+  ]) {
+    assert.ok(canonical.has(required), `${required} must be canonical-authority`);
+    assert.ok(REQUIRED_SURFACES.includes(required), `${required} must be in the code's required set`);
+    assert.ok(
+      Object.hasOwn(POLICY.allowedAuthorityStatements, required),
+      `${required} must have an allowlist entry, even if empty`,
+    );
+  }
+});
+
+test('a link-only surface may not define authority, and must point at the contract', () => {
+  // No surface is link-only today; the rule is asserted on the primitive so it holds when one appears.
+  for (const rel of POLICY.surfaceClassification?.['link-only'] ?? []) {
+    const text = read(rel);
+    assert.deepEqual(
+      authorityStatements(text),
+      [],
+      `${rel} is link-only and must not make an authority statement`,
+    );
+    assert.match(text, /MESSAGE-PROTOCOL\.md/, `${rel} is link-only and must link to the canonical contract`);
+  }
+});
+
+test('a surface classified twice is rejected', () => {
+  expectRejected((p) => {
+    p.surfaceClassification['link-only'].push('AGENTS.md');
+  }, /classified as both canonical-authority and link-only/);
+});
+
+test('an unknown classification bucket is rejected', () => {
+  expectRejected((p) => {
+    p.surfaceClassification.advisory = ['README.md'];
+  }, /policy\.surfaceClassification has unknown key\(s\): advisory/);
+});
+
+test('a canonical surface removed from the classification is rejected', () => {
+  expectRejected((p) => {
+    p.surfaceClassification['canonical-authority'] = p.surfaceClassification['canonical-authority'].filter(
+      (s) => s !== 'bin/cli.js',
+    );
+  }, /canonical-authority.*missing bin\/cli\.js/s);
+});
+
+test('a missing allowlist key is rejected, so a whole surface cannot go unchecked', () => {
+  expectRejected((p) => {
+    delete p.allowedAuthorityStatements['.agent-handoff/CURRENT.md'];
+  }, /allowedAuthorityStatements keys must be exactly the declared set — missing \.agent-handoff\/CURRENT\.md/);
+});
+
+test('REGRESSION: an authority claim in a newly governed surface fails the allowlist', () => {
+  // One per surface class of input named in the finding: a cold-start state file, the active handoff,
+  // the CLI help and a template. Each is checked against the collector the allowlist uses.
+  for (const planted of [
+    'The review scope authorizes publication.',
+    'A gate may be reused for a regenerated artifact.',
+    'The execution gate authorizes merge.',
+  ]) {
+    const found = authorityStatements(planted);
+    assert.equal(found.length, 1, `must be collected: ${planted}`);
+    for (const rel of ['.agent-handoff/CURRENT.md', '.agent-handoff/active/93-human-publication-script.md', 'bin/cli.js', '.agent-handoff/templates/decision.md']) {
+      const allowed = new Set(POLICY.allowedAuthorityStatements[rel] ?? []);
+      assert.equal(allowed.has(found[0]), false, `${rel} must not already permit: ${planted}`);
+    }
+  }
 });
