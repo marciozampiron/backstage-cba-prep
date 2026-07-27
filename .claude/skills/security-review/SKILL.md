@@ -12,9 +12,15 @@ The repository policy is authoritative. Read:
 3. `docs/architecture/ai-agent-security-model.md` for AI/model/tool/source work;
 4. the assigned GitHub issue and `.agent-handoff/` file.
 
-Publication is role-separated (#91): only the executor publishes, only a gated
-`task/<issue>-<slug>` branch, only through `agent-publish`, and never `main`. Merging is a human
-action. Reviewed commits are immutable — a finding produces a NEW fix-forward commit.
+Roles and messages are canonical in
+[`.agent-handoff/MESSAGE-PROTOCOL.md`](../../../.agent-handoff/MESSAGE-PROTOCOL.md):
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`.
+
+As Opus you validate with `agent-publish`, *prepare* the artifact with `agent-human-publish-script`
+(see the `publication-prepare` skill), and operate it only after an exact `HUMAN_GATE_GRANTED` from
+Zamp, using the printed verify-and-run command. Never approve your own work, never merge, never
+deploy, never push `main` and never force-push. Reviewed commits are immutable — a finding produces
+a NEW fix-forward commit and a new gate.
 
 As executor:
 

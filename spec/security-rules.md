@@ -25,6 +25,37 @@ product/security owner approves a documented reconciliation.
    publish generated questions.
 5. Security findings are not silently suppressed. Record the finding, severity, evidence, owner,
    remediation or accepted residual risk, and review expiry.
+6. **Publication is gated and role-separated (#91, #93).** Roles and messages are canonical in
+   [`.agent-handoff/MESSAGE-PROTOCOL.md`](../.agent-handoff/MESSAGE-PROTOCOL.md); the mechanism is
+   canonical in
+   [`docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
+   Opus prepares and, **only after an explicit `HUMAN_GATE_GRANTED` from Zamp naming the exact
+   ordered full SHAs and the artifact digest**, operates publication using the verify-and-run command
+   that hashes the bytes it executes. Two gates are required and are not interchangeable: a review
+   scope bounds preparation and authorizes nothing; the execution gate — supplied as
+   `CBA_EXECUTION_GATE`, closed-schema, bounded to 12 hours — is validated by the artifact before the
+   operator confirmation and again immediately before the push. Codex reviews read-only and never implements, prepares, executes, pushes, merges or
+   deploys. Zamp approves and decides and performs the merge. Gemini has no workflow or governance
+   role. The script may do exactly two remote things — push the reviewed commit by SHA to
+   `task/<issue>-<slug>` without force, and create or reuse one pull request. It may never merge,
+   deploy, push an integration branch, force-push, rewrite history, administer the repository or
+   branch protection, handle secrets, or invoke a paid service.
+7. Approval and operation are different actors. A gate whose approver is the invoking operator, or
+   whose approver looks like an agent identity, is refused. A generic "approved", or a
+   `REVIEW_APPROVED`, is review feedback and never a publication gate.
+8. The declared `--role`/`--executor` are caller-supplied and authenticate nothing. Treat #91
+   Stage A and the #93 bridge as process guardrails, and never describe them as mechanical identity
+   separation. Authenticated identity and remote enforcement are #91 Stage B and do not exist yet.
+9. Once independent review begins, reviewed commits are immutable. Findings produce a NEW
+   fix-forward commit — never an amend, rebase or squash of reviewed history — and a new gate.
+10. The publish gate is authored by Zamp **outside the task worktree**. A gate written inside
+   the repository is an untracked file, which makes the worktree dirty, which validation refuses;
+   the command refuses an in-repository gate path outright. Bookkeeping that writes tracked files
+   (`EVENTS.md`, `CURRENT.md`, `agent-refresh --record`) belongs to the main worktree or a later
+   commit. A control whose documented procedure cannot be completed is not a control.
+11. Publication targets are bound, not assumed: the repository is derived from the `origin` remote
+    that the push actually goes to, and the pull request is identified by owner, repository and
+    exact base and head — never by branch name alone, which spans forks.
 
 ## 2. Architecture Boundaries
 

@@ -3,6 +3,10 @@ description: Author new doc-grounded CBA questions and append them to the bank (
 argument-hint: "<domain: development-workflow|infrastructure|catalog|customizing> [count]"
 ---
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 Act as the **CBA item-writer** (AUTHOR mode). Read `spec/item-writing-rules.md`,
 `spec/exam-blueprint.md`, and `spec/backstage-docs-map.md` first.
 

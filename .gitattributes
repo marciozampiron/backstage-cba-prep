@@ -1,0 +1,28 @@
+# Source files are always diffed as text.
+#
+# A single NUL byte otherwise makes Git classify a file as binary: the diff collapses to
+# "Bin 0 -> N bytes" and the content becomes invisible to review, on the command line and on
+# GitHub. That is a review and supply-chain problem, not a display preference — a security test
+# suite that cannot be read cannot be approved. `diff` forces textual diffs regardless of content.
+#
+# `test/human-publish-script.test.js` asserts two things about this file: that no tracked source
+# actually contains a NUL byte, and that every non-binary tracked extension appears here. Adding a
+# new source type to the repository without adding it below is a test failure, not a silent gap.
+*.js       diff
+*.mjs      diff
+*.cjs      diff
+*.ts       diff
+*.tsx      diff
+*.jsx      diff
+*.json     diff
+*.jsonc    diff
+*.md       diff
+*.sh       diff
+*.yml      diff
+*.yaml     diff
+*.html     diff
+*.css      diff
+*.py       diff
+*.txt      diff
+*.toml     diff
+*.example  diff

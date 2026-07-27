@@ -10,6 +10,7 @@ GitHub Issues and the Project board remain the source of truth for scope and pri
 Run these commands before taking any task:
 
 ```bash
+cat .agent-handoff/MESSAGE-PROTOCOL.md   # canonical roles and message contract
 git pull
 npm run agent-refresh
 npm run agent-refresh -- --record
@@ -21,6 +22,7 @@ Read these files before editing:
 
 ```bash
 cat AGENTS.md
+cat .agent-handoff/MESSAGE-PROTOCOL.md
 cat .agent-handoff/README.md
 cat .agent-handoff/CURRENT.md
 cat .agent-handoff/EVENTS.md
@@ -45,9 +47,12 @@ Check ownership before editing:
 ls .agent-handoff/active
 ```
 
-## Publishing (#91)
+## Publishing (#91 Stage A + #93 operator bridge)
 
-Stage A is **validation only** — it never pushes, opens a PR, merges or uses a credential.
+Roles and messages: [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md). Mechanism:
+[`../docs/architecture/agent-publication-runbook.md`](../docs/architecture/agent-publication-runbook.md).
+
+`Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`
 
 ```bash
 # 1. own branch AND worktree — never share a writable main
@@ -56,15 +61,43 @@ git worktree add ../cba-issue-<n> -b task/<n>-<slug> main
 # 2. local defense in depth (once per clone; not the authoritative control)
 git config core.hooksPath .githooks
 
-# 3. validate the human gate locally (this is the whole Stage A behaviour)
+# 3. OPUS: advisory local validation — this is all it does
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-scope-<n>.json   # REVIEW SCOPE, authored by Zamp OUTSIDE the worktree
+
+# 4. OPUS: prepare the reviewed artifact. No network, no git mutation.
+#    Writes one file to /tmp, mode 0600, NOT executable, and prints its path, SHA-256
+#    and the verify-and-run command.
+node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
+  --gate /tmp/cba-scope-<n>.json
 ```
 
-`architect` and `reviewer` are refused before `.env` loads, the gate is read or git runs. `main` is
-never a source branch. **Publishing the branch, opening the PR and merging are not performed by
-this command**: publication is Stage B (executor bot credential) and merge is always a human
-action.
+Then, in order and by different actors:
+
+- **Step 5 — Codex (`FINDINGS` or `REVIEW_APPROVED`).** Reads the file and confirms the printed
+  SHA-256. Read-only: Codex never implements, prepares, executes, pushes, merges or deploys, and
+  `REVIEW_APPROVED` never authorizes publication.
+- **Step 6 — Zamp (`HUMAN_GATE_GRANTED`).** Writes the **execution gate**: a second manifest,
+  outside the worktree, naming the branch, ordered full SHAs, the **artifact digest**, a bounded
+  expiry and the allowed effects. A generic "approved" is not a gate, and the review scope from
+  step 3 authorizes nothing.
+- **Step 7 — Opus (`OPERATION_RESULT`).** Supplies that gate and runs the verify-and-run command
+  printed in step 4:
+
+  ```bash
+  export CBA_EXECUTION_GATE=/tmp/cba-gate-<n>.json   # Zamp's HUMAN_GATE_GRANTED
+  # then the verify-and-run command, verbatim — it exports CBA_ARTIFACT_DIGEST
+  ```
+
+  The artifact reads that gate once into a snapshot and validates it against the digest before the
+  confirmation and again immediately before the push. There is no supported bare-path invocation. It
+  pushes the reviewed commit by SHA and creates or reuses exactly one pull request.
+- **Step 8 — Zamp (`MERGE_DECISION`).** Decides and performs the merge, after required checks.
+
+`architect` and `reviewer` are refused by **both** commands before `.env` loads, the gate is read,
+git runs or any file is written. `main` is never a source branch. A gate whose approver is the
+operator, or looks like an agent identity, is refused. The prepared script can never merge, deploy,
+push `main`, force-push, rewrite history, change repository settings or read secrets.
 
 ## Before commit
 
@@ -112,10 +145,18 @@ Keep commits scoped to the approved task. Do not mix unrelated work.
 Push is allowed only after explicit human approval for the exact commit or scope.
 
 ```bash
-# Agents NEVER push main. Publication is: validate the gate, then Stage B publishes the task
-# branch and opens a PR; the human owner merges. See "Publishing (executor only, #91)" above.
+# Publication requires a HUMAN_GATE_GRANTED from Zamp naming the exact ordered full SHAs and the
+# artifact digest. Opus operates it; Codex never does; merge is always Zamp's. See "Publishing".
+#
+# BOTH commands take the REVIEW SCOPE. The execution gate is a different manifest with a different,
+# closed schema, and it reaches the artifact as CBA_EXECUTION_GATE — never as --gate.
 node bin/cli.js agent-publish --role executor --executor <agent-id> \
-  --gate .agent-handoff/publish-gates/<gate>.json
+  --gate /tmp/cba-scope-<n>.json
+
+node bin/cli.js agent-human-publish-script --role executor --executor <agent-id> \
+  --gate /tmp/cba-scope-<n>.json
+
+export CBA_EXECUTION_GATE=/tmp/cba-gate-<n>.json   # Zamp's HUMAN_GATE_GRANTED, after review
 ```
 
 After push, validate GitHub Actions:
@@ -175,8 +216,13 @@ explicitly approved.
 
 ## Role split
 
-- Executor agent: implements, validates, and commits.
-- Codex: architect/reviewer/gate.
-- Human: authorizes push.
+Canonical: [`MESSAGE-PROTOCOL.md`](MESSAGE-PROTOCOL.md).
 
-Push only after explicit human approval for the current commit or scope.
+- **Opus**: implements, validates, commits, prepares the artifact, and operates publication after an
+  exact gate. Never self-approves, merges, deploys, pushes `main` or force-pushes.
+- **Codex**: architect and independent technical/security reviewer, read-only. Never implements,
+  prepares, executes, pushes, merges or deploys.
+- **Zamp**: grants the exact gate, accepts risk, and decides and performs the merge.
+- **Gemini**: no workflow or governance role (model-provider support is unaffected).
+
+Operate only after a `HUMAN_GATE_GRANTED` naming the exact ordered full SHAs.

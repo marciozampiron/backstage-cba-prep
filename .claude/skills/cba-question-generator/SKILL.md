@@ -3,6 +3,10 @@ name: cba-question-generator
 description: Author and review Certified Backstage Associate (CBA) multiple-choice practice questions for this repo's bank, grounded in the official Backstage docs and the LF exam blueprint. Activates when creating, expanding, validating, or reviewing questions in questions/*.json.
 ---
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 # CBA Question Generator (Claude Code skill)
 
 Act as an **expert psychometric item-writer** and **Backstage subject-matter expert**. This skill is the

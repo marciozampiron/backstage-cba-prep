@@ -3,6 +3,10 @@ description: Validate and audit the CBA question bank (schema, coverage, quality
 allowed-tools: Bash(node:*)
 ---
 
+> **Governance.** This file defines no publication authority. Roles, messages and gates are
+> canonical in [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md).
+
+
 Audit this repo's CBA question bank and report issues.
 
 1. Run `node bin/cli.js validate` and `node bin/cli.js stats`; summarize the output.

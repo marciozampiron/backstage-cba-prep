@@ -1,0 +1,402 @@
+{
+  "$comment": [
+    "Canonical authority policy for #93. This file is DATA, not prose: it states who may authorize",
+    "what, and it lists the exact normalized sentences that are permitted to make an authority claim",
+    "on a canonical surface. test/governance-model.test.js enforces both halves.",
+    "",
+    "Why it exists: five consecutive review rounds found bypasses in a prose scanner built from",
+    "regexes. Each fix narrowed a window and the next round found another way in, because detecting",
+    "bad prose is an unbounded problem. This inverts it — only known-good statements are permitted,",
+    "and anything else fails until a human adds it here deliberately. That is the same discipline as",
+    "the closed nine-key execution-gate schema, applied to documentation.",
+    "",
+    "The allowlist is a BASELINE of text already reviewed across rounds 1-13. Its value is not that each",
+    "line was re-derived from first principles, but that any FUTURE change to a sentence naming a",
+    "governed document fails the suite until a human puts it here on purpose."
+  ],
+  "version": 1,
+  "actors": {
+    "opus": {
+      "role": "implementation executor and publication operator",
+      "may": [
+        "commit-on-task-branch",
+        "validate",
+        "prepare-artifact",
+        "operate-artifact-under-execution-gate"
+      ],
+      "mayNever": [
+        "self-review",
+        "self-approve",
+        "merge",
+        "deploy",
+        "push-integration-branch",
+        "force-push",
+        "administer-repository",
+        "rewrite-reviewed-history",
+        "access-secrets",
+        "invoke-paid-service"
+      ]
+    },
+    "codex": {
+      "role": "architect and independent technical/security reviewer",
+      "may": [
+        "review-read-only",
+        "report-findings",
+        "recommend-gate"
+      ],
+      "mayNever": [
+        "implement",
+        "prepare-artifact",
+        "operate-artifact",
+        "push",
+        "merge",
+        "deploy",
+        "grant-human-gate",
+        "access-secrets",
+        "invoke-paid-service"
+      ]
+    },
+    "zamp": {
+      "role": "approval, risk acceptance and merge authority",
+      "may": [
+        "author-review-scope",
+        "grant-execution-gate",
+        "accept-risk",
+        "authorize-spend",
+        "merge"
+      ],
+      "mayNever": [
+        "delegate-approval",
+        "delegate-merge"
+      ]
+    },
+    "gemini": {
+      "role": "none in this workflow",
+      "may": [],
+      "mayNever": [
+        "any-workflow-or-governance-role"
+      ],
+      "note": "Remains a supported model provider for authoring and a supported tutoring CLI. Product functionality, not a workflow role."
+    }
+  },
+  "documents": {
+    "review-scope": {
+      "writtenBy": "zamp",
+      "writtenWhen": "before preparation",
+      "suppliedAs": "--gate",
+      "filenameConvention": "/tmp/cba-scope-<issue>.json",
+      "bounds": [
+        "preparation",
+        "review"
+      ],
+      "authorizes": []
+    },
+    "execution-gate": {
+      "writtenBy": "zamp",
+      "writtenWhen": "after review",
+      "suppliedAs": "CBA_EXECUTION_GATE",
+      "filenameConvention": "/tmp/cba-gate-<issue>.json",
+      "messageType": "HUMAN_GATE_GRANTED",
+      "boundTo": "artifactDigest",
+      "authorizes": [
+        "push-reviewed-commit-to-task-branch",
+        "create-or-reuse-one-pull-request"
+      ]
+    }
+  },
+  "effects": {
+    "push-reviewed-commit-to-task-branch": {
+      "authorizedBy": "execution-gate",
+      "performedBy": "opus"
+    },
+    "create-or-reuse-one-pull-request": {
+      "authorizedBy": "execution-gate",
+      "performedBy": "opus"
+    },
+    "merge": {
+      "authorizedBy": "MERGE_DECISION",
+      "performedBy": "zamp"
+    },
+    "deploy": {
+      "authorizedBy": "separate-human-gate",
+      "performedBy": "zamp",
+      "note": "outside the scope of #93; its own human gate"
+    }
+  },
+  "governedSurfaces": [
+    "AGENTS.md",
+    ".agent-handoff/MESSAGE-PROTOCOL.md",
+    ".agent-handoff/README.md",
+    ".agent-handoff/COMMANDS.md",
+    ".agent-handoff/CURRENT.md",
+    ".agent-handoff/publish-gates/README.md",
+    ".agent-handoff/templates/task.md",
+    ".agent-handoff/templates/message.md",
+    ".agent-handoff/templates/decision.md",
+    ".agent-handoff/active/93-human-publication-script.md",
+    "spec/security-rules.md",
+    "docs/architecture/agent-publication-runbook.md",
+    "bin/cli.js",
+    ".claude/skills/publication-prepare/SKILL.md",
+    ".claude/skills/security-review/SKILL.md",
+    ".agents/skills/publication-review/SKILL.md",
+    ".agents/skills/review-security/SKILL.md",
+    ".agent-handoff/active/82-aws-observability-slice-a.md",
+    ".agent-handoff/active/85-security-assurance-architecture.md",
+    ".agent-handoff/active/91-role-separated-publication.md",
+    ".agent-handoff/inbox/67-cloudflare-opennext-stage-b.md",
+    ".agent-handoff/publish-gates/example.gate.json",
+    "src/commands/agent-check.js",
+    "src/commands/agent-human-publish-script.js",
+    "src/commands/agent-publish.js",
+    "src/commands/agent-refresh.js",
+    "src/lib/human-publish-script.js",
+    "src/lib/publish-gate.js"
+  ],
+  "surfaceClassification": {
+    "canonical-authority": [
+      "AGENTS.md",
+      ".agent-handoff/MESSAGE-PROTOCOL.md",
+      ".agent-handoff/README.md",
+      ".agent-handoff/COMMANDS.md",
+      ".agent-handoff/CURRENT.md",
+      ".agent-handoff/publish-gates/README.md",
+      ".agent-handoff/templates/task.md",
+      ".agent-handoff/templates/message.md",
+      ".agent-handoff/templates/decision.md",
+      ".agent-handoff/active/93-human-publication-script.md",
+      "spec/security-rules.md",
+      "docs/architecture/agent-publication-runbook.md",
+      "bin/cli.js",
+      ".claude/skills/publication-prepare/SKILL.md",
+      ".claude/skills/security-review/SKILL.md",
+      ".agents/skills/publication-review/SKILL.md",
+      ".agents/skills/review-security/SKILL.md",
+      ".agent-handoff/active/82-aws-observability-slice-a.md",
+      ".agent-handoff/active/85-security-assurance-architecture.md",
+      ".agent-handoff/active/91-role-separated-publication.md",
+      ".agent-handoff/inbox/67-cloudflare-opennext-stage-b.md",
+      ".agent-handoff/publish-gates/example.gate.json",
+      "src/commands/agent-check.js",
+      "src/commands/agent-human-publish-script.js",
+      "src/commands/agent-publish.js",
+      "src/commands/agent-refresh.js",
+      "src/lib/human-publish-script.js",
+      "src/lib/publish-gate.js"
+    ],
+    "link-only": [
+      "CLAUDE.md",
+      ".claude/commands/cba-exam.md",
+      ".claude/commands/cba-generate.md",
+      ".claude/commands/cba-review.md",
+      ".claude/commands/cba-study.md",
+      ".claude/skills/cba-question-generator/SKILL.md",
+      ".agents/skills/review-security/agents/openai.yaml"
+    ],
+    "historical": [
+      ".agent-handoff/EVENTS.md",
+      "inconsistencias.md"
+    ]
+  },
+  "allowedAuthorityStatements": {
+    "AGENTS.md": [
+      "Reports findings or recommends a gate.",
+      "Two gates, not one. A review scope manifest bounds what may be prepared and authorizes nothing.",
+      "The execution gate is the HUMAN_GATE_GRANTED itself — written after review because it names the artifact's digest — supplied as CBA_EXECUTION_GATE and validated by the artifact both before the operator confirmation and again immediately before the push.",
+      "- The publish gate is authored by the human outside the task worktree (for example /tmp/cba-gate-<issue>.json).",
+      "A gate written inside the repository is an untracked file, which makes the worktree dirty and is refused; .agent-handoff/publish-gates/ holds only the schema and its example."
+    ],
+    ".agent-handoff/MESSAGE-PROTOCOL.md": [
+      "| Codex (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and read-only review; reports findings or recommends a gate |",
+      "| GATE_RECOMMENDATION | Codex | Zamp | Recommendation only; never a gate |",
+      "Two gates, not one. The review scope manifest (/tmp/cba-scope-<n>.json, passed as --gate) bounds what may be prepared and is read and validated at preparation — never consumed; idempotent consumption is #91 Stage B.",
+      "The execution gate is the HUMAN_GATE_GRANTED itself: written after review, it names the digest of the artifact plus the exact ordered SHAs and a bounded expiry, and the artifact reads and validates it at run time via CBA_EXECUTION_GATE, never as --gate.",
+      "It is a separate closed nine-key schema, not the review scope plus extras.",
+      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose."
+    ],
+    ".agent-handoff/README.md": [
+      "| #91 Stage A — agent-publish | Validates a gate against local state, prints the plan, stops. |",
+      "It never publishes, never opens a pull request, never consumes a gate and never authenticates identity — the declared role and executor come from the caller, and any caller can declare executor.",
+      "The #93 bridge does not change that: it adds a reviewable artifact and a gate, not an authenticated identity.",
+      "Zamp writes the review scope manifest outside the task worktree — for example /tmp/cba-scope-<issue>.json — naming themselves, the executor, the base SHA and the exact ordered commits.",
+      "A gate written inside the repository would be an untracked file, which makes the worktree dirty, which validation then refuses; an in-repository or symlinked gate path is refused outright so the protocol cannot drift back into being unexecutable.",
+      "It re-runs the Stage A validation, refuses a gate whose approver is the operator, writes one bash file to /tmp with mode 0600 and no executable bit, and prints the path, its SHA-256 and the verify-and-run command.",
+      "Reviewing is not implementing and not executing, and REVIEW_APPROVED is never a gate.",
+      "Zamp writes the execution gate — a second manifest, outside the worktree, written after review because it names the artifact's digest:",
+      "The artifact reads the execution gate once into a snapshot and validates it — including its own expiry — both before the confirmation and again immediately before the push.",
+      "A generic \"approved\", or a Codex REVIEW_APPROVED, is review feedback and never a gate."
+    ],
+    ".agent-handoff/COMMANDS.md": [
+      "- Step 6 — Zamp (HUMAN_GATE_GRANTED). Writes the execution gate: a second manifest, outside the worktree, naming the branch, ordered full SHAs, the artifact digest, a bounded expiry and the allowed effects.",
+      "A generic \"approved\" is not a gate, and the review scope from step 3 authorizes nothing.",
+      "A gate whose approver is the operator, or looks like an agent identity, is refused."
+    ],
+    ".agent-handoff/CURRENT.md": [],
+    ".agent-handoff/publish-gates/README.md": [
+      "This folder documents the review scope manifest.",
+      "It is not the authorization to publish — that is the execution gate, the machine-readable form of a HUMAN_GATE_GRANTED, described below and in [../templates/message.md](../templates/message.md).",
+      "| | Review scope manifest | Execution gate |",
+      "Stage A does not consume a gate, and neither does the artifact: both documents are validated, and the same file would validate twice.",
+      "The two are different documents, not one document with optional extras. The execution gate is a closed set of exactly nine keys — type, gateId, issue, sourceBranch, targetBranch, approver, commits, artifactDigest, expiresAt — and the artifact refuses any key outside that set, so a review-scope manifest is not a valid execution gate and neither is a gate carrying extra fields.",
+      "Because it names a digest, an execution gate cannot be recycled for a regenerated artifact, and it is validated by the artifact immediately before any effect.",
+      "The schema documented below is the review scope.",
+      "This folder holds the schema and its example only — never a real gate. A gate is authored by Zamp outside the task worktree — the review scope as /tmp/cba-scope-<issue>.json, and the execution gate as /tmp/cba-gate-<issue>.json, which is reserved for CBA_EXECUTION_GATE and is never passed to --gate.",
+      "This directory is tracked and not ignored, so a gate written here would be an untracked file, which makes the worktree dirty, which validation then refuses.",
+      "In Stage A the review scope manifest is only ever validated: agent-publish refuses to VALIDATE without one and refuses anything the review scope does not name exactly.",
+      "The review scope authorizes nothing, in Stage A or ever.",
+      "In Stage B publication is authorized by an authenticated execution gate, consumed idempotently under the executor bot credential with live remote checks.",
+      "Stage B does not promote the review scope into an authorization — that conflation is exactly what made the first version of this bridge circular, and a Stage B implementation that publishes on the strength of a review scope would be a security defect.",
+      "An execution gate is evidence of a decision, not a credential: it contains no token, no account id and no administrative endpoint.",
+      "The review scope manifest is not a HUMAN_GATE_GRANTED and is never its machine-readable form.",
+      "In both documents the approver must be the canonical human approver and not the operator: agent-human-publish-script refuses a review scope whose approver equals the invoking executor (APPROVER_IS_OPERATOR), looks like an agent identity (APPROVER_NOT_HUMAN) or is not the canonical approver (APPROVER_NOT_CANONICAL), and the artifact applies the same requirement to the execution gate.",
+      "| — | No field here grants publication authority. That is the execution gate's job alone; see the two-document table above. |",
+      "Zamp writes the review scope outside the worktree, naming themselves as approver.",
+      "Until Stage B exists, Opus performs the push under Zamp's execution gate, and Zamp performs the merge.",
+      "Neither is authorized by the review scope alone.",
+      "A gate is bound to a specific commit sequence, and that holds for both documents.",
+      "A new commit — including a fix-forward after review — needs a new review scope and a new execution gate, and because the execution gate names the artifact digest, regenerating the artifact invalidates it too.",
+      "A gate is validated, never consumed: the same file passes twice."
+    ],
+    ".agent-handoff/templates/task.md": [],
+    ".agent-handoff/templates/message.md": [
+      "GATE_RECOMMENDATION (Codex → Zamp) — a recommendation, never a gate:",
+      "The machine-readable form is the execution gate manifest, written outside the worktree and supplied to the artifact as CBA_EXECUTION_GATE:"
+    ],
+    ".agent-handoff/templates/decision.md": [],
+    ".agent-handoff/active/93-human-publication-script.md": [
+      "| Approval separated from operation | Enforced: a gate approved by the operator, or by an agent-shaped identity, is refused | unchanged |",
+      "| 1 | Two gates. The review-scope manifest bounds preparation; a separate HUMAN_GATE_GRANTED — written after review, naming artifactDigest — is read and validated by the artifact at run time via CBA_EXECUTION_GATE, immediately before any effect. The verify-and-run command exports CBA_ARTIFACT_DIGEST so the gate is bound to the exact bytes. REVIEW_REQUEST/FINDINGS/REVIEW_APPROVED now carry SCOPE: code \\| artifact. | artifact §0; runbook §4.4; MESSAGE-PROTOCOL.md §3; publish-gates/README.md; templates/message.md |",
+      "test/governance-model.test.js enforces it in both directions: an unlisted statement fails, and a stale allowance fails, so editing any sentence naming the review scope, the execution gate or \"a gate\" requires a human to put it in the policy deliberately.",
+      "My first version of the collector kept an authority-word filter, and a planted sentence — \"The review scope may serve as sufficient basis for publication in urgent cases\" — walked straight past it, because it contains no word from the list.",
+      "Between that check and gh pr create sat seven executable statements — the landed-ref read, the pull-request set assertion, two of them network calls that can block — so a gate expiring in that span still opened a pull request.",
+      "The rejected artifact /tmp/cba-publish-93-3e2901d8ed33.sh was deleted rather than left in place, so it cannot be reused; no execution gate was created.",
+      "- The artifact requires node at operation time to open the execution gate with O_NOFOLLOW."
+    ],
+    "spec/security-rules.md": [
+      "Two gates are required and are not interchangeable: a review scope bounds preparation and authorizes nothing; the execution gate — supplied as CBA_EXECUTION_GATE, closed-schema, bounded to 12 hours — is validated by the artifact before the operator confirmation and again immediately before the push.",
+      "A gate whose approver is the invoking operator, or whose approver looks like an agent identity, is refused.",
+      "The publish gate is authored by Zamp outside the task worktree.",
+      "A gate written inside the repository is an untracked file, which makes the worktree dirty, which validation refuses; the command refuses an in-repository gate path outright."
+    ],
+    "docs/architecture/agent-publication-runbook.md": [
+      "| Zamp — human product/security owner | Author a gate naming themselves; approve; accept residual risk; decide and perform the merge | Delegate approval, risk acceptance or merge to any agent |",
+      "| Codex — architect and security reviewer | Read-only architecture and security review; identify commits by full SHA; recommend a gate | Implement, prepare a script, execute anything, push, merge, deploy |",
+      "agent-human-publish-script refuses a gate whose approver is the invoking executor (APPROVER_IS_OPERATOR) or whose approver looks like an agent identity (APPROVER_NOT_HUMAN), on top of #91's refusal of generic approvals like \"approved\" or \"lgtm\".",
+      "Both publication commands refuse its declared role before reading a gate, running git, or writing a file.",
+      "agent-publish validates a gate against local state and prints the plan.",
+      "| Replay protection | A gate is never consumed; the same file validates twice | Stage B idempotent consumption |",
+      "Everything the artifact may touch is bound at generation time from the review scope — repository, issue, source branch, target branch, the ordered reviewed SHAs, the expected HEAD.",
+      "It then requires Zamp's execution gate and re-verifies everything against live state:",
+      "the execution gate is required, and it is a different artifact from the review scope. See §4.4 — nothing is authorized by preparation alone.",
+      "the review-scope window must not have expired either; 3.",
+      ".agent-handoff/publish-gates/ is tracked and not ignored, so a gate written there is an untracked file; that makes the worktree dirty; and a dirty worktree is exactly what step 4 refuses.",
+      "| | Review scope manifest | Execution gate |",
+      "Because the execution gate names the digest, it cannot be recycled for a different artifact: a regenerated script has a different digest and needs a new gate.",
+      "| A guarantee that only Opus operates the artifact | Non-executable mode, the required execution gate and the digest binding raise the cost and make operation deliberate and traceable; they do not authenticate who ran it. |",
+      "The suite does not prove authenticated role separation or replay protection, because Stage A provides neither: the declared role is caller-supplied, and a gate is validated rather than consumed.",
+      "It proves: output-path refusal for a repository path, a path outside /tmp, traversal, a symlink and an existing file; drift refusal for commit set, base, branch, HEAD and a shared worktree; gate expiry and the typed confirmation appearing in the generated text; the absence of every forbidden operation — force push, pushing an integration branch, merge, deploy, repository administration, credential handling, history rewriting and paid-service invocation — asserted against the real generated script and against the generator source, with each pattern proven to match its own sample so a \"no match\" assertion cannot pass vacuously; that the generator source contains no network primitive and no Git or GitHub write verb; that the written file is mode 0600 with no executable bit; that no secret-shaped material reaches the script; that the repository is bound to the origin remote and a diverging or unresolvable one refuses; that the pull-request set is asserted before the push and re-asserted after it; that a gate inside the worktree refuses; that a failed gate read echoes neither the caller-supplied path nor a raw error; that no source file in the repository contains a NUL byte, which would make it binary and therefore unreviewable in a diff; and that the documents, spec/security-rules.md and both skills agree on who may prepare, read and run.",
+      "Two end-to-end tests build a real temporary git repository and walk the documented protocol: one proves that following it literally produces a script and leaves the worktree clean, and one proves that a gate written into .agent-handoff/publish-gates/ dirties the worktree and is refused."
+    ],
+    "bin/cli.js": [
+      "${c.bold('Commands:')} exam Run a timed mock exam with per-domain scoring generate Author new questions with an LLM (multi-provider) validate Check the question bank against the schema stats Show bank coverage per domain and competency sync Compare local blueprint weights with the live LF page blueprint Regenerate the domain (spec/blueprint.json) from a source URL via AI audit-sources Check that every question's source URL is reachable review-bank Review semantic answer correctness against cited sources bedrock-check Validate model-tier config (dry-run); --smoke for a paid live test agent-check Check AI orchestration readiness (dry-run); --smoke for a paid live run agent-refresh Check agent handoff state before edit/commit/push (no network) agent-publish Validate a publish gate locally (Stage A: no push, no PR, no merge) agent-human-publish-script Prepare the reviewed publication artifact (prepares only; never runs it) history Show your past exam attempts and progress help Show this help"
+    ],
+    ".claude/skills/publication-prepare/SKILL.md": [
+      "Covers validating the review scope, generating the /tmp artifact, handing it to Codex, and operating it after Zamp's gate.",
+      "A generic \"approved\", \"ok\" or \"pode pushar\" — and a Codex REVIEW_APPROVED — is review feedback, never a gate.",
+      "- A review scope manifest exists outside the task worktree (for example /tmp/cba-scope-<n>.json), written by Zamp, naming the canonical approver, you, the base SHA and the exact ordered commits (reviewedShas must equal commits).",
+      "- The review scope is not authorization to operate. It bounds what may be prepared.",
+      "The artifact then validates the execution gate against that digest before any effect.",
+      "- operate the artifact before an exact HUMAN_GATE_GRANTED bound to its digest, or reproduce its git/gh commands by hand; - approve your own work, or treat REVIEW_APPROVED or a generic \"approved\" as a gate; - push main, force-push, merge, deploy, or change repository settings or branch protection; - chmod +x the artifact, move it into the repository, or write it anywhere but /tmp; - edit a generated artifact.",
+      "If you are told to publish without a gate that names the exact ordered full SHAs, say so and ask for the HUMAN_GATE_GRANTED."
+    ],
+    ".claude/skills/security-review/SKILL.md": [],
+    ".agents/skills/publication-review/SKILL.md": [
+      "Use when Opus sends a REVIEW_REQUEST with a /tmp path and its SHA-256 for a gated task branch, before Zamp grants the execution gate.",
+      "agent-publish and agent-human-publish-script both refuse your declared role before reading a gate, running git or writing a file — that refusal is expected, not an obstacle to route around.",
+      "Confirm that the reported command does that, embeds the digest you verified, and exports it as CBA_ARTIFACT_DIGEST so the execution gate can be bound to these bytes.",
+      "The execution gate. The artifact must require CBA_EXECUTION_GATE, refuse a symlink or non-regular file, and validate that the gate is a HUMAN_GATE_GRANTED for this issue, branch and canonical approver, naming the reviewed commits exactly and in order, unexpired, bounded to 12 hours, and carrying an artifactDigest equal to the digest of the bytes being run.",
+      "A gate that could authorize a different artifact is a finding."
+    ],
+    ".agents/skills/review-security/SKILL.md": [
+      "You may NEVER implement the reviewed delivery, prepare or execute a publication script, push, merge, deploy, administer the repository, or grant the human gate — agent-publish and agent-human-publish-script both refuse your declared role before reading a gate, running git or writing a file.",
+      "Identify review targets by full commit SHA, and recommend a gate rather than acting on one."
+    ],
+    ".agent-handoff/active/82-aws-observability-slice-a.md": [],
+    ".agent-handoff/active/85-security-assurance-architecture.md": [],
+    ".agent-handoff/active/91-role-separated-publication.md": [
+      "agent-publish validates a human-authored publish gate against local repository state and prints the plan.",
+      "It does not publish, open a pull request, merge, consume a gate, authenticate identity, use a credential or deploy — and it contains no code path that could.",
+      "| Gate consumption (replay protection) | Not provided — a gate is validated, never consumed | Stage B |",
+      "A test asserts the same gate validates twice, so a future Stage B change must update it deliberately.",
+      "- Replay — a gate is validated, never consumed.",
+      "It now opens with Stage A being local advisory pre-flight validation only that never publishes, never opens a PR, never consumes a gate and never authenticates identity, and states that publication and merge are human actions until Stage B.",
+      "- publish-gates/README.md said \"A gate is consumed by a specific commit sequence\" and later \"A gate is validated, never consumed\".",
+      "The first is now \"A gate is bound to a specific commit sequence.\" - This handoff opened with the FIRST commit's summary — publisher seam, --dry-run, expiry framed as replay protection, \"only sanctioned publication path\" — presented as current state."
+    ],
+    ".agent-handoff/inbox/67-cloudflare-opennext-stage-b.md": [],
+    ".agent-handoff/publish-gates/example.gate.json": [],
+    "src/commands/agent-check.js": [],
+    "src/commands/agent-human-publish-script.js": [
+      "// // Approval is separated from operation mechanically, not only by prose: a gate whose approver is // the invoking operator, or looks like an agent identity, is refused.",
+      "That file is written 0600 and WITHOUT an executable bit, and it // refuses to do anything without Zamp's execution gate — so operating it is always a deliberate, // separately authorized act rather than something that can happen by accident.",
+      "fs.constants; let fd; try { fd = fsImpl.openSync(gatePath, C.O_RDONLY | C.O_NOFOLLOW); } catch (err) { if (err?.code === 'ELOOP' || err?.code === 'EMLINK') { throw new GateError('GATE_PATH_SYMLINK', 'The publish gate path is a symlink; refusing to follow it.",
+      "Pass the real path.'); } throw err; } try { const st = fsImpl.fstatSync(fd); if (!st.isFile()) { throw new GateError('GATE_NOT_REGULAR_FILE', 'The publish gate must be a regular file.'); } // Read from the SAME descriptor — never re-open by path.",
+      ".agent-handoff/publish-gates/ is tracked and not // ignored, so a gate written there is an untracked file — which makes the worktree dirty, which // this very command then refuses.",
+      "const gatePath = path.resolve(cwd, opts.gate); const inRepo = (p, root) => p === root || p.startsWith(${root}${path.sep}); const canonical = (p) => { try { return fsImpl.realpathSync(p); } catch { return p; // absent or unreadable: fall back to the lexical form, which still refuses in-repo } }; let gateIsSymlink = false; try { gateIsSymlink = fsImpl.lstatSync(gatePath).isSymbolicLink(); } catch { gateIsSymlink = false; } if (gateIsSymlink) { printRefusal(CMD, { code: 'GATE_PATH_SYMLINK', message: 'The publish gate path is a symlink; refusing to follow it.",
+      "Pass the real path.', }); return EXIT.VALIDATION_FAILED; } if (inRepo(gatePath, repoRoot) || inRepo(canonical(gatePath), canonical(repoRoot))) { printRefusal(CMD, { code: 'GATE_PATH_IN_REPO', message: 'The publish gate must live outside the repository worktree.",
+      "A gate written inside it is an ' + 'untracked file, which makes the worktree dirty and is then refused.",
+      "The executor operates publication, so a gate // it could have approved itself would be no decision at all.",
+      "A generic \"approved\", or a REVIEW_APPROVED, is not a gate.')}, ); return EXIT.OK; }"
+    ],
+    "src/commands/agent-publish.js": [
+      "// // Stage A validates a publish gate against local repository state and prints the plan.",
+      "Validation requires a human-authored gate.'); return EXIT.VALIDATION_FAILED; } let raw; try { raw = fsImpl.readFileSync(path.resolve(cwd, opts.gate), 'utf8'); } catch { console.error(${c.bold('agent-publish refused')} [GATE_MISSING]); console.error('No publish gate at the given path.'); // the path itself is never echoed return EXIT.VALIDATION_FAILED; }",
+      "console.log(${c.bold('Publish gate VALID (local pre-flight only)')} ${evidence.gateId}); console.log( issue : #${evidence.issue}); console.log( declared as : ${evidence.declaredExecutor} (${evidence.declaredRole}) ${c.gray('— declared, not authenticated')}); console.log( approved by : ${evidence.approver}); console.log( source branch : ${evidence.sourceBranch}); console.log( intended PR : ${evidence.sourceBranch} -> ${evidence.targetBranch}); console.log( base : ${evidence.baseSha.slice(0, 7)}); console.log( commits : ${evidence.commits.map((s) => s.slice(0, 7)).join(', ')});"
+    ],
+    "src/commands/agent-refresh.js": [],
+    "src/lib/human-publish-script.js": [
+      "/ Refuse a gate whose approver is the operator.",
+      "The subshell inherits stdin, so the typed operator confirmation still works, and it // exports the digest the artifact requires its execution gate to name.",
+      "return [ '(', s=$(cat ${shQuote(outputPath)}), if [ \"$(printf '%s\\\\n' \"$s\" | sha256sum | cut -d' ' -f1)\" = ${shQuote(digest)} ]; then, // The digest is exported so the artifact can require the execution gate to name these exact // bytes.",
+      "command -v jq >/dev/null 2>&1 || die \"jq is required to validate the execution gate\"",
+      "|| die \"the execution gate directory cannot be resolved\"",
+      "repo_top=$(git rev-parse --show-toplevel 2>/dev/null || true) repo_top=$(cd \"\\${repo_top:-.}\" 2>/dev/null && pwd -P) case \"$gate_dir\" in \"$repo_top\"|\"$repo_top\"/) die \"the execution gate must live outside the repository worktree\" ;; esac",
+      "command -v node >/dev/null 2>&1 || die \"node is required to read the execution gate safely (O_NOFOLLOW)\" EXECUTION_GATE_JSON=$(node -e ' const fs = require(\"node:fs\"); const target = process.argv[1]; let fd; try { // O_NONBLOCK matters: without it, opening a FIFO planted at this path blocks forever and the // operation hangs instead of failing.",
+      "\"symlink\" : \"unopenable\"); process.exit(2); } try { const st = fs.fstatSync(fd); if (!st.isFile()) { process.stderr.write(\"not-regular\"); process.exit(3); } if (st.size === 0) { process.stderr.write(\"empty\"); process.exit(4); } if (st.size > 65536) { process.stderr.write(\"too-large\"); process.exit(5); } process.stdout.write(fs.readFileSync(fd, \"utf8\")); } finally { try { fs.closeSync(fd); } catch { / nothing read can change on a failed close / } } ' \"$CBA_EXECUTION_GATE\" 2>\"$TMP_GATE_ERR\") || { reason=$(cat \"$TMP_GATE_ERR\" 2>/dev/null || true) case \"$reason\" in symlink) die \"the execution gate path is a symlink; refusing to follow it\" ;; not-regular) die \"the execution gate is not a regular file\" ;; empty) die \"the execution gate is empty\" ;; too-large) die \"the execution gate is larger than 64 KiB; refusing to parse it\" ;; ) die \"the execution gate cannot be opened\" ;; esac }",
+      "[ -n \"$EXECUTION_GATE_JSON\" ] || die \"the execution gate is empty\"",
+      "gate_json -e 'type == \"object\"' >/dev/null 2>&1 || die \"the execution gate is not a JSON object\" expected_keys='[\"approver\",\"artifactDigest\",\"commits\",\"expiresAt\",\"gateId\",\"issue\",\"sourceBranch\",\"targetBranch\",\"type\"]' actual_keys=$(gate_json -c 'keys_unsorted | sort') [ \"$actual_keys\" = \"$expected_keys\" ] \\\\",
+      "|| die \"the execution gate schema is wrong: it must carry exactly type, gateId, issue, sourceBranch, targetBranch, approver, commits, artifactDigest, expiresAt\"",
+      "|| die \"the execution gate id is malformed; the value is not echoed\"",
+      "printf '%s' \"$gate_id\" | grep -Eqi 'akia[0-9a-z]{16}|ghp_|gho_|github_pat_|eyj[0-9a-z_-]{6,}|sk-[0-9a-z]{8,}|xox[baprs]-|bearer|token|secret|password|credential|apikey|api[-_]key' \\\\ && die \"the execution gate id looks like it contains credential material and was refused unprinted\" printf '%s' \"$gate_digest\" | grep -Eq '^[0-9a-f]{64}$' \\\\",
+      "|| die \"the execution gate artifact digest must be 64 lowercase hex characters\"",
+      "|| die \"the execution gate expiry must be strict RFC3339 with Z or an offset\"",
+      "|| die \"the execution gate commits must be a non-empty array of full lowercase 40-character SHAs\"",
+      "gate_json -e '.issue | type == \"number\"' >/dev/null 2>&1 || die \"the execution gate issue must be a number\" for k in type sourceBranch targetBranch approver; do gate_json -e --arg k \"$k\" '.[$k] | type == \"string\" and length > 0' >/dev/null 2>&1 \\\\",
+      "|| die \"the execution gate field $k must be a non-empty string\"",
+      "check_execution_gate() { local when=\"$1\" now expiry [ \"$(gate_field type)\" = \"HUMAN_GATE_GRANTED\" ] || die \"$when: the execution gate is not a HUMAN_GATE_GRANTED message\" [ \"$(gate_field issue)\" = \"$ISSUE\" ] || die \"$when: the execution gate is for a different issue\" [ \"$(gate_field sourceBranch)\" = \"$SOURCE_BRANCH\" ] || die \"$when: the execution gate names a different source branch\" [ \"$(gate_field targetBranch)\" = \"$TARGET_BRANCH\" ] || die \"$when: the execution gate names a different target branch\" [ \"$(gate_field approver)\" = \"$GATE_APPROVER\" ] || die \"$when: the execution gate approver differs from the reviewed gate\"",
+      "|| die \"$when: the execution gate authorizes a different artifact than the one being run\"",
+      "|| die \"$when: the execution gate does not name the reviewed commits exactly and in order\"",
+      "expiry=$(date -u -d \"$gate_expires\" +%s 2>/dev/null) || die \"$when: cannot parse the execution gate expiry\" now=$(date -u +%s) [ \"$now\" -le \"$expiry\" ] || die \"$when: the execution gate expired at $gate_expires; ask for a new one\" [ $((expiry - now)) -le 43200 ] || die \"$when: the execution gate window exceeds 12 hours; ask for a bounded one\" }",
+      "check_execution_gate \"before publishing\" EXECUTION_GATE_ID=\"$gate_id\" note \"Execution gate accepted: $EXECUTION_GATE_ID approved by $GATE_APPROVER.\"",
+      "[ -n \"$expiry_epoch\" ] || die \"cannot parse the gate expiry\" [ \"$now_epoch\" -le \"$expiry_epoch\" ] || die \"the publish gate expired at $GATE_EXPIRES; ask for a new one\" }",
+      "note \"\" note \"About to publish:\" note \" repository : $REPO\" note \" issue : #$ISSUE\" note \" branch : $SOURCE_BRANCH -> $TARGET_BRANCH (pull request only)\" note \" head : \\${EXPECTED_HEAD:0:12}\" note \" review scope : $REVIEW_SCOPE_ID\" note \" execution gate : $EXECUTION_GATE_ID (this is the authorization)\" note \" approved by: $GATE_APPROVER (human owner; merge is their decision)\" note \"\" note \"Operator, confirm by sending exactly: $CONFIRMATION\" printf 'confirmation> ' IFS= read -r typed || die \"no confirmation was supplied; nothing was published\" [ \"$typed\" = \"$CONFIRMATION\" ] || die \"confirmation did not match; nothing was published\"",
+      "Authorized by execution gate $EXECUTION_GATE_ID (review scope $REVIEW_SCOPE_ID).",
+      "note \"\" note \"Published (evidence — no credential material):\" note \" authorized by : execution gate $EXECUTION_GATE_ID\" note \" review scope : $REVIEW_SCOPE_ID (bounded preparation; authorized nothing)\" note \" issue : #$ISSUE\" note \" branch : $SOURCE_BRANCH\" note \" head : \\${EXPECTED_HEAD:0:12}\" note \" base : \\${BASE_SHA:0:12}\" note \" commits : \\${#REVIEWED_SHAS[@]}\" note \" pull request : #$pr_number at \\${pr_oid:0:12}\" note \" merged : no — merge is Zamp's decision\" ; }"
+    ],
+    "src/lib/publish-gate.js": [
+      "// // Deliberately NOT claimed by Stage A: // - authenticated role/identity (Stage B credential); // - replay protection — a gate is not consumed, so the same file validates twice (Stage B owns // authoritative, idempotent consumption); // - remote base truth — origin/main is read from local refs, which are only as fresh as the // last fetch (Stage B validates against the live remote at publication time); // - exclusive-worktree enforcement — observed, reported, and treated as local convention.",
+      "Exported standalone so callers can run it as their very first statement, before reading a gate, running git or constructing a network dependency.",
+      "Only \"executor\" may proceed.'); } const normalized = role.trim().toLowerCase(); if (NON_PUBLISHING_ROLES.includes(normalized)) { fail( 'ROLE_FORBIDDEN', Declared role \"${normalized}\" may review and recommend a gate but may never publish source + 'branches, merge, deploy or act as executor (#91 decision 3).",
+      "/ export function parseGate(raw) { let gate; if (typeof raw === 'string') { try { gate = JSON.parse(raw); } catch { fail('GATE_MALFORMED', 'The publish gate is not valid JSON.'); } } else { gate = raw; } if (!gate || typeof gate !== 'object' || Array.isArray(gate)) { fail('GATE_MALFORMED', 'The publish gate must be a JSON object.'); }",
+      "const ALLOWED_FIELDS = [ 'gateId', 'issue', 'executor', 'baseSha', 'commits', 'sourceBranch', 'targetBranch', 'approver', 'approvedAt', 'expiresAt', 'reviewedShas', ]; const unknown = Object.keys(gate).filter((key) => !ALLOWED_FIELDS.includes(key)); if (unknown.length > 0) { fail( 'GATE_UNKNOWN_FIELD', The publish gate carries ${unknown.length} field(s) outside the closed schema.",
+      "const required = ALLOWED_FIELDS; for (const key of required) { if (gate[key] === undefined || gate[key] === null || gate[key] === '') { fail('GATE_INCOMPLETE', The publish gate is missing \"${key}\".); } }",
+      "if (!Number.isInteger(gate.issue) || gate.issue <= 0) { fail('GATE_INCOMPLETE', 'The publish gate needs an integer \"issue\".'); } assertNoSecretMarker('executor', gate.executor); if (typeof gate.executor !== 'string' || !ACTOR.test(gate.executor)) { fail('GATE_INCOMPLETE', 'The publish gate needs a named \"executor\" identity.'); } assertNoSecretMarker('approver', gate.approver); if (!SHA_FULL.test(String(gate.baseSha))) { fail('GATE_INCOMPLETE', '\"baseSha\" must be a full 40-character commit SHA.'); } if (!Array.isArray(gate.commits) || gate.commits.length === 0) { fail('GATE_INCOMPLETE', '\"commits\" must be a non-empty ordered array of full SHAs.'); } for (const sha of gate.commits) { if (!SHA_FULL.test(String(sha))) fail('GATE_INCOMPLETE', '\"commits\" must contain full 40-character SHAs.'); } if (new Set(gate.commits).size !== gate.commits.length) { fail('GATE_INCOMPLETE', '\"commits\" must not repeat a SHA.'); }",
+      "/ Validate a gate against observed LOCAL repository state.",
+      "// --- human decision, bounded in time --- assertNamedApprover(gate.approver); const approvedAt = assertInstant(gate.approvedAt, 'approvedAt'); const expiresAt = assertInstant(gate.expiresAt, 'expiresAt'); if (expiresAt <= approvedAt) fail('GATE_INCOMPLETE', '\"expiresAt\" must be after \"approvedAt\".'); if (expiresAt - approvedAt > MAX_TTL_MS) { fail('GATE_TTL_TOO_LONG', A publish gate may live at most ${MAX_TTL_MS / 3600000} hours.",
+      "Ask for a fresh decision instead of a long window.); } if (nowMs > expiresAt) fail('GATE_EXPIRED', 'The publish gate expired.",
+      "Ask the human owner for a new gate.'); if (nowMs < approvedAt) fail('GATE_NOT_YET_VALID', 'The publish gate is not valid yet.');",
+      "A gate is not transferable.); }",
+      "// --- replay: NOT prevented by Stage A --- advisories.push('Stage A does not consume a gate: the same file validates again."
+    ]
+  }
+}

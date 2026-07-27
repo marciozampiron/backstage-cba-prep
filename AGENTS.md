@@ -13,9 +13,10 @@ a **CBA coach**.
 Before starting any task, every agent must read:
 
 1. `AGENTS.md`;
-2. `.agent-handoff/README.md`;
-3. `.agent-handoff/CURRENT.md`;
-4. any file in `.agent-handoff/inbox/` or `.agent-handoff/active/` that references the same issue, task, or area.
+2. `.agent-handoff/MESSAGE-PROTOCOL.md` — **canonical** roles and message contract;
+3. `.agent-handoff/README.md`;
+4. `.agent-handoff/CURRENT.md`;
+5. any file in `.agent-handoff/inbox/` or `.agent-handoff/active/` that references the same issue, task, or area.
 
 GitHub Issues and the Project board remain the source of truth. `.agent-handoff/` is the local
 coordination layer for agent-to-agent handoff, current state, and execution notes.
@@ -25,17 +26,43 @@ Collaboration rules:
 - Do not start work when an `.agent-handoff/active/` file already owns the same issue or files.
 - Move or record task state through `inbox -> active -> done` when taking ownership.
 - Never push without explicit human approval.
-- **Publication is role-separated and PR-only (#91).** Agents never push `main`. The implementation
-  executor publishes only `task/<issue>-<slug>` through `agent-publish`, against a publish gate that
-  names the approving human, the exact executor and the exact ordered commits. The
-  architect/security reviewer may review and recommend a gate but may never publish, merge, deploy
-  or act as executor. Merging is a human action. A generic "approved" is a review decision, not a
-  publication command.
+- **Roles and messages are canonical in
+  [`.agent-handoff/MESSAGE-PROTOCOL.md`](.agent-handoff/MESSAGE-PROTOCOL.md).** Short version:
+
+  `Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides/performs merge`
+
+  - **Opus** — implementation executor and publication operator. Implements, tests, commits
+    fix-forward, prepares the reviewed script, and executes the exact verified bytes only after
+    Codex review and an explicit Zamp gate. Never self-reviews, self-approves, amends/rebases/
+    squashes reviewed commits, pushes `main`, force-pushes, merges, deploys, administers the
+    repository, accesses secrets, or invokes a paid service through the publication script.
+  - **Codex** — architect, technical PM and independent technical/security reviewer, **read-only**.
+    Reports findings or recommends a gate. Never implements the reviewed delivery, prepares or
+    executes the publication script, pushes, merges, deploys, or grants the human gate.
+  - **Zamp** — approval, risk acceptance and merge authority. Grants the exact publication gate and
+    decides and performs the merge. Does not need to execute the publication script.
+  - **Gemini** — no role in implementation, review, approval, publication, merge, deploy or
+    governance. It remains a supported model provider for authoring and a supported tutoring CLI;
+    that is product functionality, not a workflow role.
+
+  **Two gates, not one.** A *review scope* manifest bounds what may be prepared and authorizes
+  nothing. The *execution gate* is the `HUMAN_GATE_GRANTED` itself — written after review because it
+  names the artifact's digest — supplied as `CBA_EXECUTION_GATE` and validated by the artifact both
+  before the operator confirmation and again immediately before the push. A generic "approved", or a
+  `REVIEW_APPROVED`, is review feedback and is never a publication gate. The mechanism is documented
+  in
+  [`docs/architecture/agent-publication-runbook.md`](docs/architecture/agent-publication-runbook.md).
 - Each active agent task uses its own branch and worktree; agents do not share a writable `main`.
 - Once independent review begins, reviewed commits are immutable — findings produce a NEW
   fix-forward commit, never an amend or rebase of reviewed history.
 - `agent-refresh --record` is only a technical checkpoint; it never grants push permission.
-- Before pushing, append a `Human gate` event to `.agent-handoff/EVENTS.md`, run `npm run agent-refresh -- --record`, and push only the approved commits.
+- The publish gate is authored by the human **outside the task worktree** (for example
+  `/tmp/cba-gate-<issue>.json`). A gate written inside the repository is an untracked file, which
+  makes the worktree dirty and is refused; `.agent-handoff/publish-gates/` holds only the schema
+  and its example.
+- The task worktree stays clean until publication. `EVENTS.md`/`CURRENT.md` bookkeeping and
+  `npm run agent-refresh -- --record` belong to the main worktree or a later commit — never to the
+  task worktree before a script is generated.
 - Record final validation, commit SHA, unresolved risks, and follow-ups in the handoff file.
 - Refresh coordination state before editing, before commit, before push, after git-state changes, and every 5 minutes during long-running work.
 - Preferred refresh command: `npm run agent-refresh` (or `node bin/cli.js agent-refresh --json` for machine-readable output); use `npm run agent-refresh -- --record` only when an explicit audit event is required.
