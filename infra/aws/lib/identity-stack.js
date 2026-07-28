@@ -82,6 +82,21 @@ class IdentityStack extends Stack {
       managedLoginVersion: cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,
     });
 
+    // --- #75 smoke capability -------------------------------------------------------------------
+    // The group whose members may operate smoke runs. It exists HERE because the BFF reads it from
+    // the validated `cognito:groups` claim, and a capability the platform never provisions is a
+    // 403 waiting for #70 to invent an untracked step.
+    //
+    // The group is created; MEMBERSHIP IS NOT. Adding the dedicated smoke learners is a human-gated
+    // operator action, done once per environment — precisely so the deploy workflow never needs a
+    // Cognito admin permission. No `AWS::Cognito::UserPoolUserToGroupAttachment` belongs here.
+    this.smokeGroup = new cognito.CfnUserPoolGroup(this, 'SmokeOperators', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'cba-smoke',
+      description: 'Deployed-smoke operators (#75). Membership is assigned by a human operator, never by CI.',
+      precedence: 10,
+    });
+
     this.userPoolClient = this.userPool.addClient('WebSpaClient', {
       userPoolClientName: `cba-study-coach-${environment}-web`,
       generateSecret: false,

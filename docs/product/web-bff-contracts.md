@@ -666,6 +666,11 @@ its own run created, through the BFF and authenticated as the smoke learner, ins
 DynamoDB with a deploy role. Both routes are server-side callers only and are deliberately absent
 from the browser CORS method list.
 
+A run has two states. **Active**: it accepts stamped writes. **Completed**: cleanup has verified
+zero leftovers, so it accepts no new records (`409 RUN_CLOSED`) while cleanup itself may still be
+replayed against it. The record is never deleted — it becomes a tombstone so ownership outlives the
+data and replay stays deterministic — and the tombstone carries a bounded expiry.
+
 ### Why the run is a record and not a token claim
 
 The first design read a per-run claim from the validated principal. That cannot be issued: a Cognito
@@ -679,7 +684,7 @@ a record the BFF mints:
 ```
 POST /api/smoke-runs            -> { "runId": "run-…" }   requires the capability; caller OWNS it
 X-CBA-Smoke-Run: <runId>        -> stamps writes; present-but-unowned or malformed FAILS CLOSED
-DELETE /api/smoke-runs/:id/data -> capability + ownership, then deletes learner + run
+DELETE /api/smoke-runs/:id/data -> capability + ownership, deletes the run's DATA, closes the run
 ```
 
 ### The capability is the authorization
@@ -752,10 +757,16 @@ even when every gate passed, and promotion is blocked.
 - the **profile cache** goes only once the learner has no records left at all, so a cleanup scoped
   to one run cannot damage another.
 
-The run record is **never deleted**; it becomes a tombstone once cleanup completes. Consuming
-ownership at the end looked tidy and broke replay — a failure after that point left the retry unable
-to prove ownership, and even a successful pass made the second call answer `403`. With the tombstone
-every replay answers identically: `200` with zeros.
+The run record is **never deleted**; it becomes a tombstone once cleanup has VERIFIED zero
+leftovers. Consuming ownership at the end looked tidy and broke replay — a failure after that point
+left the retry unable to prove ownership, and even a successful pass made the second call answer
+`403`. Finalizing it inside the delete was wrong for a different reason: it marked a run complete
+while a projection was still pending and before anything was verified.
+
+**Retention is bounded** (SEC-DATA-01). The tombstone carries `expiresAt`, and the managed adapter
+writes the `ttl` attribute the table's DynamoDB TTL is configured on. TTL is a cleanup mechanism and
+never an authorization one: a completed run is refused immediately by the application, so nothing
+depends on when the row actually disappears.
 
 ### Persistence
 

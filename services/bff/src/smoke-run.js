@@ -41,9 +41,10 @@ export const SMOKE_RUN_HEADER = 'x-cba-smoke-run';
 /**
  * Read the referenced run id from request headers, or `null`.
  *
- * Deliberately does no authorization: the caller must still prove the run record belongs to the
- * authenticated learner. Returning `null` for a malformed value keeps a bad header indistinguishable
- * from an absent one, so a caller learns nothing by probing formats.
+ * Deliberately does no authorization: the caller must still hold the smoke capability AND prove the
+ * run record belongs to them. `null` here means "not a usable reference"; the dispatcher
+ * distinguishes the cases, because a PRESENT header must fail closed — a malformed one is a 400 and
+ * an unknown or unowned one a 403. Only an ABSENT header is ordinary traffic.
  */
 export function readSmokeRunHeader(headers = {}) {
   const raw = headers[SMOKE_RUN_HEADER];

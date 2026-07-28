@@ -132,6 +132,23 @@ export class InMemorySimulationRepository {
     return this.state.smokeRuns[runId] ?? null;
   }
 
+  /**
+   * Mark a run completed — a TOMBSTONE, never a deletion.
+   *
+   * Separate from `deleteSmokeRunData` on purpose: the use case calls this only after it has proven
+   * zero leftovers. Finalizing inside the delete marked a run complete while a projection was still
+   * pending and before anything was verified, so a failure in between produced a run that looked
+   * finished and was not.
+   */
+  async completeSmokeRun({ runId, completedAt, expiresAt }) {
+    const run = this.state.smokeRuns[runId];
+    if (!run) return null;
+    run.completedAt = run.completedAt ?? completedAt;
+    run.expiresAt = expiresAt;
+    this.persist();
+    return run;
+  }
+
   /** Records still matching learner + run, per class. Zero everywhere is the only proof of a
       COMPLETE cleanup: counting what was deleted cannot distinguish "nothing existed" from
       "something survived contention". */
@@ -196,14 +213,6 @@ export class InMemorySimulationRepository {
       delete this.state.profiles[learnerId];
       deleted.projections += 1;
     }
-
-    // The run record is NEVER deleted here. Consuming ownership at the end of a successful pass
-    // looked tidy and broke replay: a failure after that point left the retry with no way to prove
-    // ownership, so it answered 403 — and even on success the second call answered 403 instead of
-    // the same result. It becomes a TOMBSTONE instead, so ownership outlives the data and a replay
-    // is deterministic.
-    const run = this.state.smokeRuns[runId];
-    if (run) run.completedAt = run.completedAt ?? new Date().toISOString();
 
     this.persist();
     return deleted;

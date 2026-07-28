@@ -765,6 +765,23 @@ export async function ownedSmokeRun(learnerId, runId) {
 const CLEANUP_ATTEMPTS = 3;
 
 /**
+ * How long a completed run tombstone is retained (#75, SEC-DATA-01).
+ *
+ * The tombstone keeps ownership alive so a replay stays deterministic, and ownership is learner
+ * data — it cannot be kept forever. Seven days comfortably outlives any #70 retry window while
+ * still being bounded, and DynamoDB TTL enforces it in the managed adapter.
+ *
+ * TTL is a CLEANUP mechanism, never an authorization one: `runIsClosed` refuses a completed run
+ * immediately, so nothing depends on when the row actually disappears.
+ */
+export const SMOKE_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A run that has been cleaned up is closed: it may be replayed, never written to again. */
+export function runIsClosed(run) {
+  return Boolean(run?.completedAt);
+}
+
+/**
  * Delete every record a smoke RUN created for the authenticated smoke LEARNER (#75).
  *
  * Provider-neutral: it validates the scope, retries, verifies, and delegates the physical deletion
@@ -792,9 +809,18 @@ export async function cleanupSmokeRun(learnerId, runId) {
     for (const key of Object.keys(deleted)) deleted[key] += round[key] ?? 0;
     remaining = await db().countSmokeRunRecords({ learnerId, runId });
     if (remaining.practiceSessions + remaining.mockExams + remaining.attempts === 0) {
+      // Finalized ONLY here — after the scope has been re-queried and proven empty. Marking the run
+      // complete inside the delete marked it finished while a projection was still pending and
+      // before anything was verified, so a failure in between produced a run that looked done.
+      const completedAt = nowIso();
+      await db().completeSmokeRun({
+        runId,
+        completedAt,
+        expiresAt: new Date(now() + SMOKE_RUN_RETENTION_MS).toISOString(),
+      });
       // The run id is echoed because #70 correlates the summary with the run it just executed; the
       // learner id is NOT, because the response is written into a workflow log.
-      return { runId, deleted };
+      return { runId, deleted, completedAt };
     }
   }
 

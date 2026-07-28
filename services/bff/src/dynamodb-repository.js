@@ -63,7 +63,7 @@ export class DynamoDbSimulationRepository {
     return record;
   }
 
-  async #saveRecord(type, id, learnerId, record) {
+  async #saveRecord(type, id, learnerId, record, extra = {}) {
     const key = `${type}#${id}`;
     const expected = this.revs.get(record);
     const item = {
@@ -73,6 +73,7 @@ export class DynamoDbSimulationRepository {
       rev: (expected ?? 0) + 1,
       gsi1pk: `LEARNER#${learnerId}`,
       gsi1sk: key,
+      ...extra,
     };
     const params = {
       TableName: this.tableName,
@@ -214,6 +215,24 @@ export class DynamoDbSimulationRepository {
   }
 
   /**
+   * Mark a run completed — a tombstone, never a deletion. Called only after verification.
+   *
+   * The item also carries `ttl`, the epoch-seconds attribute the table's TTL is configured on, so
+   * the tombstone's retention is bounded (SEC-DATA-01). TTL is cleanup, not authorization: the
+   * application refuses a completed run immediately, so nothing waits on the row disappearing.
+   */
+  async completeSmokeRun({ runId, completedAt, expiresAt }) {
+    const run = await this.getSmokeRun(runId);
+    if (!run) return null;
+    run.completedAt = run.completedAt ?? completedAt;
+    run.expiresAt = expiresAt;
+    await this.#saveRecord('SMOKERUN', runId, run.learnerId, run, {
+      ttl: Math.floor(Date.parse(expiresAt) / 1000),
+    });
+    return run;
+  }
+
+  /**
    * How many records still match learner + run, per class.
    *
    * Zero everywhere is the only proof of a COMPLETE cleanup. Counting deletions cannot distinguish
@@ -273,14 +292,6 @@ export class DynamoDbSimulationRepository {
 
     // The profile cache carries no run id, so it goes only when this learner has no records left.
     // Removing it while another run's data survives would damage a run this call never scoped.
-    // The run record is NEVER deleted: it becomes a tombstone, so ownership outlives the data and a
-    // retry after a partial failure can still prove it and converge.
-    const run = await this.getSmokeRun(runId);
-    if (run && !run.completedAt) {
-      run.completedAt = new Date().toISOString();
-      await this.saveSmokeRun(run);
-    }
-
     const remaining = await this.#anyRecordsRemain(learnerId);
     if (!remaining) {
       const profile = await this.getProfile(learnerId);

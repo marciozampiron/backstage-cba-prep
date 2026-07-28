@@ -36,6 +36,7 @@ import {
   coachMessage,
   cleanupSmokeRun,
   ownedSmokeRun,
+  runIsClosed,
   startSmokeRun,
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
@@ -318,12 +319,23 @@ export async function handleApiRequest({
     // while the row stayed in the table — a false green on the exact gate that must catch it.
     let smokeRun = null;
     if (matched.route.auth && Object.hasOwn(headers, SMOKE_RUN_HEADER)) {
+      // The capability is checked HERE too, not only at mint and cleanup. Without it, a learner
+      // removed from the smoke group could keep operating the runs they already own.
+      if (!smokeCapable) {
+        throw new ApiError(403, 'FORBIDDEN', 'This operation requires the smoke capability.');
+      }
       const referenced = readSmokeRunHeader(headers);
       if (!referenced || !isValidSmokeRunId(referenced)) {
         throw new ApiError(400, 'VALIDATION_FAILED', 'The smoke-run reference is malformed.');
       }
       const owned = await ownedSmokeRun(learnerId, referenced);
       if (!owned) throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+      // A CLEANED-UP run is closed. Cleanup may be replayed against it — that is what makes replay
+      // deterministic — but a new write must not join a run that was already reported clean, or the
+      // next cleanup would find records the previous one swore were gone.
+      if (runIsClosed(owned) && !matched.route.routeKey.startsWith('DELETE ')) {
+        throw new ApiError(409, 'RUN_CLOSED', 'This smoke run has been cleaned up and accepts no new records.');
+      }
       smokeRun = { runId: owned.runId };
     }
     const parsedBody = parseBody(body, matched.route.bodyPolicy);

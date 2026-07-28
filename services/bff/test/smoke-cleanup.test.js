@@ -375,3 +375,62 @@ test('a later uncontended retry succeeds idempotently after a contended one', as
     resetRuntime();
   }
 });
+
+/* ============================ a completed run is closed ====================================== */
+
+test('NEGATIVE: a cleaned-up run accepts no new records, and replay stays at zero', async () => {
+  // Without this, replay was deterministic only if nothing was written in between: a write could
+  // rejoin a run that had already been reported clean, and the next cleanup would find records the
+  // previous one swore were gone.
+  const learner = 'smoke-closed';
+  const run = await mintRun(learner);
+  await seed(learner, run);
+
+  const first = await cleanup(learner, run);
+  assert.equal(first.status, 200);
+  assert.ok(first.body.deleted.practiceSessions >= 1);
+  assert.ok(first.body.completedAt, 'the run is finalized only after verification');
+
+  const write = await call('POST', '/practice-sessions', {
+    learner,
+    run,
+    body: { examId: 'cba', questionCount: 5 },
+  });
+  assert.equal(write.status, 409);
+  assert.equal(write.body.error.code, 'RUN_CLOSED');
+
+  // Cleanup itself is still authorized against a completed run — that is what keeps replay
+  // deterministic — and it still finds nothing.
+  const again = await cleanup(learner, run);
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.body.deleted, ZERO);
+});
+
+test('NEGATIVE: losing the capability stops operating runs already owned', async () => {
+  const learner = 'smoke-revoked';
+  const run = await mintRun(learner);
+
+  // Same learner, same owned run, capability gone — as when an operator is removed from the group.
+  const write = await call('POST', '/practice-sessions', {
+    learner,
+    run,
+    capable: false,
+    body: { examId: 'cba', questionCount: 5 },
+  });
+  assert.equal(write.status, 403);
+  assert.equal(write.body.error.code, 'FORBIDDEN');
+});
+
+test('a completed run carries a bounded retention, not an open-ended one', async () => {
+  const learner = 'smoke-retention';
+  const run = await mintRun(learner);
+  const res = await cleanup(learner, run);
+  assert.equal(res.status, 200);
+
+  const { activeRepository } = await import('../src/runtime.js');
+  const record = await activeRepository().getSmokeRun(run);
+  assert.ok(record.completedAt, 'the tombstone keeps ownership alive for replay');
+  // Ownership is learner data: it may outlive the records, but not indefinitely (SEC-DATA-01).
+  const ttlMs = Date.parse(record.expiresAt) - Date.parse(record.completedAt);
+  assert.ok(ttlMs > 0 && ttlMs <= 8 * 24 * 60 * 60 * 1000, `retention was ${ttlMs}ms`);
+});

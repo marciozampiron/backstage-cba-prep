@@ -114,9 +114,8 @@ skipped and later removed, and the fake client still has no `scan` method.
 
 ## Residual risks
 
-- The smoke-run claim has to be issued by whatever provisions the smoke learners. This slice
-  consumes `principal.smokeRunId`; nothing here mints it, and #70 must not fall back to a header in
-  a deployed runtime.
+- (Historical — superseded in review round 1.) This risk described the claim-based design that was
+  replaced. The current design needs no per-run claim; see "Current design" at the top.
 - Cleanup covers the record classes that exist today. A future record type must be added to
   `deleteSmokeRunData` or it will be silently left behind — the port method is the single place to
   change, but nothing forces a new class to register itself.
@@ -210,4 +209,40 @@ corrected, and no source file references `smokeRunId` any more.
 ### Validation after the fix
 
 root **359/359** · services/bff **219 / 218 pass / 1 skip** · web **71/71** · infra/aws **102/102** ·
+bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.
+
+## Codex review round 3 — findings and fix-forward
+
+All three reviewed commits are preserved; corrections are in a fourth.
+
+**HIGH — a completed run stayed writable.** Replay was deterministic only if nothing was written
+between calls: a write could rejoin a run already reported clean, and the next cleanup would find
+records the previous one swore were gone. A run is now explicitly `active -> completed`. A completed
+run refuses new stamped writes with `409 RUN_CLOSED` while cleanup itself stays authorized against
+it, which is what keeps replay deterministic. Finalization also moved: the run is marked complete in
+the USE CASE, after the scope is re-queried and proven empty — the adapter was marking it while a
+projection was still pending and before anything had been verified.
+
+**HIGH — the capability had no provisioned group.** `IdentityStack` now creates the `cba-smoke`
+group, so a deployed smoke learner is not left with a `403` and #70 is not left inventing an
+untracked step. Membership is deliberately NOT attached: adding the dedicated learners is a
+human-gated operator action done once per environment, precisely so the deploy role never needs a
+Cognito admin permission. A synth test asserts the group exists and that no user or attachment
+resource does.
+
+**MEDIUM — the capability was not required when referencing a run.** Only mint and cleanup checked
+it, so a learner removed from the group could keep operating runs they already owned. It is now
+checked whenever the run header is present, before the ownership lookup and before any write.
+
+**MEDIUM — tombstones had unbounded retention.** Ownership outliving the data is what makes replay
+deterministic, but ownership is learner data and cannot be kept forever. Completed runs now carry
+`expiresAt` with a documented seven-day bound, the managed adapter writes the `ttl` attribute, and
+`DataStack` configures DynamoDB TTL on it. TTL is a CLEANUP mechanism and never an authorization
+one: `RUN_CLOSED` refuses a completed run immediately, so nothing waits on the row disappearing.
+
+**LOW — three stale statements** in the contract, the module comment and this handoff are corrected.
+
+### Validation after the fix
+
+root **359/359** · services/bff **222 / 221 pass / 1 skip** · web **71/71** · infra/aws **104/104** ·
 bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.
