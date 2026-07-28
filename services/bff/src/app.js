@@ -17,6 +17,7 @@
 //                ({ provider, sub, tokenUse, loadProfile? }) — absent in local/dev mode (#69)
 // Neutral response shape: { status, body } — plain JSON-serializable.
 import { resolveLearner } from './identity.js';
+import { resolveSmokeRun } from './smoke-run.js';
 import { getMe, updateMe } from './profile.js';
 import { resolveRuntimeConfig } from './config.js';
 import { activeRepository } from './runtime.js';
@@ -33,6 +34,7 @@ import {
   submitMockExam,
   missedForAttempt,
   coachMessage,
+  cleanupSmokeRun,
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
 import { emitCompletionEvent } from './telemetry.js';
@@ -147,9 +149,12 @@ const ROUTES = [
     'POST',
     '/practice-sessions',
     'required-json',
-    async ({ learnerId, body }) => {
+    async ({ learnerId, body, smokeRun }) => {
       requireKnownExam(body.examId);
       const result = await startDrill(learnerId, {
+        // #75: stamped from the principal, never from the body — a request-supplied run id would
+        // let one run's records be attributed to another and deleted by it.
+        runId: smokeRun?.runId ?? null,
         domainId: body.domainId || undefined,
         competencyId: body.competencyId || undefined,
         questionCount: Number(body.questionCount),
@@ -176,9 +181,9 @@ const ROUTES = [
     'POST',
     '/mock-exams',
     'optional-json',
-    async ({ learnerId, body }) => {
+    async ({ learnerId, body, smokeRun }) => {
       requireKnownExam(body.examId);
-      return { status: 201, body: await startMockExam(learnerId) };
+      return { status: 201, body: await startMockExam(learnerId, { runId: smokeRun?.runId ?? null }) };
     },
   ],
   ['GET', '/mock-exams/:id', 'none', ({ learnerId, params, query }) => getMockExam(params.id, learnerId, query.index)],
@@ -202,6 +207,29 @@ const ROUTES = [
     'none',
     ({ learnerId, params, query }) =>
       missedForAttempt(params.id, learnerId, { cursor: query.cursor, limit: query.limit }),
+  ],
+  // --- #75 smoke-run cleanup -------------------------------------------------------------------
+  // DELETE, not POST: it is a deletion, and an idempotent one — repeating it is defined and safe,
+  // which is exactly what the #70 `always()` cleanup job needs on a rerun.
+  //
+  // The run id is in the PATH only to be CONFIRMED. Both scope bounds come from the authenticated
+  // principal; a path value that disagrees is refused rather than used, so a valid smoke token
+  // cannot delete a different run — and no input anywhere names a learner.
+  [
+    'DELETE',
+    '/smoke-runs/:runId/data',
+    'none',
+    async ({ learnerId, params, smokeRun }) => {
+      if (!smokeRun) {
+        // Not a smoke principal at all. 403 rather than 404: the route exists, and pretending
+        // otherwise would just push a caller into probing it.
+        throw new ApiError(403, 'FORBIDDEN', 'This operation is available only to a smoke run.');
+      }
+      if (params.runId !== smokeRun.runId) {
+        throw new ApiError(403, 'FORBIDDEN', 'The run id does not match the authenticated smoke run.');
+      }
+      return cleanupSmokeRun(learnerId, smokeRun.runId);
+    },
   ],
   [
     'POST',
@@ -265,11 +293,16 @@ export async function handleApiRequest({
       return outcome;
     }
     routeKey = matched.route.routeKey;
-    const { learnerId } = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null };
+    const identity = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null, mode: null };
+    const { learnerId } = identity;
+    // #75: resolved once per request, from the validated principal in a deployed runtime. Ordinary
+    // learners get `null`, so every route below behaves exactly as before for them.
+    const smokeRun = matched.route.auth ? resolveSmokeRun(headers, principal, { mode: identity.mode }) : null;
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({
       learnerId,
       principal: matched.route.auth ? principal : null,
+      smokeRun,
       params: matched.params,
       query,
       body: parsedBody,

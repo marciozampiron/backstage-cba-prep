@@ -659,6 +659,75 @@ may trigger paid AI work**, so the no-spend rules are trivially satisfied. All c
 
 ---
 
+## 18. `DELETE /api/smoke-runs/:runId/data` — smoke-run cleanup (#75)
+
+**Not a learner operation.** It exists so the #70 deployed-smoke workflow can remove the data its
+own run created, through the BFF and authenticated as the smoke learner, instead of reaching
+DynamoDB with a deploy role. An ordinary learner principal is refused.
+
+### Scope: two bounds, neither supplied by the caller
+
+| Bound | Source |
+| --- | --- |
+| learner | the authenticated principal, exactly as every other route resolves it |
+| run | the validated principal's smoke-run claim (deployed), or `x-cba-smoke-run` (local dev only) |
+
+The `:runId` in the path exists to **confirm** the authenticated run, not to select one. A value
+that disagrees is `403`, never a re-scope — otherwise one smoke token could delete another run's
+records. **No request input names a learner or a run**, so there is no cross-learner deletion to
+authorize in the first place, and a body naming either is ignored.
+
+Records are stamped with the run id at creation from the same principal. A record carrying no run
+id — every ordinary learner's data — is therefore never in scope.
+
+### Response
+
+```json
+{
+  "runId": "run-20260728-a1b2c3",
+  "deleted": {
+    "practiceSessions": 1,
+    "mockExams": 1,
+    "attempts": 2,
+    "answers": 12,
+    "projections": 1
+  }
+}
+```
+
+The learner id is **not** echoed: this response is written into a workflow summary. Answers are
+counted where they are removed, inside the record that holds them. `projections` covers the
+one-active-mock claim and the profile cache.
+
+**Idempotent.** A repeat returns `200` with the same shape and zeros; a run that never created
+anything returns zeros too. #70 runs cleanup with `always()`, including after a job that failed
+before creating a record, so "nothing to clean" must be a success rather than a blocked promotion.
+
+Two projections are keyed by learner alone and are handled explicitly:
+
+- the **active-mock claim** is released once the mock it points at is gone. Left behind it would
+  block every future mock for that learner — a smoke that cleans up and can then never run again.
+- the **profile cache** is removed only once the learner has no records left at all, so a cleanup
+  scoped to one run cannot damage another.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `403` | `FORBIDDEN` | the principal is not a smoke run, or the path run id disagrees with it |
+| `400` | `VALIDATION_FAILED` | the authenticated run id is malformed |
+
+A failure is observable by status and blocks promotion: per
+`deployed-environment-smoke-workflow-design.md` §6, a failed cleanup makes the run outcome FAILURE
+even when every gate passed.
+
+### Persistence
+
+The deletion goes through the repository port, so the rule is provider-neutral and DynamoDB stays
+behind the adapter. The adapter reads only the learner's own GSI partition — no scan, no
+cross-learner read, no wildcard — filters by run id, and deletes conditionally on the revision it
+read, so a record written since the read is skipped rather than removed blind.
+
 ## Deferred endpoints (same conventions, later contract passes)
 
 Only the **admin review actions** remain unspecified: approve / reject / request-changes on a draft

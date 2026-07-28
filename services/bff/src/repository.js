@@ -26,6 +26,14 @@ export class RepositoryConflictError extends Error {
   }
 }
 
+/** Count the answers a record carries, whatever shape holds them. */
+function countAnswers(record) {
+  const answers = record?.answers;
+  if (Array.isArray(answers)) return answers.filter((a) => a != null).length;
+  if (answers && typeof answers === 'object') return Object.keys(answers).length;
+  return 0;
+}
+
 function emptyState() {
   return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {} };
 }
@@ -110,6 +118,68 @@ export class InMemorySimulationRepository {
   async saveProfile(profile) {
     this.state.profiles[profile.learnerId] = profile;
     this.persist();
+  }
+
+  /**
+   * Delete everything a smoke RUN created for a smoke LEARNER (#75).
+   *
+   * Both bounds are required and neither is optional: `learnerId` says whose records these are and
+   * `runId` says which run created them. A record matching only one of the two is left alone —
+   * that is what stops one run deleting another run's data, and one learner deleting another's.
+   *
+   * Idempotent by construction: it deletes what matches and reports what it deleted, so a second
+   * call returns the same shape with zeros. Counts are per record class, which is what the #70
+   * summary needs to state that cleanup actually removed something.
+   */
+  async deleteSmokeRunData({ learnerId, runId }) {
+    const deleted = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+    const owns = (record) => record && record.learnerId === learnerId && record.runId === runId;
+
+    for (const [id, session] of Object.entries(this.state.sessions)) {
+      if (!owns(session)) continue;
+      // Answers live inside their session/attempt, so they are counted where they are removed —
+      // a count of zero answers next to a deleted session would misreport the cleanup.
+      deleted.answers += countAnswers(session);
+      delete this.state.sessions[id];
+      deleted.practiceSessions += 1;
+    }
+    for (const [id, mock] of Object.entries(this.state.mocks)) {
+      if (!owns(mock)) continue;
+      deleted.answers += countAnswers(mock);
+      delete this.state.mocks[id];
+      deleted.mockExams += 1;
+    }
+    for (const [id, attempt] of Object.entries(this.state.attempts)) {
+      if (!owns(attempt)) continue;
+      deleted.answers += countAnswers(attempt);
+      delete this.state.attempts[id];
+      deleted.attempts += 1;
+    }
+
+    // The one-active-mock claim is a projection, not a record: it is keyed by learner alone, so it
+    // is only released when the mock it points at belonged to this run. Left behind, it would block
+    // every future mock for that learner — a smoke that cleans up and then cannot run again.
+    const active = this.state.activeMocks[learnerId];
+    if (active !== undefined && this.state.mocks[active] === undefined) {
+      delete this.state.activeMocks[learnerId];
+      deleted.projections += 1;
+    }
+
+    // The profile cache is learner-scoped with no run id, so it is removed only once this learner
+    // has no records left at all. Deleting it while another run's data survives would corrupt a
+    // run this cleanup was never scoped to touch.
+    if (this.state.profiles[learnerId] !== undefined && !this.#hasAnyRecords(learnerId)) {
+      delete this.state.profiles[learnerId];
+      deleted.projections += 1;
+    }
+
+    this.persist();
+    return deleted;
+  }
+
+  #hasAnyRecords(learnerId) {
+    const anyOf = (bag) => Object.values(bag).some((r) => r && r.learnerId === learnerId);
+    return anyOf(this.state.sessions) || anyOf(this.state.mocks) || anyOf(this.state.attempts);
   }
 
   /* Logical readiness only (#77): adapter kind + ready — never physical identifiers. */

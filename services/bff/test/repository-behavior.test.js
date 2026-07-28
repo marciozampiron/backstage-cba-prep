@@ -88,7 +88,127 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
     assert.equal(r.ready, true);
   });
 
+  /* ---------------- #75 smoke-run cleanup ---------------- */
+
+  const RUN = 'run-20260728-a1b2c3';
+  const OTHER = 'run-20260728-zzzzzz';
+  const ZERO = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+
+  /** Seed one run's worth of records for a learner, straight through the port. */
+  async function seedRun(repo, learnerId, runId, suffix) {
+    await repo.saveSession({ practiceSessionId: `ps_${suffix}`, attemptId: `att_${suffix}`, learnerId, runId });
+    await repo.saveMock({ mockExamId: `mock_${suffix}`, attemptId: `att_${suffix}m`, learnerId, runId });
+    await repo.saveAttempt({
+      attemptId: `att_${suffix}`,
+      learnerId,
+      runId,
+      status: 'submitted',
+      answers: { 1: { selectedOption: 'A' }, 2: { selectedOption: 'B' } },
+    });
+    await repo.saveAttempt({ attemptId: `att_${suffix}m`, learnerId, runId, status: 'in_progress', answers: {} });
+  }
+
+  test(`${name}: deleteSmokeRunData removes the run's records and reports counts`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-clean', RUN, 'c1');
+
+    const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-clean', runId: RUN });
+    assert.equal(deleted.practiceSessions, 1);
+    assert.equal(deleted.mockExams, 1);
+    assert.equal(deleted.attempts, 2);
+    // Answers are counted where they are removed — a zero here next to a deleted attempt would
+    // misreport what the cleanup actually did.
+    assert.equal(deleted.answers, 2);
+
+    assert.equal(await repo.getSession('ps_c1'), null);
+    assert.equal(await repo.getMock('mock_c1'), null);
+    assert.equal(await repo.getAttempt('att_c1'), null);
+    assert.deepEqual(await repo.listAttempts('l-clean'), []);
+  });
+
+  test(`${name}: deleteSmokeRunData is idempotent`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-replay', RUN, 'r1');
+    await repo.deleteSmokeRunData({ learnerId: 'l-replay', runId: RUN });
+    // #70 retries this job. A different response on retry would have to be interpreted rather than
+    // simply reported.
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(await repo.deleteSmokeRunData({ learnerId: 'l-replay', runId: RUN }), ZERO, `replay ${i}`);
+    }
+  });
+
+  test(`${name}: deleteSmokeRunData never crosses learner or run`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-mine', RUN, 'm1');
+    await seedRun(repo, 'l-theirs', RUN, 't1');
+    await seedRun(repo, 'l-mine', OTHER, 'o1');
+
+    const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-mine', runId: RUN });
+    assert.equal(deleted.practiceSessions, 1);
+
+    // Another learner's records, same run id: untouched.
+    assert.notEqual(await repo.getSession('ps_t1'), null);
+    assert.notEqual(await repo.getMock('mock_t1'), null);
+    // Same learner, another run: untouched. Scoping by learner alone would have taken these.
+    assert.notEqual(await repo.getSession('ps_o1'), null);
+    assert.notEqual(await repo.getAttempt('att_o1'), null);
+  });
+
+  test(`${name}: records with no run id are never in scope`, async () => {
+    const repo = await makeRepo();
+    // An ordinary learner's data carries no run id at all.
+    await repo.saveSession({ practiceSessionId: 'ps_plain', attemptId: 'att_plain', learnerId: 'l-plain' });
+    await repo.saveAttempt({ attemptId: 'att_plain', learnerId: 'l-plain', status: 'submitted', answers: {} });
+
+    assert.deepEqual(await repo.deleteSmokeRunData({ learnerId: 'l-plain', runId: RUN }), ZERO);
+    assert.notEqual(await repo.getSession('ps_plain'), null);
+    assert.notEqual(await repo.getAttempt('att_plain'), null);
+  });
+
+  test(`${name}: the active-mock claim is released only when its mock is gone`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-active', RUN, 'a1');
+    assert.equal(await repo.claimActiveMock('l-active', 'mock_a1'), true);
+
+    // A stale claim would block every future mock for this learner — a smoke that cleans up and
+    // can then never run again is not a cleanup.
+    const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-active', runId: RUN });
+    assert.ok(deleted.projections >= 1);
+    assert.equal(await repo.getActiveMock('l-active'), null);
+    assert.equal(await repo.claimActiveMock('l-active', 'mock_next'), true);
+  });
+
+  test(`${name}: the profile projection survives while another run's records do`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-profile', RUN, 'p1');
+    await seedRun(repo, 'l-profile', OTHER, 'p2');
+    await repo.saveProfile({ learnerId: 'l-profile', displayName: 'Smoke' });
+
+    // The profile carries no run id, so removing it here would damage a run this call never scoped.
+    await repo.deleteSmokeRunData({ learnerId: 'l-profile', runId: RUN });
+    assert.notEqual(await repo.getProfile('l-profile'), null);
+
+    // Once the last records are gone it goes too, so a smoke learner leaves nothing behind.
+    await repo.deleteSmokeRunData({ learnerId: 'l-profile', runId: OTHER });
+    assert.equal(await repo.getProfile('l-profile'), null);
+  });
+
   if (reopen) {
+    test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
+      const repo = await makeRepo();
+      await seedRun(repo, 'l-persist-clean', RUN, 'pc1');
+      await seedRun(repo, 'l-persist-clean', OTHER, 'pc2');
+      await repo.deleteSmokeRunData({ learnerId: 'l-persist-clean', runId: RUN });
+
+      // The deletion has to be written through, not merely applied in memory: #70 reads the result
+      // from a different process than the one that created the records.
+      const fresh = await reopen(repo);
+      assert.equal(await fresh.getSession('ps_pc1'), null);
+      assert.equal(await fresh.getAttempt('att_pc1'), null);
+      assert.notEqual(await fresh.getSession('ps_pc2'), null);
+      assert.deepEqual(await fresh.deleteSmokeRunData({ learnerId: 'l-persist-clean', runId: RUN }), ZERO);
+    });
+
     test(`${name}: state survives adapter re-instantiation`, async () => {
       const repo = await makeRepo();
       await repo.saveAttempt({ attemptId: 'att_persist', learnerId: 'l1', status: 'submitted' });

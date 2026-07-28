@@ -25,6 +25,14 @@ import { RepositoryConflictError } from './repository.js';
 
 const REC = 'REC';
 
+/** Count the answers a record carries, whatever shape holds them. */
+function countAnswers(record) {
+  const answers = record?.answers;
+  if (Array.isArray(answers)) return answers.filter((a) => a != null).length;
+  if (answers && typeof answers === 'object') return Object.keys(answers).length;
+  return 0;
+}
+
 function recordKey(type, id) {
   return { pk: `${type}#${id}`, sk: REC };
 }
@@ -196,6 +204,102 @@ export class DynamoDbSimulationRepository {
   }
 
   /* Logical readiness only: adapter kind + reachability — never table names/ARNs/account ids. */
+  /**
+   * Delete everything a smoke RUN created for a smoke LEARNER (#75).
+   *
+   * The learner GSI is the only access path used: the query is `gsi1pk = LEARNER#<id>`, so the scan
+   * surface is one learner's partition and nothing else — no table scan, no cross-learner read, and
+   * no wildcard. Records are then filtered by `runId` IN THE ADAPTER, and a record that matches the
+   * learner but not the run is left untouched.
+   *
+   * Deletes are conditional on the record still being the one that was read: a concurrent write
+   * bumps `rev`, the delete fails its condition, and the record is skipped rather than removed
+   * blind. That keeps the operation safe to repeat, which is what #70's `always()` job needs.
+   */
+  async deleteSmokeRunData({ learnerId, runId }) {
+    const deleted = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+    const counters = { SESSION: 'practiceSessions', MOCK: 'mockExams', ATTEMPT: 'attempts' };
+
+    for (const [type, counter] of Object.entries(counters)) {
+      for (const { record, item } of await this.#listItems(learnerId, type)) {
+        // BOTH bounds, in the adapter as well as in the port: the query already scoped the learner,
+        // and this scopes the run. A record missing either is not this run's to delete.
+        if (record?.learnerId !== learnerId || record?.runId !== runId) continue;
+        const removed = await this.#deleteIfUnchanged(item);
+        if (!removed) continue;
+        deleted[counter] += 1;
+        deleted.answers += countAnswers(record);
+      }
+    }
+
+    // The one-active-mock claim is keyed by learner alone. It is released only when the mock it
+    // points at is gone — left behind, it would block every future mock for this learner, and a
+    // smoke that cleans up and can never run again is not a cleanup.
+    const active = await this.getActiveMock(learnerId);
+    if (active) {
+      const stillThere = await this.getMock(active);
+      if (!stillThere) {
+        await this.releaseActiveMock(learnerId, active);
+        deleted.projections += 1;
+      }
+    }
+
+    // The profile cache carries no run id, so it goes only when this learner has no records left.
+    // Removing it while another run's data survives would damage a run this call never scoped.
+    const remaining = await this.#anyRecordsRemain(learnerId);
+    if (!remaining) {
+      const profile = await this.getProfile(learnerId);
+      if (profile) {
+        await this.client.delete({ TableName: this.tableName, Key: recordKey('PROFILE', learnerId) });
+        deleted.projections += 1;
+      }
+    }
+
+    return deleted;
+  }
+
+  /** Like #listRecords, but keeps the item so a delete can be made conditional on its rev. */
+  async #listItems(learnerId, type) {
+    const out = [];
+    let ExclusiveStartKey;
+    do {
+      const res = await this.client.query({
+        TableName: this.tableName,
+        IndexName: 'gsi1',
+        KeyConditionExpression: 'gsi1pk = :pk AND begins_with(gsi1sk, :prefix)',
+        ExpressionAttributeValues: { ':pk': `LEARNER#${learnerId}`, ':prefix': `${type}#` },
+        ...(ExclusiveStartKey ? { ExclusiveStartKey } : {}),
+      });
+      for (const item of res.Items ?? []) out.push({ record: item.record, item });
+      ExclusiveStartKey = res.LastEvaluatedKey;
+    } while (ExclusiveStartKey);
+    return out;
+  }
+
+  /** Delete only if nobody wrote the record since it was read. Returns whether it was removed. */
+  async #deleteIfUnchanged(item) {
+    try {
+      await this.client.delete({
+        TableName: this.tableName,
+        Key: { pk: item.pk, sk: item.sk },
+        ConditionExpression: 'rev = :expected',
+        ExpressionAttributeValues: { ':expected': item.rev },
+      });
+      return true;
+    } catch (err) {
+      if (this.isConditionalFailure(err)) return false;
+      throw err;
+    }
+  }
+
+  async #anyRecordsRemain(learnerId) {
+    for (const type of ['SESSION', 'MOCK', 'ATTEMPT']) {
+      const items = await this.#listItems(learnerId, type);
+      if (items.length > 0) return true;
+    }
+    return false;
+  }
+
   async readiness() {
     try {
       await this.client.get({ TableName: this.tableName, Key: { pk: 'COUNTER', sk: REC } });

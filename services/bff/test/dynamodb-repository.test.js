@@ -77,6 +77,10 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const existing = store.items.get(key);
       if (ConditionExpression === 'mockExamId = :id') {
         if (!existing || existing.mockExamId !== ExpressionAttributeValues[':id']) throw conditionalError();
+      } else if (ConditionExpression === 'rev = :expected') {
+        // #75 cleanup deletes conditionally on the rev it read, so a record written since the read
+        // is skipped rather than removed blind. The fake enforces the same rule as the real table.
+        if (!existing || existing.rev !== ExpressionAttributeValues[':expected']) throw conditionalError();
       } else if (ConditionExpression !== undefined) {
         throw new Error(`fake client: unsupported delete condition "${ConditionExpression}"`);
       }
@@ -258,4 +262,38 @@ test('profile bootstrap race: the losing instance re-reads and returns the winne
   } finally {
     resetRuntime();
   }
+});
+
+test('cleanup skips a record written since it was read, instead of deleting it blind', async () => {
+  // A record changed between the query and the delete is not this run's to remove on the strength
+  // of a stale read. The conditional delete fails and the record is skipped, which keeps the
+  // operation safe to repeat — #70 runs it with always(), including after a partial failure.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSession({ practiceSessionId: 'ps_race', attemptId: 'att_race', learnerId: 'l-race', runId: 'run-race-000001' });
+
+  const originalDelete = repo.client.delete;
+  repo.client.delete = async (params) => {
+    // Simulate a concurrent write landing between the read and the delete.
+    const item = store.items.get(`${params.Key.pk}|${params.Key.sk}`);
+    if (item) item.rev += 1;
+    return originalDelete(params);
+  };
+
+  const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-race', runId: 'run-race-000001' });
+  assert.equal(deleted.practiceSessions, 0, 'the stale delete must be skipped, not forced');
+  assert.notEqual(await repo.getSession('ps_race'), null, 'the record must survive');
+
+  // And a later, uncontended run removes it — the skip is a deferral, not a leak.
+  repo.client.delete = originalDelete;
+  const second = await repo.deleteSmokeRunData({ learnerId: 'l-race', runId: 'run-race-000001' });
+  assert.equal(second.practiceSessions, 1);
+});
+
+test('cleanup never scans: the fake client has no scan method at all', async () => {
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  assert.equal(repo.client.scan, undefined, 'a scan would read every learner in the table');
+  await repo.saveSession({ practiceSessionId: 'ps_ns', attemptId: 'a', learnerId: 'l-ns', runId: 'run-noscan-0001' });
+  await repo.deleteSmokeRunData({ learnerId: 'l-ns', runId: 'run-noscan-0001' });
 });

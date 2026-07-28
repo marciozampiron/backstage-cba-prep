@@ -14,6 +14,7 @@ import {
   seededShuffle,
   toQuestionPayload,
 } from './bank.js';
+import { isValidSmokeRunId } from './smoke-run.js';
 import { activeRepository, now, nowIso } from './runtime.js';
 
 // Repository/clock come from the composition seam (runtime.js): tests inject fakes there.
@@ -41,7 +42,7 @@ function requireOwnership(record, learnerId) {
 
 /* ---------------- practice drills (slice 1, contracts §8–§10) ---------------- */
 
-export async function startDrill(learnerId, { domainId, competencyId, questionCount, difficulty, onlyMissed }) {
+export async function startDrill(learnerId, { domainId, competencyId, questionCount, difficulty, onlyMissed, runId = null }) {
   if (![5, 10, 20].includes(questionCount)) {
     throw new ApiError(400, 'VALIDATION_FAILED', 'questionCount must be 5, 10, or 20.');
   }
@@ -103,8 +104,12 @@ export async function startDrill(learnerId, { domainId, competencyId, questionCo
     startedAt: nowIso(),
     submittedAt: null,
     answers: {}, // index -> { questionVersionId, selectedOption, isCorrect, answeredAt, timeSpentSeconds }
+    // #75: the smoke run that created this record, or null for an ordinary learner. It is stamped
+    // from the AUTHENTICATED principal, never from the request body, so cleanup can be scoped to
+    // learner AND run without the caller ever naming either.
+    runId,
   };
-  const session = { practiceSessionId: sessionId, attemptId, learnerId };
+  const session = { practiceSessionId: sessionId, attemptId, learnerId, runId };
 
   await db().saveAttempt(attempt);
   await db().saveSession(session);
@@ -330,7 +335,7 @@ async function sweepActiveMock(learnerId) {
   return { mock, attempt };
 }
 
-export async function startMockExam(learnerId) {
+export async function startMockExam(learnerId, { runId = null } = {}) {
   // One-active-mock is enforced by an ATOMIC per-learner claim on the repository port (#77) —
   // never list-then-create. The sweep first finalizes an expired claim so a learner can restart.
   const active = await sweepActiveMock(learnerId);
@@ -378,8 +383,9 @@ export async function startMockExam(learnerId) {
     expiresAt: new Date(startedAt.getTime() + exam.timeLimitSeconds * 1000).toISOString(),
     submittedAt: null,
     answers: {}, // index -> { questionVersionId, selectedOption|null, flagged, answeredAt } — isCorrect only at submit
+    runId, // #75 — see startDrill
   };
-  const mock = { mockExamId, attemptId, learnerId, autoSubmitted: false };
+  const mock = { mockExamId, attemptId, learnerId, autoSubmitted: false, runId };
   await db().saveAttempt(attempt);
   await db().saveMock(mock);
 
@@ -718,4 +724,30 @@ export async function learnerAttemptStats(learnerId) {
     }
   }
   return { attempts, perDomain };
+}
+
+
+/**
+ * Delete every record a smoke RUN created for the authenticated smoke LEARNER (#75).
+ *
+ * Provider-neutral: it validates the scope and delegates to the repository port, so the DynamoDB
+ * adapter carries the physical deletion and this use case carries the rule. Neither identifier is a
+ * request input — the caller supplies them from the principal, and the route refuses a path run id
+ * that does not match it.
+ *
+ * Idempotent: a second call finds nothing and reports zeros with the same shape, so the #70
+ * `always()` cleanup job can retry without interpreting a different response.
+ */
+export async function cleanupSmokeRun(learnerId, runId) {
+  if (typeof learnerId !== 'string' || learnerId === '') {
+    throw new ApiError(401, 'UNAUTHENTICATED', 'Cleanup requires an authenticated learner.');
+  }
+  if (!isValidSmokeRunId(runId)) {
+    throw new ApiError(400, 'VALIDATION_FAILED', 'A smoke run id is required.');
+  }
+  const deleted = await db().deleteSmokeRunData({ learnerId, runId });
+  // The run id is echoed because #70 needs to correlate the summary with the run it just executed;
+  // the learner id is NOT, because it is a learner identifier and the summary is written to a
+  // workflow log.
+  return { runId, deleted };
 }

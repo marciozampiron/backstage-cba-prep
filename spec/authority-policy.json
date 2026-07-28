@@ -146,6 +146,7 @@
     ".agent-handoff/active/85-security-assurance-architecture.md",
     ".agent-handoff/active/91-role-separated-publication.md",
     ".agent-handoff/active/67-cloudflare-opennext-stage-b.md",
+    ".agent-handoff/active/75-smoke-cleanup-contract.md",
     ".agent-handoff/publish-gates/example.gate.json",
     "src/commands/agent-check.js",
     "src/commands/agent-human-publish-script.js",
@@ -178,6 +179,7 @@
       ".agent-handoff/active/85-security-assurance-architecture.md",
       ".agent-handoff/active/91-role-separated-publication.md",
       ".agent-handoff/active/67-cloudflare-opennext-stage-b.md",
+      ".agent-handoff/active/75-smoke-cleanup-contract.md",
       ".agent-handoff/publish-gates/example.gate.json",
       "src/commands/agent-check.js",
       "src/commands/agent-human-publish-script.js",
@@ -337,6 +339,7 @@
       "The first is now \"A gate is bound to a specific commit sequence.\" - This handoff opened with the FIRST commit's summary — publisher seam, --dry-run, expiry framed as replay protection, \"only sanctioned publication path\" — presented as current state."
     ],
     ".agent-handoff/active/67-cloudflare-opennext-stage-b.md": [],
+    ".agent-handoff/active/75-smoke-cleanup-contract.md": [],
     ".agent-handoff/publish-gates/example.gate.json": [],
     "src/commands/agent-check.js": [],
     "src/commands/agent-human-publish-script.js": [
