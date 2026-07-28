@@ -5,8 +5,11 @@
   // it can provision an R2 bucket when one is available, and #67 Stage A forbids ANY Cloudflare
   // account mutation. Every binding below is either platform-provided (ASSETS) or absent.
   //
-  // Deploy/preview are OUT OF SCOPE here and belong to #70 (human-gated), which also owns the
-  // per-environment worker names, routes and runtime variables.
+  // OWNERSHIP. #67 Stage B owns the per-environment Worker NAMES and the `workers_dev` /
+  // `preview_urls` posture below — they are declared and tested here. #70 owns the ROUTES, the
+  // runtime variable VALUES, and the deploy itself, all human-gated. Deploy and preview are out of
+  // scope in this repo entirely: there is no `deploy` or `preview` script, so a local `npm run`
+  // cannot mutate a Cloudflare account.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cba-study-coach-web",
   "main": ".open-next/worker.js",

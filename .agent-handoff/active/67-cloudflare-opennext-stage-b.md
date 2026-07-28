@@ -99,12 +99,17 @@ that also wires the deploy — recorded here so the omission is a decision, not 
 
 - The per-environment Worker names are declared but unproven — the first `--env dev` deploy under
   #70 is what confirms wrangler resolves them as expected.
-- The CORS count rule assumes one stable origin per environment. If the pilot ever needs a second
-  legitimate origin (an apex plus `www`, say), the rule has to be revisited deliberately rather
+- The CORS one-origin rule assumes one stable origin per environment. If the pilot ever needs a
+  second legitimate origin (an apex plus `www`, say), it has to be revisited deliberately rather
   than by relaxing the limit in passing.
-- `.pages.dev` is the only preview shape rejected by host. Workers preview aliases are not pattern
-  -matched, because inventing a URL grammar for them would be guesswork; the count rule is what
-  actually keeps them out.
+- **What the local check does and does not cover.** Preview prefixes and the other environment's
+  Worker name ARE rejected here — a `workers.dev` origin must carry exactly
+  `cba-study-coach-<env>-web` as its leftmost hostname label — and hosts that merely embed a
+  Cloudflare domain are rejected as lookalikes. What this repo cannot verify is the rest of the
+  hostname: the Cloudflare account SUBDOMAIN is not known here, so
+  `cba-study-coach-pilot-web.someone-elses-account.workers.dev` passes the local rule. #70 must
+  validate the full `FRONTEND_URL` against the actual account subdomain before deploying. The local
+  rule narrows the shape; it does not prove ownership.
 - The `.invalid` refusal only fires on a deployed tier. A misconfigured LOCAL runtime can still
   render a sign-in that cannot complete, which is the correct trade — local work has no real domain.
 
@@ -159,3 +164,23 @@ was not a plausible value and the format check now rejects it.
 root **359/359** · web **71/71** + `next build` OK + `leak-scan` PASS · infra/aws **101/101** ·
 services/bff **164 / 163 pass / 1 skip** · bank **60/0** · credential-free `cdk synth` OK for `dev`
 and `pilot` · `git diff --check` clean.
+
+
+## Codex review round 2 — documentation correction
+
+**LOW — the active documentation still described the superseded implementation.** Two statements
+contradicted the corrected code, and one of them contradicted my own report: I said the obsolete
+"count rule keeps previews out" wording had been removed, having fixed it in the deliverables
+section and left it standing in the residual risks. That is exactly the kind of half-correction
+that misleads the next reader more than the original error did.
+
+- The residual risk claiming Workers preview aliases are not pattern-matched is replaced with the
+  real boundary: preview prefixes and cross-environment Worker names ARE rejected locally, while
+  the Cloudflare account subdomain is not knowable here — so `#70` must still validate the full
+  `FRONTEND_URL` against the real account subdomain before deploying. The local rule narrows the
+  shape; it does not prove ownership.
+- `wrangler.jsonc` said #70 owns the per-environment Worker names. #67 Stage B owns the names and
+  the `workers_dev` / `preview_urls` posture, and the header now says so; #70 owns the routes, the
+  runtime values and the deploy.
+
+No code changed in this pass.
