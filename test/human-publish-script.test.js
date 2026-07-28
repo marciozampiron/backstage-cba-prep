@@ -1034,9 +1034,10 @@ test('no source file in this repository is stored as binary', () => {
     assert.equal(existsAnywhere, '', `${ext} files exist but were excluded from the scan`);
   }
 
-  // Pre-existing debt, deliberately listed rather than hidden by narrowing the scan. This file was
-  // merged to main under #82 and is owned by another track, so it is reported, not silently fixed.
-  const KNOWN_PRE_EXISTING = new Set(['services/bff/test/telemetry.test.js']);
+  // The #82 debt is paid: `services/bff/test/telemetry.test.js` no longer holds a literal NUL, so
+  // the exception is gone rather than merely unused. An empty set is deliberate — it keeps the
+  // mechanism in place for the next offender without leaving a name nobody re-derived.
+  const KNOWN_PRE_EXISTING = new Set();
 
   const offenders = tracked.filter((f) => {
     const full = path.join(ROOT, f);
