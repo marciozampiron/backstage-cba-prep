@@ -17,7 +17,7 @@
 //                ({ provider, sub, tokenUse, loadProfile? }) — absent in local/dev mode (#69)
 // Neutral response shape: { status, body } — plain JSON-serializable.
 import { resolveLearner } from './identity.js';
-import { resolveSmokeRun } from './smoke-run.js';
+import { readSmokeRunHeader } from './smoke-run.js';
 import { getMe, updateMe } from './profile.js';
 import { resolveRuntimeConfig } from './config.js';
 import { activeRepository } from './runtime.js';
@@ -35,6 +35,8 @@ import {
   missedForAttempt,
   coachMessage,
   cleanupSmokeRun,
+  ownedSmokeRun,
+  startSmokeRun,
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
 import { emitCompletionEvent } from './telemetry.js';
@@ -208,6 +210,14 @@ const ROUTES = [
     ({ learnerId, params, query }) =>
       missedForAttempt(params.id, learnerId, { cursor: query.cursor, limit: query.limit }),
   ],
+  // --- #75 smoke-run lifecycle -----------------------------------------------------------------
+  // The run is MINTED here and owned by the caller. A Cognito access token cannot carry a per-run
+  // claim without infrastructure this issue may not introduce, so ownership is a record — the same
+  // shape as a practice session — and the header that references it later authorizes nothing.
+  ['POST', '/smoke-runs', 'optional-json', async ({ learnerId }) => ({
+    status: 201,
+    body: { runId: (await startSmokeRun(learnerId)).runId },
+  })],
   // --- #75 smoke-run cleanup -------------------------------------------------------------------
   // DELETE, not POST: it is a deletion, and an idempotent one — repeating it is defined and safe,
   // which is exactly what the #70 `always()` cleanup job needs on a rerun.
@@ -219,16 +229,12 @@ const ROUTES = [
     'DELETE',
     '/smoke-runs/:runId/data',
     'none',
-    async ({ learnerId, params, smokeRun }) => {
-      if (!smokeRun) {
-        // Not a smoke principal at all. 403 rather than 404: the route exists, and pretending
-        // otherwise would just push a caller into probing it.
-        throw new ApiError(403, 'FORBIDDEN', 'This operation is available only to a smoke run.');
-      }
-      if (params.runId !== smokeRun.runId) {
-        throw new ApiError(403, 'FORBIDDEN', 'The run id does not match the authenticated smoke run.');
-      }
-      return cleanupSmokeRun(learnerId, smokeRun.runId);
+    async ({ learnerId, params }) => {
+      // Ownership, not possession of an id: an unknown run and somebody else's run are the same
+      // answer, so a caller learns nothing about which run ids exist.
+      const run = await ownedSmokeRun(learnerId, params.runId);
+      if (!run) throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+      return cleanupSmokeRun(learnerId, run.runId);
     },
   ],
   [
@@ -297,7 +303,12 @@ export async function handleApiRequest({
     const { learnerId } = identity;
     // #75: resolved once per request, from the validated principal in a deployed runtime. Ordinary
     // learners get `null`, so every route below behaves exactly as before for them.
-    const smokeRun = matched.route.auth ? resolveSmokeRun(headers, principal, { mode: identity.mode }) : null;
+    // #75: the header only REFERENCES a run. It is honoured just when the run record belongs to
+    // this learner, so a caller cannot stamp their writes into somebody else's run and have them
+    // deleted by it — or hidden from their own cleanup.
+    const referencedRun = matched.route.auth ? readSmokeRunHeader(headers) : null;
+    const ownedRun = referencedRun ? await ownedSmokeRun(learnerId, referencedRun) : null;
+    const smokeRun = ownedRun ? { runId: ownedRun.runId } : null;
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({
       learnerId,

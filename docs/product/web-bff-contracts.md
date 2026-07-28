@@ -659,74 +659,97 @@ may trigger paid AI work**, so the no-spend rules are trivially satisfied. All c
 
 ---
 
-## 18. `DELETE /api/smoke-runs/:runId/data` — smoke-run cleanup (#75)
+## 18. `POST /api/smoke-runs` · `DELETE /api/smoke-runs/:runId/data` — smoke-run cleanup (#75)
 
-**Not a learner operation.** It exists so the #70 deployed-smoke workflow can remove the data its
-own run created, through the BFF and authenticated as the smoke learner, instead of reaching
-DynamoDB with a deploy role. An ordinary learner principal is refused.
+**Not a learner-facing feature.** It exists so the #70 deployed-smoke workflow can remove the data
+its own run created, through the BFF and authenticated as the smoke learner, instead of reaching
+DynamoDB with a deploy role. Both routes are server-side callers only and are deliberately absent
+from the browser CORS method list.
 
-### Scope: two bounds, neither supplied by the caller
+### Why the run is a record and not a token claim
+
+The first design read a per-run claim from the validated principal. That cannot be issued: a Cognito
+**access** token carries `sub`, `token_use`, `client_id`, `scope` and groups — not custom
+attributes. Putting a per-run value in one needs either an admin call per run or a
+pre-token-generation trigger, and both are infrastructure #75 is not authorized to introduce.
+
+So the boundary is the other one #75 offers — **learner-owned deletion through the BFF**. The run is
+a record the BFF mints:
+
+```
+POST /api/smoke-runs            -> { "runId": "run-…" }   the caller now OWNS that run
+X-CBA-Smoke-Run: <runId>        -> stamps subsequent writes, honoured ONLY if the caller owns it
+DELETE /api/smoke-runs/:id/data -> same ownership check, then deletes learner + run
+```
+
+The header is a **reference**, the same shape as a session id in a path — it authorizes nothing.
+An unknown run and somebody else's run give the identical `403`, so a caller learns nothing about
+which run ids exist. Run ids are random, not sequential: a guessable id would leave the ownership
+check as the only barrier between two callers.
+
+A write that references a run the caller does not own still succeeds — it is simply **not stamped**
+into that run. Honouring it would either hide the record from its own cleanup or expose it to
+someone else's.
+
+### Scope: two bounds, neither supplied as data
 
 | Bound | Source |
 | --- | --- |
 | learner | the authenticated principal, exactly as every other route resolves it |
-| run | the validated principal's smoke-run claim (deployed), or `x-cba-smoke-run` (local dev only) |
+| run | a run record owned by that principal |
 
-The `:runId` in the path exists to **confirm** the authenticated run, not to select one. A value
-that disagrees is `403`, never a re-scope — otherwise one smoke token could delete another run's
-records. **No request input names a learner or a run**, so there is no cross-learner deletion to
-authorize in the first place, and a body naming either is ignored.
+No request input names a learner, and a body naming one is ignored. Records carry the run id from
+creation, so data created outside a run — every ordinary learner's — is never in scope.
 
-Records are stamped with the run id at creation from the same principal. A record carrying no run
-id — every ordinary learner's data — is therefore never in scope.
-
-### Response
+### Success
 
 ```json
 {
-  "runId": "run-20260728-a1b2c3",
-  "deleted": {
-    "practiceSessions": 1,
-    "mockExams": 1,
-    "attempts": 2,
-    "answers": 12,
-    "projections": 1
-  }
+  "runId": "run-…",
+  "deleted": { "practiceSessions": 1, "mockExams": 1, "attempts": 2, "answers": 12, "projections": 1 }
 }
 ```
 
 The learner id is **not** echoed: this response is written into a workflow summary. Answers are
-counted where they are removed, inside the record that holds them. `projections` covers the
-one-active-mock claim and the profile cache.
+counted inside the record that holds them. `projections` covers the one-active-mock claim and the
+profile cache.
 
-**Idempotent.** A repeat returns `200` with the same shape and zeros; a run that never created
-anything returns zeros too. #70 runs cleanup with `always()`, including after a job that failed
-before creating a record, so "nothing to clean" must be a success rather than a blocked promotion.
+A run that created nothing returns zeros with `200`. #70 runs cleanup with `always()`, including
+after a job that failed before creating a record, so "nothing to clean" must be a success rather
+than a blocked promotion.
 
-Two projections are keyed by learner alone and are handled explicitly:
+### Completeness is verified, not inferred
 
-- the **active-mock claim** is released once the mock it points at is gone. Left behind it would
-  block every future mock for that learner — a smoke that cleans up and can then never run again.
-- the **profile cache** is removed only once the learner has no records left at all, so a cleanup
-  scoped to one run cannot damage another.
-
-### Errors
+The adapter deletes conditionally on the revision it read, so a record written between the read and
+the delete is skipped rather than removed blind. Counting deletions cannot distinguish *nothing
+existed* from *something survived contention* — both report zero. After a bounded retry the scope is
+therefore **queried again**, and anything still matching fails the operation:
 
 | Status | Code | When |
 | --- | --- | --- |
-| `403` | `FORBIDDEN` | the principal is not a smoke run, or the path run id disagrees with it |
-| `400` | `VALIDATION_FAILED` | the authenticated run id is malformed |
+| `409` | `CLEANUP_INCOMPLETE` | records matching learner + run remain after the retries |
+| `403` | `FORBIDDEN` | the run does not exist or does not belong to the caller |
+| `400` | `VALIDATION_FAILED` | the run id is malformed |
 
-A failure is observable by status and blocks promotion: per
-`deployed-environment-smoke-workflow-design.md` §6, a failed cleanup makes the run outcome FAILURE
-even when every gate passed.
+`CLEANUP_INCOMPLETE` carries per-class leftover counts and never record ids or a learner id. Per
+`deployed-environment-smoke-workflow-design.md` §6 a failed cleanup makes the run outcome FAILURE
+even when every gate passed, and promotion is blocked.
+
+### Two projections keyed by learner alone
+
+- the **active-mock claim** is released once the mock it points at is gone. Left behind it blocks
+  every future mock for that learner — a smoke that cleans up and can then never run again.
+- the **profile cache** goes only once the learner has no records left at all, so a cleanup scoped
+  to one run cannot damage another.
+
+The run record itself is removed last, and only when its data is gone: while it exists, a retry can
+still prove ownership and finish the job.
 
 ### Persistence
 
-The deletion goes through the repository port, so the rule is provider-neutral and DynamoDB stays
-behind the adapter. The adapter reads only the learner's own GSI partition — no scan, no
-cross-learner read, no wildcard — filters by run id, and deletes conditionally on the revision it
-read, so a record written since the read is skipped rather than removed blind.
+The rule lives in the use case and the deletion behind the repository port, so DynamoDB stays in the
+adapter. The adapter reads only the learner's own GSI partition — no scan, no cross-learner read, no
+wildcard — and filters by run id there as well as in the port.
 
 ## Deferred endpoints (same conventions, later contract passes)
 

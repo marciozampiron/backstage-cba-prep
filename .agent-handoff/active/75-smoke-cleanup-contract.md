@@ -116,3 +116,46 @@ bank **60 valid / 0 errors** · credential-free `cdk synth` OK for `dev` and `pi
 `git diff --check` clean.
 
 No deploy, AWS live call, Cloudflare operation, secret operation, paid call or push.
+
+## Codex review round 1 — findings and fix-forward
+
+`a0dd41c` is preserved; the corrections are in a second commit. All three findings were reproduced
+against the implementation first.
+
+**HIGH — the route was absent from the deployed surface.** The dispatcher implemented it and
+`ApiStack`'s explicit ROUTES list did not, so API Gateway would have answered 404 before Lambda ran.
+Both routes are added and carry the JWT authorizer like every other route — this deletes data, and
+an unauthenticated caller must not reach the dispatcher. `DELETE` is deliberately NOT added to the
+browser CORS methods: #70 is a server-side caller, and widening the preflight surface for a caller
+that does not exist would be a cost with no benefit. Asserted in synth.
+
+**HIGH — the deployed principal could never carry the run, so the design was unimplementable.**
+This one was worse than a missing mapping, and mapping the claim would not have fixed it. A Cognito
+ACCESS token carries `sub`, `token_use`, `client_id`, `scope` and groups — not custom attributes.
+Issuing a per-run value in one needs an admin call per run or a pre-token-generation trigger, and
+both are infrastructure this issue may not introduce. Rather than leave #70 to invent that, the
+boundary moved to the other option #75 explicitly offers: **learner-owned deletion through the BFF**.
+
+The run is now a RECORD the BFF mints (`POST /smoke-runs`), owned by the caller. The
+`X-CBA-Smoke-Run` header REFERENCES it and authorizes nothing — the same shape as a session id in a
+path — and is honoured only when the run record belongs to the authenticated learner. An unknown run
+and someone else's run return the identical `403`, so no caller learns which run ids exist, and ids
+are random rather than sequential so ownership is not the only barrier. A write referencing a run
+the caller does not own still succeeds but is simply not stamped into that run; honouring it would
+either hide the record from its own cleanup or expose it to someone else's.
+
+This removes the Cognito dependency entirely: no claim, no admin permission, no trigger, and no
+header trusted as authorization in a deployed runtime.
+
+**MEDIUM — a conditional-delete conflict returned false success.** Zero meant either "nothing
+existed" or "a record survived contention", and a partial cleanup answering 200 would let a run be
+promoted with records still in the table. Completeness is now VERIFIED rather than inferred: after a
+bounded retry the scope is re-queried through a new `countSmokeRunRecords` port method, and anything
+still matching raises `409 CLEANUP_INCOMPLETE` with per-class leftover counts and no ids. Two tests
+cover it — a record that survives every attempt fails the operation, and a later uncontended retry
+finishes the job idempotently.
+
+### Validation after the fix
+
+root **359/359** · services/bff **214 / 213 pass / 1 skip** · web **71/71** · infra/aws **102/102** ·
+bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.

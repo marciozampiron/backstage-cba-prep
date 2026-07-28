@@ -204,6 +204,33 @@ export class DynamoDbSimulationRepository {
   }
 
   /* Logical readiness only: adapter kind + reachability — never table names/ARNs/account ids. */
+  /* Smoke-run records (#75): a RUN item keyed like any other record, owned by its learner. */
+  async saveSmokeRun(run) {
+    await this.#saveRecord('SMOKERUN', run.runId, run.learnerId, run);
+  }
+
+  async getSmokeRun(runId) {
+    return this.#getRecord('SMOKERUN', runId);
+  }
+
+  /**
+   * How many records still match learner + run, per class.
+   *
+   * Zero everywhere is the only proof of a COMPLETE cleanup. Counting deletions cannot distinguish
+   * "nothing existed" from "a record survived contention" — both report zero — so the use case
+   * verifies with this instead of inferring completeness from what it removed.
+   */
+  async countSmokeRunRecords({ learnerId, runId }) {
+    const counts = { practiceSessions: 0, mockExams: 0, attempts: 0 };
+    const byType = { SESSION: 'practiceSessions', MOCK: 'mockExams', ATTEMPT: 'attempts' };
+    for (const [type, key] of Object.entries(byType)) {
+      for (const { record } of await this.#listItems(learnerId, type)) {
+        if (record?.learnerId === learnerId && record?.runId === runId) counts[key] += 1;
+      }
+    }
+    return counts;
+  }
+
   /**
    * Delete everything a smoke RUN created for a smoke LEARNER (#75).
    *
@@ -246,6 +273,16 @@ export class DynamoDbSimulationRepository {
 
     // The profile cache carries no run id, so it goes only when this learner has no records left.
     // Removing it while another run's data survives would damage a run this call never scoped.
+    // The run record itself goes last, and only once its records are gone: while it exists a retry
+    // can still prove ownership and finish the job.
+    const stillMatching = await this.countSmokeRunRecords({ learnerId, runId });
+    if (stillMatching.practiceSessions + stillMatching.mockExams + stillMatching.attempts === 0) {
+      const run = await this.getSmokeRun(runId);
+      if (run) {
+        await this.client.delete({ TableName: this.tableName, Key: recordKey('SMOKERUN', runId) });
+      }
+    }
+
     const remaining = await this.#anyRecordsRemain(learnerId);
     if (!remaining) {
       const profile = await this.getProfile(learnerId);

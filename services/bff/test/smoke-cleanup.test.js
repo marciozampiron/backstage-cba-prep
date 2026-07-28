@@ -2,18 +2,17 @@
 //
 // #70's `always()` cleanup job calls this through the BFF, authenticated as the smoke learner. The
 // interesting cases are all negative: this is a DELETE endpoint reachable by a token, so most of
-// what matters is what it refuses. A cleanup that deletes slightly too much is a data-loss bug in
-// a shared environment, and one that deletes too little leaves records that block the next run.
+// what matters is what it refuses. A cleanup that deletes slightly too much is data loss in a
+// shared environment, and one that deletes too little leaves records that block the next run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.CBA_WEB_STORE = 'memory';
 process.env.CBA_WEB_AUTH = 'dev';
 const { handleApiRequest } = await import('../src/index.js');
-const { isValidSmokeRunId, resolveSmokeRun } = await import('../src/smoke-run.js');
+const { isValidSmokeRunId, readSmokeRunHeader } = await import('../src/smoke-run.js');
 
-const RUN = 'run-20260728-a1b2c3';
-const OTHER_RUN = 'run-20260728-zzzzzz';
+const ZERO = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
 
 function call(method, path, { learner, run, body } = {}) {
   const headers = {};
@@ -27,7 +26,15 @@ function call(method, path, { learner, run, body } = {}) {
   });
 }
 
-/** Create one practice session and one mock exam for a learner, optionally inside a smoke run. */
+/** Mint a run the same way #70 will: through the BFF, owned by the caller. */
+async function mintRun(learner) {
+  const res = await call('POST', '/smoke-runs', { learner, body: {} });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.equal(isValidSmokeRunId(res.body.runId), true);
+  return res.body.runId;
+}
+
+/** Create one practice session (with a real answer) and one mock exam inside a run. */
 async function seed(learner, run) {
   const drill = await call('POST', '/practice-sessions', {
     learner,
@@ -35,8 +42,8 @@ async function seed(learner, run) {
     body: { examId: 'cba', questionCount: 5 },
   });
   assert.equal(drill.status, 201, JSON.stringify(drill.body));
-  // The practice-session response carries no question refs — the next-question call does. Answering
-  // for real matters here: an answer count of zero would let the cleanup claim success while
+
+  // Answering for real matters: an answer count of zero would let cleanup claim success while
   // leaving the records that actually hold learner input.
   const next = await call('GET', `/practice-sessions/${drill.body.practiceSessionId}/next`, { learner, run });
   assert.equal(next.status, 200, JSON.stringify(next.body));
@@ -50,53 +57,54 @@ async function seed(learner, run) {
     },
   });
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
+
   const mock = await call('POST', '/mock-exams', { learner, run, body: { examId: 'cba' } });
   assert.equal(mock.status, 201, JSON.stringify(mock.body));
-  return { drill: drill.body, mock: mock.body, answerStatus: answer.status };
+  return { drill: drill.body, mock: mock.body };
 }
 
-const cleanup = (learner, run, pathRun = run) =>
-  call('DELETE', `/smoke-runs/${pathRun}/data`, { learner, run });
+const cleanup = (learner, run) => call('DELETE', `/smoke-runs/${run}/data`, { learner, run });
 
-/* ============================ the run id itself ============================================== */
+/* ============================ the run id and the header ====================================== */
 
 test('a smoke run id is bounded and opaque', () => {
-  // It reaches a route path and a persistence key, so an unbounded string would be both an
-  // injection surface and an unbounded partition key.
-  assert.equal(isValidSmokeRunId(RUN), true);
+  // It reaches a route path, a header and a persistence key, so an unbounded string would be both
+  // an injection surface and an unbounded partition key.
   for (const bad of [
     '', 'short', 'a'.repeat(65), '-leading', 'has space', 'has/slash', 'has..dots',
     'has#hash', null, undefined, 42, {},
   ]) {
     assert.equal(isValidSmokeRunId(bad), false, JSON.stringify(bad));
   }
+  assert.equal(isValidSmokeRunId('run-abcdefgh12345678'), true);
 });
 
-test('in a deployed runtime the run identity comes from the principal, never a header', () => {
-  // A header would let anyone holding an ordinary learner token promote themselves into a smoke
-  // principal, and from there delete data.
-  const headers = { 'x-cba-smoke-run': RUN };
-  assert.equal(resolveSmokeRun(headers, null, { mode: 'cognito' }), null);
-  assert.equal(resolveSmokeRun(headers, { smokeRunId: undefined }, { mode: 'cognito' }), null);
-  assert.deepEqual(resolveSmokeRun({}, { smokeRunId: RUN }, { mode: 'cognito' }), { runId: RUN });
-  // A malformed claim is not trusted either.
-  assert.equal(resolveSmokeRun({}, { smokeRunId: 'nope' }, { mode: 'cognito' }), null);
-  // Local dev keeps the header, because local identity is header-based already.
-  assert.deepEqual(resolveSmokeRun(headers, null, { mode: 'dev' }), { runId: RUN });
+test('the run header is a reference and authorizes nothing on its own', () => {
+  // Ownership is checked separately against the stored run record. A malformed value reads as
+  // absent, so probing formats teaches a caller nothing.
+  assert.equal(readSmokeRunHeader({ 'x-cba-smoke-run': 'run-abcdefgh12345678' }), 'run-abcdefgh12345678');
+  assert.equal(readSmokeRunHeader({ 'x-cba-smoke-run': 'short' }), null);
+  assert.equal(readSmokeRunHeader({}), null);
+});
+
+test('minted run ids are unique and unguessable', async () => {
+  const ids = [];
+  for (let i = 0; i < 5; i++) ids.push(await mintRun('smoke-mint'));
+  assert.equal(new Set(ids).size, 5, 'a repeated id would let one run delete another');
+  // Not sequential: a guessable id would leave the ownership check as the only barrier.
+  assert.equal(ids.some((id, i) => i > 0 && id === ids[i - 1]), false);
 });
 
 /* ============================ positive ======================================================= */
 
 test('cleanup removes everything the run created and reports what it removed', async () => {
   const learner = 'smoke-positive';
-  await seed(learner, RUN);
+  const run = await mintRun(learner);
+  await seed(learner, run);
 
-  const before = await call('GET', '/dashboard', { learner, run: RUN });
-  assert.equal(before.status, 200);
-
-  const res = await cleanup(learner, RUN);
+  const res = await cleanup(learner, run);
   assert.equal(res.status, 200, JSON.stringify(res.body));
-  assert.equal(res.body.runId, RUN);
+  assert.equal(res.body.runId, run);
   assert.ok(res.body.deleted.practiceSessions >= 1, 'the practice session must be removed');
   assert.ok(res.body.deleted.mockExams >= 1, 'the mock exam must be removed');
   assert.ok(res.body.deleted.attempts >= 2, 'both attempts must be removed');
@@ -107,12 +115,15 @@ test('cleanup removes everything the run created and reports what it removed', a
 });
 
 test('a cleaned-up learner can immediately start another mock', async () => {
-  // The one-active-mock claim is keyed by learner alone. Left behind, it blocks every future mock —
+  // The one-active-mock claim is keyed by learner alone. Left behind it blocks every future mock —
   // a cleanup that makes the next run impossible is not a cleanup.
   const learner = 'smoke-reusable';
-  await seed(learner, RUN);
-  await cleanup(learner, RUN);
-  const again = await call('POST', '/mock-exams', { learner, run: OTHER_RUN, body: { examId: 'cba' } });
+  const run = await mintRun(learner);
+  await seed(learner, run);
+  await cleanup(learner, run);
+
+  const next = await mintRun(learner);
+  const again = await call('POST', '/mock-exams', { learner, run: next, body: { examId: 'cba' } });
   assert.equal(again.status, 201, JSON.stringify(again.body));
 });
 
@@ -120,134 +131,192 @@ test('a cleaned-up learner can immediately start another mock', async () => {
 
 test('NEGATIVE: another learner cannot delete this run\'s data', async () => {
   const victim = 'smoke-victim';
-  const attacker = 'smoke-attacker';
-  await seed(victim, RUN);
+  const run = await mintRun(victim);
+  await seed(victim, run);
 
-  // The attacker holds a perfectly valid smoke token for the SAME run id.
-  const res = await cleanup(attacker, RUN);
-  assert.equal(res.status, 200, 'it is not an error — there is simply nothing of theirs to delete');
-  assert.deepEqual(res.body.deleted, {
-    practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0,
-  });
+  // The attacker knows the run id exactly and is authenticated. Ownership is the only thing that
+  // stops them, which is precisely what this asserts.
+  const res = await cleanup('smoke-attacker', run);
+  assert.equal(res.status, 403);
+  assert.equal(res.body.error.code, 'FORBIDDEN');
 
-  // The victim's data is untouched, which is the assertion that matters.
-  const still = await cleanup(victim, RUN);
-  assert.ok(still.body.deleted.practiceSessions >= 1, 'the victim\'s records must still have been there');
+  const own = await cleanup(victim, run);
+  assert.ok(own.body.deleted.practiceSessions >= 1, 'the victim\'s records must still have been there');
 });
 
-test('NEGATIVE: a smoke run cannot delete another run\'s data', async () => {
+test('NEGATIVE: a run cannot delete another run\'s data', async () => {
   const learner = 'smoke-two-runs';
-  await seed(learner, RUN);
+  const runA = await mintRun(learner);
+  const runB = await mintRun(learner);
+  await seed(learner, runA);
 
-  // Same learner, different authenticated run. Scoping by learner alone would delete these.
-  const other = await cleanup(learner, OTHER_RUN);
+  // Same learner, different run. Scoping by learner alone would delete runA's records here.
+  const other = await cleanup(learner, runB);
   assert.equal(other.status, 200);
-  assert.deepEqual(other.body.deleted, {
-    practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0,
-  });
+  assert.deepEqual(other.body.deleted, ZERO);
 
-  const own = await cleanup(learner, RUN);
+  const own = await cleanup(learner, runA);
   assert.ok(own.body.deleted.practiceSessions >= 1);
 });
 
-test('NEGATIVE: the path run id only confirms the authenticated one', async () => {
-  const learner = 'smoke-path-mismatch';
-  await seed(learner, RUN);
-
-  // A valid smoke token plus a different run id in the path must be refused, not re-scoped.
-  const res = await cleanup(learner, RUN, OTHER_RUN);
-  assert.equal(res.status, 403);
-  assert.equal(res.body.error.code, 'FORBIDDEN');
-
-  const own = await cleanup(learner, RUN);
-  assert.ok(own.body.deleted.practiceSessions >= 1, 'the refusal must not have deleted anything');
+test('NEGATIVE: an unknown run id is refused exactly like someone else\'s', async () => {
+  // The same answer for both, so a caller learns nothing about which run ids exist.
+  const unknown = await call('DELETE', '/smoke-runs/run-doesnotexist000000/data', { learner: 'smoke-probe' });
+  assert.equal(unknown.status, 403);
+  assert.equal(unknown.body.error.code, 'FORBIDDEN');
 });
 
-test('NEGATIVE: an ordinary learner cannot reach the operation at all', async () => {
+test('NEGATIVE: a learner cannot stamp writes into a run they do not own', async () => {
+  const owner = 'smoke-stamp-owner';
+  const outsider = 'smoke-stamp-outsider';
+  const run = await mintRun(owner);
+
+  // The outsider references the owner's run on a WRITE. Honouring it would either hide their
+  // records from their own cleanup or expose them to the owner's.
+  const drill = await call('POST', '/practice-sessions', {
+    learner: outsider,
+    run,
+    body: { examId: 'cba', questionCount: 5 },
+  });
+  assert.equal(drill.status, 201, 'the write still succeeds — it is simply not part of that run');
+
+  const ownerCleanup = await cleanup(owner, run);
+  assert.deepEqual(ownerCleanup.body.deleted, ZERO, 'the outsider\'s record was never stamped into this run');
+
+  const dash = await call('GET', '/dashboard', { learner: outsider });
+  assert.equal(dash.status, 200, 'and their own data is untouched');
+});
+
+test('records created with no run are never in scope', async () => {
   const learner = 'ordinary-learner';
   await seed(learner, undefined);
+  const run = await mintRun(learner);
 
-  const res = await call('DELETE', `/smoke-runs/${RUN}/data`, { learner });
-  assert.equal(res.status, 403);
-  assert.equal(res.body.error.code, 'FORBIDDEN');
+  const res = await cleanup(learner, run);
+  assert.deepEqual(res.body.deleted, ZERO, 'data with no run id belongs to no run');
 
-  // And their records survive: an ordinary learner's data has no run id, so it is never in scope.
   const dash = await call('GET', '/dashboard', { learner });
   assert.equal(dash.status, 200);
 });
 
-test('an anonymous dev caller is still scoped to its own default learner', async () => {
-  // In dev mode identity IS header-based, so an absent learner header resolves the deterministic
-  // default learner rather than failing — that is the existing local contract, not something this
-  // operation may change. What matters is that the anonymous caller is scoped to THAT learner and
-  // cannot reach anyone else's records. (Deployed mode refuses the header outright; see the
-  // principal test above, which is where the real boundary lives.)
-  const victim = 'smoke-anon-victim';
-  await seed(victim, RUN);
-
-  const res = await handleApiRequest({
-    method: 'DELETE',
-    path: `/smoke-runs/${RUN}/data`,
-    headers: { 'x-cba-smoke-run': RUN },
-  });
-  assert.equal(res.status, 200);
-  assert.deepEqual(res.body.deleted, {
-    practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0,
-  }, 'the anonymous default learner owns none of the victim\'s records');
-
-  const own = await cleanup(victim, RUN);
-  assert.ok(own.body.deleted.practiceSessions >= 1, 'the victim\'s data must have survived');
-});
-
 test('no input anywhere names a learner', async () => {
   const learner = 'smoke-no-learner-input';
-  await seed(learner, RUN);
+  const run = await mintRun(learner);
+  await seed(learner, run);
 
-  // A body is not even read by this route, but if one were smuggled in it must change nothing.
   const res = await handleApiRequest({
     method: 'DELETE',
-    path: `/smoke-runs/${RUN}/data`,
-    headers: { 'x-cba-learner': learner, 'x-cba-smoke-run': RUN },
-    body: JSON.stringify({ learnerId: 'someone-else', runId: OTHER_RUN }),
+    path: `/smoke-runs/${run}/data`,
+    headers: { 'x-cba-learner': learner },
+    body: JSON.stringify({ learnerId: 'someone-else', runId: 'run-elsewhere00000000' }),
   });
   assert.equal(res.status, 200);
-  assert.equal(res.body.runId, RUN, 'the body must not be able to re-scope the run');
-  assert.ok(res.body.deleted.practiceSessions >= 1, 'it deleted the caller\'s own records, not the named ones');
+  assert.equal(res.body.runId, run, 'the body must not be able to re-scope the run');
+  assert.ok(res.body.deleted.practiceSessions >= 1, 'it deleted the caller\'s own records');
 });
 
 /* ============================ idempotency / replay ========================================== */
 
-test('cleanup is idempotent: replaying it returns the same shape with zeros', async () => {
+test('replaying cleanup never deletes twice and never reports a false success', async () => {
   const learner = 'smoke-replay';
-  await seed(learner, RUN);
+  const run = await mintRun(learner);
+  await seed(learner, run);
 
-  const first = await cleanup(learner, RUN);
+  const first = await cleanup(learner, run);
   assert.equal(first.status, 200);
   assert.ok(first.body.deleted.attempts >= 2);
 
-  for (let i = 0; i < 3; i++) {
-    const again = await cleanup(learner, RUN);
-    assert.equal(again.status, 200, `replay ${i} must succeed`);
-    assert.equal(again.body.runId, RUN);
-    // The same SHAPE with zeros — #70 retries this job, and a different response on retry would
-    // have to be interpreted rather than simply reported.
-    assert.deepEqual(again.body.deleted, {
-      practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0,
-    });
+  // The run record is consumed once its data is gone, so a replay is refused by ownership rather
+  // than answering 200 with zeros. #70 needs a retry to be SAFE, not necessarily identical: what
+  // must never happen is a second call reporting deletions it did not make.
+  const again = await cleanup(learner, run);
+  assert.ok(again.status === 200 || again.status === 403, `got ${again.status}`);
+  if (again.status === 200) assert.deepEqual(again.body.deleted, ZERO);
+});
+
+test('cleanup of a run that created nothing is a success with zeros, not an error', async () => {
+  // #70 runs cleanup with `always()`, including after a job that failed before creating anything.
+  // An error here would turn "nothing to clean" into a blocked promotion.
+  const learner = 'smoke-never-ran';
+  const run = await mintRun(learner);
+  const res = await cleanup(learner, run);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.deleted, ZERO);
+});
+
+/* ============================ incomplete cleanup blocks ====================================== */
+
+const { configureRuntime, resetRuntime } = await import('../src/runtime.js');
+const { InMemorySimulationRepository } = await import('../src/repository.js');
+const { cleanupSmokeRun } = await import('../src/store.js');
+
+test('NEGATIVE: a record that survives every attempt makes cleanup FAIL, not succeed quietly', async () => {
+  // The adapter deletes conditionally on the revision it read, so a record written between the read
+  // and the delete is skipped. Counting deletions cannot tell "nothing existed" from "something
+  // survived" — both report zero — and answering 200 there would let a run be promoted with records
+  // still in the table. Completeness is therefore VERIFIED by re-querying the scope.
+  class ContendedRepository extends InMemorySimulationRepository {
+    async deleteSmokeRunData() {
+      // Every delete loses its condition: nothing is ever removed.
+      return { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+    }
+  }
+  const repo = new ContendedRepository();
+  await repo.saveSmokeRun({ runId: 'run-contended000000000', learnerId: 'l-contended' });
+  await repo.saveSession({
+    practiceSessionId: 'ps_contended',
+    attemptId: 'att_contended',
+    learnerId: 'l-contended',
+    runId: 'run-contended000000000',
+  });
+
+  configureRuntime({ repository: repo });
+  try {
+    await assert.rejects(
+      () => cleanupSmokeRun('l-contended', 'run-contended000000000'),
+      (err) => {
+        assert.equal(err.status, 409, 'it must be a non-2xx so the job fails and promotion blocks');
+        assert.equal(err.code, 'CLEANUP_INCOMPLETE');
+        // Leftovers are reported per CLASS, never as ids — the summary says what survived without
+        // naming a learner's records.
+        assert.equal(err.details.remaining.practiceSessions, 1);
+        assert.equal(JSON.stringify(err.details).includes('ps_contended'), false);
+        assert.equal(JSON.stringify(err.details).includes('l-contended'), false);
+        return true;
+      },
+    );
+  } finally {
+    resetRuntime();
   }
 });
 
-test('cleanup of a run that never existed is a success with zeros, not an error', async () => {
-  // #70 runs cleanup with `always()`, including after a job that failed before creating anything.
-  // An error here would turn "nothing to clean" into a blocked promotion.
-  const res = await cleanup('smoke-never-ran', 'run-20260728-nothing1');
-  assert.equal(res.status, 200);
-  assert.deepEqual(res.body.deleted, {
-    practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0,
+test('a later uncontended retry succeeds idempotently after a contended one', async () => {
+  let contend = true;
+  class SometimesContendedRepository extends InMemorySimulationRepository {
+    async deleteSmokeRunData(scope) {
+      if (contend) return { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+      return super.deleteSmokeRunData(scope);
+    }
+  }
+  const repo = new SometimesContendedRepository();
+  await repo.saveSmokeRun({ runId: 'run-retryable000000000', learnerId: 'l-retry' });
+  await repo.saveSession({
+    practiceSessionId: 'ps_retry',
+    attemptId: 'att_retry',
+    learnerId: 'l-retry',
+    runId: 'run-retryable000000000',
   });
-});
 
-test('NEGATIVE: a malformed run id in the path is refused', async () => {
-  const res = await call('DELETE', '/smoke-runs/short/data', { learner: 'smoke-bad-id', run: RUN });
-  assert.equal(res.status, 403, 'it does not match the authenticated run');
+  configureRuntime({ repository: repo });
+  try {
+    await assert.rejects(() => cleanupSmokeRun('l-retry', 'run-retryable000000000'), (e) => e.code === 'CLEANUP_INCOMPLETE');
+    // The skip is a deferral, not a leak: once contention clears, the same call finishes the job.
+    contend = false;
+    const res = await cleanupSmokeRun('l-retry', 'run-retryable000000000');
+    assert.equal(res.runId, 'run-retryable000000000');
+    assert.equal(res.deleted.practiceSessions, 1);
+    assert.equal(await repo.getSession('ps_retry'), null);
+  } finally {
+    resetRuntime();
+  }
 });

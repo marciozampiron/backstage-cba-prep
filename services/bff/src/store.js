@@ -15,6 +15,7 @@ import {
   toQuestionPayload,
 } from './bank.js';
 import { isValidSmokeRunId } from './smoke-run.js';
+import { randomUUID } from 'node:crypto';
 import { activeRepository, now, nowIso } from './runtime.js';
 
 // Repository/clock come from the composition seam (runtime.js): tests inject fakes there.
@@ -728,15 +729,53 @@ export async function learnerAttemptStats(learnerId) {
 
 
 /**
+ * Mint a smoke run for the authenticated learner (#75).
+ *
+ * The run is a RECORD, not a token claim: a Cognito access token cannot carry a per-run value
+ * without infrastructure this issue may not introduce, and a design whose identity can never be
+ * issued is not a design. Ownership is what the record establishes, so a later reference to this
+ * run id proves nothing on its own.
+ */
+export async function startSmokeRun(learnerId) {
+  if (typeof learnerId !== 'string' || learnerId === '') {
+    throw new ApiError(401, 'UNAUTHENTICATED', 'A smoke run requires an authenticated learner.');
+  }
+  // Random, not sequential: a guessable run id would let one caller reference another's run, and
+  // the ownership check would then be the only thing standing between them.
+  const runId = `run-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  const run = { runId, learnerId, startedAt: nowIso() };
+  await db().saveSmokeRun(run);
+  return run;
+}
+
+/**
+ * Resolve a referenced run id to a run this learner owns, or `null`.
+ *
+ * `null` for unknown AND for someone else's run, deliberately: distinguishing them would tell a
+ * caller which run ids exist.
+ */
+export async function ownedSmokeRun(learnerId, runId) {
+  if (!isValidSmokeRunId(runId) || typeof learnerId !== 'string' || learnerId === '') return null;
+  const run = await db().getSmokeRun(runId);
+  if (!run || run.learnerId !== learnerId) return null;
+  return run;
+}
+
+/** How many times cleanup retries a contended delete before reporting the run incomplete. */
+const CLEANUP_ATTEMPTS = 3;
+
+/**
  * Delete every record a smoke RUN created for the authenticated smoke LEARNER (#75).
  *
- * Provider-neutral: it validates the scope and delegates to the repository port, so the DynamoDB
- * adapter carries the physical deletion and this use case carries the rule. Neither identifier is a
- * request input — the caller supplies them from the principal, and the route refuses a path run id
- * that does not match it.
+ * Provider-neutral: it validates the scope, retries, verifies, and delegates the physical deletion
+ * to the repository port.
  *
- * Idempotent: a second call finds nothing and reports zeros with the same shape, so the #70
- * `always()` cleanup job can retry without interpreting a different response.
+ * COMPLETENESS IS VERIFIED, NOT INFERRED. The adapter deletes conditionally on the revision it
+ * read, so a record written between the read and the delete is skipped. Counting deletions cannot
+ * distinguish "nothing existed" from "something survived contention" — both report zero — and a
+ * partial cleanup that answers 200 would let a run be promoted with records left behind. So after a
+ * bounded retry the scope is queried again, and anything still matching makes this a failure with
+ * the leftovers named by class.
  */
 export async function cleanupSmokeRun(learnerId, runId) {
   if (typeof learnerId !== 'string' || learnerId === '') {
@@ -745,9 +784,26 @@ export async function cleanupSmokeRun(learnerId, runId) {
   if (!isValidSmokeRunId(runId)) {
     throw new ApiError(400, 'VALIDATION_FAILED', 'A smoke run id is required.');
   }
-  const deleted = await db().deleteSmokeRunData({ learnerId, runId });
-  // The run id is echoed because #70 needs to correlate the summary with the run it just executed;
-  // the learner id is NOT, because it is a learner identifier and the summary is written to a
-  // workflow log.
-  return { runId, deleted };
+
+  const deleted = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+  let remaining = null;
+  for (let attempt = 0; attempt < CLEANUP_ATTEMPTS; attempt++) {
+    const round = await db().deleteSmokeRunData({ learnerId, runId });
+    for (const key of Object.keys(deleted)) deleted[key] += round[key] ?? 0;
+    remaining = await db().countSmokeRunRecords({ learnerId, runId });
+    if (remaining.practiceSessions + remaining.mockExams + remaining.attempts === 0) {
+      // The run id is echoed because #70 correlates the summary with the run it just executed; the
+      // learner id is NOT, because the response is written into a workflow log.
+      return { runId, deleted };
+    }
+  }
+
+  // Observable, and it blocks: the design (§6) makes a failed cleanup a failed run even when every
+  // gate passed. Leftovers are reported per CLASS — never ids — so the summary says what survived
+  // without naming a learner's records.
+  throw new ApiError(409, 'CLEANUP_INCOMPLETE', 'Cleanup could not remove every record for this run.', {
+    runId,
+    deleted,
+    remaining,
+  });
 }

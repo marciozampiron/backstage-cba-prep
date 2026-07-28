@@ -35,7 +35,7 @@ function countAnswers(record) {
 }
 
 function emptyState() {
-  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {} };
+  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {}, smokeRuns: {} };
 }
 
 export class InMemorySimulationRepository {
@@ -120,6 +120,30 @@ export class InMemorySimulationRepository {
     this.persist();
   }
 
+  /* Smoke-run records (#75): the BFF-minted proof that a run belongs to a learner. Stored rather
+     than claimed, because a Cognito access token cannot carry a per-run value without
+     infrastructure this issue may not introduce. */
+  async saveSmokeRun(run) {
+    this.state.smokeRuns[run.runId] = run;
+    this.persist();
+  }
+
+  async getSmokeRun(runId) {
+    return this.state.smokeRuns[runId] ?? null;
+  }
+
+  /** Records still matching learner + run, per class. Zero everywhere is the only proof of a
+      COMPLETE cleanup: counting what was deleted cannot distinguish "nothing existed" from
+      "something survived contention". */
+  async countSmokeRunRecords({ learnerId, runId }) {
+    const owns = (r) => r && r.learnerId === learnerId && r.runId === runId;
+    return {
+      practiceSessions: Object.values(this.state.sessions).filter(owns).length,
+      mockExams: Object.values(this.state.mocks).filter(owns).length,
+      attempts: Object.values(this.state.attempts).filter(owns).length,
+    };
+  }
+
   /**
    * Delete everything a smoke RUN created for a smoke LEARNER (#75).
    *
@@ -171,6 +195,15 @@ export class InMemorySimulationRepository {
     if (this.state.profiles[learnerId] !== undefined && !this.#hasAnyRecords(learnerId)) {
       delete this.state.profiles[learnerId];
       deleted.projections += 1;
+    }
+
+    // The run record itself goes last: while it exists, a retry can still prove ownership and
+    // finish the job. Removing it first would strand any leftover records with no way to claim them.
+    if (this.state.smokeRuns[runId] !== undefined) {
+      const remaining = await this.countSmokeRunRecords({ learnerId, runId });
+      if (remaining.practiceSessions + remaining.mockExams + remaining.attempts === 0) {
+        delete this.state.smokeRuns[runId];
+      }
     }
 
     this.persist();
