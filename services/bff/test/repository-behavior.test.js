@@ -198,6 +198,42 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
     assert.equal(await repo.getProfile('l-profile'), null);
   });
 
+  test(`${name}: a closed run refuses every stamped mutation, not just creation`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-fence', RUN, 'f1');
+    await repo.closeSmokeRun(RUN);
+
+    // Fencing creation and not updates closed instances rather than the class: an answer written
+    // after cleanup could reinsert an attempt the cleanup had already verified gone.
+    for (const [label, write] of Object.entries({
+      attempt: () => repo.saveAttempt({ attemptId: 'att_f1', learnerId: 'l-fence', runId: RUN, answers: {} }),
+      session: () => repo.saveSession({ practiceSessionId: 'ps_f1', attemptId: 'att_f1', learnerId: 'l-fence', runId: RUN }),
+      mock: () => repo.saveMock({ mockExamId: 'mock_f1', attemptId: 'att_f1', learnerId: 'l-fence', runId: RUN }),
+    })) {
+      await assert.rejects(write, (err) => err?.name === 'RepositoryConflictError', label);
+    }
+  });
+
+  test(`${name}: a closed run refuses the active-mock claim`, async () => {
+    const repo = await makeRepo();
+    await seedRun(repo, 'l-claim', RUN, 'c9');
+    await repo.closeSmokeRun(RUN);
+
+    // The projection was outside the fence, and the first attempt at fencing it looked the run up
+    // from a mock that `startMockExam` has not saved yet — so it checked nothing. The run is passed
+    // explicitly now.
+    await assert.rejects(
+      () => repo.claimActiveMock('l-claim', 'mock_never_saved', { runId: RUN }),
+      (err) => err?.name === 'RepositoryConflictError',
+    );
+    assert.equal(await repo.getActiveMock('l-claim'), null, 'no stale claim may survive cleanup');
+  });
+
+  test(`${name}: an ordinary claim with no run is unaffected`, async () => {
+    const repo = await makeRepo();
+    assert.equal(await repo.claimActiveMock('l-plain-claim', 'mock_plain'), true);
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();

@@ -90,15 +90,25 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
     // record put, applied together or not at all. The fake enforces the same rule as the real
     // table, so the TOCTOU regression exercises the real code path.
     async transactWrite({ TransactItems }) {
-      for (const item of TransactItems) {
-        if (!item.ConditionCheck) continue;
-        const existing = store.items.get(keyOf(item.ConditionCheck.Key));
-        const expected = item.ConditionCheck.ExpressionAttributeValues[':active'];
-        if (!existing || existing.record?.status !== expected) {
-          const err = new Error('TransactionCanceledException');
-          err.name = 'TransactionCanceledException';
-          throw err;
+      // `CancellationReasons` is POSITIONAL in the real API, and the adapter classifies on index 0.
+      // The fake reproduces that faithfully — without it, a transaction conflict and a closed run
+      // would be indistinguishable here, which is the bug the classification exists to prevent.
+      const reasons = TransactItems.map((item) => {
+        if (item.ConditionCheck) {
+          const existing = store.items.get(keyOf(item.ConditionCheck.Key));
+          const expected = item.ConditionCheck.ExpressionAttributeValues[':active'];
+          if (!existing || existing.record?.status !== expected) return { Code: 'ConditionalCheckFailed' };
         }
+        if (item.Put?.ConditionExpression === 'attribute_not_exists(pk)' && store.items.has(keyOf(item.Put.Item))) {
+          return { Code: 'ConditionalCheckFailed' };
+        }
+        return { Code: 'None' };
+      });
+      if (reasons.some((r) => r.Code !== 'None')) {
+        const err = new Error('TransactionCanceledException');
+        err.name = 'TransactionCanceledException';
+        err.CancellationReasons = reasons;
+        throw err;
       }
       for (const item of TransactItems) {
         if (item.Put) store.items.set(keyOf(item.Put.Item), item.Put.Item);
@@ -288,6 +298,7 @@ test('cleanup skips a record written since it was read, instead of deleting it b
   // operation safe to repeat — #70 runs it with always(), including after a partial failure.
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({ runId: 'run-race-000001', learnerId: 'l-race', status: 'active' });
   await repo.saveSession({ practiceSessionId: 'ps_race', attemptId: 'att_race', learnerId: 'l-race', runId: 'run-race-000001' });
 
   const originalDelete = repo.client.delete;
@@ -312,6 +323,33 @@ test('cleanup never scans: the fake client has no scan method at all', async () 
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
   assert.equal(repo.client.scan, undefined, 'a scan would read every learner in the table');
+  await repo.saveSmokeRun({ runId: 'run-noscan-0001', learnerId: 'l-ns', status: 'active' });
   await repo.saveSession({ practiceSessionId: 'ps_ns', attemptId: 'a', learnerId: 'l-ns', runId: 'run-noscan-0001' });
   await repo.deleteSmokeRunData({ learnerId: 'l-ns', runId: 'run-noscan-0001' });
+});
+
+test('a cancellation that is NOT the run condition is not reported as a closed run', async () => {
+  // Reporting every TransactionCanceledException as RUN_CLOSED told the caller something false
+  // about the run's state and hid a fault — a transaction conflict or a capacity failure — that
+  // deserves to surface.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({ runId: 'run-classify0000000000', learnerId: 'l-classify', status: 'active' });
+
+  repo.client.transactWrite = async () => {
+    const err = new Error('TransactionCanceledException');
+    err.name = 'TransactionCanceledException';
+    // Index 0 is the RUN's condition check, and it passed. The failure is elsewhere.
+    err.CancellationReasons = [{ Code: 'None' }, { Code: 'TransactionConflict' }];
+    throw err;
+  };
+
+  await assert.rejects(
+    () => repo.saveSmokeScopedRecord({
+      runId: 'run-classify0000000000',
+      kind: 'attempt',
+      record: { attemptId: 'att_x', learnerId: 'l-classify', answers: {} },
+    }),
+    (err) => err.name === 'TransactionCanceledException',
+  );
 });

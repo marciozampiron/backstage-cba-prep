@@ -14,6 +14,7 @@ import {
   seededShuffle,
   toQuestionPayload,
 } from './bank.js';
+import { RepositoryConflictError } from './repository.js';
 import { isValidSmokeRunId } from './smoke-run.js';
 import { randomUUID } from 'node:crypto';
 import { activeRepository, now, nowIso } from './runtime.js';
@@ -355,7 +356,19 @@ export async function startMockExam(learnerId, { runId = null } = {}) {
   }
 
   const mockExamId = await db().nextId('mock');
-  if (!(await db().claimActiveMock(learnerId, mockExamId))) {
+  let claimed;
+  try {
+    claimed = await db().claimActiveMock(learnerId, mockExamId, { runId });
+  } catch (err) {
+    // The run stopped accepting records between the dispatcher check and this write. That is a
+    // closed run, not a lost race — reporting it as MOCK_EXAM_IN_PROGRESS would send the caller
+    // looking for a mock that does not exist.
+    if (err instanceof RepositoryConflictError) {
+      throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+    }
+    throw err;
+  }
+  if (!claimed) {
     // Lost a concurrent race: surface the winner's mock, exactly like the sequential case.
     const winnerId = await db().getActiveMock(learnerId);
     throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {

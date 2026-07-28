@@ -110,10 +110,12 @@ export class InMemorySimulationRepository {
   /* One-active-mock claim (#77): the ATOMIC per-learner guard the store relies on instead of
      list-then-create. Local adapters are single-process, so a plain check-and-set is atomic
      enough here; the DynamoDB adapter implements the same contract with a conditional write. */
-  async claimActiveMock(learnerId, mockExamId) {
-    // The claim is a projection, and it was outside the fence: it could be created after cleanup
-    // had verified zero records, leaving a stale claim that blocks every future mock.
-    this.#assertRunAccepts(this.state.mocks[mockExamId]);
+  async claimActiveMock(learnerId, mockExamId, { runId = null } = {}) {
+    // The run is passed EXPLICITLY. The first attempt at this fence looked the run up from the mock
+    // record — but `startMockExam` claims BEFORE saving that mock, so the lookup was always
+    // undefined and the fence checked nothing at all. A guard that cannot see its subject is not a
+    // guard.
+    this.#assertRunAccepts({ runId });
     if (this.state.activeMocks[learnerId]) return false;
     this.state.activeMocks[learnerId] = mockExamId;
     this.persist();

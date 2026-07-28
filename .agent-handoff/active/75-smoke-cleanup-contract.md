@@ -324,3 +324,84 @@ previous fix had not considered — TOCTOU, then every-mutation coverage, then r
 signal about sequencing, not just about individual mistakes: the contract was being designed while
 being implemented. Before #70, the contract for this operation should be written and reviewed on its
 own, so this class of problem surfaces in a design review rather than a code review.
+
+## Codex review round 6 — corrections landed
+
+The two red tests are green and the transaction-cancellation handling is now positional.
+
+**The two failures were both mine, and of different kinds.** One was a real classification defect:
+`#saveRecord` mapped any `TransactionCanceledException` to `RepositoryConflictError`, which
+`saveSmokeScopedRecord` then swallowed as `false` — so a transaction conflict or a capacity failure
+was reported as a closed run. `CancellationReasons` is positional, so index 0 (the run's
+ConditionCheck) means the run stopped accepting records and index 1 (the record's Put) means a lost
+update; anything else now propagates untouched. The other was a fixture mistake: an edit of mine had
+duplicated a `saveSmokeRun` line three times, and the second call failed its `attribute_not_exists`
+condition. Worth separating, because only the first was a defect in the contract.
+
+**Also closed in this pass:**
+
+- `TRANSACT_WRITE_ITEMS` is in `DYNAMO_ALARMED_OPERATIONS`, the filter encoding my mistaken belief
+  is gone, and the alarm's operation set, the synthesized dimensions and the IAM grant are asserted
+  aligned. `TransactWriteItems` IS a DynamoDB metric `Operation`; claiming otherwise had left the
+  release-blocking alarm blind to failures on the newest write path.
+- `claimActiveMock` takes `runId` EXPLICITLY. The first version looked the run up from the mock
+  record, but `startMockExam` claims before saving that mock, so the lookup was always `undefined`
+  and the fence checked nothing. Fenced in memory, file and DynamoDB — the managed one as a
+  ConditionCheck plus the claim Put in a single transaction — and `startMockExam` maps the refusal
+  to `RUN_CLOSED` rather than `MOCK_EXAM_IN_PROGRESS`, which would have sent the caller looking for
+  a mock that does not exist.
+- `#saveRecord` in the managed adapter now transacts against the active run whenever the record
+  carries a run id, so UPDATES are fenced and not only creation.
+
+## Retention design (recorded before implementation, per the review sequence)
+
+### The problem with one field
+
+`expiresAt` currently serves two unrelated purposes, which is why it is wrong in both directions. It
+is set at creation to bound an ABANDONED run, and reused at completion to bound a TOMBSTONE. Because
+first-write wins, a run completed on day six keeps one day instead of a fresh seven. Because child
+records carry no expiry of their own, an abandoned run can vanish while its learner data remains —
+and with the run gone, `ownedSmokeRun` returns `null`, so cleanup becomes unreachable and the data
+is stranded permanently. `closeSmokeRun` also rewrites the run row without the top-level `ttl`, so a
+cleanup that fails midway leaves a `closing` row with no physical expiry at all.
+
+### Two clocks, never one
+
+| Field | Meaning | Set when | Bound |
+| --- | --- | --- | --- |
+| `abandonedAt` | the run was opened and never finished | at mint | 24h |
+| `expiresAt` | the tombstone may be forgotten | at FIRST completion | 7d from `completedAt` |
+
+`ttl` (epoch seconds, the DynamoDB TTL attribute) always mirrors whichever of the two is currently
+in force, and is re-written on every state transition — including `closing`, which is the gap today.
+
+- **Active**: `ttl` = `abandonedAt`. A run nobody cleans up stops holding learner ownership within a
+  day, not seven.
+- **Closing**: `ttl` unchanged. A failed cleanup must not extend or lose its bound.
+- **Completed**: `ttl` = `expiresAt`, anchored on the FIRST `completedAt`. A replay never moves it —
+  that is what stopped repeated replays retaining the tombstone indefinitely — and the anchor is
+  fresh rather than inherited from the active clock, so a run completed on day six still gets seven.
+
+### Child records expire independently
+
+Every smoke-scoped session, mock and attempt carries its own `ttl` at 7 days from creation. Two
+reasons, and the second is the one that matters: it bounds the data even if the run row disappears
+first, and it removes the stranding failure entirely — data can no longer outlive the ownership
+needed to delete it.
+
+### Expiry is an application decision
+
+`ownedSmokeRun` already refuses an expired run. That stays, and it is the point: DynamoDB TTL can
+lag by days, so nothing may treat "the row is still there" as "the run is still valid". TTL is
+housekeeping; the application decides.
+
+### Tests to write with an injected clock
+
+1. abandoned run, day two → the run reads as gone, `ttl` was the 24h bound;
+2. completion on day six → `expiresAt` is `completedAt + 7d`, NOT one day;
+3. replay on day ten → `expiresAt` unchanged from the first completion;
+4. cleanup that fails during `closing` → the row keeps its `ttl`, and a retry still converges;
+5. child record TTL is present and independent of the run's;
+6. an expired run refuses cleanup through the application, with the row still present.
+
+Implementation follows in a separate commit, after this design is reviewed.

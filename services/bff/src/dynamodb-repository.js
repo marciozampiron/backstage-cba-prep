@@ -33,6 +33,27 @@ function countAnswers(record) {
   return 0;
 }
 
+/**
+ * Did the RUN's condition check fail, as opposed to anything else in the transaction?
+ *
+ * `CancellationReasons` is positional: index 0 is the run's ConditionCheck. Treating every
+ * `TransactionCanceledException` as a closed run misclassified transaction conflicts and capacity
+ * failures, which are faults that must surface rather than be reported as run state.
+ */
+function runConditionFailed(err) {
+  if (err?.name !== 'TransactionCanceledException') return false;
+  const reasons = err.CancellationReasons;
+  if (!Array.isArray(reasons)) return false;
+  return reasons[0]?.Code === 'ConditionalCheckFailed';
+}
+
+/** Did the RECORD's own condition fail? `CancellationReasons` index 1 is the record's Put. */
+function recordConditionFailed(err) {
+  if (err?.name !== 'TransactionCanceledException') return false;
+  const reasons = err.CancellationReasons;
+  return Array.isArray(reasons) && reasons[1]?.Code === 'ConditionalCheckFailed';
+}
+
 function recordKey(type, id) {
   return { pk: `${type}#${id}`, sk: REC };
 }
@@ -85,10 +106,37 @@ export class DynamoDbSimulationRepository {
             ExpressionAttributeValues: { ':expected': expected },
           }),
     };
+    // A record carrying a run id is fenced on that run being ACTIVE — for UPDATES as much as for
+    // creation. Fencing creation alone closed instances rather than the class: an answer written
+    // after cleanup could reinsert an attempt the cleanup had already verified gone.
+    const fenced = Boolean(record?.runId) && ['SESSION', 'MOCK', 'ATTEMPT'].includes(type);
     try {
-      await this.client.put(params);
+      if (fenced) {
+        await this.client.transactWrite({
+          TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: this.tableName,
+                Key: recordKey('SMOKERUN', record.runId),
+                ConditionExpression: 'record.#s = :active',
+                ExpressionAttributeNames: { '#s': 'status' },
+                ExpressionAttributeValues: { ':active': 'active' },
+              },
+            },
+            { Put: { ...params } },
+          ],
+        });
+      } else {
+        await this.client.put(params);
+      }
     } catch (err) {
-      if (this.isConditionalFailure(err)) {
+      if (runConditionFailed(err)) {
+        throw new RepositoryConflictError('This smoke run stopped accepting records.');
+      }
+      // Only the RECORD's own condition — its rev, or attribute_not_exists on create — is a lost
+      // update. A generic TransactionCanceledException is NOT: mapping it here turned transaction
+      // conflicts and capacity failures into a conflict the caller then swallowed as "run closed".
+      if (this.isConditionalFailure(err) || recordConditionFailed(err)) {
         throw new RepositoryConflictError(`Lost update on ${type.toLowerCase()} record.`);
       }
       throw err;
@@ -169,7 +217,8 @@ export class DynamoDbSimulationRepository {
     await this.#saveRecord('PROFILE', profile.learnerId, profile.learnerId, profile);
   }
 
-  async claimActiveMock(learnerId, mockExamId) {
+  /** The unfenced claim, for ordinary learners with no run. */
+  async #claimWithoutRun(learnerId, mockExamId) {
     try {
       await this.client.put({
         TableName: this.tableName,
@@ -226,8 +275,19 @@ export class DynamoDbSimulationRepository {
    * apply or neither does.
    */
   async saveSmokeScopedRecord({ runId, kind, record }) {
+    const save = { session: 'saveSession', mock: 'saveMock', attempt: 'saveAttempt' }[kind];
+    if (!save) throw new Error(`unknown smoke-scoped record kind "${kind}"`);
+    try {
+      await this[save]({ ...record, runId });
+      return true;
+    } catch (err) {
+      if (err instanceof RepositoryConflictError) return false;
+      throw err;
+    }
+  }
+
+  async #legacySmokeScopedWrite({ runId, kind, record }) {
     const type = { session: 'SESSION', mock: 'MOCK', attempt: 'ATTEMPT' }[kind];
-    if (!type) throw new Error(`unknown smoke-scoped record kind "${kind}"`);
     const id = record.practiceSessionId ?? record.mockExamId ?? record.attemptId;
     const key = `${type}#${id}`;
     try {
@@ -260,6 +320,41 @@ export class DynamoDbSimulationRepository {
       this.revs.set(record, 1);
       return true;
     } catch (err) {
+      if (runConditionFailed(err)) return false;
+      // Every OTHER cancellation — TransactionConflict, capacity, an unrelated item — is a real
+      // error. Reporting it as a closed run told the caller something false about the run's state
+      // and hid a fault that deserves to surface.
+      throw err;
+    }
+  }
+
+  /** The claim is a projection and needs the same fence, conditioned on the run in one transaction. */
+  async claimActiveMock(learnerId, mockExamId, { runId = null } = {}) {
+    if (!runId) return this.#claimWithoutRun(learnerId, mockExamId);
+    try {
+      await this.client.transactWrite({
+        TransactItems: [
+          {
+            ConditionCheck: {
+              TableName: this.tableName,
+              Key: recordKey('SMOKERUN', runId),
+              ConditionExpression: 'record.#s = :active',
+              ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: { ':active': 'active' },
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: { pk: `LEARNER#${learnerId}`, sk: 'ACTIVE_MOCK', mockExamId },
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          },
+        ],
+      });
+      return true;
+    } catch (err) {
+      if (runConditionFailed(err)) throw new RepositoryConflictError('This smoke run stopped accepting records.');
       if (this.isConditionalFailure(err) || err?.name === 'TransactionCanceledException') return false;
       throw err;
     }
