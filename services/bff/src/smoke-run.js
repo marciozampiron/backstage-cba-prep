@@ -16,7 +16,10 @@
 //   POST /smoke-runs                  -> the BFF mints a run id and stores it against the caller
 //   X-CBA-Smoke-Run: <runId>          -> stamps subsequent writes, ACCEPTED ONLY if that run record
 //                                        belongs to the authenticated learner
-//   DELETE /smoke-runs/:runId/data    -> same ownership check, then deletes learner + run
+//   DELETE /smoke-runs/:runId/data    -> capability + ownership, deletes the run's DATA and CLOSES
+//                                        the run. The run record itself is never deleted: it
+//                                        becomes a tombstone with a bounded expiry, so ownership
+//                                        outlives the data and a replay stays deterministic.
 //
 // The header is therefore a REFERENCE, not an authorization — the same shape as a session id in a
 // path. It grants nothing on its own: an unknown run id, or one owned by somebody else, is refused,

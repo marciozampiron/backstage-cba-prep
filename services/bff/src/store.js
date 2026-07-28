@@ -112,8 +112,16 @@ export async function startDrill(learnerId, { domainId, competencyId, questionCo
   };
   const session = { practiceSessionId: sessionId, attemptId, learnerId, runId };
 
-  await db().saveAttempt(attempt);
-  await db().saveSession(session);
+  if (runId) {
+    // Conditional on the run still being active: the dispatcher's check happened before this
+    // handler ran, and on its own it leaves a window in which cleanup can complete underneath us.
+    const ok = (await db().saveSmokeScopedRecord({ runId, kind: 'attempt', record: attempt }))
+      && (await db().saveSmokeScopedRecord({ runId, kind: 'session', record: session }));
+    if (!ok) throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+  } else {
+    await db().saveAttempt(attempt);
+    await db().saveSession(session);
+  }
 
   return {
     practiceSessionId: sessionId,
@@ -387,8 +395,14 @@ export async function startMockExam(learnerId, { runId = null } = {}) {
     runId, // #75 — see startDrill
   };
   const mock = { mockExamId, attemptId, learnerId, autoSubmitted: false, runId };
-  await db().saveAttempt(attempt);
-  await db().saveMock(mock);
+  if (runId) {
+    const ok = (await db().saveSmokeScopedRecord({ runId, kind: 'attempt', record: attempt }))
+      && (await db().saveSmokeScopedRecord({ runId, kind: 'mock', record: mock }));
+    if (!ok) throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+  } else {
+    await db().saveAttempt(attempt);
+    await db().saveMock(mock);
+  }
 
   return {
     mockExamId,
@@ -743,7 +757,15 @@ export async function startSmokeRun(learnerId) {
   // Random, not sequential: a guessable run id would let one caller reference another's run, and
   // the ownership check would then be the only thing standing between them.
   const runId = `run-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
-  const run = { runId, learnerId, startedAt: nowIso() };
+  // Abandoned runs need a bound too: a run that is never cleaned up would otherwise keep learner
+  // ownership forever. It gets the same retention from creation, and completion re-anchors it.
+  const run = {
+    runId,
+    learnerId,
+    status: 'active',
+    startedAt: nowIso(),
+    expiresAt: new Date(now() + SMOKE_RUN_RETENTION_MS).toISOString(),
+  };
   await db().saveSmokeRun(run);
   return run;
 }
@@ -758,6 +780,9 @@ export async function ownedSmokeRun(learnerId, runId) {
   if (!isValidSmokeRunId(runId) || typeof learnerId !== 'string' || learnerId === '') return null;
   const run = await db().getSmokeRun(runId);
   if (!run || run.learnerId !== learnerId) return null;
+  // TTL is eventually consistent, so the application decides — a row that has outlived its
+  // retention is treated as gone whether or not DynamoDB has removed it yet.
+  if (runIsExpired(run)) return null;
   return run;
 }
 
@@ -776,9 +801,15 @@ const CLEANUP_ATTEMPTS = 3;
  */
 export const SMOKE_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** A run that has been cleaned up is closed: it may be replayed, never written to again. */
+/** A run that is closing or completed accepts no new records; cleanup may still be replayed. */
 export function runIsClosed(run) {
-  return Boolean(run?.completedAt);
+  return Boolean(run) && run.status !== 'active';
+}
+
+/** An expired run is refused by the APPLICATION — never by waiting for eventual TTL deletion. */
+export function runIsExpired(run, atMs = now()) {
+  const expiresAt = run?.expiresAt ? Date.parse(run.expiresAt) : NaN;
+  return Number.isFinite(expiresAt) && atMs >= expiresAt;
 }
 
 /**
@@ -801,6 +832,11 @@ export async function cleanupSmokeRun(learnerId, runId) {
   if (!isValidSmokeRunId(runId)) {
     throw new ApiError(400, 'VALIDATION_FAILED', 'A smoke run id is required.');
   }
+
+  // CLOSE FIRST. Every smoke-scoped write is conditional on the run being active, so moving it out
+  // of `active` before deleting anything is what stops a write that already passed the dispatcher
+  // check from committing after this call reports success.
+  await db().closeSmokeRun(runId);
 
   const deleted = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
   let remaining = null;

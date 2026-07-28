@@ -207,11 +207,73 @@ export class DynamoDbSimulationRepository {
   /* Logical readiness only: adapter kind + reachability — never table names/ARNs/account ids. */
   /* Smoke-run records (#75): a RUN item keyed like any other record, owned by its learner. */
   async saveSmokeRun(run) {
-    await this.#saveRecord('SMOKERUN', run.runId, run.learnerId, run);
+    // Even an ACTIVE run carries a TTL: a run abandoned before cleanup would otherwise keep learner
+    // ownership forever.
+    const ttl = run.expiresAt ? { ttl: Math.floor(Date.parse(run.expiresAt) / 1000) } : {};
+    await this.#saveRecord('SMOKERUN', run.runId, run.learnerId, run, ttl);
   }
 
   async getSmokeRun(runId) {
     return this.#getRecord('SMOKERUN', runId);
+  }
+
+  /**
+   * Write a smoke-scoped record ONLY while its run is still active.
+   *
+   * A TRANSACTION, because the alternative is a time-of-check/time-of-use gap: the dispatcher's
+   * check ran before this handler, so a plain conditional put would still let a write commit after
+   * cleanup reported success. The condition check on the run item and the record write either both
+   * apply or neither does.
+   */
+  async saveSmokeScopedRecord({ runId, kind, record }) {
+    const type = { session: 'SESSION', mock: 'MOCK', attempt: 'ATTEMPT' }[kind];
+    if (!type) throw new Error(`unknown smoke-scoped record kind "${kind}"`);
+    const id = record.practiceSessionId ?? record.mockExamId ?? record.attemptId;
+    const key = `${type}#${id}`;
+    try {
+      await this.client.transactWrite({
+        TransactItems: [
+          {
+            ConditionCheck: {
+              TableName: this.tableName,
+              Key: recordKey('SMOKERUN', runId),
+              ConditionExpression: 'record.#s = :active',
+              ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: { ':active': 'active' },
+            },
+          },
+          {
+            Put: {
+              TableName: this.tableName,
+              Item: {
+                ...recordKey(type, id),
+                record,
+                learnerId: record.learnerId,
+                rev: 1,
+                gsi1pk: `LEARNER#${record.learnerId}`,
+                gsi1sk: key,
+              },
+            },
+          },
+        ],
+      });
+      this.revs.set(record, 1);
+      return true;
+    } catch (err) {
+      if (this.isConditionalFailure(err) || err?.name === 'TransactionCanceledException') return false;
+      throw err;
+    }
+  }
+
+  /** Move a run to `closing` so in-flight writes can no longer commit into it. */
+  async closeSmokeRun(runId) {
+    const run = await this.getSmokeRun(runId);
+    if (!run) return null;
+    if (run.status === 'active') {
+      run.status = 'closing';
+      await this.#saveRecord('SMOKERUN', runId, run.learnerId, run);
+    }
+    return run;
   }
 
   /**
@@ -224,10 +286,13 @@ export class DynamoDbSimulationRepository {
   async completeSmokeRun({ runId, completedAt, expiresAt }) {
     const run = await this.getSmokeRun(runId);
     if (!run) return null;
+    // FIRST completion wins: recomputing the expiry on every replay slid the tombstone forward, so
+    // repeated replays could retain it indefinitely. Retention runs from when the run finished.
     run.completedAt = run.completedAt ?? completedAt;
-    run.expiresAt = expiresAt;
+    run.expiresAt = run.expiresAt ?? expiresAt;
+    run.status = 'completed';
     await this.#saveRecord('SMOKERUN', runId, run.learnerId, run, {
-      ttl: Math.floor(Date.parse(expiresAt) / 1000),
+      ttl: Math.floor(Date.parse(run.expiresAt) / 1000),
     });
     return run;
   }

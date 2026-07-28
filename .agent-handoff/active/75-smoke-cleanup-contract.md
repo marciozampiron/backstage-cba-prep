@@ -246,3 +246,39 @@ one: `RUN_CLOSED` refuses a completed run immediately, so nothing waits on the r
 
 root **359/359** · services/bff **222 / 221 pass / 1 skip** · web **71/71** · infra/aws **104/104** ·
 bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.
+
+## Codex review round 4 — findings and fix-forward
+
+All four reviewed commits are preserved; corrections are in a fifth.
+
+**HIGH — an in-flight write could land after cleanup reported success.** The dispatcher's
+`RUN_CLOSED` check runs before the handler, so on its own it is a time-of-check/time-of-use gap: a
+write that passed the check could still commit after cleanup answered zero, leaving records the run
+swore were gone — and the next cleanup would find them. The state test now happens AT the write. The
+lifecycle is `active -> closing -> completed`, cleanup moves the run out of `active` BEFORE deleting
+anything, and every smoke-scoped write is conditional on `active`: check-and-write in the
+single-process adapter, and a transaction pairing a condition check on the run item with the record
+put in the managed one. The fake DynamoDB client enforces the same rule, so the regression exercises
+the real path. Reverting the conditional write makes that test fail.
+
+**MEDIUM — retention was still unbounded, twice over.** Every replay recomputed the expiry and both
+adapters overwrote it, so a replay on day six moved the tombstone from day seven to day thirteen and
+repeated replays could retain it forever. First completion now wins for both `completedAt` and
+`expiresAt`: retention runs from when the run FINISHED, not from the last time somebody asked about
+it. Abandoned active runs were the second gap — a run never cleaned up kept ownership indefinitely —
+so a run carries an expiry from creation and the managed adapter writes `ttl` for active runs too.
+Expiry is enforced by the APPLICATION: an expired run reads as gone from `ownedSmokeRun`, so nothing
+waits on eventually consistent TTL deletion.
+
+**MEDIUM — membership was an untracked prerequisite.** The release runbook now carries the operator
+procedure: assign, verify, remove, with the note that `cognito:groups` lands on the NEXT token so a
+session obtained before assignment keeps failing until re-issued. Evidence recorded for GO/NO-GO is
+logical only. The group is created by `IdentityStack` and membership is assigned by a human, so the
+deploy role never holds a Cognito admin permission.
+
+**LOW — the module contract still said cleanup deletes the run.** Corrected.
+
+### Validation after the fix
+
+root **359/359** · services/bff **225 / 224 pass / 1 skip** · web **71/71** · infra/aws **104/104** ·
+bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.

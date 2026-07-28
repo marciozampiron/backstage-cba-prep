@@ -133,6 +133,35 @@ export class InMemorySimulationRepository {
   }
 
   /**
+   * Write a smoke-scoped record ONLY while its run is still active.
+   *
+   * The dispatcher's `RUN_CLOSED` check happens before the handler runs, so on its own it is a
+   * time-of-check/time-of-use gap: a write that passed the check can still commit after cleanup
+   * reported success, leaving records the run swore were gone. The state test therefore has to
+   * happen AT the write. In this single-process adapter check-and-write is atomic by construction;
+   * the managed adapter uses a transaction with a condition check on the run item.
+   */
+  async saveSmokeScopedRecord({ runId, kind, record }) {
+    const run = this.state.smokeRuns[runId];
+    if (!run || run.status !== 'active') return false;
+    if (kind === 'session') this.state.sessions[record.practiceSessionId] = record;
+    else if (kind === 'mock') this.state.mocks[record.mockExamId] = record;
+    else if (kind === 'attempt') this.state.attempts[record.attemptId] = record;
+    else throw new Error(`unknown smoke-scoped record kind "${kind}"`);
+    this.persist();
+    return true;
+  }
+
+  /** Move a run to `closing` so in-flight writes can no longer commit into it. */
+  async closeSmokeRun(runId) {
+    const run = this.state.smokeRuns[runId];
+    if (!run) return null;
+    if (run.status === 'active') run.status = 'closing';
+    this.persist();
+    return run;
+  }
+
+  /**
    * Mark a run completed — a TOMBSTONE, never a deletion.
    *
    * Separate from `deleteSmokeRunData` on purpose: the use case calls this only after it has proven
@@ -143,8 +172,13 @@ export class InMemorySimulationRepository {
   async completeSmokeRun({ runId, completedAt, expiresAt }) {
     const run = this.state.smokeRuns[runId];
     if (!run) return null;
+    // FIRST completion wins for both fields. Recomputing the expiry on every replay slid the
+    // tombstone forward — a replay on day six moved it from day seven to day thirteen, so repeated
+    // replays could retain it indefinitely. Retention is measured from when the run finished, not
+    // from the last time somebody asked about it.
     run.completedAt = run.completedAt ?? completedAt;
-    run.expiresAt = expiresAt;
+    run.expiresAt = run.expiresAt ?? expiresAt;
+    run.status = 'completed';
     this.persist();
     return run;
   }

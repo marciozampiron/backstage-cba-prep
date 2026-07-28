@@ -434,3 +434,94 @@ test('a completed run carries a bounded retention, not an open-ended one', async
   const ttlMs = Date.parse(record.expiresAt) - Date.parse(record.completedAt);
   assert.ok(ttlMs > 0 && ttlMs <= 8 * 24 * 60 * 60 * 1000, `retention was ${ttlMs}ms`);
 });
+
+/* ============================ the time-of-check gap ========================================== */
+
+test('NEGATIVE: a write in flight during cleanup cannot land after it reports success', async () => {
+  // The dispatcher checks the run state BEFORE the handler runs. On its own that is a
+  // time-of-check/time-of-use gap: a write that passed the check can still commit after cleanup has
+  // reported zero, leaving records the run swore were gone — and the next cleanup would find them.
+  // The state test therefore happens AT the write, conditionally.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Repo } = await import('../src/repository.js');
+  const { startSmokeRun, startDrill, cleanupSmokeRun } = await import('../src/store.js');
+
+  let release;
+  const paused = new Promise((r) => { release = r; });
+  let pauseNext = false;
+
+  class PausingRepository extends Repo {
+    async saveSmokeScopedRecord(args) {
+      if (pauseNext && args.kind === 'attempt') {
+        pauseNext = false;
+        await paused; // the write is mid-flight while cleanup runs
+      }
+      return super.saveSmokeScopedRecord(args);
+    }
+  }
+
+  const repo = new PausingRepository();
+  cfg({ repository: repo });
+  try {
+    const run = await startSmokeRun('l-inflight');
+    pauseNext = true;
+    const writing = startDrill('l-inflight', { questionCount: 5, runId: run.runId });
+
+    const result = await cleanupSmokeRun('l-inflight', run.runId);
+    assert.deepEqual(result.deleted, ZERO, 'nothing existed yet');
+
+    release();
+    // The write must now be REFUSED rather than landing behind the completed cleanup.
+    await assert.rejects(() => writing, (err) => {
+      assert.equal(err.status, 409);
+      assert.equal(err.code, 'RUN_CLOSED');
+      return true;
+    });
+
+    // And the scope really is empty — the assertion that would have failed before.
+    const after = await repo.countSmokeRunRecords({ learnerId: 'l-inflight', runId: run.runId });
+    assert.deepEqual(after, { practiceSessions: 0, mockExams: 0, attempts: 0 });
+  } finally {
+    reset();
+  }
+});
+
+test('replaying cleanup does not slide the tombstone forward', async () => {
+  // A replay six days after completion used to move the expiry from day seven to day thirteen, so
+  // repeated replays could retain learner ownership indefinitely. Retention runs from when the run
+  // finished, not from the last time somebody asked about it.
+  const learner = 'smoke-retention-stable';
+  const run = await mintRun(learner);
+  const first = await cleanup(learner, run);
+  assert.equal(first.status, 200);
+
+  const { activeRepository } = await import('../src/runtime.js');
+  const original = (await activeRepository().getSmokeRun(run)).expiresAt;
+
+  await cleanup(learner, run);
+  await cleanup(learner, run);
+  assert.equal((await activeRepository().getSmokeRun(run)).expiresAt, original);
+});
+
+test('an expired run is refused by the application, not by waiting for TTL', async () => {
+  // DynamoDB TTL is eventually consistent — it can lag by days. The authorization decision must not
+  // wait for the row to disappear.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Repo } = await import('../src/repository.js');
+  const { startSmokeRun, ownedSmokeRun } = await import('../src/store.js');
+
+  const repo = new Repo();
+  cfg({ repository: repo });
+  try {
+    const run = await startSmokeRun('l-expired');
+    assert.ok(await ownedSmokeRun('l-expired', run.runId), 'valid while unexpired');
+
+    const stored = await repo.getSmokeRun(run.runId);
+    stored.expiresAt = new Date(Date.now() - 1000).toISOString();
+    await repo.saveSmokeRun(stored);
+
+    assert.equal(await ownedSmokeRun('l-expired', run.runId), null, 'expired reads as gone');
+  } finally {
+    reset();
+  }
+});

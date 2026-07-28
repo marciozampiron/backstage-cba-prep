@@ -86,6 +86,24 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       }
       store.items.delete(key);
     },
+    // #75: the conditional write is a TRANSACTION — a condition check on the run item plus the
+    // record put, applied together or not at all. The fake enforces the same rule as the real
+    // table, so the TOCTOU regression exercises the real code path.
+    async transactWrite({ TransactItems }) {
+      for (const item of TransactItems) {
+        if (!item.ConditionCheck) continue;
+        const existing = store.items.get(keyOf(item.ConditionCheck.Key));
+        const expected = item.ConditionCheck.ExpressionAttributeValues[':active'];
+        if (!existing || existing.record?.status !== expected) {
+          const err = new Error('TransactionCanceledException');
+          err.name = 'TransactionCanceledException';
+          throw err;
+        }
+      }
+      for (const item of TransactItems) {
+        if (item.Put) store.items.set(keyOf(item.Put.Item), item.Put.Item);
+      }
+    },
     // Deliberately NO scan method: any attempt to Scan explodes loudly.
   };
 }
