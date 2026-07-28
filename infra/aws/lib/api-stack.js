@@ -145,6 +145,9 @@ class ApiStack extends Stack {
       removalPolicy: durable ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
 
+    // Exposed for #82 Slice B: the ObservabilityStack takes an EXPLICIT reference to this
+    // function rather than reconstructing its name, so a rename cannot leave alarms pointing at
+    // a function that no longer exists.
     const fn = new NodejsFunction(this, 'BffFunction', {
       functionName: `cba-study-coach-${environment}-bff`,
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -186,6 +189,8 @@ class ApiStack extends Stack {
     });
 
     // Minimal DynamoDB grants for the #77 adapter's documented access patterns — NOTHING else.
+    this.bffFunction = fn;
+
     fn.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'ItemCrudOnExactTable',

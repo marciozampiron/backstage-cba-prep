@@ -34,13 +34,21 @@ function buildStacks(app) {
         userPoolClient: identity.userPoolClient,
         userPoolDomain: identity.userPoolDomain,
       });
-      return { identity, data, api };
+      // #82 Slice B: the ObservabilityStack composes metrics and notifications over resources it
+      // does NOT own. Every reference is explicit, so a rename in ApiStack/DataStack breaks synth
+      // here instead of silently producing alarms and widgets that watch nothing.
+      const observability = new ObservabilityStack(app, 'ObservabilityStack', {
+        stackName: `${base}-observability`,
+        httpApi: api.httpApi,
+        bffFunction: api.bffFunction,
+        bffLogGroup: api.bffLogGroup,
+        accessLogGroup: api.accessLogGroup,
+        table: data.table,
+      });
+      return { identity, data, api, observability };
     })(),
     aiOrchestration: new AiOrchestrationStack(app, 'AiOrchestrationStack', {
       stackName: `${base}-ai-orchestration`,
-    }),
-    observability: new ObservabilityStack(app, 'ObservabilityStack', {
-      stackName: `${base}-observability`,
     }),
   };
 }

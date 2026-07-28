@@ -230,3 +230,104 @@ services/bff **163 pass + 1 skip** · infra/aws **62/62** · `cdk synth` credent
 **Zero deploy and zero cloud mutation:** no AWS or Cloudflare call, no OTEL/Application Signals
 enablement, no Bedrock invocation, no push. `7fdc6a4` and `ecd0f62` are untouched; #10, `EVENTS.md`,
 `.vscode/` and all governance residue are preserved.
+
+---
+
+## Slice B — ObservabilityStack (implemented locally, awaiting independent review)
+
+Two preserved commits on `task/82-observability-stack`, branched from `origin/main`. Slice A's
+reviewed commits are untouched; no amend, rebase or squash.
+
+### Commit 1 — remove the #82 NUL debt
+
+`services/bff/test/telemetry.test.js` carried a literal NUL byte, which made Git classify the file
+as binary: the diff collapsed to `Bin 0 -> N bytes`, so a security test could not be reviewed on
+GitHub — the exact file where reviewability matters most. The byte is now built at runtime with
+`String.fromCharCode(0)`; the assertion is unchanged and still covers the control character.
+
+With the debt gone, `KNOWN_PRE_EXISTING` in `test/human-publish-script.test.js` is empty. That set
+is self-policing: the guard asserts every listed exception still contains a NUL, so leaving a stale
+name behind would have failed. The file now has a normal textual diff.
+
+### Commit 2 — implement the stack
+
+`infra/aws/lib/observability-stack.js` replaces the placeholder. Wiring is by construct reference,
+never by reconstructed name: `ApiStack` now exposes `bffFunction`, and `app.js` passes the HTTP API,
+the BFF function, both log groups and the DynamoDB table explicitly. A missing reference throws at
+synth with the property named, because an alarm silently pointed at a renamed function is a monitor
+that reports healthy forever.
+
+- **KMS**: one customer-managed key per environment, rotation on, `RETAIN` in pilot / `DESTROY` in
+  dev. CloudWatch gets exactly `kms:Decrypt` + `kms:GenerateDataKey` under `aws:SourceAccount` —
+  not `kms:GenerateDataKey*`, which would also grant `WithoutPlaintext` and `Pair`.
+- **SNS**: one encrypted operational topic per environment. `sns:Publish` is restricted to the
+  CloudWatch service principal, this account, and an `ArnLike` on this environment's alarm ARN
+  prefix. No subscription in code — the endpoint is operator configuration.
+- **Alarms**: exactly six, all `TreatMissingData=NOT_BREACHING`, all action-free. The
+  `OperationalHealth` composite references exactly those six and is the only resource carrying the
+  SNS action.
+- **Dashboard**: the five baseline rows. **Queries**: five versioned, bounded Logs Insights
+  definitions projecting only allowlisted fields; `@message` is rejected because it returns the
+  whole event and would defeat the Slice A allowlist at query time.
+- **Gate role**: environment-scoped, read-only, trusting the imported account-global provider on an
+  exact subject (repo + GitHub Environment + `aud=sts.amazonaws.com`), `environment:` not `ref:`.
+  Two statements only. No role ARN output, no deploy, write, or log-content-read permission.
+- **Outputs**: four logical names. No ARN, account id, endpoint, subscription or secret.
+- **No budget**: blocked until the `Project` cost-allocation tag is proven to isolate this project.
+
+### Ownership decision recorded in the canonical docs
+
+Per Zamp's binding decision, `SecurityStack` keeps the account-global OIDC **provider** (one per
+issuer per account, so it needs one owner) and `ObservabilityStack` instantiates the
+environment-specific gate **role**, importing that provider without creating a second one. The
+reasoning is now in `aws-iac-foundation.md` (Observability Stack + Security Stack sections) and
+`aws-observability-baseline.md` §4, §4.1 and §15: a role maintained away from the alarms, dashboard
+and topic it reads drifts silently when one of them is renamed, because a stale ARN inside an Allow
+denies without any signal.
+
+### Negative controls (each mutation is asserted to actually take effect first)
+
+Every invariant is a named function run twice — against the real template, where it must pass, and
+against a mutated copy, where it must throw. A control that has never been observed to fail proves
+nothing.
+
+| Required control | How it fails |
+| --- | --- |
+| Removing any one of the six alarms | Each of the six is dropped from the composite rule individually, and separately deleted outright |
+| An SNS action on any second alarm | Each alarm × each of `AlarmActions`/`OKActions`/`InsufficientDataActions` |
+| Expanding the read-only OIDC action set | Seven additions incl. `logs:StartQuery`, `logs:GetLogEvents`, `cloudwatch:SetAlarmState`, `cloudwatch:*`; plus a second `Resource:"*"` statement |
+| Wildcard IAM actions | Wildcards injected into the role trust, key policy and topic policy |
+| Unrelated publishers | Another service, `Principal:"*"`, a foreign account, and a CloudWatch statement missing `aws:SourceAccount` |
+| Missing stack references | All five props, each omitted in turn |
+| Unsupported environment | `staging`, `production`, `prod`, `""` |
+
+### Residual risks
+
+- **The `kms:*` root-administration statement remains.** `kms.Key` always emits it, and AWS
+  documents that removing it produces an unmanageable, unrecoverable key. It grants an account
+  administrator nothing they do not already have, so it is allowed as a single narrow exception:
+  the test requires it to be on a KMS key, principal this account's root, action exactly `kms:*`,
+  and at most one such statement in the template. A `kms:*` to a service principal, or a second
+  root statement, fails. Flagged for the reviewer as the one wildcard action that survives.
+- **Everything here is a synth-time guarantee.** The template can be provably correct and the
+  notification path still be dead — a broken key policy loses notifications without changing any
+  alarm state. Only the live notification-path proof (§14 of the baseline) closes this, and it is
+  out of scope for this slice.
+- **The alarm thresholds are estimates, not measurements.** p95 ≥ 12s is derived from the 15s
+  Lambda timeout, and the error alarms fire on the first occurrence. Both will need retuning
+  against real pilot traffic; too-sensitive alarms get ignored, which is the same as no alarms.
+- **`DynamoThrottling` uses a table-level math expression** over `ReadThrottleEvents +
+  WriteThrottleEvents`. It will not attribute throttling to a specific index.
+- Slice A's residual risks are unchanged; no metric on events missing `requestId` yet.
+
+### Validation
+
+root **311 tests / 310 pass / 1 skip / 0 fail** · infra/aws **91/91** (62 pre-existing + 29 new) ·
+services/bff **164 / 163 pass / 1 skip / 0 fail** · web **62/62** + `next build` OK · bank **60
+valid / 0 errors** · `git diff --check` clean · `npm run agent-refresh` ok · credential-free
+`cdk synth` OK for `dev` and `pilot`, refused for `staging`.
+
+**Zero mutation:** no deploy, no AWS or Cloudflare call, no subscription, no alarm-state change, no
+OTEL/Application Signals enablement, no Bedrock invocation, no secret operation, no push, no PR and
+no merge. #67, #10, #91/#93, `.vscode/`, `CURRENT.md` and `EVENTS.md` are preserved; the stale
+primary worktree was never touched.

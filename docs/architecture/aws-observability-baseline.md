@@ -42,10 +42,12 @@ The diagram has four intentional boundaries:
 
 ## 3. Current State
 
-The repository still contains a placeholder `ObservabilityStack`; the authorized AWS account has
-no deployed CBA Study Coach dashboard, alarm set, or application log groups. The SecurityStack is
-the only deployed application stack. Therefore observability is a required dependency of the
-pilot deployment, not a follow-up after launch.
+The `ObservabilityStack` is implemented (#82 Slice B) and synthesises credential-free for `dev`
+and `pilot`, but nothing in this baseline is deployed yet: the authorized AWS account still has no
+CBA Study Coach dashboard, alarm set, or application log groups, and the SecurityStack remains the
+only deployed application stack. Observability is therefore a required dependency of the pilot
+deployment, not a follow-up after launch. Every guarantee below is currently a synth-time
+guarantee; the live notification-path proof (§14) is what converts it into an operational one.
 
 ## 4. Ownership
 
@@ -54,8 +56,8 @@ pilot deployment, not a follow-up after launch.
 | `ApiStack` | Explicit Lambda log group and retention, structured JSON application logging, API Gateway access log group and allowlisted access-log format |
 | `DataStack` | DynamoDB resource and native metrics consumed by alarms; no observability IAM resources |
 | `IdentityStack` | Cognito resources; tokens, claims, email, and learner identity must never be logged |
-| `ObservabilityStack` | Customer-managed KMS key, encrypted SNS notification topic, CloudWatch alarms, dashboard, saved Logs Insights queries, and optional project-scoped budget |
-| `SecurityStack` / #70 | Environment-scoped GitHub OIDC observability-gate role with the exact read-only O1/O2 actions; no deploy permissions |
+| `ObservabilityStack` | Customer-managed KMS key, encrypted SNS notification topic, CloudWatch alarms, dashboard, saved Logs Insights queries, the environment-scoped read-only observability-gate role, and the optional project-scoped budget |
+| `SecurityStack` | The **account-global** GitHub OIDC identity provider only. It is not re-created anywhere else, and it grants nothing on its own |
 | BFF transport | Request correlation and sanitized operational events; no CloudWatch or OTEL SDK dependency |
 | Domain/application | No AWS, CloudWatch, OTEL, dashboard, alarm, or logging-framework imports |
 | Cloudflare platform | Worker/edge logs and analytics; not automatically visible in CloudWatch |
@@ -63,6 +65,23 @@ pilot deployment, not a follow-up after launch.
 Cross-stack references are explicit. The stack that owns a workload owns its log emission
 configuration; the ObservabilityStack composes metrics and notifications without taking ownership
 of the workload itself.
+
+### 4.1 Why the gate role is resource-local
+
+The OIDC **provider** and the **role that trusts it** are different kinds of object, and splitting
+them the other way was the wrong cut:
+
+- The provider is an account-level identity boundary. One issuer may have exactly one provider per
+  account, so it must have exactly one owner — `SecurityStack`. `ObservabilityStack` imports it by
+  ARN and never creates one; a second provider for `token.actions.githubusercontent.com` is a
+  deploy-time conflict, and the synth tests assert that no provider resource appears here.
+- The role grants read access to *these* alarms, *this* dashboard and *this* topic. Its permission
+  set is only reviewable next to the resources it reads. Owned by a security stack that cannot see
+  those resources, the role's scope would be maintained by hand and would drift the moment a topic
+  or alarm is renamed — the failure being silent, because a stale ARN in an Allow denies quietly.
+
+So: provider account-global and centrally owned, role environment-scoped and resource-local, wired
+to the topic construct rather than to a written-out ARN.
 
 ## 5. Environment Posture
 
@@ -299,15 +318,20 @@ Any failure blocks smokes and promotion.
 
 ### Read-only IAM surface for O1/O2
 
-The #70 observability-gate job assumes a dedicated environment-scoped GitHub OIDC role. It has no
-deploy permissions and receives only these read actions:
+The #70 observability-gate job assumes a dedicated environment-scoped GitHub OIDC role. The role is
+created by `ObservabilityStack` (see §4.1) and trusts the account-global provider owned by
+`SecurityStack`, on an exact subject: this repository, GitHub Environment `dev` or `pilot`, and
+`aud=sts.amazonaws.com` — an `environment:` subject rather than a `ref:` one, so it is reachable
+only from a job GitHub has already gated. It has no deploy permissions and receives only these read
+actions:
 
 - O1: `logs:DescribeLogGroups`, `logs:DescribeQueryDefinitions`,
   `cloudwatch:GetDashboard`, `cloudwatch:DescribeAlarms`, `sns:GetTopicAttributes`, and
   `sns:ListSubscriptionsByTopic`;
 - O2: `cloudwatch:DescribeAlarms` and `cloudwatch:GetMetricData`.
 
-No write, query-execution, subscription, alarm-state mutation, or log-content read is allowed.
+No write, query-execution, subscription, alarm-state mutation, or log-content read is allowed. The
+role ARN is never emitted as a stack output; #70 resolves the role by its logical name.
 There is never an `Action: "*"`. CloudWatch and Logs list/describe/get operations that do not
 support resource-level authorization may use `Resource: "*"` only in an isolated read-only
 statement containing the exact actions above — that statement must contain nothing else, so an
