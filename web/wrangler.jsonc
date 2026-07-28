@@ -5,8 +5,15 @@
   // it can provision an R2 bucket when one is available, and #67 Stage A forbids ANY Cloudflare
   // account mutation. Every binding below is either platform-provided (ASSETS) or absent.
   //
-  // Deploy/preview are OUT OF SCOPE here and belong to #70 (human-gated), which also owns the
-  // per-environment worker names, routes and runtime variables.
+  // OWNERSHIP. #67 Stage B owns the per-environment Worker NAMES and the `workers_dev` /
+  // `preview_urls` posture below — they are declared and tested here. #70 owns the ROUTES, the
+  // runtime variable VALUES, and the deployment itself.
+  //
+  // The deployment is not out of the repository — #70 implements it here, as a human-gated
+  // workflow behind the GitHub Environment approval. What is prohibited is the PACKAGE-LEVEL path:
+  // `web/package.json` has no `deploy` or `preview` script and must never gain one, so no local
+  // `npm run` can mutate a Cloudflare account. `opennextjs-cloudflare deploy` is reachable only
+  // from that workflow.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cba-study-coach-web",
   "main": ".open-next/worker.js",
@@ -22,6 +29,52 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
+  },
+
+  // --- per-environment workers (#67 Stage B) -------------------------------------------------
+  //
+  // Names only. Separate Workers per tier is the same separation the AWS side already has
+  // (`cba-study-coach-<env>-*`), and it is what stops a dev deploy from overwriting pilot.
+  //
+  // ROUTES ARE DELIBERATELY ABSENT. Whether the pilot serves from a custom domain or the
+  // `workers.dev` origin is still an OPEN DECISION on #67, and it is not a cosmetic one: it
+  // determines the exact origin that goes in the BFF CORS list (#69) and the Cognito callback and
+  // logout URLs, which still hold the reserved `.invalid` placeholder. Writing a route here would
+  // decide it silently. #70 supplies the route with the deploy.
+  //
+  // VARS ARE ALSO ABSENT, and stay absent. `CBA_RUNTIME_ENV`, `CBA_BFF_BASE_URL`, `CBA_WEB_AUTH`
+  // and the `COGNITO_*` values are Worker RUNTIME variables supplied per environment at deploy
+  // time by #70. A committed value here would be both an endpoint in a tracked file and a
+  // build-time freeze of something the contract requires to be resolved per request.
+  //
+  // `workers_dev` and `preview_urls` are set EXPLICITLY on every environment because both default
+  // to true. Left unset, deploying the pilot Worker would publish versioned and aliased preview
+  // URLs on `workers.dev` — public origins pointing at pilot, which the environment contract
+  // forbids outright. A default that silently exposes an environment is not a default worth
+  // inheriting.
+  "env": {
+    // dev DOES get previews: the contract gives it ephemeral, UI-only preview URLs alongside one
+    // stable dev URL. Previews are never added to any BFF CORS allow-list, so an authenticated
+    // flow cannot run on them — they validate rendering only.
+    "dev": {
+      "name": "cba-study-coach-dev-web",
+      "workers_dev": true,
+      "preview_urls": true
+    },
+    // pilot gets NEITHER, and the two settings are refused for different reasons.
+    //
+    // `preview_urls: false` is permanent: "previews must never point at pilot" is a contract rule,
+    // not a preference.
+    //
+    // `workers_dev: false` is the fail-closed side of an OPEN DECISION. If the pilot ends up
+    // serving from the `workers.dev` origin rather than a custom domain, this flips to true as
+    // part of that decision — together with the CORS origin and the Cognito callback/logout URLs.
+    // Until then it stays off, so nothing is published by default while the decision is pending.
+    "pilot": {
+      "name": "cba-study-coach-pilot-web",
+      "workers_dev": false,
+      "preview_urls": false
+    }
   }
 
   // Deliberately NOT configured (each would provision or require a Cloudflare resource):

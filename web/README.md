@@ -80,10 +80,75 @@ SDK import and credentials into synthetic artifacts and asserts the scanner FAIL
 | `CBA_BFF_BASE_URL` | Cloudflare Worker **runtime** variable, supplied per environment by #70 | the environment's Web BFF (API Gateway) origin. **Never** `NEXT_PUBLIC_*` — Next inlines those at build time, which would break the build-once/promote-the-same-artifact rule of the #56 smoke design. Resolved server-side by `lib/bff-config.js`; unset locally means same-origin `/api`. |
 | `CBA_RUNTIME_ENV` | environment | `local` \| `dev` \| `pilot`. `dev`/`pilot` **require** `CBA_BFF_BASE_URL` — the resolver fails fast instead of silently falling back to same-origin. **On Cloudflare Workers it is mandatory and only `dev`/`pilot` are legal**: a deployed runtime never inherits the `local` default. |
 | `CBA_WEB_AUTH` | environment (#69) | `dev` only locally. In a `dev`/`pilot` runtime it must be exactly `cognito`; absent, `dev` or unknown makes `/auth/config` answer `AUTH_MISCONFIGURED` instead of downgrading to the deterministic local learner. |
-| `COGNITO_*` | environment (#69) | served to the browser at request time by `/auth/config`; ids are configuration, not secrets. |
+| `COGNITO_USER_POOL_ID` | Worker **runtime** variable, per environment (#69/#70) | served to the browser at request time by `/auth/config`; an id, not a secret. Required, non-empty, untrimmed values rejected. |
+| `COGNITO_CLIENT_ID` | Worker **runtime** variable, per environment (#69/#70) | same. |
+| `COGNITO_DOMAIN` | Worker **runtime** variable, per environment (#69/#70) | an absolute `https://` **origin**, not a bare host: `auth-settings.js` uses it as a URL base (`new URL('/logout', domain)`), so a bare host would resolve against the frontend and send the learner to a logout URL on the wrong site. On a **deployed** tier the reserved `.invalid` placeholder is refused — see below. |
+
+All of these are Worker **runtime** variables for the same reason `CBA_BFF_BASE_URL` is:
+`/auth/config` is served per request from the Worker binding env, so one built artifact promotes
+across tiers unchanged. They are supplied per environment at deploy time by #70, never committed,
+and never `NEXT_PUBLIC_*`.
+
+**Why a deployed tier refuses `COGNITO_DOMAIN` on `.invalid`.** The Cognito callback and logout
+URLs still default to the reserved `.invalid` placeholder while the custom-domain-versus-
+`workers.dev` decision on #67 is open. A placeholder that reaches a deployed tier renders a sign-in
+button that cannot complete its redirect: the page looks healthy and the flow is dead, which is the
+kind of failure a health check passes straight over. `/auth/config` therefore answers
+`AUTH_MISCONFIGURED` at config time, where it is visible, rather than in the browser after the
+redirect. Local development may still use the placeholder.
 
 No Cloudflare API token, AWS credential, account id or ARN belongs in this repo, in logs, or in
 fixtures. `npm run leak-scan` enforces the browser-facing half of that rule.
+
+## Per-environment Workers (#67 Stage B)
+
+`wrangler.jsonc` declares one Worker per tier — `cba-study-coach-dev-web` and
+`cba-study-coach-pilot-web` — mirroring the `cba-study-coach-<env>-*` separation the AWS side
+already uses. Separate Workers are what stop a dev deploy from overwriting pilot.
+
+Two things are **deliberately absent** from that file and stay absent:
+
+- **Routes.** Whether the pilot serves from a custom domain or the `workers.dev` origin is an open
+  decision on #67, and not a cosmetic one: it determines the exact origin in the BFF CORS list
+  (#69) and the Cognito callback/logout URLs. Writing a route would decide it silently. #70
+  supplies the route with the deploy.
+- **Vars.** Every runtime variable above is supplied at deploy time. A committed value would be
+  both an endpoint in a tracked file and a build-time freeze of something the contract requires to
+  be resolved per request.
+
+Deploy stays out of this package: there is no `deploy` or `preview` script in `package.json`, so a
+local `npm run` cannot mutate a Cloudflare account. `opennextjs-cloudflare deploy` is invoked only
+from the #70 workflow behind the GitHub Environment approval.
+
+`workers_dev` and `preview_urls` are set **explicitly on every environment**, because both default
+to `true`. Left unset, deploying the pilot Worker would publish versioned and aliased preview URLs
+on `workers.dev` — public origins pointing at pilot, which the contract forbids outright.
+
+| | `workers_dev` | `preview_urls` |
+| --- | --- | --- |
+| `dev` | `true` | `true` — ephemeral, UI-only previews, exactly what the contract gives dev |
+| `pilot` | `false` | `false` — permanent: previews must never point at pilot |
+
+`pilot.workers_dev: false` is the fail-closed side of the open origin decision: nothing is
+published by default while it is pending. If the pilot ends up serving from `workers.dev` rather
+than a custom domain, it flips to `true` as part of that decision, together with the CORS origin
+and the Cognito callback/logout URLs.
+
+**Ephemeral previews are never CORS-allow-listed** (pilot-environment-contract §1). Authenticated
+integration goes through one stable URL per environment, enforced by `ApiStack` with two rules that
+are both necessary and neither sufficient:
+
+- **at most one** exact `https` origin — this stops an origin being *appended*;
+- **the origin is bound to the environment's Worker** — on `workers.dev` the leftmost hostname label
+  must be exactly `cba-study-coach-<env>-web`. A preview URL is the stable hostname with a prefix
+  (`<version>-<worker>.…` or `<alias>-<worker>.…`), so this rejects every preview shape, and the
+  other environment's Worker, with the same rule.
+
+The count rule alone does **not** enforce the preview policy: it only prevents appending. A preview
+URL *replacing* the stable one is the likelier mistake — a developer pasting the URL they were just
+testing — and it is the Worker-name binding that catches that. Hosts embedding a Cloudflare domain
+without being on it (`…workers.dev.evil.test`) are rejected too; custom domains are otherwise
+unconstrained, because pinning a shape would pre-empt the open decision.
 
 ## Identity / auth
 

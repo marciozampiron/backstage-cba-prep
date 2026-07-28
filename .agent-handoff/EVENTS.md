@@ -2,6 +2,26 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-28 — Claude — #82 closed, #67 Stage B opened
+
+- #82 CLOSED (completed) with all three slices on `main`; Roadmap board item confirmed Done.
+  Slice B: PR #98, merge `2d8ab134c9c2f1f0a5944a1c756bdf200e4e01c0`. Slice C: PR #99, merge
+  `2f9ee8efb97c9e1612eea31c16ab6b18e146fea1`. CI green on `main` at `2f9ee8e` for `quality (20)`,
+  `quality (22)`, `Analyze (actions)` and `Analyze (javascript-typescript)`.
+- `infra-synth` and `web-quality` are path-filtered and did not trigger on the Slice C merge, which
+  touches no `infra/aws/**` or `web/**` path. Both were run locally on that commit: infra/aws
+  99/99 and credential-free `cdk synth` OK for `dev` and `pilot`.
+- Recorded on the issue that the live SNS/KMS notification-path proof is NOT closed by #82 and
+  remains a separate pilot-promotion gate under #70.
+- Handoffs reconciled: `active/82-*` moved to `done/`, `inbox/67-cloudflare-opennext-stage-b.md`
+  moved to `active/`. `spec/authority-policy.json` updated so the governed-surface paths follow
+  the files — the policy is closed on those paths, so a move without it fails the suite.
+- Local cleanup: worktree `cba-issue-82c` removed, branch `task/82-observability-slice-c` deleted
+  with `git branch -d` (no force), and the expired #82 scope/gate/publication artifacts removed
+  from `/tmp`. The #91 worktree was not touched.
+- No push, deploy, cloud mutation or paid call.
+
+
 ## 2026-07-25 — Codex post-push validation — #69 closed and Done
 
 - Independently confirmed `HEAD == origin/main == 961af51`, no unpublished commits, and no active
