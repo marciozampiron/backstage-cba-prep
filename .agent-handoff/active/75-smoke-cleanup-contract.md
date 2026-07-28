@@ -353,124 +353,119 @@ condition. Worth separating, because only the first was a defect in the contract
 - `#saveRecord` in the managed adapter now transacts against the active run whenever the record
   carries a run id, so UPDATES are fenced and not only creation.
 
-## Retention design — REVISION 3 (recorded before implementation)
+## Retention design — REVISION 4 (recorded before implementation)
 
-Revisions 1 and 2 are superseded. Revision 2's central mistake was collapsing two different
-questions into one deadline: *may this run still accept writes?* and *may this run still be cleaned
-up?* Those have opposite retention needs, and answering both with the 24h abandonment clock made
-cleanup unreachable exactly when it was most needed.
+Revisions 1–3 are superseded. The three-clock model from R3 is carried forward unchanged and
+approved; R4 adds the two contracts R3 asserted but never specified — what "logically expired" means
+on every read path, and how a profile actually becomes smoke-bounded given that the repository has
+no idea what a capability is.
 
-### Three clocks, because there are three questions
+### Carried forward from R3 (unchanged)
 
-| Field | Question it answers | Set when | Bound |
+| Field | Question | Set when | Bound |
 | --- | --- | --- | --- |
 | `writeDeadlineAt` | may new records join this run? | at mint | 24h |
 | `ownershipExpiresAt` | may this run still be cleaned up? | at mint | 8d |
 | `expiresAt` | may the tombstone be forgotten? | at FIRST completion | 7d from `completedAt` |
 
-`ttl` (epoch seconds) mirrors **ownership**, never the write deadline, and is rewritten on every
-transition including `closing`.
+`ttl` mirrors ownership, never the write deadline. Ownership deliberately outlives child retention
+by a day, so cleanup is reachable for as long as anything remains to clean. Cleanup stays authorized
+after the write deadline — that is the manual-recovery path. `retainUntil` on children is
+repository-owned and write-once. The active-mock claim is reclaimed logically, and its deadline is
+pinned by the transaction to the run's own.
 
-### Ownership must outlive its children (finding 1)
+### Logical expiry is a property of the READ PATH, and cleanup does not use it (finding 1)
 
-Revision 2 set the active run's `ttl` to the 24h abandonment bound while children survived seven
-days. `ownedSmokeRun` refuses an expired run and the DELETE route uses that same lookup, so after
-24h cleanup answered `403` while up to six more days of sessions, attempts and mocks remained —
-data outliving the ownership record needed to delete it, and #70 unable to prove convergence after a
-cancelled workflow.
+R3 said "no reachable child remains" and named only four functions. That is not a contract: TTL is
+eventual, so an expired session or attempt stays physically present and every unlisted read path
+would still return it.
 
-The two are now separated:
+**Two distinct read modes, and the distinction is the whole point.**
 
-- **write eligibility** ends at `writeDeadlineAt` (24h). A run past it accepts no new records.
-- **ownership** ends at `ownershipExpiresAt` (8d) — deliberately one day LONGER than child
-  retention, so there is always a window in which the children still exist and the run that owns
-  them can still be named. `ownedSmokeRun` refuses only past ownership.
+*Application reads* hide an expired smoke child. `getSession`, `getAttempt`, `getMock`,
+`listAttempts`, `listMocks` and everything built on them — dashboard, results, missed review,
+`onlyMissed` pools — treat a record whose `retainUntil` has passed as ABSENT. A record with no
+`retainUntil` is an ordinary learner's and is never filtered.
 
-So an abandoned run stops growing after a day and stays cleanable for eight. Cleanup is authorized
-against a write-expired run: that is the manual-recovery path after a cancelled workflow, and
-refusing it was the defect.
+*Cleanup reads* are RAW. `deleteSmokeRunData` and `countSmokeRunRecords` enumerate physically and
+see expired rows, because their job is to delete them while ownership is still valid. This is the
+trap R3 walked into without noticing: had cleanup reused the filtered list, it would have reported
+zero — verified, complete, green — while the rows sat in the table. Verification would have been
+measuring its own blindfold.
 
-Test: at 25h, writes are refused and cleanup succeeds; at 8d + 1h, cleanup is refused and no child
-record remains that a cleanup could have reached.
+The port therefore separates them explicitly rather than by convention: the filtered accessors are
+the default, and the raw enumeration is a distinct, named method that only cleanup calls. A future
+read path gets filtering by default; a future cleanup path has to ask for raw access deliberately.
 
-### ACTIVE_MOCK: reclaimed by the application, not by TTL (finding 2)
+Tests, all with the physical row still present:
+a. direct `getAttempt` returns `null`;
+b. dashboard and `listAttempts` exclude it;
+c. cleanup before ownership expiry still discovers and deletes it;
+d. verification cannot report zero while a physical row matching learner + run remains — asserted
+   by seeding a row the filtered path hides and requiring cleanup to both find it and count it.
 
-Revision 2 claimed a `ttl` meant the claim could not outlive run validity. TTL is eventual, so that
-was wrong: the row can persist for days, and `getActiveMock` returned it without looking at anything.
-A stale in-progress claim then blocks the next smoke — the exact failure the fence exists to prevent.
+### The profile lifecycle is a server-derived operation, not a stamp (finding 2)
 
-- The claim item carries `runId` and `writeDeadlineAt`, and **`getActiveMock` evaluates them**: a
-  claim whose deadline has passed reads as ABSENT and is released, in every adapter, whether or not
-  the physical row is still there. TTL is housekeeping; the application reclaims.
-- The deadline is not chosen by the caller. Its trusted source is the run item itself, and the
-  transaction pins it: the `ConditionCheck` asserts
-  `record.writeDeadlineAt = :deadline AND record.writeDeadlineAt > :now AND record.#s = :active`.
-  A claim can therefore only carry the run's own current deadline, and only while that deadline is
-  in the future. A caller-supplied or stale value fails the condition rather than being written.
+R3 said "the repository stamps a profile when the principal holds the smoke capability". The
+repository receives a profile record and nothing else; the capability lives at the transport
+boundary. As written it was unimplementable, and closing the gap by passing a flag through the
+record would have made smoke classification caller-influenced — the opposite of the rule.
 
-Test: a claim written at hour one is logically absent at hour 25 with the row still present, and a
-new claim succeeds; a transaction attempting a deadline that does not match the run's is refused.
+**Binding happens at run mint, as an explicit port operation.** `startSmokeRun` already runs in the
+trusted server context, has already verified the capability, and knows the run's
+`ownershipExpiresAt`. It calls `bindProfileToSmokeRun({ learnerId, retainUntil })`. Nothing about
+smoke classification travels in request data or in the profile record.
 
-### PROFILE: bounded and owned here, not deferred (finding 3)
+**A profile that predates the capability** is covered by exactly this: binding is keyed on the run,
+not on a profile write, so a profile created months earlier is bound the first time that learner
+mints a run. `loadOrBootstrap` never needing another write is no longer a problem, because the
+binding is not waiting for one.
 
-Revision 2 accepted an unbounded smoke profile and deferred the owner to #70. That does not close
-the design, and the justification was also factually wrong: the record holds `email`,
-`displayName`, `activeExamId` and timestamps — confidential learner data under SEC-DATA-01, not "a
-cached display name".
+**Renewal is bound to run ownership, and only to that.** Each mint re-anchors `retainUntil` to that
+run's `ownershipExpiresAt`. So a learner running smokes weekly keeps a profile that never expires
+mid-run, and a learner who stops running them loses it eight days after the last run. Ordinary
+profile updates — `PUT /me`, a UserInfo refresh — never extend it. Retention follows the reason the
+data exists, which is the runs, not the last time somebody touched the record.
 
-The bounded owner is this contract:
+**Reclaiming a logically expired but physically present profile.** This is the deadlock R3 would
+have produced: `getProfile` hides the row, bootstrap then creates with `attribute_not_exists(pk)`,
+that fails against the row that is still there, the re-read hides it again, and the learner is stuck
+until TTL fires — days.
 
-- a profile written while the principal holds the **smoke capability** is stamped `smoke: true` and
-  `retainUntil` = creation + 8d, by the repository.
-- `getProfile` refuses an expired smoke profile at the application level, so the answer does not
-  wait on TTL; the managed adapter also carries `ttl` so the row is actually removed.
-- an ORDINARY learner profile is never stamped and never expires. A TTL on the shared projection
-  would silently degrade real accounts, which is why the marker is the smoke capability and not the
-  presence of a run.
+The reclaim is a CONDITIONAL REPLACE on the row's revision, not a blind write: read the physical
+row, and replace it only if the revision is still the one that was read. A concurrent refresh bumps
+the revision, the replace fails its condition, and the fresh profile wins — the stale reclaim can
+never overwrite it. On that failure the caller re-reads and uses the fresh profile.
 
-This bounds the abandoned case without depending on #70 and without touching real learners. #70's
-identity lifecycle remains a separate concern: deleting the smoke USER is theirs; bounding the data
-that user accumulates is ours.
+Tests:
+a. a profile created before the capability becomes bounded at the next run mint, with no profile
+   write in between;
+b. an expired-but-present row is reclaimed before TTL deletion, and the learner is never stuck;
+c. an ordinary learner's profile is never stamped, never hidden and never expires;
+d. a stale reclaim racing a fresh write loses, and the fresh profile survives;
+e. two runs a week apart never let the profile expire mid-run, and a `PUT /me` between them does
+   not extend it beyond the last run's horizon.
 
-Test: an abandoned smoke run's profile is gone at 8d + 1h with no further request; an ordinary
-learner's profile is untouched at the same instant.
+### Expiry stays an application decision, on every path
 
-### `retainUntil` is repository-owned and write-once (finding 4)
-
-Revision 2 put the anchor in a mutable application record and proved it with a happy-path test —
-which demonstrates preservation only while every caller behaves. Retention metadata must not be
-something a caller can set.
-
-- the REPOSITORY stamps `retainUntil` at creation, from the **injected clock**, and only then;
-- on update it reads the stored anchor and rewrites it verbatim; the incoming record's value is
-  **ignored entirely** rather than trusted;
-- a stamped record whose stored anchor is missing or unparseable is a defect and fails closed — the
-  write is refused rather than silently re-anchored, because re-anchoring is the failure mode this
-  is designed to prevent;
-- `#saveRecord` derives the top-level `ttl` from the stored anchor, so an update reproduces the same
-  value rather than a new one.
-
-Adversarial tests: a caller supplying a far-future `retainUntil` on create and on update; a caller
-removing it on update; a caller mutating it to an earlier value; a stored anchor that is absent or
-malformed. Each must preserve the original anchor or fail closed — never adopt the supplied value.
-
-### Expiry stays an application decision, everywhere
-
-`ownedSmokeRun`, `getActiveMock`, `getProfile` and the write fence all evaluate time themselves.
-DynamoDB TTL can lag by days, so nothing may read "the row is still there" as "this is still valid".
+`ownedSmokeRun`, `getActiveMock`, `getProfile`, the write fence, and now every child read path
+evaluate time themselves. TTL is housekeeping and is never the answer to "is this still valid".
 
 ### Full test plan, injected clock throughout
 
 1. run at 25h → writes refused, cleanup still authorized;
 2. run at 8d + 1h → cleanup refused, and no reachable child remains;
-3. completion on day six → `expiresAt` is `completedAt + 7d`, not one day;
-4. replay on day ten → `expiresAt` unchanged from the first completion;
+3. completion on day six → `expiresAt` is `completedAt + 7d`;
+4. replay on day ten → `expiresAt` unchanged;
 5. cleanup failing during `closing` → the row keeps its `ttl`; a retry converges;
 6. claim at hour one → logically absent at hour 25 with the row present; a new claim succeeds;
 7. claim transaction with a deadline that does not match the run's → refused;
-8. child `retainUntil` survives ten updates unchanged; supplied, removed, mutated and malformed
-   values are each rejected or preserved, never adopted;
-9. smoke profile gone at 8d + 1h with no further request; ordinary profile untouched;
-10. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
+8. child `retainUntil` survives ten updates; supplied, removed, mutated and malformed values are
+   rejected or preserved, never adopted;
+9. expired child: hidden from get/list, still found and deleted by cleanup, and verification cannot
+   report zero while the row exists;
+10. profile: pre-existing binding, reclaim before TTL, ordinary profile untouched, stale reclaim
+    loses a race, repeated runs neither expire nor indefinitely extend;
+11. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
 
-Implementation follows only after this revision is approved.
+Implementation begins only after this revision receives REVIEW_APPROVED.
