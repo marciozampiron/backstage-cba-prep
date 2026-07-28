@@ -44,6 +44,32 @@ GO only if ALL are true:
 - [ ] Observability gates O1 and O2 from #82 are green: expected resources/configuration exist,
       pilot notification is confirmed, API Gateway and Lambda both report positive traffic in the
       bounded smoke window, and all required individual/composite alarms are `OK`.
+      Run them read-only. O1 first:
+      `node bin/cli.js observability-gate --gate o1 --environment pilot`.
+      Then set the **release barrier** before any smoke runs — CloudWatch rounds a metric
+      `StartTime` down to the whole minute, so an unaligned window silently includes traffic that
+      reached the PREVIOUS deployment, and O2 would promote a release the smokes never touched:
+
+      ```bash
+      BARRIER=$(node bin/cli.js observability-gate --barrier)
+      while [ "$(date -u +%s)" -lt "$(date -u -d "$BARRIER" +%s)" ]; do sleep 1; done
+      # ...run the deployed smokes now...
+      node bin/cli.js observability-gate --gate o2 --environment pilot \
+        --api-id <deploy output> --since "$BARRIER"
+      ```
+
+      The barrier comes from the gate itself rather than from shell date arithmetic, so the runbook
+      and the code cannot implement two different algorithms — and shell arithmetic on a bare
+      `HH:MM` is worse than it looks: GNU `date -d "12:32 +1 minute"` reads `+1` as a timezone and
+      returns `11:33`, `23:59` becomes `23:00`, and `00:00` becomes the previous day. A stale
+      barrier skips the wait loop and O2 then blocks on `WINDOW_STALE`.
+
+      O2 refuses an unaligned start, and refuses a window carried over from an earlier release,
+      before making any metric call.
+      **A green O2 is not functional coverage.** It proves telemetry ingestion — that requests
+      reached the deployed API and Lambda and metrics are flowing — not that any particular contract
+      route works. Functional coverage is the deployed learner smokes in §3, and O2 must never be
+      recorded as evidence that the learner loop is correct.
 - [ ] **Notification-path live evidence is valid for this environment** (#82) — a SEPARATE item from
       "notification is confirmed" above. A confirmed subscription proves an endpoint was registered;
       it does **not** prove CloudWatch can actually deliver through the customer-managed KMS key,

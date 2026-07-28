@@ -13,6 +13,7 @@ import { runAgentCheck } from '../src/commands/agent-check.js';
 import { runAgentRefresh } from '../src/commands/agent-refresh.js';
 import { runAgentPublish } from '../src/commands/agent-publish.js';
 import { runAgentHumanPublishScript } from '../src/commands/agent-human-publish-script.js';
+import { runObservabilityGate } from '../src/commands/observability-gate.js';
 import { assertPublishingRole } from '../src/lib/publish-gate.js';
 import { resolveDomain } from '../src/lib/blueprint.js';
 import { loadEnv } from '../src/lib/env.js';
@@ -64,6 +65,7 @@ const HELP = `
     agent-refresh  Check agent handoff state before edit/commit/push (no network)
     agent-publish  Validate a publish gate locally (Stage A: no push, no PR, no merge)
     agent-human-publish-script  Prepare the reviewed publication artifact (prepares only; never runs it)
+    observability-gate  Run release gate O1 (structural) or O2 (deployed telemetry) — read-only
     history     Show your past exam attempts and progress
     help        Show this help
 
@@ -127,6 +129,19 @@ const HELP = `
     ${c.gray('(no network: reads .agent-handoff and local git state)')}
     --json          emit machine-readable coordination state
     --record        append an explicit audit event to .agent-handoff/EVENTS.md
+
+  ${c.bold('observability-gate options:')}
+    ${c.gray('(read-only: describes and metric reads only — no deploy, write, query execution,')}
+    ${c.gray(' log-content read, alarm-state change or subscription change)')}
+    --barrier          print the release barrier (next whole minute, UTC) and exit; wait for it
+                       before the first smoke, then pass it as --since
+    --gate o1|o2       O1 = structural resources; O2 = deployed telemetry evidence
+    --environment E    dev | pilot (or CBA_ENVIRONMENT)
+    --api-id ID        O2 only: the deployed HTTP API id (or CBA_API_ID), used solely to build the
+                       metric dimension; it never appears in the verdict
+    --since ISO        O2 only: smoke-window start (or CBA_SMOKE_WINDOW_START), captured
+                       immediately BEFORE the first smoke
+    ${c.gray('O2 proves telemetry ingestion, not functional route coverage.')}
 
   ${c.bold('agent-check options:')}
     ${c.gray('(dry-run by default: constructs provider + orchestrator from env, no spend)')}
@@ -265,6 +280,18 @@ async function main() {
           gate: args.gate,
           repo: args.repo,
           out: args.out,
+        }),
+      );
+      break;
+    case 'observability-gate':
+      process.exit(
+        await runObservabilityGate({
+          gate: args.gate,
+          barrier: !!args.barrier,
+          environment: args.environment,
+          apiId: args['api-id'],
+          since: args.since,
+          json: !!args.json,
         }),
       );
       break;
