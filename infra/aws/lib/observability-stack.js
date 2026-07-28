@@ -491,7 +491,7 @@ class ObservabilityStack extends Stack {
       }),
     });
 
-    // ONE isolated wildcard-resource statement, holding nothing but the five describe/get actions.
+    // ONE isolated wildcard-resource statement, holding nothing but the four describe/get actions.
     // Those APIs do not support resource-level authorization; everything that does is scoped below.
     gateRole.addToPolicy(
       new iam.PolicyStatement({
@@ -560,10 +560,12 @@ class ObservabilityStack extends Stack {
 // `@message` projection: it would return the whole event and defeat the field allowlist, and these
 // are investigation tools rather than an export path.
 //
-// TWO DIFFERENT BOUNDS, and only one of them lives here. `| limit N` caps the ROWS RETURNED; it does
-// NOT cap what the query scans. Logs Insights has no time clause in the query language at all — the
-// window is `startTime`/`endTime` on the StartQuery call, so a saved query text simply cannot carry
-// it, and reading `limit` as a time bound would be a false assurance about both cost and exposure.
+// TWO DIFFERENT BOUNDS, and only one of them lives here. `| limit N` caps the ROWS RETURNED. Query
+// text can narrow results further — Logs Insights QL does support `@timestamp` filtering with
+// `now()` and the datetime functions — but those are filters over what the execution ALREADY
+// scanned. Only `startTime`/`endTime` on the StartQuery call define the scan range, and that range
+// is the cost and exposure boundary. So no saved query can carry its own scan bound, and reading
+// `limit` or a `@timestamp` filter as one would be a false assurance about both.
 // Enforcing an explicit bounded window at execution belongs to whoever runs these queries: #70 for
 // the release gates, and the console operator otherwise. Slice B ships no query runner.
 

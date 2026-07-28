@@ -370,11 +370,11 @@ statement for a foreign account. The comment is corrected: the root statement is
 policies delegate key use at all, so it does more than restate existing administrator access.
 
 **MEDIUM — "bounded" was a false claim about the saved queries.** `| limit N` caps rows returned,
-not what is scanned, and Logs Insights has no time clause in its language — the window is
-`startTime`/`endTime` on `StartQuery`, so a saved query text cannot carry it. The code comment, the
-test name and baseline §10 now say exactly that, execution-time enforcement is assigned to #70, and
-a new test asserts the gate role holds no `logs:StartQuery`/`GetQueryResults`/`StopQuery`, so it
-cannot execute a query and bypass the window at all.
+not what is scanned. Only `startTime`/`endTime` on `StartQuery` define the execution scan range, so
+a saved query text cannot carry its own scan bound. The code comment, the test name and baseline §10
+now say exactly that, execution-time enforcement is assigned to #70, and a new test asserts the gate
+role holds no `logs:StartQuery`/`GetQueryResults`/`StopQuery`, so it cannot execute a query and
+bypass the window at all.
 
 **MEDIUM — the notification invariant ignored the target.** It proved only that one composite had a
 non-empty action, so retargeting it at another account's topic passed. It now requires
@@ -401,3 +401,32 @@ root **311/311** · infra/aws **99/99** (62 pre-existing + 37 new) · services/b
 
 Residual risks are unchanged except that the surviving `kms:*` is now pinned to one exact shape;
 the synth-time-only caveat and the untuned thresholds still stand.
+
+### Codex review round 2 — documentation corrections
+
+Behavior was accepted; these are documentation and comment fixes only, in a fourth commit. No code
+path, policy, alarm, query or test assertion changed.
+
+- **Baseline §9 contradicted the implementation.** It required `kms:GenerateDataKey*` while also
+  claiming no policy grants a wildcard action. It now states the exact pair, records that the
+  narrowing is an **assumption** (AWS guidance commonly shows the wildcard for service event
+  sources) which the live notification-path proof must settle before pilot promotion, and documents
+  the one unavoidable `kms:*` account-root administration statement with the exact shape the tests
+  pin. §15's proof section now cross-references the assumption it exists to falsify. Widening back
+  to the wildcard remains a legitimate outcome of that proof — widening without it is not.
+- **The saved-query explanation overstated the limitation.** Logs Insights QL does support
+  `@timestamp` filtering with `now()` and the datetime functions; what query text cannot replace is
+  the execution scan range set by `StartQuery` `startTime`/`endTime`. Baseline §10, the code comment
+  and the test comment/name now say filters narrow *returned results* while only StartQuery defines
+  the scan range and therefore the cost/exposure boundary. #70 still owns enforcement.
+- **Two comments still said "five" wildcard actions** after `GetDashboard` was scoped out. Both now
+  say four.
+- **Same drift found in §15 and fixed with it:** the section still described one wildcard statement
+  holding every listed action, which stopped being true when `GetDashboard` was scoped. It now shows
+  the three statements and their resources in a table.
+
+### Validation after the documentation fix
+
+root **311/311** · infra/aws **99/99** · services/bff **164 / 163 pass / 1 skip** · web **62/62** ·
+bank **60 valid / 0 errors** · `git diff --check` clean · credential-free `cdk synth` OK for `dev`
+and `pilot`, refused for `staging`.

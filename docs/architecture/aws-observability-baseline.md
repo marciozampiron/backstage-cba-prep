@@ -212,11 +212,29 @@ not sufficient because its policy cannot be extended for CloudWatch alarm use. E
 
 The SNS resource policy allows only the `cloudwatch.amazonaws.com` service principal to call
 `sns:Publish`, restricted to the same account and the environment's alarm ARN prefix through
-`aws:SourceAccount` and `aws:SourceArn`. The KMS key policy grants that same principal only
-`kms:Decrypt` and `kms:GenerateDataKey*`, restricted by `aws:SourceAccount`. Do not require an alarm
+`aws:SourceAccount` and `aws:SourceArn`. The KMS key policy grants that same principal exactly
+`kms:Decrypt` and `kms:GenerateDataKey`, restricted by `aws:SourceAccount`. Do not require an alarm
 `aws:SourceArn` condition in the key policy unless a synth/live integration test proves CloudWatch
-propagates that context to KMS. Offline tests must prove that neither policy grants a wildcard action
-or an unrelated publisher.
+propagates that context to KMS.
+
+**Why the exact pair and not `kms:GenerateDataKey*`.** The wildcard form also grants
+`GenerateDataKeyWithoutPlaintext` and `GenerateDataKeyPair`, which SNS server-side encryption does
+not use. AWS guidance commonly shows the wildcard for service event sources, so the narrower grant
+is a deliberate narrowing and therefore **an assumption, not a proven fact**: if CloudWatch requires
+one of the wider actions, notifications fail silently — the alarm still transitions and nothing
+reports the drop. The separately gated live notification-path proof below is what settles it, and it
+must pass before pilot promotion. Widening back to `kms:GenerateDataKey*` is a legitimate outcome of
+that proof; widening it *without* the proof is not.
+
+**One wildcard action is unavoidable.** The CDK `Key` construct always emits the account-root key
+administration statement (`Allow` / `kms:*` / `Resource: "*"` to `arn:<partition>:iam::<account>:root`,
+with no condition). It cannot be removed without producing a key that nobody can administer or
+recover, and it is what lets IAM policies in the account delegate key use at all. It is therefore
+permitted as the single exception, matched on that exact whole shape: any extra principal,
+condition or resource makes it a different grant and must fail. Offline tests must prove that no
+other statement in either policy grants a wildcard action or admits an unrelated publisher, and
+that the key policy holds exactly one non-root grant with exactly the CloudWatch principal, those
+two actions and the `aws:SourceAccount` condition.
 
 Reference: [AWS guidance for CloudWatch alarms with encrypted SNS topics](https://repost.aws/knowledge-center/cloudwatch-configure-alarm-sns).
 
@@ -238,13 +256,17 @@ Queries must select only allowlisted fields. They are investigation tools, not d
 analytics or scheduled learner-data exports.
 
 **Two different bounds, enforced in two different places.** A saved query carries `| limit N`, which
-caps the rows returned — it does not cap what the query scans. Logs Insights has no time clause in
-its query language; the window is `startTime`/`endTime` on the `StartQuery` call. A saved query text
-therefore cannot be time-bounded, and treating `limit` as a time bound would be a false assurance
-about both cost and exposure. **Every execution must pass an explicit bounded window**, and that
-enforcement belongs to the caller: #70 for the release gates, the operator otherwise. The
-ObservabilityStack ships the query definitions only — it has no query runner, and the gate role
-deliberately holds no `logs:StartQuery`.
+caps the rows returned. Query text can narrow results further — Logs Insights QL does support
+filtering on `@timestamp` with `now()` and the datetime functions — but every one of those is a
+filter applied to what the execution already scanned. **Only `startTime`/`endTime` on the
+`StartQuery` call define the execution scan range**, and that range, not any clause in the query
+text, is the cost and exposure boundary. So no saved query can carry its own scan bound, and reading
+`limit` or a `@timestamp` filter as one would be a false assurance about both cost and exposure.
+
+**Every execution must pass an explicit bounded window**, and enforcing it belongs to the caller:
+#70 for the release gates, the operator otherwise. The ObservabilityStack ships the query
+definitions only — it has no query runner, and the gate role deliberately holds no
+`logs:StartQuery`, so it cannot execute a query and therefore cannot bypass the window at all.
 
 ## 11. Cross-Cloud Boundary
 
@@ -345,11 +367,20 @@ actions:
 
 No write, query-execution, subscription, alarm-state mutation, or log-content read is allowed. The
 role ARN is never emitted as a stack output; #70 resolves the role by its logical name.
-There is never an `Action: "*"`. CloudWatch and Logs list/describe/get operations that do not
-support resource-level authorization may use `Resource: "*"` only in an isolated read-only
-statement containing the exact actions above — that statement must contain nothing else, so an
-offline test fails if any additional action is ever added to it. SNS reads are scoped to the
-environment topic. Offline IAM tests must reject any broader action set.
+
+There is never an `Action: "*"`, and `Resource: "*"` is confined to the actions that genuinely
+cannot be resource-scoped. Everything that supports resource-level authorization is scoped, which
+splits the list above across three statements:
+
+| Statement | Resource | Actions |
+| --- | --- | --- |
+| wildcard describes | `*` | `logs:DescribeLogGroups`, `logs:DescribeQueryDefinitions`, `cloudwatch:DescribeAlarms`, `cloudwatch:GetMetricData` |
+| dashboard | this environment's dashboard ARN | `cloudwatch:GetDashboard` |
+| topic | this environment's topic ARN | `sns:GetTopicAttributes`, `sns:ListSubscriptionsByTopic` |
+
+The wildcard statement must contain those four actions and nothing else, so an offline test fails if
+any action is ever added to it — with a wildcard resource every addition is account-wide rather than
+environment-scoped. Offline IAM tests must reject any broader action set.
 
 ### Notification-path proof (mandatory promotion prerequisite, executed outside O1/O2)
 
@@ -357,6 +388,10 @@ O1 proves the topic, key, policies and alarms EXIST; O2 proves telemetry flows a
 Neither proves that CloudWatch can actually publish through the customer-managed key to a
 subscriber — the one failure mode that is silent, because a broken key policy loses notifications
 without changing any alarm state.
+
+This is also the proof that settles the §9 key-policy narrowing: `kms:Decrypt` +
+`kms:GenerateDataKey` without the wildcard is an assumption about what CloudWatch actually calls,
+and this is the only check that can falsify it.
 
 That end-to-end proof (CloudWatch -> SNS -> KMS -> confirmed subscription) is a **required
 prerequisite for promotion**, recorded per environment:

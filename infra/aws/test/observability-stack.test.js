@@ -279,7 +279,7 @@ function gatePolicyStatements(tpl) {
 }
 
 /**
- * The single wildcard-resource statement must contain the five describe/get actions and NOTHING
+ * The single wildcard-resource statement must contain the four describe/get actions and NOTHING
  * else. With `Resource: "*"`, every added action is account-wide rather than environment-scoped.
  */
 function assertWildcardStatementIsExact(tpl) {
@@ -797,7 +797,7 @@ test('the SystemErrors alarm covers exactly the operations the adapter issues', 
   assert.deepEqual(granted, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
 });
 
-test('saved queries cap the rows returned; the TIME window is not, and cannot be, set here', () => {
+test('saved queries cap the rows returned; the execution scan range is set by the caller', () => {
   // The Slice A telemetry allowlist plus the Lambda runtime's own REPORT fields. Anything else in a
   // projection would defeat the field allowlist at query time.
   const ALLOWED = new Set([
@@ -809,10 +809,10 @@ test('saved queries cap the rows returned; the TIME window is not, and cannot be
     assert.equal(queries.length, 5, `${env}: five queries`);
     for (const [id, q] of queries) {
       const text = q.Properties.QueryString;
-      // `| limit N` caps ROWS RETURNED. It does not cap what the query scans, and Logs Insights has
-      // no time clause in its language at all — the window is startTime/endTime on StartQuery. This
-      // assertion therefore claims only the row cap; the bounded execution window is #70's, and the
-      // gate role deliberately holds no logs:StartQuery (asserted separately).
+      // `| limit N` caps ROWS RETURNED. QL filters (including `@timestamp` ones) narrow results but
+      // still run over what the execution scanned; only startTime/endTime on StartQuery set that
+      // range. This assertion therefore claims only the row cap; the bounded execution window is
+      // #70's, and the gate role deliberately holds no logs:StartQuery (asserted separately).
       assert.match(text, /\|\s*limit\s+\d+/, `${env}/${id} must cap the rows returned`);
       // `@message` returns the whole event and would bypass the field allowlist entirely.
       assert.equal(text.includes('@message'), false, `${env}/${id} must not project @message`);
