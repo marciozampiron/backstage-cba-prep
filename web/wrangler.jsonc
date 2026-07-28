@@ -7,9 +7,13 @@
   //
   // OWNERSHIP. #67 Stage B owns the per-environment Worker NAMES and the `workers_dev` /
   // `preview_urls` posture below — they are declared and tested here. #70 owns the ROUTES, the
-  // runtime variable VALUES, and the deploy itself, all human-gated. Deploy and preview are out of
-  // scope in this repo entirely: there is no `deploy` or `preview` script, so a local `npm run`
-  // cannot mutate a Cloudflare account.
+  // runtime variable VALUES, and the deployment itself.
+  //
+  // The deployment is not out of the repository — #70 implements it here, as a human-gated
+  // workflow behind the GitHub Environment approval. What is prohibited is the PACKAGE-LEVEL path:
+  // `web/package.json` has no `deploy` or `preview` script and must never gain one, so no local
+  // `npm run` can mutate a Cloudflare account. `opennextjs-cloudflare deploy` is reachable only
+  // from that workflow.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cba-study-coach-web",
   "main": ".open-next/worker.js",

@@ -184,3 +184,16 @@ that misleads the next reader more than the original error did.
   runtime values and the deploy.
 
 No code changed in this pass.
+
+
+## Codex review round 3 — wording correction
+
+**LOW — the corrected header contradicted itself.** It said #70 owns the deployment and then called
+deployment "out of scope in this repo entirely". The second claim is false: #70 implements the
+human-gated deployment workflow IN this repository. What is prohibited is narrower and more
+specific — the package-level path. `web/package.json` has no `deploy` or `preview` script and must
+never gain one, so no local `npm run` can mutate a Cloudflare account; `opennextjs-cloudflare
+deploy` is reachable only from the #70 workflow, behind the GitHub Environment approval.
+
+The "out of scope entirely" phrasing would have sent the #70 executor looking outside this
+repository for something that is implemented inside it. No code changed in this pass.
