@@ -10,6 +10,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runObservabilityGate, EXIT } from '../src/commands/observability-gate.js';
 import { AWS_CALL_TIMEOUT_MS, readMetricSum, withCliBounds } from '../src/commands/observability-gate.js';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
 import {
   ALARM_SUFFIXES,
   GateError,
@@ -705,33 +711,118 @@ test('every AWS call is bounded at the CLI level as well as the process level', 
   assert.ok(Number.isFinite(AWS_CALL_TIMEOUT_MS) && AWS_CALL_TIMEOUT_MS > 0);
 });
 
-test('a slow call cannot buy the loop another round past the deadline', async () => {
-  // The deadline used to be judged BEFORE the remote calls, so a round that began just inside the
-  // budget and then spent minutes in a slow call was still treated as having budget left.
+/**
+ * A stub that behaves like `spawnSync` with a timeout: it advances the fake clock by the call's
+ * natural duration OR by the timeout it was given, whichever comes first, and reports the
+ * killed-process shape when the timeout wins. Without honouring the timeout, a fake clock cannot
+ * show whether the budget is actually enforced.
+ */
+function hangingAws({ clock, hangMs, payloads = {} }) {
+  const timeouts = [];
+  const invoke = (args, options = {}) => {
+    const key = `${args[0]} ${args[1]}`;
+    if (key === 'sts get-caller-identity') return DEFAULTS_INVOKER(args);
+    const budget = options.timeoutMs ?? AWS_CALL_TIMEOUT_MS;
+    timeouts.push({ key, budget });
+    if (budget <= 0) throw new Error(`a call was started with no budget left: ${key}`);
+    const spent = Math.min(hangMs, budget);
+    clock.ms += spent;
+    if (spent >= budget) return { code: 1, stdout: '', stderr: 'aws terminated by SIGKILL' };
+    const payload = payloads[key] ?? DEFAULTS[key];
+    return { code: 0, stdout: JSON.stringify(payload), stderr: '' };
+  };
+  invoke.timeouts = timeouts;
+  return invoke;
+}
+
+test('the declared budget is a real wall-clock bound, not a lower one', async () => {
+  // Reproduces the reported behaviour: calls that each run long used to be given the full per-call
+  // ceiling regardless of what was left, so a ten-minute budget could take far longer.
   const start = Date.parse('2026-07-28T12:00:00Z');
-  let clock = start;
-  let rounds = 0;
-  const aws = fakeAws({
-    'cloudwatch get-metric-data': () => {
-      rounds += 1;
-      clock += 9 * 60_000; // the call itself burns most of the budget
-      return { MetricDataResults: [completeResult('api', []), completeResult('lambda', [])] };
+  const clock = { ms: start };
+  const budgetMs = O2_MAX_POLL_MS;
+  // Each call takes 55s — just under the per-call ceiling, so calls SUCCEED and the loop keeps
+  // going. That is what exposes the defect: with 85s per round (55s call + 30s sleep), a round
+  // eventually starts with only a few seconds left, and giving it the full 60s ceiling overruns the
+  // budget. A call that simply exceeds the ceiling would be killed on the first round and prove
+  // nothing about the overall bound.
+  const aws = hangingAws({
+    clock,
+    hangMs: 55_000,
+    payloads: {
+      'cloudwatch get-metric-data': {
+        MetricDataResults: [completeResult('api', []), completeResult('lambda', [])],
+      },
     },
   });
-  const slept = [];
+
   const code = await runObservabilityGate({
     gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
     aws, env: ENV, log: silent, json: true,
-    now: () => clock,
-    sleep: async (ms) => { slept.push(ms); clock += ms; },
-    timeoutMs: O2_MAX_POLL_MS,
+    now: () => clock.ms,
+    sleep: async (ms) => { clock.ms += ms; },
+    timeoutMs: budgetMs,
+    intervalMs: 30_000,
+  });
+
+  assert.equal(code, EXIT.GATE_FAILED, 'it must fail closed');
+  const elapsed = clock.ms - start;
+  // The only slack allowed is the deterministic cost of terminating one in-flight process.
+  assert.ok(elapsed <= budgetMs, `elapsed ${elapsed}ms must not exceed the ${budgetMs}ms budget`);
+  // And no call was ever handed more than what remained.
+  let spent = 0;
+  for (const { budget } of aws.timeouts) {
+    assert.ok(budget <= AWS_CALL_TIMEOUT_MS, 'no call may exceed the per-call ceiling');
+    assert.ok(budget <= budgetMs - spent, `a call was given ${budget}ms with ${budgetMs - spent}ms left`);
+    spent += Math.min(55_000, budget);
+  }
+  assert.ok(aws.timeouts.length >= 2, 'the loop must have gone round more than once');
+});
+
+test('each call is given the smaller of the per-call ceiling and the remaining budget', async () => {
+  const start = Date.parse('2026-07-28T12:00:00Z');
+  const clock = { ms: start };
+  const aws = hangingAws({ clock, hangMs: 0 }); // instant calls, so only the arithmetic is tested
+
+  await runObservabilityGate({
+    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
+    aws, env: ENV, log: silent, json: true,
+    now: () => clock.ms,
+    sleep: async (ms) => { clock.ms += ms; },
+    timeoutMs: 20_000,     // shorter than the 60s per-call ceiling
+    intervalMs: 30_000,
+  });
+  assert.ok(aws.timeouts.length > 0);
+  for (const { budget } of aws.timeouts) {
+    assert.ok(budget <= 20_000, `a call was given ${budget}ms against a 20s budget`);
+  }
+});
+
+test('no AWS call is started once the budget is exhausted', async () => {
+  const start = Date.parse('2026-07-28T12:00:00Z');
+  const clock = { ms: start };
+  // The metric call consumes the entire budget, so the alarm call must not be attempted at all.
+  const aws = hangingAws({
+    clock,
+    hangMs: 60_000,
+    payloads: {
+      'cloudwatch get-metric-data': {
+        MetricDataResults: [completeResult('api', [1]), completeResult('lambda', [1])],
+      },
+    },
+  });
+  const code = await runObservabilityGate({
+    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
+    aws, env: ENV, log: silent, json: true,
+    now: () => clock.ms,
+    sleep: async (ms) => { clock.ms += ms; },
+    timeoutMs: 60_000,
     intervalMs: 30_000,
   });
   assert.equal(code, EXIT.GATE_FAILED);
-  assert.equal(rounds, 2, 'the second round must observe the deadline the slow call crossed');
-  // And no sleep may run past the remaining budget.
-  for (const ms of slept) assert.ok(ms <= O2_MAX_POLL_MS, `slept ${ms}ms`);
-  assert.ok(clock - start <= O2_MAX_POLL_MS + 9 * 60_000 + 1, 'the run must not exceed one over-long call plus the budget');
+  assert.equal(clock.ms - start, 60_000, 'the run must stop exactly at the budget');
+  // hangingAws throws if a call is started with no budget, so reaching here proves none was.
+  assert.equal(aws.timeouts.filter((t) => t.key === 'cloudwatch describe-alarms').length, 0);
 });
 
 test('the loop never sleeps past the remaining budget', async () => {
@@ -769,6 +860,58 @@ test('a hanging or un-spawnable invoker fails closed rather than passing', async
 });
 
 const DEFAULTS_INVOKER = fakeAws();
+
+/* ============================ the release barrier ============================================ */
+
+test('the barrier is the next whole minute, across hour and day boundaries', () => {
+  const cases = [
+    ['2026-07-28T12:32:34Z', '2026-07-28T12:33:00Z'],   // ordinary time
+    ['2026-07-28T12:33:00Z', '2026-07-28T12:34:00Z'],   // already aligned — it must still advance
+    ['2026-07-28T23:59:01Z', '2026-07-29T00:00:00Z'],   // day boundary
+    ['2026-07-28T23:59:00Z', '2026-07-29T00:00:00Z'],
+    ['2026-12-31T23:59:30Z', '2027-01-01T00:00:00Z'],   // year boundary
+    ['2026-07-28T00:00:00Z', '2026-07-28T00:01:00Z'],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(new Date(nextMinuteBarrier(Date.parse(input))).toISOString(), expected.replace('Z', '.000Z'), input);
+  }
+});
+
+test('--barrier prints an aligned, future instant and touches nothing else', async () => {
+  const lines = [];
+  const aws = fakeAws();
+  const nowMs = Date.parse('2026-07-28T23:59:01Z');
+  const code = await runObservabilityGate({ barrier: true, aws, env: ENV, now: () => nowMs, log: (s2) => lines.push(String(s2)) });
+  assert.equal(code, EXIT.OK);
+  assert.equal(lines.join(''), '2026-07-29T00:00:00Z');
+  assert.equal(aws.calls.length, 0, 'printing the barrier must not reach AWS');
+
+  // What it prints must be exactly what the gate will later accept.
+  const printed = Date.parse(lines.join(''));
+  assert.doesNotThrow(() => assertSmokeWindow({ startMs: printed, nowMs: printed + 1000 }));
+});
+
+test('the runbook barrier command is the tested implementation, and it works', () => {
+  const runbook = readFileSync(join(REPO, 'docs/architecture/pilot-release-runbook.md'), 'utf8');
+  const line = runbook.split('\n').map((l) => l.trim()).find((l) => l.startsWith('BARRIER='));
+  assert.ok(line, 'the runbook must define BARRIER');
+
+  // Shell date arithmetic on a bare HH:MM is the bug this replaced: GNU `date -d "12:32 +1 minute"`
+  // reads `+1` as a timezone and returns 11:33, so the barrier came out stale and O2 then blocked
+  // on WINDOW_STALE — the canonical procedure could not be followed.
+  assert.equal(/\+1 minute/.test(line), false, 'the barrier must not use shell minute arithmetic');
+  assert.match(line, /observability-gate --barrier/, 'the barrier must come from the gate itself');
+
+  // Execute the exact documented command, so the runbook cannot drift from the implementation.
+  const command = line.replace('BARRIER=$(', '').replace(/\)$/, '');
+  // Drop only the `node` token; everything after it is the script and its arguments.
+  const [, ...args] = command.split(/\s+/);
+  const printed = execFileSync(process.execPath, args, { cwd: REPO, encoding: 'utf8' }).trim();
+  assert.match(printed, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z$/, `documented command printed "${printed}"`);
+  const parsed = Date.parse(printed);
+  assert.equal(parsed % 60_000, 0, 'the documented command must produce a minute-aligned instant');
+  assert.ok(parsed > Date.now() - 1000, 'the documented command must produce a future instant, not a stale one');
+});
 
 /* ============================ output hygiene ================================================= */
 

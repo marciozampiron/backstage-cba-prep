@@ -51,12 +51,18 @@ GO only if ALL are true:
       reached the PREVIOUS deployment, and O2 would promote a release the smokes never touched:
 
       ```bash
-      BARRIER=$(date -u -d "$(date -u +%H:%M) +1 minute" +%Y-%m-%dT%H:%M:00Z)
-      while [ "$(date -u +%Y-%m-%dT%H:%M:00Z)" \< "$BARRIER" ]; do sleep 1; done
+      BARRIER=$(node bin/cli.js observability-gate --barrier)
+      while [ "$(date -u +%s)" -lt "$(date -u -d "$BARRIER" +%s)" ]; do sleep 1; done
       # ...run the deployed smokes now...
       node bin/cli.js observability-gate --gate o2 --environment pilot \
         --api-id <deploy output> --since "$BARRIER"
       ```
+
+      The barrier comes from the gate itself rather than from shell date arithmetic, so the runbook
+      and the code cannot implement two different algorithms — and shell arithmetic on a bare
+      `HH:MM` is worse than it looks: GNU `date -d "12:32 +1 minute"` reads `+1` as a timezone and
+      returns `11:33`, `23:59` becomes `23:00`, and `00:00` becomes the previous day. A stale
+      barrier skips the wait loop and O2 then blocks on `WINDOW_STALE`.
 
       O2 refuses an unaligned start, and refuses a window carried over from an earlier release,
       before making any metric call.

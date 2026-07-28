@@ -23,6 +23,7 @@ import {
   assertSmokeWindow,
   evaluateO1,
   evaluateO2Round,
+  nextMinuteBarrier,
   resourceNames,
 } from '../lib/observability-gate.js';
 
@@ -45,11 +46,17 @@ export function withCliBounds(args) {
   return [...args, '--cli-connect-timeout', '5', '--cli-read-timeout', '30', '--no-cli-pager'];
 }
 
-/** Default invoker. Injected in tests; never constructed there. */
-function defaultAws(args) {
+/**
+ * Default invoker. Injected in tests; never constructed there.
+ *
+ * `timeoutMs` is the REMAINING gate budget, capped by the per-call ceiling. Passing the ceiling
+ * unconditionally is what let a ten-minute budget take eighteen: a call starting a second before the
+ * deadline could still run for a full minute, and another could follow it.
+ */
+function defaultAws(args, { timeoutMs = AWS_CALL_TIMEOUT_MS } = {}) {
   const res = spawnSync('aws', withCliBounds(args), {
     encoding: 'utf8',
-    timeout: AWS_CALL_TIMEOUT_MS,
+    timeout: Math.max(1, Math.min(AWS_CALL_TIMEOUT_MS, timeoutMs)),
     killSignal: 'SIGKILL',
     env: { ...process.env, AWS_PAGER: '', AWS_CLI_AUTO_PROMPT: 'off' },
   });
@@ -81,8 +88,8 @@ function printRefusal(code, message, log) {
  * exit, and that is an ANSWER, not an error. Everything else fails closed: a call that did not
  * succeed leaves the gate unable to see, which is never a pass.
  */
-function awsJson(aws, args, { allowFailure = false } = {}) {
-  const res = aws([...args, '--output', 'json']);
+function awsJson(aws, args, { allowFailure = false, timeoutMs } = {}) {
+  const res = aws([...args, '--output', 'json'], { timeoutMs });
   if (res.code !== 0) {
     if (allowFailure) return null;
     throw new GateError('AWS_CALL_FAILED', `aws ${args[0]} ${args[1]} failed (exit ${res.code})`);
@@ -180,7 +187,7 @@ function collectO1(aws, names, ctx, environment) {
  * `apigateway:GET`, deliberately), so #70 supplies it from its own deploy output. It is a physical
  * identifier: it is used to build the metric dimension and never appears in the verdict.
  */
-function collectTraffic(aws, { apiId, functionName, startIso, endIso }) {
+function collectTraffic(aws, { apiId, functionName, startIso, endIso, timeoutMs }) {
   const queries = [
     {
       Id: 'api',
@@ -207,7 +214,7 @@ function collectTraffic(aws, { apiId, functionName, startIso, endIso }) {
     '--metric-data-queries', JSON.stringify(queries),
     '--start-time', startIso,
     '--end-time', endIso,
-  ]);
+  ], { timeoutMs });
 
   return {
     apiCount: readMetricSum(out, 'api'),
@@ -276,12 +283,12 @@ export function readMetricSum(out, id) {
   return total;
 }
 
-function collectAlarmStates(aws, names) {
+function collectAlarmStates(aws, names, { timeoutMs } = {}) {
   const out = awsJson(aws, [
     'cloudwatch', 'describe-alarms',
     '--alarm-names', ...names.alarms, names.compositeAlarm,
     '--alarm-types', 'MetricAlarm', 'CompositeAlarm',
-  ]);
+  ], { timeoutMs });
   return [
     ...(out.MetricAlarms || []).map((a) => ({ name: a.AlarmName, state: a.StateValue })),
     ...(out.CompositeAlarms || []).map((a) => ({ name: a.AlarmName, state: a.StateValue })),
@@ -316,6 +323,14 @@ export async function runObservabilityGate(opts = {}) {
   const aws = opts.aws || defaultAws;
   const now = opts.now || (() => Date.now());
   const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+
+  // `--barrier` prints the release barrier and does nothing else: no AWS call, no environment, no
+  // gate. It exists so the runbook and the gate cannot implement two different algorithms — the
+  // documented procedure asks the code for the instant the code will later require.
+  if (opts.barrier) {
+    log(new Date(nextMinuteBarrier(now())).toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    return EXIT.OK;
+  }
 
   const gate = String(opts.gate || '').toUpperCase();
   const environment = opts.environment || env.CBA_ENVIRONMENT;
@@ -389,37 +404,52 @@ export async function runObservabilityGate(opts = {}) {
     const intervalMs = Number.isFinite(opts.intervalMs) ? opts.intervalMs : 30_000;
     const deadline = now() + budgetMs;
 
-    for (;;) {
-      const roundStart = now();
+    // The budget is a WALL-CLOCK bound, so it has to constrain the calls themselves and not only the
+    // decision to loop again. Every call is given whatever is left, capped by the per-call ceiling,
+    // and no call is started with nothing left — otherwise a call that begins a second before the
+    // deadline still runs for a full minute, and another follows it.
+    const remainingBudget = () => deadline - now();
+    const callBudget = () => Math.min(AWS_CALL_TIMEOUT_MS, Math.max(0, remainingBudget()));
 
-      const traffic = collectTraffic(aws, {
+    const emit = (verdict) => {
+      if (opts.json) log(JSON.stringify(verdict, null, 2));
+      else printVerdict(verdict, log);
+      return verdict.ok ? EXIT.OK : EXIT.GATE_FAILED;
+    };
+
+    let traffic = {};
+    for (;;) {
+      if (remainingBudget() <= 0) {
+        // Out of budget before this round could observe anything: decide on what is already known.
+        return emit(evaluateO2Round({ traffic, alarms: null, environment, deadlineReached: true }).verdict);
+      }
+
+      traffic = collectTraffic(aws, {
         apiId,
         functionName,
         startIso: new Date(startMs).toISOString(),
-        endIso: new Date(roundStart).toISOString(),
+        endIso: new Date(now()).toISOString(),
+        timeoutMs: callBudget(),
       });
 
       // Alarm states are only read once traffic evidence exists, so a run with no traffic never
-      // reports an alarm verdict at all — there is nothing there to misread as health.
-      const alarms = traffic.apiCount >= 1 && traffic.lambdaInvocations >= 1
-        ? collectAlarmStates(aws, names)
+      // reports an alarm verdict at all — there is nothing there to misread as health. The budget is
+      // recomputed between the two calls, so a slow metric read cannot fund the alarm read.
+      const trafficObserved = traffic.apiCount >= 1 && traffic.lambdaInvocations >= 1;
+      const alarms = trafficObserved && remainingBudget() > 0
+        ? collectAlarmStates(aws, names, { timeoutMs: callBudget() })
         : null;
 
       // The deadline is judged AFTER the remote calls, not before them. Judging it first meant a
       // round that began just inside the budget and then spent minutes in a slow call was still
-      // treated as having budget left, so the loop slept and went round again — the documented
-      // ten-minute maximum was a lower bound on the real one.
-      const deadlineReached = now() >= deadline;
+      // treated as having budget left, so the loop slept and went round again.
+      const deadlineReached = remainingBudget() <= 0;
 
       const { done, verdict } = evaluateO2Round({ traffic, alarms, environment, deadlineReached });
-      if (done) {
-        if (opts.json) log(JSON.stringify(verdict, null, 2));
-        else printVerdict(verdict, log);
-        return verdict.ok ? EXIT.OK : EXIT.GATE_FAILED;
-      }
+      if (done) return emit(verdict);
+
       // Never sleep past the budget: the next round has to be able to observe the deadline.
-      const remaining = deadline - now();
-      await sleep(Math.max(0, Math.min(intervalMs, remaining)));
+      await sleep(Math.max(0, Math.min(intervalMs, remainingBudget())));
     }
   } catch (err) {
     if (err instanceof GateError) {

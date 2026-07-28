@@ -133,6 +133,8 @@ const HELP = `
   ${c.bold('observability-gate options:')}
     ${c.gray('(read-only: describes and metric reads only — no deploy, write, query execution,')}
     ${c.gray(' log-content read, alarm-state change or subscription change)')}
+    --barrier          print the release barrier (next whole minute, UTC) and exit; wait for it
+                       before the first smoke, then pass it as --since
     --gate o1|o2       O1 = structural resources; O2 = deployed telemetry evidence
     --environment E    dev | pilot (or CBA_ENVIRONMENT)
     --api-id ID        O2 only: the deployed HTTP API id (or CBA_API_ID), used solely to build the
@@ -285,6 +287,7 @@ async function main() {
       process.exit(
         await runObservabilityGate({
           gate: args.gate,
+          barrier: !!args.barrier,
           environment: args.environment,
           apiId: args['api-id'],
           since: args.since,

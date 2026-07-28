@@ -167,3 +167,40 @@ of the budget, a budget shorter than one interval, and a hanging or un-spawnable
 
 root **354/354** · observability-gate **43/43** · infra/aws **99/99** (untouched) · bank **60/0** ·
 `git diff --check` clean. Both Codex reproductions now block: F2 exits 1, F3 returns `ok: false`.
+
+## Codex review round 2 — findings and fix-forward
+
+`d730d75` and `fa46eba` are preserved; corrections are in a third commit.
+
+**MEDIUM — the documented release-barrier command computed the wrong time.** Reproduced exactly as
+reported: GNU `date -d "12:32 +1 minute"` reads `+1` as a timezone component, giving `11:33`;
+`23:59` gives `23:00`; `00:00` gives the previous day. A stale barrier skips the wait loop and O2
+then blocks on `WINDOW_STALE`, so the canonical procedure could not be followed as written. Rather
+than fix the shell arithmetic, the runbook now asks the code: `observability-gate --barrier` prints
+the barrier through `nextMinuteBarrier()` and does nothing else — no AWS call, no environment, no
+gate — so the documented procedure and the check that later enforces it cannot diverge. The wait
+loop compares epoch seconds, which is safe across every boundary. Coverage: ordinary time,
+already-aligned time (it must still advance), 23:59 UTC, the year boundary, and midnight; plus a
+test that reads the runbook, refuses a `+1 minute` form, and EXECUTES the documented command,
+asserting the result is minute-aligned and in the future.
+
+**LOW — the ten-minute maximum was still not enforced.** The per-call ceiling was passed
+unconditionally, so a call starting a second before the deadline still got a full minute, and
+another could follow it. The remaining budget is now recomputed before every call and passed as the
+subprocess timeout capped by the ceiling, recomputed again between `GetMetricData` and
+`DescribeAlarms`, and no call is started with nothing left. The permissive assertion — which
+accepted the budget plus nine minutes — is replaced by one that requires elapsed wall-clock time not
+to exceed the declared budget at all.
+
+**The new budget tests were checked for being decorative, and the first attempt was.** With a hang
+longer than the per-call ceiling, every call was killed on the first round and the run ended after
+60 simulated seconds, so the elapsed assertion passed against the OLD implementation too. The test
+now uses a 55-second call — just under the ceiling, so calls succeed and the loop keeps going —
+which is what puts a round's start near the deadline. Reverting the budget arithmetic now fails both
+budget tests; before the rewrite it failed only one.
+
+### Validation after the fix
+
+root **359/359** · observability-gate **48/48** · infra/aws **99/99** (untouched) · bank **60/0** ·
+`git diff --check` clean · the documented barrier command executed for real and printed an aligned
+future instant.
