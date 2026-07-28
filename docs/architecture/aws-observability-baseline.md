@@ -42,10 +42,12 @@ The diagram has four intentional boundaries:
 
 ## 3. Current State
 
-The repository still contains a placeholder `ObservabilityStack`; the authorized AWS account has
-no deployed CBA Study Coach dashboard, alarm set, or application log groups. The SecurityStack is
-the only deployed application stack. Therefore observability is a required dependency of the
-pilot deployment, not a follow-up after launch.
+The `ObservabilityStack` is implemented (#82 Slice B) and synthesises credential-free for `dev`
+and `pilot`, but nothing in this baseline is deployed yet: the authorized AWS account still has no
+CBA Study Coach dashboard, alarm set, or application log groups, and the SecurityStack remains the
+only deployed application stack. Observability is therefore a required dependency of the pilot
+deployment, not a follow-up after launch. Every guarantee below is currently a synth-time
+guarantee; the live notification-path proof (§14) is what converts it into an operational one.
 
 ## 4. Ownership
 
@@ -54,8 +56,8 @@ pilot deployment, not a follow-up after launch.
 | `ApiStack` | Explicit Lambda log group and retention, structured JSON application logging, API Gateway access log group and allowlisted access-log format |
 | `DataStack` | DynamoDB resource and native metrics consumed by alarms; no observability IAM resources |
 | `IdentityStack` | Cognito resources; tokens, claims, email, and learner identity must never be logged |
-| `ObservabilityStack` | Customer-managed KMS key, encrypted SNS notification topic, CloudWatch alarms, dashboard, saved Logs Insights queries, and optional project-scoped budget |
-| `SecurityStack` / #70 | Environment-scoped GitHub OIDC observability-gate role with the exact read-only O1/O2 actions; no deploy permissions |
+| `ObservabilityStack` | Customer-managed KMS key, encrypted SNS notification topic, CloudWatch alarms, dashboard, saved Logs Insights queries, the environment-scoped read-only observability-gate role, and the optional project-scoped budget |
+| `SecurityStack` | The **account-global** GitHub OIDC identity provider only. It is not re-created anywhere else, and it grants nothing on its own |
 | BFF transport | Request correlation and sanitized operational events; no CloudWatch or OTEL SDK dependency |
 | Domain/application | No AWS, CloudWatch, OTEL, dashboard, alarm, or logging-framework imports |
 | Cloudflare platform | Worker/edge logs and analytics; not automatically visible in CloudWatch |
@@ -63,6 +65,23 @@ pilot deployment, not a follow-up after launch.
 Cross-stack references are explicit. The stack that owns a workload owns its log emission
 configuration; the ObservabilityStack composes metrics and notifications without taking ownership
 of the workload itself.
+
+### 4.1 Why the gate role is resource-local
+
+The OIDC **provider** and the **role that trusts it** are different kinds of object, and splitting
+them the other way was the wrong cut:
+
+- The provider is an account-level identity boundary. One issuer may have exactly one provider per
+  account, so it must have exactly one owner — `SecurityStack`. `ObservabilityStack` imports it by
+  ARN and never creates one; a second provider for `token.actions.githubusercontent.com` is a
+  deploy-time conflict, and the synth tests assert that no provider resource appears here.
+- The role grants read access to *these* alarms, *this* dashboard and *this* topic. Its permission
+  set is only reviewable next to the resources it reads. Owned by a security stack that cannot see
+  those resources, the role's scope would be maintained by hand and would drift the moment a topic
+  or alarm is renamed — the failure being silent, because a stale ARN in an Allow denies quietly.
+
+So: provider account-global and centrally owned, role environment-scoped and resource-local, wired
+to the topic construct rather than to a written-out ARN.
 
 ## 5. Environment Posture
 
@@ -145,10 +164,14 @@ periods. Use a stable 24-column layout:
 | Row | Panels |
 | --- | --- |
 | 1 - Service health | Alarm status for the complete minimum set and the aggregate operational-health alarm |
-| 2 - HTTP API | Request count, `4xx`, `5xx`, integration errors, p50/p95/p99 latency |
+| 2 - HTTP API | Request count, `4xx`, `5xx`, p50/p95/p99 latency, integration latency |
 | 3 - Lambda BFF | Invocations, errors, throttles, p95 duration, concurrent executions |
 | 4 - DynamoDB | Consumed capacity, successful-request latency, throttling, system errors |
 | 5 - Investigation | Recent sanitized 5xx events, errors grouped by `errorCode`/`routeKey`, slow routes |
+
+HTTP APIs expose no native "integration errors" metric — integration failures surface as `5xx` on
+the route, and `IntegrationLatency` is the supported signal for the integration itself, so row 2
+uses those rather than a metric that does not exist.
 
 Generic API `4xx` remains dashboard telemetry, not a release-blocking alarm: authentication and
 learner input errors would create noisy incidents. The dashboard contains no learner/product
@@ -189,11 +212,29 @@ not sufficient because its policy cannot be extended for CloudWatch alarm use. E
 
 The SNS resource policy allows only the `cloudwatch.amazonaws.com` service principal to call
 `sns:Publish`, restricted to the same account and the environment's alarm ARN prefix through
-`aws:SourceAccount` and `aws:SourceArn`. The KMS key policy grants that same principal only
-`kms:Decrypt` and `kms:GenerateDataKey*`, restricted by `aws:SourceAccount`. Do not require an alarm
+`aws:SourceAccount` and `aws:SourceArn`. The KMS key policy grants that same principal exactly
+`kms:Decrypt` and `kms:GenerateDataKey`, restricted by `aws:SourceAccount`. Do not require an alarm
 `aws:SourceArn` condition in the key policy unless a synth/live integration test proves CloudWatch
-propagates that context to KMS. Offline tests must prove that neither policy grants a wildcard action
-or an unrelated publisher.
+propagates that context to KMS.
+
+**Why the exact pair and not `kms:GenerateDataKey*`.** The wildcard form also grants
+`GenerateDataKeyWithoutPlaintext` and `GenerateDataKeyPair`, which SNS server-side encryption does
+not use. AWS guidance commonly shows the wildcard for service event sources, so the narrower grant
+is a deliberate narrowing and therefore **an assumption, not a proven fact**: if CloudWatch requires
+one of the wider actions, notifications fail silently — the alarm still transitions and nothing
+reports the drop. The separately gated live notification-path proof below is what settles it, and it
+must pass before pilot promotion. Widening back to `kms:GenerateDataKey*` is a legitimate outcome of
+that proof; widening it *without* the proof is not.
+
+**One wildcard action is unavoidable.** The CDK `Key` construct always emits the account-root key
+administration statement (`Allow` / `kms:*` / `Resource: "*"` to `arn:<partition>:iam::<account>:root`,
+with no condition). It cannot be removed without producing a key that nobody can administer or
+recover, and it is what lets IAM policies in the account delegate key use at all. It is therefore
+permitted as the single exception, matched on that exact whole shape: any extra principal,
+condition or resource makes it a different grant and must fail. Offline tests must prove that no
+other statement in either policy grants a wildcard action or admits an unrelated publisher, and
+that the key policy holds exactly one non-root grant with exactly the CloudWatch principal, those
+two actions and the `aws:SourceAccount` condition.
 
 Reference: [AWS guidance for CloudWatch alarms with encrypted SNS topics](https://repost.aws/knowledge-center/cloudwatch-configure-alarm-sns).
 
@@ -211,8 +252,21 @@ Version these operational queries with the ObservabilityStack:
 5. API-to-Lambda correlation by the canonical API Gateway `requestId`, which is copied unchanged
    into the BFF completion event and error envelope.
 
-Queries must select only allowlisted fields and use bounded time windows. They are investigation
-tools, not durable product analytics or scheduled learner-data exports.
+Queries must select only allowlisted fields. They are investigation tools, not durable product
+analytics or scheduled learner-data exports.
+
+**Two different bounds, enforced in two different places.** A saved query carries `| limit N`, which
+caps the rows returned. Query text can narrow results further — Logs Insights QL does support
+filtering on `@timestamp` with `now()` and the datetime functions — but every one of those is a
+filter applied to what the execution already scanned. **Only `startTime`/`endTime` on the
+`StartQuery` call define the execution scan range**, and that range, not any clause in the query
+text, is the cost and exposure boundary. So no saved query can carry its own scan bound, and reading
+`limit` or a `@timestamp` filter as one would be a false assurance about both cost and exposure.
+
+**Every execution must pass an explicit bounded window**, and enforcing it belongs to the caller:
+#70 for the release gates, the operator otherwise. The ObservabilityStack ships the query
+definitions only — it has no query runner, and the gate role deliberately holds no
+`logs:StartQuery`, so it cannot execute a query and therefore cannot bypass the window at all.
 
 ## 11. Cross-Cloud Boundary
 
@@ -299,20 +353,34 @@ Any failure blocks smokes and promotion.
 
 ### Read-only IAM surface for O1/O2
 
-The #70 observability-gate job assumes a dedicated environment-scoped GitHub OIDC role. It has no
-deploy permissions and receives only these read actions:
+The #70 observability-gate job assumes a dedicated environment-scoped GitHub OIDC role. The role is
+created by `ObservabilityStack` (see §4.1) and trusts the account-global provider owned by
+`SecurityStack`, on an exact subject: this repository, GitHub Environment `dev` or `pilot`, and
+`aud=sts.amazonaws.com` — an `environment:` subject rather than a `ref:` one, so it is reachable
+only from a job GitHub has already gated. It has no deploy permissions and receives only these read
+actions:
 
 - O1: `logs:DescribeLogGroups`, `logs:DescribeQueryDefinitions`,
   `cloudwatch:GetDashboard`, `cloudwatch:DescribeAlarms`, `sns:GetTopicAttributes`, and
   `sns:ListSubscriptionsByTopic`;
 - O2: `cloudwatch:DescribeAlarms` and `cloudwatch:GetMetricData`.
 
-No write, query-execution, subscription, alarm-state mutation, or log-content read is allowed.
-There is never an `Action: "*"`. CloudWatch and Logs list/describe/get operations that do not
-support resource-level authorization may use `Resource: "*"` only in an isolated read-only
-statement containing the exact actions above — that statement must contain nothing else, so an
-offline test fails if any additional action is ever added to it. SNS reads are scoped to the
-environment topic. Offline IAM tests must reject any broader action set.
+No write, query-execution, subscription, alarm-state mutation, or log-content read is allowed. The
+role ARN is never emitted as a stack output; #70 resolves the role by its logical name.
+
+There is never an `Action: "*"`, and `Resource: "*"` is confined to the actions that genuinely
+cannot be resource-scoped. Everything that supports resource-level authorization is scoped, which
+splits the list above across three statements:
+
+| Statement | Resource | Actions |
+| --- | --- | --- |
+| wildcard describes | `*` | `logs:DescribeLogGroups`, `logs:DescribeQueryDefinitions`, `cloudwatch:DescribeAlarms`, `cloudwatch:GetMetricData` |
+| dashboard | this environment's dashboard ARN | `cloudwatch:GetDashboard` |
+| topic | this environment's topic ARN | `sns:GetTopicAttributes`, `sns:ListSubscriptionsByTopic` |
+
+The wildcard statement must contain those four actions and nothing else, so an offline test fails if
+any action is ever added to it — with a wildcard resource every addition is account-wide rather than
+environment-scoped. Offline IAM tests must reject any broader action set.
 
 ### Notification-path proof (mandatory promotion prerequisite, executed outside O1/O2)
 
@@ -320,6 +388,10 @@ O1 proves the topic, key, policies and alarms EXIST; O2 proves telemetry flows a
 Neither proves that CloudWatch can actually publish through the customer-managed key to a
 subscriber — the one failure mode that is silent, because a broken key policy loses notifications
 without changing any alarm state.
+
+This is also the proof that settles the §9 key-policy narrowing: `kms:Decrypt` +
+`kms:GenerateDataKey` without the wildcard is an assumption about what CloudWatch actually calls,
+and this is the only check that can falsify it.
 
 That end-to-end proof (CloudWatch -> SNS -> KMS -> confirmed subscription) is a **required
 prerequisite for promotion**, recorded per environment:

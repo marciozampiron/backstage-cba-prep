@@ -249,7 +249,9 @@ const ADVERSARIAL_VALUES = [
   ['array', ['a', 'b']],
   ['oversized string', 'X'.repeat(5000)],
   ['newline injection', 'ok\nlevel=admin'],
-  ['control character', 'ok null'],
+  // The NUL is built at runtime. A literal one makes Git classify this file as binary, so the
+  // diff collapses to "Bin 0 -> N bytes" and a security test becomes unreviewable on GitHub.
+  ['control character', `ok${String.fromCharCode(0)}null`],
   ['whitespace', 'has spaces'],
   ['negative number', -1],
   ['non-finite number', Number.POSITIVE_INFINITY],

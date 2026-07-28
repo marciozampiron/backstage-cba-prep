@@ -55,6 +55,11 @@ class SecurityStack extends Stack {
         clientIdList: ['sts.amazonaws.com'],
       }).attrArn;
 
+    // Published so roles in other stacks consume THIS provider instead of reconstructing its ARN
+    // from pseudo parameters. A reconstructed ARN synthesises fine and creates no dependency, so in
+    // a clean account the role could be created before the provider exists (#82 Slice B review).
+    this.githubOidcProviderArn = providerArn;
+
     // --- Blueprint-refresh Bedrock role (least privilege) --------------------------------------
     // Inference-profile ARN is account/region-scoped -> pseudo params keep the template id-free.
     const inferenceProfileArn = this.formatArn({

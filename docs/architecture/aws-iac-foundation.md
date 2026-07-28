@@ -94,18 +94,29 @@ Owns:
 - the encrypted SNS operational-notification topic, whose resource policy admits only the
   CloudWatch service principal for the environment's alarms;
 - CloudWatch alarms and dashboards composed from workload-native metrics;
+- the environment-scoped, read-only GitHub OIDC observability-gate role, which **imports** the
+  account-global OIDC provider owned by the Security Stack rather than creating a second one. The
+  role is kept next to the alarms, dashboard and topic it reads because its scope is only
+  reviewable there, and because a role maintained away from those resources drifts silently when
+  one of them is renamed;
 - an optional project-scoped budget after cost-allocation tags are activated.
 
 Workload-owned logging stays with the workload stack: `ApiStack` owns explicit Lambda/API Gateway
 log groups, structured JSON configuration, access-log allowlists, and retention. The full
 privacy, alarm, dashboard, cost, and release-gate contract is
-[`aws-observability-baseline.md`](aws-observability-baseline.md) (#82). The current
-ObservabilityStack remains a placeholder until #82 ships; observability is required before pilot
-promotion in #70.
+[`aws-observability-baseline.md`](aws-observability-baseline.md) (#82). Slice B implements this
+stack; it synthesises for `dev` and `pilot` but is not yet deployed, and observability is required
+before pilot promotion in #70.
 
 ### Security Stack
 
-Owns cross-cutting IAM/KMS/secrets policies only when they are truly shared. Prefer resource-local policies where possible to avoid a central security stack becoming a dependency knot.
+Owns cross-cutting IAM/KMS/secrets policies only when they are truly shared. Prefer resource-local
+policies where possible to avoid a central security stack becoming a dependency knot.
+
+The GitHub OIDC identity **provider** is the clearest example of something genuinely shared: AWS
+permits one provider per issuer per account, so it is created here, once, and imported by ARN
+everywhere else. Roles that trust it are not shared and are not owned here — each one lives with
+the resources it grants access to (see the Observability Stack above).
 
 ## Environment Model
 
