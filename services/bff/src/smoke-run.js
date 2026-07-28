@@ -49,3 +49,30 @@ export function readSmokeRunHeader(headers = {}) {
   const raw = headers[SMOKE_RUN_HEADER];
   return isValidSmokeRunId(raw) ? raw : null;
 }
+
+/**
+ * The Cognito group whose members may operate smoke runs.
+ *
+ * A GROUP rather than a custom attribute, because `cognito:groups` is actually present on an access
+ * token. Membership is pre-provisioned once per environment for the dedicated smoke learners — this
+ * grants nothing per run, so no admin call happens on the smoke path.
+ */
+export const SMOKE_GROUP = 'cba-smoke';
+
+/** The local-only header that stands in for the group when auth mode is `dev`. */
+export const SMOKE_CAPABILITY_HEADER = 'x-cba-smoke';
+
+/**
+ * May this caller operate smoke runs at all?
+ *
+ * This is the authorization; the run id is only a reference. Without it, any authenticated learner
+ * could mint a run and reach a deletion endpoint — an opaque id and an absent CORS method are not
+ * authorization, they are obscurity.
+ */
+export function hasSmokeCapability(headers = {}, principal = null, { mode = 'dev' } = {}) {
+  if (mode === 'cognito') {
+    // Deployed: the validated claim only. A header here would let any learner token self-promote.
+    return Array.isArray(principal?.groups) && principal.groups.includes(SMOKE_GROUP);
+  }
+  return headers[SMOKE_CAPABILITY_HEADER] === SMOKE_GROUP;
+}

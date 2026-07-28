@@ -18,22 +18,39 @@ itself, never with a deploy role reaching DynamoDB. The failure modes point in o
 deleting slightly too much is data loss in a shared environment, and deleting too little leaves a
 claim or a record that blocks the next run.
 
-## Scope: two bounds, neither supplied by the caller
+## Current design (this is the vigent one)
+
+The run is a **record the BFF mints**, and the authorization is a **capability from a validated
+group claim** — not a per-run token claim. See "Superseded design" below for what was tried first
+and why it could not work.
+
+```
+POST   /api/smoke-runs             -> { runId }      requires the smoke capability; caller OWNS it
+X-CBA-Smoke-Run: <runId>           -> stamps writes; PRESENT-but-unowned or malformed FAILS CLOSED
+DELETE /api/smoke-runs/:id/data    -> capability + ownership, then deletes learner + run
+```
 
 | Bound | Source |
 | --- | --- |
-| learner | the authenticated principal, exactly as every other route resolves it |
-| run | the validated principal's smoke-run claim (deployed) or `x-cba-smoke-run` (local dev only) |
+| may operate smoke runs at all | `cognito:groups` contains `cba-smoke` (deployed) / `x-cba-smoke` header (local dev) |
+| learner | the authenticated principal, as every other route resolves it |
+| run | a run record owned by that principal |
 
-The run id is **not** a request input. If cleanup accepted one, a smoke token would be enough to
-delete another run's records and "learner + run" would collapse to "learner". The `:runId` in the
-path exists to **confirm** the authenticated run: a value that disagrees is `403`, never a re-scope.
-Records are stamped with the run id at creation from the same principal, so a record with no run id
-— every ordinary learner's data — is never in scope.
+`cognito:groups` is on an access token, so this capability is genuinely issuable: membership is
+pre-provisioned once per environment for the dedicated smoke learners, and nothing is granted per
+run. No admin call happens on the smoke path.
 
-In a deployed runtime the claim is the only source. A header there would let anyone holding an
-ordinary learner token promote themselves into a smoke principal. Local dev keeps the header,
-because local identity is header-based already.
+No request input names a learner or a run. An **absent** run header is ordinary traffic; a
+**present** one that is malformed, unknown or unowned is a refusal and the write never happens.
+Records created outside a run are never in scope.
+
+## Superseded design (historical — do not implement)
+
+The first version read a per-run claim, `principal.smokeRunId`, from the validated principal. It
+cannot be issued: a Cognito **access** token carries `sub`, `token_use`, `client_id`, `scope` and
+groups — not custom attributes. A per-run value there needs an admin call per run or a
+pre-token-generation trigger, both infrastructure this issue may not introduce. Nothing in the code
+reads `smokeRunId` any more.
 
 ## What was built
 
@@ -158,4 +175,39 @@ finishes the job idempotently.
 ### Validation after the fix
 
 root **359/359** · services/bff **214 / 213 pass / 1 skip** · web **71/71** · infra/aws **102/102** ·
+bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.
+
+## Codex review round 2 — findings and fix-forward
+
+`a0dd41c` and `5c7d60c` are preserved; corrections are in a third commit.
+
+**HIGH — any authenticated learner could become a smoke operator.** Correct, and I had settled for
+ownership as if it were authorization. It is not: ownership says *whose run this is*, not *who may
+operate runs at all*. Both routes now require a capability read from the validated `cognito:groups`
+claim — `cba-smoke`. That claim IS on an access token, unlike the custom attribute I rejected the
+design over, so it is genuinely issuable: membership is pre-provisioned once per environment for the
+dedicated smoke learners and nothing is granted per run. An ordinary learner gets `403` at mint and
+at cleanup. In `dev` mode a header stands in, as local identity is header-based already; in a
+deployed runtime the header can never promote anyone.
+
+**HIGH — a present-but-unowned run reference failed open.** The write fell through unstamped, which
+was worse than it looked: the record landed outside every run, so the caller's own cleanup answered
+`200` with zeros while the row stayed in the table — a false green on the exact gate meant to catch
+leftovers. An ABSENT header is still ordinary traffic; a PRESENT one that is malformed is `400` and
+one naming an unknown or unowned run is `403`, and the write does not happen. Regressions assert
+both the status and that nothing was persisted.
+
+**MEDIUM — ownership was consumed before completion, and replay was not deterministic.** The run
+record is no longer deleted; it becomes a tombstone once cleanup completes. Ownership therefore
+outlives the data, a retry after a partial failure can still prove it and converge, and every replay
+answers identically — `200` with zeros. The test no longer accepts `200 || 403`: it asserts `200`
+with zeros three times in a row.
+
+**MEDIUM — stale wording.** The vigent design is now at the top of this file and the superseded
+claim-based one is marked historical. The code comment that said the run comes from the principal is
+corrected, and no source file references `smokeRunId` any more.
+
+### Validation after the fix
+
+root **359/359** · services/bff **219 / 218 pass / 1 skip** · web **71/71** · infra/aws **102/102** ·
 bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.

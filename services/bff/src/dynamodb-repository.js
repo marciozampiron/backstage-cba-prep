@@ -273,14 +273,12 @@ export class DynamoDbSimulationRepository {
 
     // The profile cache carries no run id, so it goes only when this learner has no records left.
     // Removing it while another run's data survives would damage a run this call never scoped.
-    // The run record itself goes last, and only once its records are gone: while it exists a retry
-    // can still prove ownership and finish the job.
-    const stillMatching = await this.countSmokeRunRecords({ learnerId, runId });
-    if (stillMatching.practiceSessions + stillMatching.mockExams + stillMatching.attempts === 0) {
-      const run = await this.getSmokeRun(runId);
-      if (run) {
-        await this.client.delete({ TableName: this.tableName, Key: recordKey('SMOKERUN', runId) });
-      }
+    // The run record is NEVER deleted: it becomes a tombstone, so ownership outlives the data and a
+    // retry after a partial failure can still prove it and converge.
+    const run = await this.getSmokeRun(runId);
+    if (run && !run.completedAt) {
+      run.completedAt = new Date().toISOString();
+      await this.saveSmokeRun(run);
     }
 
     const remaining = await this.#anyRecordsRemain(learnerId);

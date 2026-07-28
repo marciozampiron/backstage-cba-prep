@@ -105,9 +105,9 @@ export async function startDrill(learnerId, { domainId, competencyId, questionCo
     startedAt: nowIso(),
     submittedAt: null,
     answers: {}, // index -> { questionVersionId, selectedOption, isCorrect, answeredAt, timeSpentSeconds }
-    // #75: the smoke run that created this record, or null for an ordinary learner. It is stamped
-    // from the AUTHENTICATED principal, never from the request body, so cleanup can be scoped to
-    // learner AND run without the caller ever naming either.
+    // #75: the smoke run that created this record, or null outside a run. It is stamped from a run
+    // the caller was proven to OWN — never from the request body — so cleanup is scoped to learner
+    // AND run without any input naming either.
     runId,
   };
   const session = { practiceSessionId: sessionId, attemptId, learnerId, runId };

@@ -197,14 +197,13 @@ export class InMemorySimulationRepository {
       deleted.projections += 1;
     }
 
-    // The run record itself goes last: while it exists, a retry can still prove ownership and
-    // finish the job. Removing it first would strand any leftover records with no way to claim them.
-    if (this.state.smokeRuns[runId] !== undefined) {
-      const remaining = await this.countSmokeRunRecords({ learnerId, runId });
-      if (remaining.practiceSessions + remaining.mockExams + remaining.attempts === 0) {
-        delete this.state.smokeRuns[runId];
-      }
-    }
+    // The run record is NEVER deleted here. Consuming ownership at the end of a successful pass
+    // looked tidy and broke replay: a failure after that point left the retry with no way to prove
+    // ownership, so it answered 403 — and even on success the second call answered 403 instead of
+    // the same result. It becomes a TOMBSTONE instead, so ownership outlives the data and a replay
+    // is deterministic.
+    const run = this.state.smokeRuns[runId];
+    if (run) run.completedAt = run.completedAt ?? new Date().toISOString();
 
     this.persist();
     return deleted;

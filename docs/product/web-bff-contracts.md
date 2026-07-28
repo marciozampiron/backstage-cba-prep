@@ -677,19 +677,29 @@ So the boundary is the other one #75 offers — **learner-owned deletion through
 a record the BFF mints:
 
 ```
-POST /api/smoke-runs            -> { "runId": "run-…" }   the caller now OWNS that run
-X-CBA-Smoke-Run: <runId>        -> stamps subsequent writes, honoured ONLY if the caller owns it
-DELETE /api/smoke-runs/:id/data -> same ownership check, then deletes learner + run
+POST /api/smoke-runs            -> { "runId": "run-…" }   requires the capability; caller OWNS it
+X-CBA-Smoke-Run: <runId>        -> stamps writes; present-but-unowned or malformed FAILS CLOSED
+DELETE /api/smoke-runs/:id/data -> capability + ownership, then deletes learner + run
 ```
+
+### The capability is the authorization
+
+Both routes require membership of the `cba-smoke` Cognito group, read from the validated
+`cognito:groups` claim. That claim IS present on an access token, so the capability is genuinely
+issuable: membership is pre-provisioned once per environment for the dedicated smoke learners, and
+nothing is granted per run. An ordinary authenticated learner gets `403` — an opaque run id and an
+absent CORS method are obscurity, not authorization.
 
 The header is a **reference**, the same shape as a session id in a path — it authorizes nothing.
 An unknown run and somebody else's run give the identical `403`, so a caller learns nothing about
 which run ids exist. Run ids are random, not sequential: a guessable id would leave the ownership
 check as the only barrier between two callers.
 
-A write that references a run the caller does not own still succeeds — it is simply **not stamped**
-into that run. Honouring it would either hide the record from its own cleanup or expose it to
-someone else's.
+**The run reference fails closed.** An ABSENT header is ordinary traffic. A PRESENT header that is
+malformed is `400`, and one naming an unknown or unowned run is `403` — the write does not happen.
+Letting it fall through unstamped was worse than it looked: the record landed outside every run, so
+the caller's own cleanup answered `200` with zeros while the row stayed in the table, a false green
+on the exact gate meant to catch leftovers.
 
 ### Scope: two bounds, neither supplied as data
 
@@ -742,8 +752,10 @@ even when every gate passed, and promotion is blocked.
 - the **profile cache** goes only once the learner has no records left at all, so a cleanup scoped
   to one run cannot damage another.
 
-The run record itself is removed last, and only when its data is gone: while it exists, a retry can
-still prove ownership and finish the job.
+The run record is **never deleted**; it becomes a tombstone once cleanup completes. Consuming
+ownership at the end looked tidy and broke replay — a failure after that point left the retry unable
+to prove ownership, and even a successful pass made the second call answer `403`. With the tombstone
+every replay answers identically: `200` with zeros.
 
 ### Persistence
 

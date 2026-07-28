@@ -12,7 +12,29 @@ import {
 
 test('principal: a valid ACCESS token claim set maps to a neutral principal', () => {
   const p = principalFromJwtClaims({ token_use: 'access', sub: 'abc-123', username: 'u' });
-  assert.deepEqual(p, { provider: 'cognito', sub: 'abc-123', tokenUse: 'access' });
+  assert.deepEqual(p, { provider: 'cognito', sub: 'abc-123', tokenUse: 'access', groups: [] });
+});
+
+test('principal: cognito:groups is carried through, and nothing else is', () => {
+  // #75: the smoke capability is a GROUP because `cognito:groups` is actually present on an access
+  // token, unlike a custom attribute. Only that claim is mapped — a token cannot smuggle anything
+  // else into the neutral principal.
+  const p = principalFromJwtClaims({
+    token_use: 'access',
+    sub: 'abc-123',
+    'cognito:groups': ['cba-smoke', 'learners'],
+    'custom:anything': 'ignored',
+    scope: 'aws.cognito.signin.user.admin',
+  });
+  assert.deepEqual(p, { provider: 'cognito', sub: 'abc-123', tokenUse: 'access', groups: ['cba-smoke', 'learners'] });
+
+  // A malformed or absent groups claim degrades to none, never to a truthy value.
+  for (const claim of [undefined, null, 'cba-smoke', 42, {}, [1, '', 'ok']]) {
+    const q = principalFromJwtClaims({ token_use: 'access', sub: 'abc-123', 'cognito:groups': claim });
+    assert.ok(Array.isArray(q.groups));
+    assert.equal(q.groups.includes(''), false);
+    assert.equal(q.groups.some((g) => typeof g !== 'string'), false);
+  }
 });
 
 test('principal: ID tokens are REJECTED even though they pass the JWT authorizer', () => {

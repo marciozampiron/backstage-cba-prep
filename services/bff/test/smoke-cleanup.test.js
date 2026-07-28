@@ -10,13 +10,14 @@ import assert from 'node:assert/strict';
 process.env.CBA_WEB_STORE = 'memory';
 process.env.CBA_WEB_AUTH = 'dev';
 const { handleApiRequest } = await import('../src/index.js');
-const { isValidSmokeRunId, readSmokeRunHeader } = await import('../src/smoke-run.js');
+const { SMOKE_GROUP, hasSmokeCapability, isValidSmokeRunId, readSmokeRunHeader } = await import('../src/smoke-run.js');
 
 const ZERO = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
 
-function call(method, path, { learner, run, body } = {}) {
+function call(method, path, { learner, run, body, capable = true } = {}) {
   const headers = {};
   if (learner) headers['x-cba-learner'] = learner;
+  if (capable) headers['x-cba-smoke'] = SMOKE_GROUP;
   if (run) headers['x-cba-smoke-run'] = run;
   return handleApiRequest({
     method,
@@ -171,20 +172,71 @@ test('NEGATIVE: a learner cannot stamp writes into a run they do not own', async
   const outsider = 'smoke-stamp-outsider';
   const run = await mintRun(owner);
 
-  // The outsider references the owner's run on a WRITE. Honouring it would either hide their
-  // records from their own cleanup or expose them to the owner's.
+  // The outsider references the owner's run on a WRITE. Letting it fall through unstamped was
+  // worse than it looked: the record landed outside every run, so the outsider's own cleanup
+  // reported success with zeros while the row stayed in the table — a false green on the exact
+  // gate meant to catch leftovers. A present-but-unowned reference now fails closed.
   const drill = await call('POST', '/practice-sessions', {
     learner: outsider,
     run,
     body: { examId: 'cba', questionCount: 5 },
   });
-  assert.equal(drill.status, 201, 'the write still succeeds — it is simply not part of that run');
+  assert.equal(drill.status, 403, 'the write must be refused, not silently unstamped');
+  assert.equal(drill.body.error.code, 'FORBIDDEN');
 
   const ownerCleanup = await cleanup(owner, run);
-  assert.deepEqual(ownerCleanup.body.deleted, ZERO, 'the outsider\'s record was never stamped into this run');
+  assert.deepEqual(ownerCleanup.body.deleted, ZERO, 'nothing was ever created in this run');
+});
 
-  const dash = await call('GET', '/dashboard', { learner: outsider });
-  assert.equal(dash.status, 200, 'and their own data is untouched');
+test('NEGATIVE: a malformed run reference fails closed, and no write happens', async () => {
+  const learner = 'smoke-malformed-ref';
+  const res = await handleApiRequest({
+    method: 'POST',
+    path: '/practice-sessions',
+    headers: { 'x-cba-learner': learner, 'x-cba-smoke': SMOKE_GROUP, 'x-cba-smoke-run': 'short' },
+    body: JSON.stringify({ examId: 'cba', questionCount: 5 }),
+  });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error.code, 'VALIDATION_FAILED');
+
+  // Nothing was persisted: the dashboard has no attempt to show.
+  const dash = await call('GET', '/dashboard', { learner });
+  assert.equal(dash.status, 200);
+  assert.equal(dash.body.recentAttempts?.length ?? 0, 0);
+});
+
+test('an ABSENT run header is ordinary traffic, not a refusal', async () => {
+  const res = await call('POST', '/practice-sessions', {
+    learner: 'smoke-no-header',
+    body: { examId: 'cba', questionCount: 5 },
+  });
+  assert.equal(res.status, 201);
+});
+
+/* ============================ the capability is the authorization ============================ */
+
+test('the smoke capability comes from a validated group claim in a deployed runtime', () => {
+  // `cognito:groups` IS on an access token, unlike a custom attribute — which is what makes this
+  // capability actually issuable. Membership is pre-provisioned once, never per run.
+  assert.equal(hasSmokeCapability({}, { groups: [SMOKE_GROUP] }, { mode: 'cognito' }), true);
+  assert.equal(hasSmokeCapability({}, { groups: ['learners'] }, { mode: 'cognito' }), false);
+  assert.equal(hasSmokeCapability({}, { groups: [] }, { mode: 'cognito' }), false);
+  assert.equal(hasSmokeCapability({}, {}, { mode: 'cognito' }), false);
+  // A header must never self-promote a deployed caller.
+  assert.equal(hasSmokeCapability({ 'x-cba-smoke': SMOKE_GROUP }, { groups: [] }, { mode: 'cognito' }), false);
+});
+
+test('NEGATIVE: an ordinary learner cannot mint or clean up a run', async () => {
+  const ordinary = 'plain-learner';
+  const mint = await call('POST', '/smoke-runs', { learner: ordinary, capable: false, body: {} });
+  assert.equal(mint.status, 403, 'an authenticated learner is not a smoke operator');
+  assert.equal(mint.body.error.code, 'FORBIDDEN');
+
+  // And they cannot reach cleanup even with a run id that exists.
+  const owner = 'smoke-cap-owner';
+  const run = await mintRun(owner);
+  const attempt = await call('DELETE', `/smoke-runs/${run}/data`, { learner: ordinary, capable: false });
+  assert.equal(attempt.status, 403);
 });
 
 test('records created with no run are never in scope', async () => {
@@ -207,7 +259,7 @@ test('no input anywhere names a learner', async () => {
   const res = await handleApiRequest({
     method: 'DELETE',
     path: `/smoke-runs/${run}/data`,
-    headers: { 'x-cba-learner': learner },
+    headers: { 'x-cba-learner': learner, 'x-cba-smoke': SMOKE_GROUP },
     body: JSON.stringify({ learnerId: 'someone-else', runId: 'run-elsewhere00000000' }),
   });
   assert.equal(res.status, 200);
@@ -226,12 +278,15 @@ test('replaying cleanup never deletes twice and never reports a false success', 
   assert.equal(first.status, 200);
   assert.ok(first.body.deleted.attempts >= 2);
 
-  // The run record is consumed once its data is gone, so a replay is refused by ownership rather
-  // than answering 200 with zeros. #70 needs a retry to be SAFE, not necessarily identical: what
-  // must never happen is a second call reporting deletions it did not make.
-  const again = await cleanup(learner, run);
-  assert.ok(again.status === 200 || again.status === 403, `got ${again.status}`);
-  if (again.status === 200) assert.deepEqual(again.body.deleted, ZERO);
+  // Deterministic, not merely safe. The run record survives as a tombstone, so ownership outlives
+  // the data and every replay answers the same way: 200 with zeros. Consuming ownership on success
+  // made the second call answer 403, which #70 would have to special-case.
+  for (let i = 0; i < 3; i++) {
+    const again = await cleanup(learner, run);
+    assert.equal(again.status, 200, `replay ${i}`);
+    assert.equal(again.body.runId, run);
+    assert.deepEqual(again.body.deleted, ZERO);
+  }
 });
 
 test('cleanup of a run that created nothing is a success with zeros, not an error', async () => {
