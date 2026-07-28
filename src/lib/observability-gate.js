@@ -53,6 +53,18 @@ export const O2_MAX_POLL_MS = 10 * 60 * 1000;
  */
 export const O2_MAX_WINDOW_AGE_MS = O2_MAX_POLL_MS + 5 * 60 * 1000;
 
+/**
+ * The release barrier: the first whole minute at or after `ms`.
+ *
+ * The caller waits for this instant before the first smoke, so that CloudWatch's rounding of
+ * `StartTime` down to the minute cannot pull earlier traffic into the window. Already-aligned
+ * inputs advance to the NEXT minute, because a barrier equal to "right now" gives the previous
+ * deployment's in-flight requests the same timestamp bucket.
+ */
+export function nextMinuteBarrier(ms) {
+  return Math.floor(ms / 60_000) * 60_000 + 60_000;
+}
+
 /** Alarm states AWS can report. Anything outside this set is unknown, and unknown fails. */
 const KNOWN_ALARM_STATES = ['OK', 'ALARM', 'INSUFFICIENT_DATA'];
 
@@ -192,15 +204,31 @@ export function evaluateO1(observed = {}, environment) {
   } else {
     const byName = new Map(alarms.filter((a) => a && typeof a.name === 'string').map((a) => [a.name, a]));
 
+    // The RESOURCE TYPE is part of the check, not decoration. A metric alarm named
+    // `…-operational-health` satisfies a name-only test while the aggregation and the
+    // sole-notification topology are simply absent — the composite is what carries the SNS action,
+    // so without it nothing pages at all and O1 would still be green.
     const missing = names.alarms.filter((n) => !byName.has(n));
-    checks.push(check('alarm-set', missing.length === 0, missing.length === 0
-      ? `all ${names.alarms.length} native alarms exist`
-      : `missing alarms: ${missing.join(', ')}`));
+    const wrongType = names.alarms
+      .map((n) => byName.get(n))
+      .filter(Boolean)
+      .filter((a) => a.type !== 'MetricAlarm')
+      .map((a) => `${a.name}=${a.type ?? 'unknown'}`);
+    checks.push(check('alarm-set', missing.length === 0 && wrongType.length === 0,
+      missing.length
+        ? `missing alarms: ${missing.join(', ')}`
+        : wrongType.length
+          ? `wrong resource type: ${wrongType.join(', ')}`
+          : `all ${names.alarms.length} native alarms exist as metric alarms`));
 
     const composite = byName.get(names.compositeAlarm);
-    checks.push(check('composite-alarm', Boolean(composite), composite
-      ? `${names.compositeAlarm} exists`
-      : `${names.compositeAlarm} does not exist`));
+    const compositeOk = Boolean(composite) && composite.type === 'CompositeAlarm';
+    checks.push(check('composite-alarm', compositeOk,
+      !composite
+        ? `${names.compositeAlarm} does not exist`
+        : compositeOk
+          ? `${names.compositeAlarm} exists as a composite alarm`
+          : `${names.compositeAlarm} is a ${composite.type ?? 'unknown'}, not a CompositeAlarm`));
 
     // Only the native alarms carry TreatMissingData; a composite has no such attribute.
     const wrongPosture = names.alarms
@@ -243,14 +271,31 @@ export function evaluateO1(observed = {}, environment) {
 /**
  * Validate the bounded smoke window before it is ever used to query metrics.
  *
- * Both bounds matter and for different reasons: an inverted or zero-length window can never contain
- * evidence, and a window that starts too far back would let a previous release's traffic satisfy
- * this gate.
+ * Three bounds, three different failures.
+ *
+ * MINUTE ALIGNMENT is the subtle one, and passing the timestamp to CloudWatch does not achieve it.
+ * `GetMetricData` ROUNDS `StartTime` DOWN to the whole minute, so a window declared at 12:32:34
+ * is actually queried from 12:32:00. A request that reached the PREVIOUS deployment at 12:32:10
+ * then lands inside the window: both traffic checks are satisfied, every alarm is `OK`, and O2
+ * promotes a release the smokes never reached. The gate cannot detect that after the fact — the
+ * datapoint is indistinguishable from a legitimate one — so the window must be aligned before the
+ * smokes run. The caller waits for the next whole minute, records that instant as the release
+ * barrier, and only then starts the first smoke; a start that is not minute-aligned is refused
+ * rather than quietly widened by the rounding.
  */
 export function assertSmokeWindow({ startMs, nowMs }) {
   if (!Number.isFinite(startMs)) fail('WINDOW_START_INVALID', 'the smoke-window start is not a valid timestamp');
   if (!Number.isFinite(nowMs)) fail('WINDOW_NOW_INVALID', 'the current time is not a valid timestamp');
   if (startMs > nowMs) fail('WINDOW_IN_FUTURE', 'the smoke-window start is in the future');
+  if (startMs % 60_000 !== 0) {
+    fail(
+      'WINDOW_NOT_MINUTE_ALIGNED',
+      `the smoke window must start on a whole minute; got ${new Date(startMs).toISOString()}. `
+      + 'CloudWatch rounds StartTime down to the minute, so an unaligned window silently includes '
+      + `traffic from before it — use ${new Date(nextMinuteBarrier(startMs)).toISOString()}, wait for `
+      + 'that instant, and only then start the first smoke.',
+    );
+  }
   const age = nowMs - startMs;
   if (age > O2_MAX_WINDOW_AGE_MS) {
     fail(

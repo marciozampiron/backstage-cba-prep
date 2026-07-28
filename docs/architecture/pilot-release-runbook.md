@@ -44,11 +44,22 @@ GO only if ALL are true:
 - [ ] Observability gates O1 and O2 from #82 are green: expected resources/configuration exist,
       pilot notification is confirmed, API Gateway and Lambda both report positive traffic in the
       bounded smoke window, and all required individual/composite alarms are `OK`.
-      Run them read-only, with the smoke window captured immediately BEFORE the first smoke:
-      `node bin/cli.js observability-gate --gate o1 --environment pilot`, then
-      `node bin/cli.js observability-gate --gate o2 --environment pilot --api-id <deploy output> --since <ISO>`.
-      A window carried over from an earlier release is refused, because yesterday's traffic would
-      otherwise satisfy today's gate.
+      Run them read-only. O1 first:
+      `node bin/cli.js observability-gate --gate o1 --environment pilot`.
+      Then set the **release barrier** before any smoke runs — CloudWatch rounds a metric
+      `StartTime` down to the whole minute, so an unaligned window silently includes traffic that
+      reached the PREVIOUS deployment, and O2 would promote a release the smokes never touched:
+
+      ```bash
+      BARRIER=$(date -u -d "$(date -u +%H:%M) +1 minute" +%Y-%m-%dT%H:%M:00Z)
+      while [ "$(date -u +%Y-%m-%dT%H:%M:00Z)" \< "$BARRIER" ]; do sleep 1; done
+      # ...run the deployed smokes now...
+      node bin/cli.js observability-gate --gate o2 --environment pilot \
+        --api-id <deploy output> --since "$BARRIER"
+      ```
+
+      O2 refuses an unaligned start, and refuses a window carried over from an earlier release,
+      before making any metric call.
       **A green O2 is not functional coverage.** It proves telemetry ingestion — that requests
       reached the deployed API and Lambda and metrics are flowing — not that any particular contract
       route works. Functional coverage is the deployed learner smokes in §3, and O2 must never be

@@ -121,3 +121,49 @@ proof, no OTEL/Application Signals, no Bedrock or paid call, no push. #70's work
 root **344/344** · infra/aws **99/99** (unchanged by this slice) · services/bff **164 / 163 pass /
 1 skip** · bank **60 valid / 0 errors** · `git diff --check` clean · `npm run agent-refresh` ok ·
 credential-free `cdk synth` OK for `dev` and `pilot` · no account id or secret in the diff.
+
+## Codex review round 1 — findings and fix-forward
+
+`d730d75` is preserved; every correction is in a second commit. Each finding was reproduced against
+the implementation before being fixed, and the two reproductions Codex supplied were re-run after.
+
+**HIGH — the smoke window could include traffic from before its declared start.** `GetMetricData`
+rounds `StartTime` DOWN to the whole minute, so a window captured at `12:32:34` is queried from
+`12:32:00`: a request that reached the PREVIOUS deployment at `12:32:10` satisfies both traffic
+checks while every alarm reads `OK`, and O2 promotes a release the smokes never reached. Nothing
+downstream can catch it — after the fact that datapoint is indistinguishable from a legitimate one.
+Passing the unrounded timestamp does not help; the alignment has to happen before the smokes run.
+`assertSmokeWindow` now refuses a start that is not minute-aligned, before any metric call, and
+names the barrier to use. `nextMinuteBarrier()` always advances, because a barrier equal to "right
+now" shares a timestamp bucket with the previous deployment's in-flight requests. The baseline and
+the runbook now carry the four-step procedure — deploy, O1, wait for the barrier, then smoke — with
+a copy-pasteable barrier command. Regression uses Codex's exact `12:32:34Z`.
+
+**MEDIUM — O2 accepted qualified metric results.** `sumOf` ignored `StatusCode` and `Messages`.
+Because a `PartialData` or `InternalError` result arrives with its values populated, summing them
+turned a response that reported incomplete data into a report of healthy traffic. Reproduced exactly as reported: exit 0
+with `PartialData` + `InternalError`, both positive. `readMetricSum` now requires exactly one result
+per id, `StatusCode === 'Complete'`, no messages at either level, no residual `NextToken`, matching
+timestamps, and finite non-negative values; anything else is a refusal, not a smaller number.
+Fifteen unit refusals plus four end-to-end cases, all carrying positive values, each asserted to
+block BEFORE any alarm is read.
+
+**MEDIUM — O1 checked the composite's name but not its type.** Reproduced: a green O1 with the
+aggregate reported as a `MetricAlarm`. The composite is what carries the SNS action, so the
+aggregation and sole-notification topology could be absent with the gate still green. Native alarms
+must now be `MetricAlarm` and the aggregate exactly `CompositeAlarm`, with five negative controls
+including the swapped-types case, where every name is present and the counts are right.
+
+**LOW — the ten-minute maximum was not a real wall-clock bound.** `spawnSync` had no timeout,
+`deadlineReached` was computed before the remote calls, and a full interval was slept regardless of
+remaining budget. Calls now carry a process timeout plus `--cli-connect-timeout`/`--cli-read-timeout`
+(both configurable to zero, meaning block forever) and `--no-cli-pager`, with the pager and
+auto-prompt disabled in the environment; a killed or un-spawnable process is reported as a failure,
+which every caller already treats as fail-closed. The deadline is judged AFTER the calls, and each
+sleep is trimmed to the remaining budget. Covered by fake-clock tests — a slow call that burns most
+of the budget, a budget shorter than one interval, and a hanging or un-spawnable invoker.
+
+### Validation after the fix
+
+root **354/354** · observability-gate **43/43** · infra/aws **99/99** (untouched) · bank **60/0** ·
+`git diff --check` clean. Both Codex reproductions now block: F2 exits 1, F3 returns `ok: false`.

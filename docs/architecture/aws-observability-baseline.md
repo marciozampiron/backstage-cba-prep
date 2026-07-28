@@ -453,6 +453,22 @@ let yesterday's traffic satisfy today's gate: the metric query returns datapoint
 further back than the poll budget plus a short setup margin, and refuses it *before* making any
 metric call.
 
+**The window must also start on a whole minute, and passing the timestamp to CloudWatch is not
+enough.** `GetMetricData` rounds `StartTime` DOWN to the minute. A window captured at `12:32:34` is
+actually queried from `12:32:00`, so a request that reached the PREVIOUS deployment at `12:32:10`
+falls inside it — both traffic checks pass, every alarm is `OK`, and O2 promotes a release the
+smokes never reached. Nothing downstream can detect that, because after the fact the stale datapoint
+is indistinguishable from a legitimate one. The alignment therefore has to happen before the smokes
+run, as a procedure:
+
+1. deploy, then run O1;
+2. compute the next whole minute — the **release barrier** — and WAIT until it passes;
+3. record that exact instant as the smoke window start;
+4. only then issue the first smoke.
+
+O2 refuses a start that is not minute-aligned rather than relying on the rounding, and refuses it
+before any metric call.
+
 **`ALARM` and `INSUFFICIENT_DATA` are not the same kind of answer.** `ALARM` is decided — no amount
 of further polling makes it acceptable — so it blocks immediately. `INSUFFICIENT_DATA` may still
 settle as metrics arrive, so it blocks only at the deadline. A required alarm that is absent, or

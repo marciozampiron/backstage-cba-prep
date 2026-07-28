@@ -9,9 +9,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runObservabilityGate, EXIT } from '../src/commands/observability-gate.js';
+import { AWS_CALL_TIMEOUT_MS, readMetricSum, withCliBounds } from '../src/commands/observability-gate.js';
 import {
   ALARM_SUFFIXES,
   GateError,
+  nextMinuteBarrier,
   O2_MAX_POLL_MS,
   O2_MAX_WINDOW_AGE_MS,
   O2_SCOPE_NOTE,
@@ -88,8 +90,8 @@ const DEFAULTS = {
   },
   'cloudwatch get-metric-data': {
     MetricDataResults: [
-      { Id: 'api', Values: [3, 4] },
-      { Id: 'lambda', Values: [7] },
+      { Id: 'api', StatusCode: 'Complete', Values: [3, 4] },
+      { Id: 'lambda', StatusCode: 'Complete', Values: [7] },
     ],
   },
 };
@@ -149,6 +151,32 @@ test('NEGATIVE: each structural defect blocks O1 on its own', () => {
     'alarms unobservable': (o) => { o.alarms = null; },
     'log groups unobservable': (o) => { o.logGroups = null; },
     'queries unobservable': (o) => { o.queryDefinitionNames = null; },
+  };
+  for (const [label, mutate] of Object.entries(cases)) {
+    const observed = healthy('pilot');
+    mutate(observed);
+    assert.equal(evaluateO1(observed, 'pilot').ok, false, `${label} must block O1`);
+  }
+});
+
+test('NEGATIVE: the alarm RESOURCE TYPE is checked, not only the name', () => {
+  // A metric alarm named `…-operational-health` satisfies a name-only test while the aggregation
+  // and the sole-notification topology are simply absent — the composite is what carries the SNS
+  // action, so nothing would page and O1 would still be green.
+  const cases = {
+    'composite reported as a MetricAlarm': (o) => {
+      o.alarms.find((a) => a.type === 'CompositeAlarm').type = 'MetricAlarm';
+    },
+    'composite with no type at all': (o) => {
+      delete o.alarms.find((a) => a.type === 'CompositeAlarm').type;
+    },
+    'a native alarm reported as a CompositeAlarm': (o) => { o.alarms[0].type = 'CompositeAlarm'; },
+    'a native alarm with no type': (o) => { delete o.alarms[0].type; },
+    // Mixed: the counts are right and every name is present, but the topology is inverted.
+    'native and composite types swapped': (o) => {
+      o.alarms[0].type = 'CompositeAlarm';
+      o.alarms.find((a) => a.name.endsWith('-operational-health')).type = 'MetricAlarm';
+    },
   };
   for (const [label, mutate] of Object.entries(cases)) {
     const observed = healthy('pilot');
@@ -231,17 +259,54 @@ test('NEGATIVE: O1 refuses when the region is unset', async () => {
 /* ============================ the smoke window =============================================== */
 
 test('the smoke window must be bounded and anchored to this run', () => {
-  const now = 1_800_000_000_000;
+  // A whole minute, so these cases exercise the age bounds rather than the alignment rule.
+  const now = Math.floor(1_800_000_000_000 / 60_000) * 60_000;
   assert.doesNotThrow(() => assertSmokeWindow({ startMs: now - 60_000, nowMs: now }));
 
   // A window from a previous release would let YESTERDAY's traffic satisfy TODAY's gate: the metric
   // query returns datapoints, the alarms read OK, and a deploy nothing reached goes green.
+  // Whole-minute offsets, so these cases exercise the age bounds and not the alignment rule.
   assert.throws(
-    () => assertSmokeWindow({ startMs: now - O2_MAX_WINDOW_AGE_MS - 1000, nowMs: now }),
+    () => assertSmokeWindow({ startMs: now - O2_MAX_WINDOW_AGE_MS - 60_000, nowMs: now }),
     (e) => e.code === 'WINDOW_STALE',
   );
-  assert.throws(() => assertSmokeWindow({ startMs: now + 1000, nowMs: now }), (e) => e.code === 'WINDOW_IN_FUTURE');
+  assert.throws(() => assertSmokeWindow({ startMs: now + 60_000, nowMs: now }), (e) => e.code === 'WINDOW_IN_FUTURE');
   assert.throws(() => assertSmokeWindow({ startMs: NaN, nowMs: now }), (e) => e.code === 'WINDOW_START_INVALID');
+});
+
+test('the smoke window must start on a whole minute', () => {
+  // CloudWatch rounds StartTime DOWN to the minute. A window declared at 12:32:34 is queried from
+  // 12:32:00, so a request that reached the PREVIOUS deployment at 12:32:10 lands inside it: both
+  // traffic checks pass, every alarm is OK, and O2 promotes a release the smokes never reached.
+  // Passing the unrounded timestamp to CloudWatch does not prevent that — only refusing the
+  // unaligned window does, because after the fact the stale datapoint is indistinguishable from a
+  // legitimate one.
+  const unaligned = Date.parse('2026-07-28T12:32:34Z');
+  const nowMs = Date.parse('2026-07-28T12:33:10Z');
+  assert.throws(
+    () => assertSmokeWindow({ startMs: unaligned, nowMs }),
+    (e) => e.code === 'WINDOW_NOT_MINUTE_ALIGNED',
+  );
+
+  const aligned = Date.parse('2026-07-28T12:33:00Z');
+  assert.doesNotThrow(() => assertSmokeWindow({ startMs: aligned, nowMs }));
+
+  // The barrier always advances: a barrier equal to "right now" would share a timestamp bucket with
+  // the previous deployment's in-flight requests.
+  assert.equal(nextMinuteBarrier(unaligned), Date.parse('2026-07-28T12:33:00Z'));
+  assert.equal(nextMinuteBarrier(aligned), Date.parse('2026-07-28T12:34:00Z'));
+  assert.equal(nextMinuteBarrier(aligned) % 60_000, 0);
+});
+
+test('NEGATIVE: an unaligned window is refused before any metric call', async () => {
+  const aws = fakeAws();
+  const code = await runObservabilityGate({
+    gate: 'o2', environment: 'pilot', apiId: API_ID,
+    since: '2026-07-28T12:32:34Z',
+    aws, env: ENV, now: () => Date.parse('2026-07-28T12:33:10Z'), log: silent, json: true,
+  });
+  assert.equal(code, EXIT.GATE_FAILED);
+  assert.equal(aws.calls.length, 0, 'it must refuse before reaching AWS at all');
 });
 
 /* ============================ O2: traffic evidence =========================================== */
@@ -267,6 +332,87 @@ test('the verdict says whether traffic was observed, never how much', () => {
   assert.equal(evidence.observed, true);
   // A request count is learner activity, and release evidence outlives the run that produced it.
   assert.equal(JSON.stringify(evidence).includes('4217'), false);
+});
+
+/* ============================ O2: metric-result integrity =================================== */
+
+const completeResult = (id, values) => ({ Id: id, StatusCode: 'Complete', Values: values });
+
+test('a complete metric result is summed', () => {
+  const out = { MetricDataResults: [completeResult('api', [1, 2, 3])] };
+  assert.equal(readMetricSum(out, 'api'), 6);
+  assert.equal(readMetricSum({ MetricDataResults: [completeResult('api', [])] }, 'api'), 0);
+});
+
+test('NEGATIVE: a qualified metric result is refused, not summed', () => {
+  // Each of these carries POSITIVE VALUES. Summing them is how a gate reports healthy traffic from
+  // a response that told it the data was incomplete: the numbers look ordinary and nothing in the
+  // verdict hints that CloudWatch qualified them.
+  const cases = {
+    PartialData: { MetricDataResults: [{ Id: 'api', StatusCode: 'PartialData', Values: [9] }] },
+    InternalError: { MetricDataResults: [{ Id: 'api', StatusCode: 'InternalError', Values: [9] }] },
+    Forbidden: { MetricDataResults: [{ Id: 'api', StatusCode: 'Forbidden', Values: [9] }] },
+    'status unset': { MetricDataResults: [{ Id: 'api', Values: [9] }] },
+    'result messages': { MetricDataResults: [{ Id: 'api', StatusCode: 'Complete', Values: [9], Messages: [{ Code: 'x' }] }] },
+    'query-level messages': {
+      MetricDataResults: [completeResult('api', [9])],
+      Messages: [{ Code: 'MaxMetricsExceeded', Value: 'truncated' }],
+    },
+    'residual NextToken': { MetricDataResults: [completeResult('api', [9])], NextToken: 'more' },
+    'missing result': { MetricDataResults: [completeResult('lambda', [9])] },
+    'duplicated result': { MetricDataResults: [completeResult('api', [9]), completeResult('api', [9])] },
+    'no results array': {},
+    'values not an array': { MetricDataResults: [{ Id: 'api', StatusCode: 'Complete', Values: 9 }] },
+    'a non-finite value': { MetricDataResults: [completeResult('api', [9, Number.NaN])] },
+    'a negative value': { MetricDataResults: [completeResult('api', [9, -1])] },
+    'mismatched timestamps': {
+      MetricDataResults: [{ Id: 'api', StatusCode: 'Complete', Values: [9], Timestamps: [] }],
+    },
+    'an unparseable timestamp': {
+      MetricDataResults: [{ Id: 'api', StatusCode: 'Complete', Values: [9], Timestamps: ['not a date'] }],
+    },
+  };
+  for (const [label, out] of Object.entries(cases)) {
+    assert.throws(() => readMetricSum(out, 'api'), (e) => e instanceof GateError, `${label} must be refused`);
+  }
+});
+
+test('NEGATIVE: a qualified metric result blocks O2 before any alarm is read', async () => {
+  const nowMs = Date.parse('2026-07-28T12:00:00Z');
+  const responses = {
+    'both results qualified': {
+      MetricDataResults: [
+        { Id: 'api', StatusCode: 'PartialData', Values: [9] },
+        { Id: 'lambda', StatusCode: 'InternalError', Values: [9], Messages: [{ Code: 'InternalError' }] },
+      ],
+      Messages: [{ Code: 'MaxMetricsExceeded', Value: 'truncated' }],
+    },
+    'only the API result qualified': {
+      MetricDataResults: [
+        { Id: 'api', StatusCode: 'PartialData', Values: [9] },
+        completeResult('lambda', [9]),
+      ],
+    },
+    'only the Lambda result qualified': {
+      MetricDataResults: [
+        completeResult('api', [9]),
+        { Id: 'lambda', StatusCode: 'Forbidden', Values: [9] },
+      ],
+    },
+    'paginated with positive values': {
+      MetricDataResults: [completeResult('api', [9]), completeResult('lambda', [9])],
+      NextToken: 'more',
+    },
+  };
+  for (const [label, payload] of Object.entries(responses)) {
+    const aws = fakeAws({ 'cloudwatch get-metric-data': payload });
+    const code = await runObservabilityGate({
+      gate: 'o2', environment: 'pilot', apiId: API_ID, since: since(nowMs),
+      aws, env: ENV, now: () => nowMs, log: silent, json: true, timeoutMs: O2_MAX_POLL_MS,
+    });
+    assert.equal(code, EXIT.GATE_FAILED, `${label} must block`);
+    assert.equal(aws.called('cloudwatch', 'describe-alarms'), false, `${label} must block before alarm evaluation`);
+  }
 });
 
 /* ============================ O2: alarm states =============================================== */
@@ -383,7 +529,9 @@ test('every O2 verdict carries the ingestion-not-coverage limit, including the p
 
 /* ============================ O2: end to end through the command ============================= */
 
-const since = (nowMs, agoMs = 60_000) => new Date(nowMs - agoMs).toISOString();
+// The gate requires a minute-aligned window, so the helper produces one — and `nowMs` in these
+// tests is itself a whole minute.
+const since = (nowMs, agoMs = 60_000) => new Date(Math.floor((nowMs - agoMs) / 60_000) * 60_000).toISOString();
 
 test('O2 passes end to end when traffic flows and alarms are OK', async () => {
   const nowMs = Date.parse('2026-07-28T12:00:00Z');
@@ -400,7 +548,12 @@ test('O2 passes end to end when traffic flows and alarms are OK', async () => {
 test('NEGATIVE: with no traffic, O2 blocks and never asks about alarms', async () => {
   const nowMs = Date.parse('2026-07-28T12:00:00Z');
   const aws = fakeAws({
-    'cloudwatch get-metric-data': { MetricDataResults: [{ Id: 'api', Values: [] }, { Id: 'lambda', Values: [] }] },
+    'cloudwatch get-metric-data': {
+      MetricDataResults: [
+        { Id: 'api', StatusCode: 'Complete', Values: [] },
+        { Id: 'lambda', StatusCode: 'Complete', Values: [] },
+      ],
+    },
   });
   const code = await runObservabilityGate({
     gate: 'o2', environment: 'pilot', apiId: API_ID, since: since(nowMs),
@@ -415,8 +568,8 @@ test('NEGATIVE: with no traffic, O2 blocks and never asks about alarms', async (
 test('NEGATIVE: traffic from only one side is not evidence', async () => {
   const nowMs = Date.parse('2026-07-28T12:00:00Z');
   for (const results of [
-    [{ Id: 'api', Values: [5] }, { Id: 'lambda', Values: [] }],
-    [{ Id: 'api', Values: [] }, { Id: 'lambda', Values: [5] }],
+    [{ Id: 'api', StatusCode: 'Complete', Values: [5] }, { Id: 'lambda', StatusCode: 'Complete', Values: [] }],
+    [{ Id: 'api', StatusCode: 'Complete', Values: [] }, { Id: 'lambda', StatusCode: 'Complete', Values: [5] }],
   ]) {
     const aws = fakeAws({ 'cloudwatch get-metric-data': { MetricDataResults: results } });
     const code = await runObservabilityGate({
@@ -476,7 +629,7 @@ test('O2 polls again when a transient INSUFFICIENT_DATA settles before the deadl
     },
   });
   const code = await runObservabilityGate({
-    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 30_000).toISOString(),
+    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
     aws, env: ENV, log: silent, json: true,
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
@@ -538,6 +691,84 @@ test('the metric query is bounded by the declared window', async () => {
   assert.equal(call[call.indexOf('--start-time') + 1], startIso);
   assert.equal(call[call.indexOf('--end-time') + 1], new Date(nowMs).toISOString());
 });
+
+/* ============================ wall-clock bounds ============================================== */
+
+test('every AWS call is bounded at the CLI level as well as the process level', () => {
+  const args = withCliBounds(['cloudwatch', 'describe-alarms']);
+  // Both are configurable to zero — "block indefinitely" — so a gate that inherits an operator's
+  // config has no wall-clock bound at all, whatever its own deadline says.
+  assert.equal(args[args.indexOf('--cli-connect-timeout') + 1], '5');
+  assert.equal(args[args.indexOf('--cli-read-timeout') + 1], '30');
+  // The pager waits for a terminal CI does not have.
+  assert.ok(args.includes('--no-cli-pager'));
+  assert.ok(Number.isFinite(AWS_CALL_TIMEOUT_MS) && AWS_CALL_TIMEOUT_MS > 0);
+});
+
+test('a slow call cannot buy the loop another round past the deadline', async () => {
+  // The deadline used to be judged BEFORE the remote calls, so a round that began just inside the
+  // budget and then spent minutes in a slow call was still treated as having budget left.
+  const start = Date.parse('2026-07-28T12:00:00Z');
+  let clock = start;
+  let rounds = 0;
+  const aws = fakeAws({
+    'cloudwatch get-metric-data': () => {
+      rounds += 1;
+      clock += 9 * 60_000; // the call itself burns most of the budget
+      return { MetricDataResults: [completeResult('api', []), completeResult('lambda', [])] };
+    },
+  });
+  const slept = [];
+  const code = await runObservabilityGate({
+    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
+    aws, env: ENV, log: silent, json: true,
+    now: () => clock,
+    sleep: async (ms) => { slept.push(ms); clock += ms; },
+    timeoutMs: O2_MAX_POLL_MS,
+    intervalMs: 30_000,
+  });
+  assert.equal(code, EXIT.GATE_FAILED);
+  assert.equal(rounds, 2, 'the second round must observe the deadline the slow call crossed');
+  // And no sleep may run past the remaining budget.
+  for (const ms of slept) assert.ok(ms <= O2_MAX_POLL_MS, `slept ${ms}ms`);
+  assert.ok(clock - start <= O2_MAX_POLL_MS + 9 * 60_000 + 1, 'the run must not exceed one over-long call plus the budget');
+});
+
+test('the loop never sleeps past the remaining budget', async () => {
+  const start = Date.parse('2026-07-28T12:00:00Z');
+  let clock = start;
+  const slept = [];
+  await runObservabilityGate({
+    gate: 'o2', environment: 'pilot', apiId: API_ID, since: new Date(start - 60_000).toISOString(),
+    aws: fakeAws({
+      'cloudwatch get-metric-data': { MetricDataResults: [completeResult('api', []), completeResult('lambda', [])] },
+    }),
+    env: ENV, log: silent, json: true,
+    now: () => clock,
+    sleep: async (ms) => { slept.push(ms); clock += ms; },
+    timeoutMs: 45_000,      // budget shorter than one interval
+    intervalMs: 30_000,
+  });
+  assert.deepEqual(slept, [30_000, 15_000], 'the last sleep must be trimmed to the remaining budget');
+  assert.equal(clock - start, 45_000);
+});
+
+test('a hanging or un-spawnable invoker fails closed rather than passing', async () => {
+  const nowMs = Date.parse('2026-07-28T12:00:00Z');
+  // What `defaultAws` reports when spawnSync kills the process on timeout, or cannot start it.
+  for (const result of [
+    { code: 1, stdout: '', stderr: 'aws terminated by SIGKILL' },
+    { code: 1, stdout: '', stderr: 'spawnSync aws ENOENT' },
+  ]) {
+    const aws = (args) => (args[0] === 'sts' ? DEFAULTS_INVOKER(args) : result);
+    const code = await runObservabilityGate({
+      gate: 'o1', environment: 'pilot', aws, env: ENV, now: () => nowMs, log: silent, json: true,
+    });
+    assert.equal(code, EXIT.GATE_FAILED, JSON.stringify(result));
+  }
+});
+
+const DEFAULTS_INVOKER = fakeAws();
 
 /* ============================ output hygiene ================================================= */
 

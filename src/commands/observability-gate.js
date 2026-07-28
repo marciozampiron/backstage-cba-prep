@@ -30,9 +30,38 @@ export const EXIT = { OK: 0, GATE_FAILED: 1, USAGE: 2 };
 
 const CMD = 'observability-gate';
 
+/** Hard ceiling on any single AWS call, so one hung socket cannot outlive the poll budget. */
+export const AWS_CALL_TIMEOUT_MS = 60_000;
+
+/**
+ * Bound every call at the CLI level as well as the process level.
+ *
+ * `--cli-connect-timeout`/`--cli-read-timeout` matter because both are configurable to zero, which
+ * means "block indefinitely" — a gate that inherits that from an operator's config has no wall-clock
+ * bound at all, whatever its own deadline says. The pager and the auto-prompt are disabled because
+ * either will wait for a terminal that CI does not have.
+ */
+export function withCliBounds(args) {
+  return [...args, '--cli-connect-timeout', '5', '--cli-read-timeout', '30', '--no-cli-pager'];
+}
+
 /** Default invoker. Injected in tests; never constructed there. */
 function defaultAws(args) {
-  const res = spawnSync('aws', args, { encoding: 'utf8' });
+  const res = spawnSync('aws', withCliBounds(args), {
+    encoding: 'utf8',
+    timeout: AWS_CALL_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+    env: { ...process.env, AWS_PAGER: '', AWS_CLI_AUTO_PROMPT: 'off' },
+  });
+  // A killed or un-spawnable process has no exit status. Reporting it as a plain non-zero exit is
+  // right: every caller here treats that as "could not see", which fails closed.
+  if (res.error || res.signal) {
+    return {
+      code: 1,
+      stdout: '',
+      stderr: res.error ? String(res.error.message) : `aws terminated by ${res.signal}`,
+    };
+  }
   return {
     code: res.status == null ? 1 : res.status,
     stdout: res.stdout || '',
@@ -180,13 +209,71 @@ function collectTraffic(aws, { apiId, functionName, startIso, endIso }) {
     '--end-time', endIso,
   ]);
 
-  const sumOf = (id) => {
-    const result = (out.MetricDataResults || []).find((r) => r.Id === id);
-    if (!result || !Array.isArray(result.Values)) return null;
-    return result.Values.reduce((total, v) => total + (Number.isFinite(v) ? v : 0), 0);
+  return {
+    apiCount: readMetricSum(out, 'api'),
+    lambdaInvocations: readMetricSum(out, 'lambda'),
   };
+}
 
-  return { apiCount: sumOf('api'), lambdaInvocations: sumOf('lambda') };
+/**
+ * Read one metric's sum, refusing anything that is not a complete answer.
+ *
+ * `MetricDataResult` carries a `StatusCode`, and a `PartialData` or `InternalError` result STILL
+ * CARRIES VALUES. Summing those values is how a gate reports healthy traffic from a response that
+ * told it the data was incomplete — the numbers look ordinary and nothing in the verdict hints that
+ * CloudWatch qualified them. Any status other than `Complete`, any message at either level, a
+ * residual `NextToken`, a duplicated or missing id, or a value that is not a finite non-negative
+ * number is a refusal, not a smaller number.
+ */
+export function readMetricSum(out, id) {
+  if (!out || typeof out !== 'object') {
+    throw new GateError('METRIC_RESPONSE_INVALID', 'the metric response could not be read');
+  }
+  if (Array.isArray(out.Messages) && out.Messages.length) {
+    // Global messages describe the QUERY, e.g. MaxMetricsExceeded — the results may be truncated.
+    throw new GateError('METRIC_RESPONSE_MESSAGES', 'the metric response carried query-level messages, so the results may be incomplete');
+  }
+  if (out.NextToken) {
+    throw new GateError('METRIC_RESPONSE_PAGINATED', 'the metric response was paginated, so the sums this gate computed would be partial');
+  }
+
+  const results = (Array.isArray(out.MetricDataResults) ? out.MetricDataResults : []).filter((r) => r && r.Id === id);
+  if (results.length === 0) throw new GateError('METRIC_RESULT_MISSING', `the metric response contained no result for "${id}"`);
+  if (results.length > 1) throw new GateError('METRIC_RESULT_DUPLICATED', `the metric response contained ${results.length} results for "${id}"`);
+
+  const [result] = results;
+  if (result.StatusCode !== 'Complete') {
+    throw new GateError(
+      'METRIC_RESULT_INCOMPLETE',
+      `the "${id}" metric result reported StatusCode=${result.StatusCode ?? 'unset'}; only Complete is evidence`,
+    );
+  }
+  if (Array.isArray(result.Messages) && result.Messages.length) {
+    throw new GateError('METRIC_RESULT_MESSAGES', `the "${id}" metric result carried messages, so its values are qualified`);
+  }
+  if (!Array.isArray(result.Values)) {
+    throw new GateError('METRIC_RESULT_MALFORMED', `the "${id}" metric result carried no values array`);
+  }
+  if (result.Timestamps !== undefined) {
+    if (!Array.isArray(result.Timestamps) || result.Timestamps.length !== result.Values.length) {
+      throw new GateError('METRIC_RESULT_MALFORMED', `the "${id}" metric result has mismatched timestamps and values`);
+    }
+    for (const t of result.Timestamps) {
+      const parsed = typeof t === 'number' ? t * 1000 : Date.parse(String(t));
+      if (!Number.isFinite(parsed)) {
+        throw new GateError('METRIC_RESULT_MALFORMED', `the "${id}" metric result has an unparseable timestamp`);
+      }
+    }
+  }
+
+  let total = 0;
+  for (const v of result.Values) {
+    if (!Number.isFinite(v) || v < 0) {
+      throw new GateError('METRIC_RESULT_MALFORMED', `the "${id}" metric result has a value this gate will not sum`);
+    }
+    total += v;
+  }
+  return total;
 }
 
 function collectAlarmStates(aws, names) {
@@ -303,14 +390,13 @@ export async function runObservabilityGate(opts = {}) {
     const deadline = now() + budgetMs;
 
     for (;;) {
-      const nowMs = now();
-      const deadlineReached = nowMs >= deadline;
+      const roundStart = now();
 
       const traffic = collectTraffic(aws, {
         apiId,
         functionName,
         startIso: new Date(startMs).toISOString(),
-        endIso: new Date(nowMs).toISOString(),
+        endIso: new Date(roundStart).toISOString(),
       });
 
       // Alarm states are only read once traffic evidence exists, so a run with no traffic never
@@ -319,13 +405,21 @@ export async function runObservabilityGate(opts = {}) {
         ? collectAlarmStates(aws, names)
         : null;
 
+      // The deadline is judged AFTER the remote calls, not before them. Judging it first meant a
+      // round that began just inside the budget and then spent minutes in a slow call was still
+      // treated as having budget left, so the loop slept and went round again — the documented
+      // ten-minute maximum was a lower bound on the real one.
+      const deadlineReached = now() >= deadline;
+
       const { done, verdict } = evaluateO2Round({ traffic, alarms, environment, deadlineReached });
       if (done) {
         if (opts.json) log(JSON.stringify(verdict, null, 2));
         else printVerdict(verdict, log);
         return verdict.ok ? EXIT.OK : EXIT.GATE_FAILED;
       }
-      await sleep(intervalMs);
+      // Never sleep past the budget: the next round has to be able to observe the deadline.
+      const remaining = deadline - now();
+      await sleep(Math.max(0, Math.min(intervalMs, remaining)));
     }
   } catch (err) {
     if (err instanceof GateError) {
