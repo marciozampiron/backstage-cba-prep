@@ -44,6 +44,15 @@ GO only if ALL are true:
 - [ ] Observability gates O1 and O2 from #82 are green: expected resources/configuration exist,
       pilot notification is confirmed, API Gateway and Lambda both report positive traffic in the
       bounded smoke window, and all required individual/composite alarms are `OK`.
+      Run them read-only, with the smoke window captured immediately BEFORE the first smoke:
+      `node bin/cli.js observability-gate --gate o1 --environment pilot`, then
+      `node bin/cli.js observability-gate --gate o2 --environment pilot --api-id <deploy output> --since <ISO>`.
+      A window carried over from an earlier release is refused, because yesterday's traffic would
+      otherwise satisfy today's gate.
+      **A green O2 is not functional coverage.** It proves telemetry ingestion — that requests
+      reached the deployed API and Lambda and metrics are flowing — not that any particular contract
+      route works. Functional coverage is the deployed learner smokes in §3, and O2 must never be
+      recorded as evidence that the learner loop is correct.
 - [ ] **Notification-path live evidence is valid for this environment** (#82) — a SEPARATE item from
       "notification is confirmed" above. A confirmed subscription proves an endpoint was registered;
       it does **not** prove CloudWatch can actually deliver through the customer-managed KMS key,

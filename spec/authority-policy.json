@@ -142,6 +142,7 @@
     ".agents/skills/publication-review/SKILL.md",
     ".agents/skills/review-security/SKILL.md",
     ".agent-handoff/active/82-aws-observability-slice-a.md",
+    ".agent-handoff/active/82-observability-slice-c.md",
     ".agent-handoff/active/85-security-assurance-architecture.md",
     ".agent-handoff/active/91-role-separated-publication.md",
     ".agent-handoff/inbox/67-cloudflare-opennext-stage-b.md",
@@ -173,6 +174,7 @@
       ".agents/skills/publication-review/SKILL.md",
       ".agents/skills/review-security/SKILL.md",
       ".agent-handoff/active/82-aws-observability-slice-a.md",
+      ".agent-handoff/active/82-observability-slice-c.md",
       ".agent-handoff/active/85-security-assurance-architecture.md",
       ".agent-handoff/active/91-role-separated-publication.md",
       ".agent-handoff/inbox/67-cloudflare-opennext-stage-b.md",
@@ -298,7 +300,7 @@
       "Two end-to-end tests build a real temporary git repository and walk the documented protocol: one proves that following it literally produces a script and leaves the worktree clean, and one proves that a gate written into .agent-handoff/publish-gates/ dirties the worktree and is refused."
     ],
     "bin/cli.js": [
-      "${c.bold('Commands:')} exam Run a timed mock exam with per-domain scoring generate Author new questions with an LLM (multi-provider) validate Check the question bank against the schema stats Show bank coverage per domain and competency sync Compare local blueprint weights with the live LF page blueprint Regenerate the domain (spec/blueprint.json) from a source URL via AI audit-sources Check that every question's source URL is reachable review-bank Review semantic answer correctness against cited sources bedrock-check Validate model-tier config (dry-run); --smoke for a paid live test agent-check Check AI orchestration readiness (dry-run); --smoke for a paid live run agent-refresh Check agent handoff state before edit/commit/push (no network) agent-publish Validate a publish gate locally (Stage A: no push, no PR, no merge) agent-human-publish-script Prepare the reviewed publication artifact (prepares only; never runs it) history Show your past exam attempts and progress help Show this help"
+      "${c.bold('Commands:')} exam Run a timed mock exam with per-domain scoring generate Author new questions with an LLM (multi-provider) validate Check the question bank against the schema stats Show bank coverage per domain and competency sync Compare local blueprint weights with the live LF page blueprint Regenerate the domain (spec/blueprint.json) from a source URL via AI audit-sources Check that every question's source URL is reachable review-bank Review semantic answer correctness against cited sources bedrock-check Validate model-tier config (dry-run); --smoke for a paid live test agent-check Check AI orchestration readiness (dry-run); --smoke for a paid live run agent-refresh Check agent handoff state before edit/commit/push (no network) agent-publish Validate a publish gate locally (Stage A: no push, no PR, no merge) agent-human-publish-script Prepare the reviewed publication artifact (prepares only; never runs it) observability-gate Run release gate O1 (structural) or O2 (deployed telemetry) — read-only history Show your past exam attempts and progress help Show this help"
     ],
     ".claude/skills/publication-prepare/SKILL.md": [
       "Covers validating the review scope, generating the /tmp artifact, handing it to Codex, and operating it after Zamp's gate.",
@@ -322,6 +324,7 @@
       "Identify review targets by full commit SHA, and recommend a gate rather than acting on one."
     ],
     ".agent-handoff/active/82-aws-observability-slice-a.md": [],
+    ".agent-handoff/active/82-observability-slice-c.md": [],
     ".agent-handoff/active/85-security-assurance-architecture.md": [],
     ".agent-handoff/active/91-role-separated-publication.md": [
       "agent-publish validates a human-authored publish gate against local repository state and prints the plan.",

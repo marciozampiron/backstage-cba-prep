@@ -344,12 +344,25 @@ Issue #70 must implement two deterministic, no-AI-spend gates.
 Run after the AWS stacks deploy and before learner smokes:
 
 - explicit Lambda and API access log groups exist with correct retention;
-- structured logging and the access-log allowlist are configured;
 - dashboard, saved queries, SNS topic, aggregate alarm, and the complete alarm set exist;
 - every alarm has `TreatMissingData=notBreaching`;
 - pilot has a confirmed notification subscription.
 
-Any failure blocks smokes and promotion.
+Any failure blocks smokes and promotion, and so does any failure to *observe*: a call that errors,
+returns output the gate cannot parse, or reports a state it does not recognise is a block, never a
+pass. "I could not tell" is not evidence of health.
+
+**Structured logging and the access-log allowlist are proven offline, not by O1.** Verifying them
+live would need `lambda:GetFunctionConfiguration` and `apigateway:GET`, and standing permission on
+the deployed workload is a much larger, permanent cost than the check is worth — especially for
+properties that are already pinned at synth time by the ApiStack tests, on the same template the
+deploy is built from. O1 therefore verifies the log GROUPS, which is what the read-only role can
+see: that they exist and carry the retention §5 pins. Drifted or never-expiring retention blocks.
+
+The gate also calls `sts:GetCallerIdentity` to resolve the account and partition it needs to address
+the environment's topic. That does not widen the role: `GetCallerIdentity` is not permission-gated
+by IAM and cannot be denied to any principal. The values are used to build one ARN in memory and are
+never written to a verdict, a summary or a log line.
 
 ### Read-only IAM surface for O1/O2
 
@@ -430,7 +443,27 @@ After deployed learner smokes:
 
 `TreatMissingData=notBreaching` remains the alarm posture, but it cannot by itself satisfy O2.
 The explicit traffic check prevents a green release when smokes never reached the deployed API or
-Lambda.
+Lambda — with no traffic, that posture makes every alarm read `OK`, so checking alarms first would
+pass exactly the deployment nothing reached. The order is the control, and the gate reads no alarm
+state at all until traffic evidence exists.
+
+**The window must be anchored to this run.** A `--since` carried over from a previous release would
+let yesterday's traffic satisfy today's gate: the metric query returns datapoints, the alarms read
+`OK`, and a deploy no request ever reached goes green. O2 therefore refuses a window that starts
+further back than the poll budget plus a short setup margin, and refuses it *before* making any
+metric call.
+
+**`ALARM` and `INSUFFICIENT_DATA` are not the same kind of answer.** `ALARM` is decided — no amount
+of further polling makes it acceptable — so it blocks immediately. `INSUFFICIENT_DATA` may still
+settle as metrics arrive, so it blocks only at the deadline. A required alarm that is absent, or
+reporting a state the gate does not recognise, blocks immediately: that is the gate failing to see,
+not the system being unhealthy in a way that might improve.
+
+**The HTTP API id is supplied by #70, not discovered.** API Gateway `Count` is dimensioned by
+`ApiId`, which is generated at deploy time and cannot be derived from the environment name. Reading
+it live would need `apigateway:GET`, which the gate role deliberately does not hold, so #70 passes
+it from its own deploy output. It is a physical identifier: it builds the metric dimension and never
+appears in the verdict.
 
 O2 proves **telemetry ingestion**, not functional coverage: `Count >= 1` and `Invocations >= 1`
 show that requests reached the deployed API and Lambda and that their metrics are flowing. They do
@@ -439,7 +472,15 @@ deployed learner smokes; O2 must never be read as evidence that the learner loop
 
 The release summary records only logical alarm names/states and whether the minimum traffic
 evidence was observed. It must not print endpoints, metric dimensions, resource ids, ARNs, account
-ids, counts tied to learners, or log payloads.
+ids, counts tied to learners, or log payloads. The verdict says traffic was observed or was not —
+never how much: a request count is learner activity, and release evidence outlives the run that
+produced it. The gate enforces this on the way out, refusing to emit a verdict that contains an ARN,
+a twelve-digit account id or a URL, so a future check cannot leak one by interpolating it into a
+detail string.
+
+Every O2 verdict carries the ingestion-not-coverage limit as a field, **including the passing one**.
+A green O2 is precisely the result that gets quoted later as "the release was verified", and
+attaching the limit to the verdict is the only way it survives being copied into a summary.
 
 ## 16. Explicit Non-goals
 
