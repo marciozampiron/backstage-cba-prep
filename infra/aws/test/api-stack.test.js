@@ -81,7 +81,15 @@ test('IAM: exactly item-CRUD on the table ARN and Query on the gsi1 index ARN â€
   const crud = dynamo.find((s) => s.Sid === 'ItemCrudOnExactTable');
   assert.deepEqual(
     [...crud.Action].sort(),
-    ['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+    [
+      'dynamodb:DeleteItem',
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      // #75: smoke-scoped writes commit the record and the run's state together. Scoped to the
+      // exact table ARN like every other item action â€” never a wildcard resource.
+      'dynamodb:TransactWriteItems',
+      'dynamodb:UpdateItem',
+    ],
   );
   const query = dynamo.find((s) => s.Sid === 'QueryOnExactGsi1Only');
   assert.equal(query.Action, 'dynamodb:Query');

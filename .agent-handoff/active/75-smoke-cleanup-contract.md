@@ -282,3 +282,45 @@ deploy role never holds a Cognito admin permission.
 
 root **359/359** · services/bff **225 / 224 pass / 1 skip** · web **71/71** · infra/aws **104/104** ·
 bank **60/0** · credential-free `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean.
+
+## Codex review round 5 — PARTIAL fix; two findings remain open
+
+This commit does NOT close all three findings. It is labelled partial on purpose: the remaining work
+is a transaction rewrite in the managed adapter and a retention redesign, and rushing either would
+produce the same pattern of half-fixes this review cycle has already shown too much of.
+
+**HIGH 1 — CLOSED. The deployed path could not execute the transaction.** `TransactWriteCommand` is
+now imported in the real client factory and wired through the lazy client in `runtime.js`, so the
+call the adapter makes actually exists. The Lambda role gains `dynamodb:TransactWriteItems` on the
+exact table ARN — nothing wider — and the exact-policy test is updated to match. The #82 alarm test
+excludes it explicitly: `TransactWriteItems` is a request type, not a DynamoDB metric `Operation`,
+and CloudWatch attributes the writes inside it to `PutItem`, which the alarm already covers.
+
+**HIGH 2 — PARTIALLY closed.** The fence moved from the call sites to the PORT, which closes the
+class rather than the instances: `saveSession`, `saveAttempt`, `saveMock` and `claimActiveMock` now
+refuse any record carrying a run id whose run is not active. That covers the reported answer-write
+and active-mock reproductions for the memory and file adapters, and no future write path has to
+remember the rule. **The managed adapter is NOT yet fenced on the update paths** — its
+`#saveRecord` still writes unconditionally, so the same delayed-update reproduction would still
+succeed against DynamoDB. That is the first thing to do next: route `#saveRecord` through a
+transaction with a condition check on the run whenever the record carries a run id, and add the
+delayed update/claim regression for the Dynamo adapter.
+
+**HIGH 3 — OPEN.** Abandonment expiry and completed-tombstone expiry are still the same field, so a
+run completed on day six keeps one day rather than a fresh seven; child records have no independent
+TTL, so an abandoned run can expire while its learner data remains; and Dynamo `closeSmokeRun`
+rewrites the row without the top-level `ttl`, so a failed cleanup can leave a `closing` row with no
+physical expiry. Nothing in this commit addresses any of that.
+
+### Validation
+
+root **359/359** · services/bff **225 / 224 pass / 1 skip** · web **71/71** · infra/aws **104/104** ·
+bank **60/0** · `git diff --check` clean.
+
+### Note on this cycle
+
+Five review rounds, sixteen findings, and the last three rounds each uncovered a defect class the
+previous fix had not considered — TOCTOU, then every-mutation coverage, then retention. That is a
+signal about sequencing, not just about individual mistakes: the contract was being designed while
+being implemented. Before #70, the contract for this operation should be written and reviewed on its
+own, so this class of problem surfaces in a design review rather than a code review.

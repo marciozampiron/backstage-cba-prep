@@ -822,6 +822,9 @@ test('the SystemErrors alarm covers exactly the operations the adapter issues', 
     .flatMap((st) => [].concat(st.Action ?? []))
     .filter((a) => a.startsWith('dynamodb:'))
     .map((a) => a.replace('dynamodb:', ''))
+    // TransactWriteItems (#75) is a request type, not a DynamoDB metric Operation — CloudWatch
+    // attributes the writes inside it to PutItem, which the alarm already covers.
+    .filter((a) => a !== 'TransactWriteItems')
     .sort();
   assert.deepEqual(granted, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
 });

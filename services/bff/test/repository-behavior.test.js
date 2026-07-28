@@ -96,6 +96,11 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
 
   /** Seed one run's worth of records for a learner, straight through the port. */
   async function seedRun(repo, learnerId, runId, suffix) {
+    // The run record has to exist and be ACTIVE: stamped writes are fenced on it, so seeding
+    // records for a run that was never opened is not a state the application can produce.
+    if (!(await repo.getSmokeRun(runId))) {
+      await repo.saveSmokeRun({ runId, learnerId, status: 'active', startedAt: new Date(0).toISOString() });
+    }
     await repo.saveSession({ practiceSessionId: `ps_${suffix}`, attemptId: `att_${suffix}`, learnerId, runId });
     await repo.saveMock({ mockExamId: `mock_${suffix}`, attemptId: `att_${suffix}m`, learnerId, runId });
     await repo.saveAttempt({

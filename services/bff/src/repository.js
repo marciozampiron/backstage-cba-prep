@@ -58,8 +58,25 @@ export class InMemorySimulationRepository {
   }
 
   async saveSession(session) {
+    this.#assertRunAccepts(session);
     this.state.sessions[session.practiceSessionId] = session;
     this.persist();
+  }
+
+  /**
+   * Refuse any write carrying a run id whose run is no longer active (#75).
+   *
+   * Enforced HERE rather than at each call site, because fencing call sites closes instances while
+   * this closes the CLASS. Creation was fenced and updates were not, so an answer written after
+   * cleanup could reinsert an attempt the cleanup had already verified gone — and every future
+   * write path would have had to remember the rule.
+   */
+  #assertRunAccepts(record) {
+    if (!record?.runId) return;
+    const run = this.state.smokeRuns[record.runId];
+    if (!run || run.status !== 'active') {
+      throw new RepositoryConflictError('This smoke run stopped accepting records.');
+    }
   }
 
   async getAttempt(attemptId) {
@@ -67,6 +84,7 @@ export class InMemorySimulationRepository {
   }
 
   async saveAttempt(attempt) {
+    this.#assertRunAccepts(attempt);
     this.state.attempts[attempt.attemptId] = attempt;
     this.persist();
   }
@@ -80,6 +98,7 @@ export class InMemorySimulationRepository {
   }
 
   async saveMock(mock) {
+    this.#assertRunAccepts(mock);
     this.state.mocks[mock.mockExamId] = mock;
     this.persist();
   }
@@ -92,6 +111,9 @@ export class InMemorySimulationRepository {
      list-then-create. Local adapters are single-process, so a plain check-and-set is atomic
      enough here; the DynamoDB adapter implements the same contract with a conditional write. */
   async claimActiveMock(learnerId, mockExamId) {
+    // The claim is a projection, and it was outside the fence: it could be created after cleanup
+    // had verified zero records, leaving a stale claim that blocks every future mock.
+    this.#assertRunAccepts(this.state.mocks[mockExamId]);
     if (this.state.activeMocks[learnerId]) return false;
     this.state.activeMocks[learnerId] = mockExamId;
     this.persist();
@@ -142,14 +164,15 @@ export class InMemorySimulationRepository {
    * the managed adapter uses a transaction with a condition check on the run item.
    */
   async saveSmokeScopedRecord({ runId, kind, record }) {
-    const run = this.state.smokeRuns[runId];
-    if (!run || run.status !== 'active') return false;
-    if (kind === 'session') this.state.sessions[record.practiceSessionId] = record;
-    else if (kind === 'mock') this.state.mocks[record.mockExamId] = record;
-    else if (kind === 'attempt') this.state.attempts[record.attemptId] = record;
-    else throw new Error(`unknown smoke-scoped record kind "${kind}"`);
-    this.persist();
-    return true;
+    const save = { session: 'saveSession', mock: 'saveMock', attempt: 'saveAttempt' }[kind];
+    if (!save) throw new Error(`unknown smoke-scoped record kind "${kind}"`);
+    try {
+      await this[save]({ ...record, runId });
+      return true;
+    } catch (err) {
+      if (err instanceof RepositoryConflictError) return false;
+      throw err;
+    }
   }
 
   /** Move a run to `closing` so in-flight writes can no longer commit into it. */

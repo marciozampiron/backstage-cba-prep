@@ -36,6 +36,7 @@ function createRepositoryFromEnv() {
       update: lazy('update'),
       query: lazy('query'),
       delete: lazy('delete'),
+      transactWrite: lazy('transactWrite'),
     },
   });
 }

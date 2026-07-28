@@ -278,7 +278,15 @@ class ApiStack extends Stack {
     fn.addToRolePolicy(
       new iam.PolicyStatement({
         sid: 'ItemCrudOnExactTable',
-        actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem'],
+        actions: [
+          'dynamodb:GetItem',
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:DeleteItem',
+          // #75: smoke-scoped writes pair a condition check on the run with the record put, so the
+          // run's state and the record commit together or not at all. Scoped to this table only.
+          'dynamodb:TransactWriteItems',
+        ],
         resources: [table.tableArn],
       }),
     );

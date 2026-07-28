@@ -427,10 +427,12 @@ export class DynamoDbSimulationRepository {
  * the deployed runtime bundle provides them.
  */
 export async function createDynamoDbClient() {
-  let DynamoDBClient, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand;
+  let DynamoDBClient, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand,
+    TransactWriteCommand;
   try {
     ({ DynamoDBClient } = await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ '@aws-sdk/client-dynamodb'));
-    ({ DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } =
+    ({ DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand,
+      TransactWriteCommand } =
       await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ '@aws-sdk/lib-dynamodb'));
   } catch {
     throw new Error(
@@ -445,5 +447,9 @@ export async function createDynamoDbClient() {
     update: (p) => doc.send(new UpdateCommand(p)),
     query: (p) => doc.send(new QueryCommand(p)),
     delete: (p) => doc.send(new DeleteCommand(p)),
+    // #75: a smoke-scoped write pairs a condition check on the run with the record put, so the
+    // run's state and the record either both apply or neither does. Without this command wired
+    // here, the first deployed smoke-scoped creation would fail at runtime.
+    transactWrite: (p) => doc.send(new TransactWriteCommand(p)),
   };
 }

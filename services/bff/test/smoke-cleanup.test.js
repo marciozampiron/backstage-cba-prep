@@ -317,7 +317,7 @@ test('NEGATIVE: a record that survives every attempt makes cleanup FAIL, not suc
     }
   }
   const repo = new ContendedRepository();
-  await repo.saveSmokeRun({ runId: 'run-contended000000000', learnerId: 'l-contended' });
+  await repo.saveSmokeRun({ runId: 'run-contended000000000', learnerId: 'l-contended', status: 'active' });
   await repo.saveSession({
     practiceSessionId: 'ps_contended',
     attemptId: 'att_contended',
@@ -354,7 +354,7 @@ test('a later uncontended retry succeeds idempotently after a contended one', as
     }
   }
   const repo = new SometimesContendedRepository();
-  await repo.saveSmokeRun({ runId: 'run-retryable000000000', learnerId: 'l-retry' });
+  await repo.saveSmokeRun({ runId: 'run-retryable000000000', learnerId: 'l-retry', status: 'active' });
   await repo.saveSession({
     practiceSessionId: 'ps_retry',
     attemptId: 'att_retry',
