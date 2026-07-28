@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-25 (governance cleanup after the #69 publication)
+Last updated: 2026-07-28 (#82 closed; #67 Stage B taken into active ownership)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -66,22 +66,26 @@ Project board remain the source of truth; this file summarizes local coordinatio
   #68 AWS Web BFF extraction, #69 Cognito/CORS security boundary, and #70 integrated deploy plus
   post-deploy smoke gates. The current Next.js app is not a pure static export; sensitive exam data
   and correction logic remain server-side behind the AWS BFF.
-- #82 is the Phase 1 / Todo operational-observability baseline and a native sub-issue of #46.
-  Its architecture package is complete and independently reviewed: canonical baseline +
-  reproducible observability diagram, canonical API Gateway-to-BFF request correlation, positive
-  API/Lambda traffic evidence in O2, a dedicated read-only gate role, encrypted SNS notifications,
-  separate Cloudflare telemetry, and a deferred auto-instrumentation-first OTEL/Application Signals
-  path. The final review pass applied the two LOW items (diagram legibility; KMS/SNS ownership in
-  `aws-iac-foundation.md`) and hardened the contract: O2 proves telemetry ingestion and NOT
-  functional route coverage, the composite references exactly the six alarms and is the sole SNS
-  publisher, the implicit Lambda log-group adoption path is decided before the first deploy, one
-  `requestId` is provable end to end, the isolated `Resource: "*"` statement carries only the
-  documented read-only actions, and the live CloudWatch -> SNS/KMS -> subscription proof is a
-  MANDATORY promotion prerequisite executed OUTSIDE O1/O2 under operator credentials (required
-  before the first `pilot` promotion and re-proven after any key/topic policy change).
-  Implementation is queued in
-  `inbox/82-aws-observability-implementation.md`; #70 still depends on delivery. No observability
-  implementation or deploy has been authorized.
+- **#82 is CLOSED (Done)** — the operational-observability baseline is delivered in three slices,
+  all on `main`. Slice A: sanitized completion events plus explicit Lambda/API access log groups
+  with per-environment retention. Slice B (PR #98, merge `2d8ab134c9c2f1f0a5944a1c756bdf200e4e01c0`):
+  the `ObservabilityStack` — customer-managed rotating KMS key, encrypted SNS topic, six native
+  alarms all `TreatMissingData=notBreaching`, an `OperationalHealth` composite that references
+  exactly those six and is the sole SNS publisher, a five-row dashboard, five saved Logs Insights
+  queries, and the environment-scoped read-only GitHub OIDC gate role (the account-global provider
+  stays owned by `SecurityStack` and is imported, never re-created). Slice C (PR #99, merge
+  `2f9ee8efb97c9e1612eea31c16ab6b18e146fea1`): the `observability-gate` command implementing O1
+  (structural) and O2 (deployed telemetry evidence, bounded minute-aligned smoke window, traffic
+  before alarms, real wall-clock budget). Everything remains synth-only — nothing was deployed.
+- **Still open under #70, and NOT closed by #82: the live CloudWatch -> SNS -> KMS -> confirmed
+  subscription proof.** O1 proves the resources exist; O2 proves telemetry flows and alarms are
+  `OK`; neither proves a notification can actually be delivered, which is the one failure mode that
+  is silent because a broken key policy loses notifications without changing any alarm state. It is
+  also the only check that can falsify the deliberate narrowing of the key policy to exactly
+  `kms:Decrypt` + `kms:GenerateDataKey`. It runs outside O1/O2 under operator credentials, is
+  required before the first `pilot` promotion, and must be re-proven after any key/topic policy
+  change. #70 also owns wiring the gates into the workflow and enforcing the bounded execution
+  window on the saved queries.
 - Phase 5 / #10 is the post-POC evolution from the CBA pilot to a multi-certification portal.
   Before the first non-CBA certification, a mandatory DDD hardening gate must make certification
   partitioning explicit, keep principals data-only, separate application ports/errors from adapters,
@@ -103,8 +107,9 @@ Project board remain the source of truth; this file summarizes local coordinatio
   User Pool + PKCE-ready public client, API Gateway JWT authorizer on every route except public
   readiness, access-token-only neutral principal (ID tokens and `x-cba-learner` refused, missing
   bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
-  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. Now #67
-  Cloudflare frontend, then #79, #75 cleanup contract, #82 -> #70 -> close #46/#68. Everything is
+  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. #82 is now
+  CLOSED. Current work: **#67 Stage B** (Cloudflare Workers/OpenNext frontend), then #79, the #75
+  cleanup contract, then #70 -> close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
@@ -131,6 +136,15 @@ Project board remain the source of truth; this file summarizes local coordinatio
   (Duplicate issue #45 is closed as a duplicate of #42.)
 - Tooling lesson (2026-07-08): verify CI-matrix (Node 20+22) compatibility for tooling changes —
   `node --test` glob-pattern paths need Node >=21; root test uses a shell-expanded `test/*.test.js`.
+
+## Active handoff
+
+- `active/67-cloudflare-opennext-stage-b.md` — #67 Stage B, taken into active ownership 2026-07-28.
+  Stage A is published and done. Stage B's account-level items (Cloudflare project, Environment
+  API token, Worker names/routes, deploy lane) are human-gated and land WITH #70; only the
+  reviewable in-repo scope is implementable now. `web/package.json` must never gain a `deploy` or
+  `preview` script, and no Cloudflare token, account id, zone id or endpoint belongs in a tracked
+  file.
 
 ## Do not touch without explicit assignment
 
