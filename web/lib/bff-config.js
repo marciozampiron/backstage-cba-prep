@@ -126,3 +126,64 @@ export async function getRuntimeEnv() {
 export async function getBffConfig() {
   return resolveBffConfig(await getRuntimeEnv(), { onWorkers: onCloudflareWorkers() });
 }
+
+/**
+ * Resolve the Cognito values the Worker serves through `/auth/config` (#67 Stage B).
+ *
+ * These are runtime variables for the same reason `CBA_BFF_BASE_URL` is: `/auth/config` is served
+ * per request from the Worker binding env, so one built artifact can be promoted across tiers
+ * unchanged. They are supplied per environment by the #70 deploy, never committed, and never
+ * `NEXT_PUBLIC_*`.
+ *
+ * Presence alone is not enough. The Cognito callback and logout URLs still default to the reserved
+ * `.invalid` placeholder while the custom-domain-vs-`workers.dev` decision is open, and a
+ * placeholder that reaches a deployed tier renders a sign-in button that cannot complete — the
+ * page looks healthy and the flow is dead. So a deployed tier refuses a `.invalid` domain here,
+ * where the failure is visible, rather than in the browser after redirect.
+ *
+ * Pure and env-shaped, like `resolveBffConfig`, so it is testable with no Worker and no network.
+ *
+ * @param {Record<string, string|undefined>} env
+ * @param {{ deployed?: boolean }} options
+ * @returns {{ userPoolId: string, clientId: string, domain: string }}
+ */
+export function resolveCognitoConfig(env = {}, { deployed = false } = {}) {
+  const read = (key) => {
+    const raw = env[key];
+    if (typeof raw !== 'string' || raw.trim() === '') {
+      throw new Error(`${key} is required when CBA_WEB_AUTH=cognito.`);
+    }
+    if (raw !== raw.trim()) {
+      throw new Error(`${key} must not have leading/trailing whitespace.`);
+    }
+    return raw;
+  };
+
+  const userPoolId = read('COGNITO_USER_POOL_ID');
+  const clientId = read('COGNITO_CLIENT_ID');
+  const domain = read('COGNITO_DOMAIN');
+
+  // `auth-settings.js` uses the domain as a URL BASE (`new URL('/logout', domain)`), so it must be
+  // an absolute origin — a bare host would silently produce a relative resolution against the
+  // frontend and send the learner to a logout URL on the wrong site.
+  let parsed;
+  try {
+    parsed = new URL(domain);
+  } catch {
+    throw new Error(`COGNITO_DOMAIN must be an absolute URL — got "${domain}".`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('COGNITO_DOMAIN must use https://.');
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('COGNITO_DOMAIN must be an origin — no credentials, query string or fragment.');
+  }
+  if (deployed && (parsed.hostname === 'invalid' || parsed.hostname.endsWith('.invalid'))) {
+    throw new Error(
+      'COGNITO_DOMAIN is still the reserved .invalid placeholder — a deployed tier cannot complete '
+      + 'a sign-in redirect with it. Set the environment\'s real Cognito domain.',
+    );
+  }
+
+  return { userPoolId, clientId, domain };
+}

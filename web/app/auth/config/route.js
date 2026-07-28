@@ -7,7 +7,7 @@
 // `bffBaseUrl` is served in BOTH modes: it is where `apiFetch` sends learner API calls. Local with
 // no base means same-origin `/api`; dev/pilot require a base (the resolver fails fast) and the
 // browser then calls the AWS API Gateway directly, guarded by the exact-origin CORS seam (#69).
-import { getRuntimeEnv, onCloudflareWorkers, resolveBffConfig } from '../../../lib/bff-config.js';
+import { getRuntimeEnv, onCloudflareWorkers, resolveBffConfig, resolveCognitoConfig } from '../../../lib/bff-config.js';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,19 +44,17 @@ export async function GET() {
     return Response.json({ mode: 'dev', ...runtime });
   }
 
-  const { COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID, COGNITO_DOMAIN } = env;
-  if (!COGNITO_USER_POOL_ID || !COGNITO_CLIENT_ID || !COGNITO_DOMAIN) {
-    // Fail closed: a cognito runtime without its config must not render a broken sign-in.
+  let cognito;
+  try {
+    // Fail closed: a cognito runtime without complete, well-formed config must not render a broken
+    // sign-in. On a deployed tier this also rejects the reserved `.invalid` placeholder, which
+    // would otherwise produce a sign-in button that cannot complete its redirect.
+    cognito = resolveCognitoConfig(env, { deployed });
+  } catch {
     return Response.json(
       { error: { code: 'AUTH_MISCONFIGURED', message: 'Auth configuration is incomplete.' } },
       { status: 500 },
     );
   }
-  return Response.json({
-    mode: 'cognito',
-    userPoolId: COGNITO_USER_POOL_ID,
-    clientId: COGNITO_CLIENT_ID,
-    domain: COGNITO_DOMAIN,
-    ...runtime,
-  });
+  return Response.json({ mode: 'cognito', ...cognito, ...runtime });
 }

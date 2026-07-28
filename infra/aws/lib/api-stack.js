@@ -103,6 +103,41 @@ function parseCorsOrigins(value) {
   if (list.includes('*')) {
     throw new Error('corsAllowedOrigins must be EXACT origins — "*" is forbidden (credentials mode, #69).');
   }
+
+  // #67 Stage B / pilot-environment-contract §1: ephemeral Cloudflare previews validate UI ONLY and
+  // are never added to any BFF CORS allow-list — their per-change URLs would make an exact-origin
+  // list unmanageable, and a preview must never be able to reach the pilot BFF. Authenticated
+  // integration goes through ONE stable URL per environment, which is the single origin the BFF
+  // allows.
+  //
+  // The count rule is what actually enforces the preview policy: with a maximum of one, a per-change
+  // preview URL cannot be appended — it can only REPLACE the stable origin, which is a visible edit
+  // rather than an accumulation nobody notices.
+  if (list.length > 1) {
+    throw new Error(
+      `corsAllowedOrigins allows at most ONE stable origin per environment — got ${list.length}. `
+      + 'Ephemeral previews are never allow-listed (pilot-environment-contract §1).',
+    );
+  }
+  for (const origin of list) {
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`corsAllowedOrigins must contain absolute origins — got "${origin}".`);
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error(`corsAllowedOrigins must use https — got "${origin}".`);
+    }
+    if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      throw new Error(`corsAllowedOrigins must be origins only, with no path, query or fragment — got "${origin}".`);
+    }
+    // Cloudflare Pages preview hosts are unmistakably ephemeral, and this project does not use
+    // Pages at all, so any `.pages.dev` origin here is a mistake rather than a decision.
+    if (parsed.hostname.endsWith('.pages.dev')) {
+      throw new Error(`corsAllowedOrigins must not contain an ephemeral preview origin — got "${origin}".`);
+    }
+  }
   return list;
 }
 

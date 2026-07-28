@@ -22,6 +22,30 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
+  },
+
+  // --- per-environment workers (#67 Stage B) -------------------------------------------------
+  //
+  // Names only. Separate Workers per tier is the same separation the AWS side already has
+  // (`cba-study-coach-<env>-*`), and it is what stops a dev deploy from overwriting pilot.
+  //
+  // ROUTES ARE DELIBERATELY ABSENT. Whether the pilot serves from a custom domain or the
+  // `workers.dev` origin is still an OPEN DECISION on #67, and it is not a cosmetic one: it
+  // determines the exact origin that goes in the BFF CORS list (#69) and the Cognito callback and
+  // logout URLs, which still hold the reserved `.invalid` placeholder. Writing a route here would
+  // decide it silently. #70 supplies the route with the deploy.
+  //
+  // VARS ARE ALSO ABSENT, and stay absent. `CBA_RUNTIME_ENV`, `CBA_BFF_BASE_URL`, `CBA_WEB_AUTH`
+  // and the `COGNITO_*` values are Worker RUNTIME variables supplied per environment at deploy
+  // time by #70. A committed value here would be both an endpoint in a tracked file and a
+  // build-time freeze of something the contract requires to be resolved per request.
+  "env": {
+    "dev": {
+      "name": "cba-study-coach-dev-web"
+    },
+    "pilot": {
+      "name": "cba-study-coach-pilot-web"
+    }
   }
 
   // Deliberately NOT configured (each would provision or require a Cloudflare resource):

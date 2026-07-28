@@ -132,3 +132,71 @@ test('cognito mode with incomplete auth ids fails closed', async () => {
   assert.equal(res.status, 500);
   assert.equal(res.body.error.code, 'AUTH_MISCONFIGURED');
 });
+
+/* ============================ #67 Stage B: the runtime-variable contract ===================== */
+
+test('a deployed cognito runtime refuses the reserved .invalid placeholder', async () => {
+  // The Cognito callback/logout URLs still default to `.invalid` while the custom-domain versus
+  // workers.dev decision is open. Reaching a deployed tier with it renders a sign-in button that
+  // cannot complete its redirect: the page looks healthy and the flow is dead. Failing here makes
+  // it visible at config time instead of in the browser after the redirect.
+  const res = await callWith({
+    CBA_WEB_AUTH: 'cognito',
+    CBA_RUNTIME_ENV: 'pilot',
+    CBA_BFF_BASE_URL: 'https://api.pilot.example.test',
+    COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
+    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_DOMAIN: 'https://auth.cba-study-coach.invalid',
+  });
+  assert.equal(res.status, 500);
+  assert.equal(res.body.error.code, 'AUTH_MISCONFIGURED');
+  assert.equal(res.body.domain, undefined, 'nothing partial leaks out of a broken runtime');
+});
+
+test('local development may still use the .invalid placeholder', async () => {
+  // Only a DEPLOYED tier is refused: local work has no real Cognito domain and must not be blocked.
+  const res = await callWith({
+    CBA_WEB_AUTH: 'cognito',
+    COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
+    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_DOMAIN: 'https://auth.cba-study-coach.invalid',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.mode, 'cognito');
+});
+
+test('NEGATIVE: each malformed Cognito value fails closed on its own', async () => {
+  const base = {
+    CBA_WEB_AUTH: 'cognito',
+    CBA_RUNTIME_ENV: 'pilot',
+    CBA_BFF_BASE_URL: 'https://api.pilot.example.test',
+    COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
+    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_DOMAIN: 'https://auth.pilot.example.test',
+  };
+  // NOTE: `Object.assign` turns an `undefined` value into the STRING "undefined", which is present
+  // and non-empty — so an absent variable has to be modelled by DELETING the key, not by setting it
+  // to undefined. The first version of this test did the latter and proved nothing.
+  const cases = {
+    'missing pool id': (e) => { delete e.COGNITO_USER_POOL_ID; },
+    'missing client id': (e) => { delete e.COGNITO_CLIENT_ID; },
+    'missing domain': (e) => { delete e.COGNITO_DOMAIN; },
+    'empty pool id': { COGNITO_USER_POOL_ID: '' },
+    'whitespace-only client id': { COGNITO_CLIENT_ID: '   ' },
+    'padded client id': { COGNITO_CLIENT_ID: ' client-id ' },
+    // A bare host would resolve `new URL('/logout', domain)` relative to the frontend and send the
+    // learner to a logout URL on the wrong site.
+    'bare host domain': { COGNITO_DOMAIN: 'auth.pilot.example.test' },
+    'http domain': { COGNITO_DOMAIN: 'http://auth.pilot.example.test' },
+    'domain with a query string': { COGNITO_DOMAIN: 'https://auth.pilot.example.test?x=1' },
+    'domain with credentials': { COGNITO_DOMAIN: 'https://u:p@auth.pilot.example.test' },
+  };
+  for (const [label, override] of Object.entries(cases)) {
+    const env = { ...base };
+    if (typeof override === 'function') override(env);
+    else Object.assign(env, override);
+    const res = await callWith(env);
+    assert.equal(res.status, 500, `${label} must fail closed`);
+    assert.equal(res.body.error.code, 'AUTH_MISCONFIGURED', label);
+  }
+});

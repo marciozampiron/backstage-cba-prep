@@ -112,6 +112,42 @@ test('CORS: absent by default; exact origins with credentials when configured; "
   );
 });
 
+test('NEGATIVE: the CORS list holds at most one stable origin, and never a preview (#67 Stage B)', () => {
+  const reject = (origins, pattern) => assert.throws(
+    () => buildStacks(new App({ context: { environment: 'dev', corsAllowedOrigins: JSON.stringify(origins) } })),
+    pattern,
+    JSON.stringify(origins),
+  );
+
+  // The count rule is what enforces the preview policy. Ephemeral previews validate UI only and
+  // are never allow-listed (pilot-environment-contract §1); with a maximum of one, a per-change
+  // preview URL cannot be APPENDED — it can only replace the stable origin, which is a visible
+  // edit rather than an accumulation nobody notices.
+  reject(
+    ['https://dev.example.test', 'https://preview-abc123.example.test'],
+    /at most ONE stable origin/,
+  );
+  reject(
+    ['https://a.example.test', 'https://b.example.test', 'https://c.example.test'],
+    /at most ONE stable origin/,
+  );
+
+  // Cloudflare Pages preview hosts are unmistakably ephemeral, and this project does not use Pages
+  // at all — such an origin here is a mistake, not a decision.
+  reject(['https://abc123.cba-study-coach.pages.dev'], /ephemeral preview origin/);
+
+  // Shape rules, so a malformed entry cannot become a permissive one.
+  reject(['http://dev.example.test'], /must use https/);
+  reject(['https://dev.example.test/app'], /origins only/);
+  reject(['https://dev.example.test?x=1'], /origins only/);
+  reject(['dev.example.test'], /absolute origins/);
+
+  // The single stable origin still works, and is still exact.
+  const ok = apiTemplate('dev', { corsAllowedOrigins: '["https://dev.example.test"]' });
+  const api = Object.values(ok.findResources('AWS::ApiGatewayV2::Api'))[0];
+  assert.deepEqual(api.Properties.CorsConfiguration.AllowOrigins, ['https://dev.example.test']);
+});
+
 test('invalid environment and missing table both fail construction', () => {
   assert.throws(
     () => new ApiStack(new App({ context: { environment: 'production' } }), 'ApiStack', {}),
