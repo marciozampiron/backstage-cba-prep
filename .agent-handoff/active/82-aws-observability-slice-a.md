@@ -430,3 +430,35 @@ path, policy, alarm, query or test assertion changed.
 root **311/311** · infra/aws **99/99** · services/bff **164 / 163 pass / 1 skip** · web **62/62** ·
 bank **60 valid / 0 errors** · `git diff --check` clean · credential-free `cdk synth` OK for `dev`
 and `pilot`, refused for `staging`.
+
+### CodeQL on PR #98 — the same defect, in the part of the guard I left behind
+
+CodeQL raised two high-severity `js/incomplete-url-substring-sanitization` alerts against
+`infra/aws/test/observability-stack.test.js:586` and `:625`, both
+`JSON.stringify(principal).includes('cloudwatch.amazonaws.com')`.
+
+This is the F4 finding again. Codex said the CloudWatch assertion "accepts mixed or additional
+service-principal statements"; I made the KMS grant check structurally exact and left two
+presence-tests standing next to it. Substring presence never proved exclusivity: a statement naming
+CloudWatch *and* another principal contains the string, and so does the lookalike host
+`evil-cloudwatch.amazonaws.com.attacker.net`.
+
+Fixed by matching the whole shape against a shared `CLOUDWATCH_PRINCIPAL` constant, reusing the
+existing `eq` helper. Three regressions added to the SNS guard — CloudWatch plus another service,
+CloudWatch plus an AWS principal, and the lookalike host — each of which contains the allowed name
+and passed the old check.
+
+A demonstration that re-ran the substring check to show the old behaviour was written and then
+removed: it would have reintroduced the exact unsafe host test the scanner flags. The rejection
+assertions carry that proof without it.
+
+Runtime templates were never affected — the deployed policy has always been exactly
+`{Service: 'cloudwatch.amazonaws.com'}`, and `assertKmsGrantsAreExact` already covered the KMS path.
+What was wrong was the guard, which would have let a future regression through.
+
+### Validation after the CodeQL fix
+
+root **311/311** · infra/aws **99/99** · `git diff --check` clean · credential-free `cdk synth` OK
+for `dev` and `pilot`. PR #98 CI before the fix: `quality (20)`, `quality (22)`, `web-quality`,
+`Analyze (actions)`, `Analyze (javascript-typescript)` and `synth` green; `CodeQL` red with alerts
+#6 and #7.

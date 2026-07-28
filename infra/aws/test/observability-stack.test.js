@@ -381,6 +381,9 @@ const ACCOUNT_ROOT_PRINCIPAL = {
 
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+/** The only principal allowed to use the key or publish to the topic. Matched whole, never by substring. */
+const CLOUDWATCH_PRINCIPAL = { Service: 'cloudwatch.amazonaws.com' };
+
 /**
  * The ONE permitted wildcard action, matched on its exact whole shape.
  *
@@ -445,7 +448,7 @@ function assertKmsGrantsAreExact(tpl) {
     throw new Error(`${id}: expected exactly one non-root key grant, found ${grants.length}`);
   }
   const [grant] = grants;
-  if (!eq(grant.Principal, { Service: 'cloudwatch.amazonaws.com' })) {
+  if (!eq(grant.Principal, CLOUDWATCH_PRINCIPAL)) {
     throw new Error(`${id}: the only key grant must be to the CloudWatch service principal alone, got ${JSON.stringify(grant.Principal)}`);
   }
   if (!eq([...grant.Action].sort(), ['kms:Decrypt', 'kms:GenerateDataKey'])) {
@@ -582,8 +585,11 @@ test('the KMS key is customer-managed with rotation, and grants exact actions to
     const [, key] = resourcesOfType(tpl, 'AWS::KMS::Key')[0];
     assert.equal(key.Properties.EnableKeyRotation, true, `${env}: rotation`);
 
+    // Structural equality, never a substring: `includes('cloudwatch.amazonaws.com')` also matches
+    // `{Service: ['cloudwatch.amazonaws.com', 'events.amazonaws.com']}` and
+    // `evil-cloudwatch.amazonaws.com.attacker.net`, so presence would have been read as exclusivity.
     const cw = key.Properties.KeyPolicy.Statement.filter(
-      (s) => JSON.stringify(s.Principal ?? {}).includes('cloudwatch.amazonaws.com'),
+      (s) => eq(s.Principal, CLOUDWATCH_PRINCIPAL),
     );
     assert.equal(cw.length, 1, `${env}: exactly one CloudWatch statement`);
     // Exact pair, not `kms:GenerateDataKey*` — the wildcard form would also grant
@@ -602,7 +608,7 @@ test('the topic policy admits only CloudWatch, this account, and this environmen
       (s) => [].concat(s.Action ?? []).includes('sns:Publish'),
     );
     assert.equal(publish.length, 1, `${env}: one publish statement`);
-    assert.deepEqual(publish[0].Principal, { Service: 'cloudwatch.amazonaws.com' });
+    assert.deepEqual(publish[0].Principal, CLOUDWATCH_PRINCIPAL);
     assert.deepEqual(publish[0].Condition.StringEquals['aws:SourceAccount'], { Ref: 'AWS::AccountId' });
 
     // The alarm ARN prefix scopes publication to THIS environment's alarms, not every alarm in the
@@ -621,9 +627,11 @@ test('NEGATIVE: an unrelated publisher on the topic policy is detectable', () =>
     const doc = t.Resources[id].Properties.PolicyDocument;
     for (const s of doc.Statement) {
       if (![].concat(s.Action ?? []).some((a) => a === 'sns:Publish')) continue;
-      const principal = JSON.stringify(s.Principal ?? {});
-      if (!principal.includes('cloudwatch.amazonaws.com')) {
-        throw new Error(`unrelated publisher on the alert topic: ${principal}`);
+      // Exact shape, not substring presence. A statement can name CloudWatch AND something else,
+      // and a lookalike host can embed the real one; either would have satisfied a `includes` test
+      // while granting publication to a principal nobody reviewed.
+      if (!eq(s.Principal, CLOUDWATCH_PRINCIPAL)) {
+        throw new Error(`unrelated publisher on the alert topic: ${JSON.stringify(s.Principal ?? {})}`);
       }
       if (!s.Condition?.StringEquals?.['aws:SourceAccount']) {
         throw new Error('a publish statement without aws:SourceAccount allows the confused-deputy shape');
@@ -637,6 +645,15 @@ test('NEGATIVE: an unrelated publisher on the topic policy is detectable', () =>
     ['another service', { Service: 'events.amazonaws.com' }],
     ['any principal', '*'],
     ['a foreign account', { AWS: 'arn:aws:iam::111122223333:root' }],
+    // MIXED principals: each of these CONTAINS `cloudwatch.amazonaws.com`, so each passed the old
+    // substring check while granting publication to a second principal as well.
+    ['CloudWatch plus another service', { Service: ['cloudwatch.amazonaws.com', 'events.amazonaws.com'] }],
+    ['CloudWatch plus an AWS principal', {
+      Service: 'cloudwatch.amazonaws.com',
+      AWS: 'arn:aws:iam::111122223333:root',
+    }],
+    // And a lookalike host that merely embeds the real service name.
+    ['a lookalike service host', { Service: 'evil-cloudwatch.amazonaws.com.attacker.net' }],
   ]) {
     const mutated = JSON.parse(JSON.stringify(tpl));
     mutated.Resources[id].Properties.PolicyDocument.Statement.push({
@@ -647,6 +664,18 @@ test('NEGATIVE: an unrelated publisher on the topic policy is detectable', () =>
       Condition: { StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } },
     });
     assert.throws(() => assertOnlyCloudWatchPublishes(mutated), /unrelated publisher/, label);
+  }
+
+  // The last three shapes above all CONTAIN the allowed service name and were therefore accepted by
+  // the presence test this guard used to perform. They are rejected structurally now. Note that the
+  // proof is the rejection itself: re-running a substring check here to demonstrate the old
+  // behaviour would reintroduce the same unsafe host test the scanner flags.
+  for (const principal of [
+    { Service: ['cloudwatch.amazonaws.com', 'events.amazonaws.com'] },
+    { Service: 'cloudwatch.amazonaws.com', AWS: 'arn:aws:iam::111122223333:root' },
+    { Service: 'evil-cloudwatch.amazonaws.com.attacker.net' },
+  ]) {
+    assert.equal(eq(principal, CLOUDWATCH_PRINCIPAL), false, JSON.stringify(principal));
   }
 
   // And a CloudWatch statement that drops the account condition is caught too.
