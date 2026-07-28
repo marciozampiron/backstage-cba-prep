@@ -75,12 +75,13 @@ with the same fail-fast discipline `CBA_BFF_BASE_URL` already had. Two rules are
   is dead, which is exactly what a health check passes straight over. Local development may still
   use it.
 
-**Ephemeral previews cannot enter the CORS allow-list.** `pilot-environment-contract` §1 says
-previews validate UI only and are never allow-listed; authenticated integration goes through one
-stable URL, the single origin the BFF allows. `parseCorsOrigins` now enforces at most ONE exact
-`https` origin, rejects `.pages.dev` hosts, and rejects malformed entries. The COUNT rule is what
-does the work: with a maximum of one, a per-change preview URL cannot be appended — only
-substituted, which is a visible edit rather than an accumulation nobody notices.
+**Ephemeral previews cannot enter the CORS allow-list.** `parseCorsOrigins` enforces at most ONE
+exact `https` origin AND binds it to the environment: on `workers.dev` the leftmost hostname label
+must be exactly `cba-study-coach-<env>-web`. Both rules are needed and neither is sufficient — the
+count stops an origin being appended, and the Worker binding stops a preview URL REPLACING the
+stable one, which is the likelier mistake. Hosts that embed a Cloudflare domain without being on it
+are rejected as lookalikes; custom domains stay unconstrained so the open origin decision is not
+pre-empted.
 
 ## Not delivered, and why
 
@@ -113,3 +114,48 @@ root **359/359** · web **65/65** + `next build` OK + `leak-scan` PASS · infra/
 services/bff **164 / 163 pass / 1 skip** · bank **60 valid / 0 errors** · credential-free
 `cdk synth` OK for `dev` and `pilot` · `git diff --check` clean · no `deploy`/`preview` script in
 `web/package.json` · no token, account id, zone id or endpoint in any tracked file.
+
+## Codex review round 1 — findings and fix-forward
+
+`81eee44` is preserved; corrections are in a third commit. All three findings were reproduced first.
+
+**HIGH — pilot preview URLs were implicitly public.** Both `workers_dev` and `preview_urls` default
+to `true`, so declaring the environments without them meant deploying pilot would publish versioned
+and aliased preview URLs — public origins pointing at pilot, which the contract forbids. Both are
+now explicit on every environment. Pilot gets `preview_urls: false` permanently, and
+`workers_dev: false` as the fail-closed side of the open origin decision: nothing is published
+while it is pending, and flipping it is part of that decision. Dev keeps both `true`, which is what
+the contract gives it — ephemeral UI-only previews alongside one stable URL. A new
+`web/test/wrangler-config.test.mjs` asserts the EFFECTIVE configuration, because an absent setting
+is invisible in a diff and still publishes.
+
+**MEDIUM — the CORS count did not exclude Workers previews, and the code said it did.** The claim
+was wrong: counting stops an origin being APPENDED and does nothing about a preview URL REPLACING
+the stable one, which is the likelier mistake. `parseCorsOrigins` now takes the environment and
+requires a `workers.dev` origin's leftmost hostname label to be exactly `cba-study-coach-<env>-web`.
+A preview is the stable hostname with a prefix, so that one rule rejects both documented shapes and
+the other environment's Worker. Writing the tests also surfaced a gap Codex did not name: a host
+that EMBEDS the Cloudflare domain without being on it (`…workers.dev.evil.test`) fell through to the
+unconstrained custom-domain path purely because the suffix check did not match; it is now rejected
+as a lookalike. Custom domains stay otherwise unconstrained so the open decision is not pre-empted.
+The false "count rule enforces previews" wording is gone from the code, the README and this file.
+
+**MEDIUM — public auth config accepted credential-shaped values.** Reproduced exactly: an AKIA-shaped
+pool id, a JWT-shaped client id and a domain carrying a path all returned 200. These values are
+served publicly, so the consequence of being wrong is asymmetric — an id in the wrong place is a
+broken sign-in, a secret in the wrong place is published to every browser. Both ids now have
+explicit format checks, plus tripwires for JWTs, AWS access key ids, ARNs, URLs, PEM blocks,
+provider tokens, control characters and implausible length. `COGNITO_DOMAIN` must have pathname `/`
+with no credentials, query or fragment, and the resolver returns the NORMALISED origin — a path is
+not cosmetic, because `new URL('/logout', base)` discards it and the logout URL would silently
+differ from what was configured. No rejected value is ever echoed, and `/auth/config` still answers
+the generic `AUTH_MISCONFIGURED`; a test asserts the message does not contain the input.
+
+The `client-id` test fixture was replaced with a realistic Cognito app-client id, since the old one
+was not a plausible value and the format check now rejects it.
+
+### Validation after the fix
+
+root **359/359** · web **71/71** + `next build` OK + `leak-scan` PASS · infra/aws **101/101** ·
+services/bff **164 / 163 pass / 1 skip** · bank **60/0** · credential-free `cdk synth` OK for `dev`
+and `pilot` · `git diff --check` clean.

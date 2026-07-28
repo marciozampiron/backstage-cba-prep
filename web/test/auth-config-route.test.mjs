@@ -4,6 +4,7 @@
 // It is the ONE place the browser learns (a) which auth mode is active and (b) where the Web BFF
 // lives. Both are served at REQUEST time; neither is ever a NEXT_PUBLIC_* build-time constant.
 import { test } from 'node:test';
+import { resolveCognitoConfig } from '../lib/bff-config.js';
 import assert from 'node:assert/strict';
 
 const KEYS = [
@@ -47,7 +48,7 @@ test('cognito mode serves auth ids AND the base URL together', async () => {
     CBA_RUNTIME_ENV: 'pilot',
     CBA_BFF_BASE_URL: 'https://api.pilot.example.test',
     COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
-    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_CLIENT_ID: 'abcdefghij0123456789klmn',
     COGNITO_DOMAIN: 'https://auth.pilot.example.test',
   });
   assert.equal(res.status, 200);
@@ -145,7 +146,7 @@ test('a deployed cognito runtime refuses the reserved .invalid placeholder', asy
     CBA_RUNTIME_ENV: 'pilot',
     CBA_BFF_BASE_URL: 'https://api.pilot.example.test',
     COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
-    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_CLIENT_ID: 'abcdefghij0123456789klmn',
     COGNITO_DOMAIN: 'https://auth.cba-study-coach.invalid',
   });
   assert.equal(res.status, 500);
@@ -158,7 +159,7 @@ test('local development may still use the .invalid placeholder', async () => {
   const res = await callWith({
     CBA_WEB_AUTH: 'cognito',
     COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
-    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_CLIENT_ID: 'abcdefghij0123456789klmn',
     COGNITO_DOMAIN: 'https://auth.cba-study-coach.invalid',
   });
   assert.equal(res.status, 200);
@@ -171,7 +172,7 @@ test('NEGATIVE: each malformed Cognito value fails closed on its own', async () 
     CBA_RUNTIME_ENV: 'pilot',
     CBA_BFF_BASE_URL: 'https://api.pilot.example.test',
     COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
-    COGNITO_CLIENT_ID: 'client-id',
+    COGNITO_CLIENT_ID: 'abcdefghij0123456789klmn',
     COGNITO_DOMAIN: 'https://auth.pilot.example.test',
   };
   // NOTE: `Object.assign` turns an `undefined` value into the STRING "undefined", which is present
@@ -183,7 +184,7 @@ test('NEGATIVE: each malformed Cognito value fails closed on its own', async () 
     'missing domain': (e) => { delete e.COGNITO_DOMAIN; },
     'empty pool id': { COGNITO_USER_POOL_ID: '' },
     'whitespace-only client id': { COGNITO_CLIENT_ID: '   ' },
-    'padded client id': { COGNITO_CLIENT_ID: ' client-id ' },
+    'padded client id': { COGNITO_CLIENT_ID: ' abcdefghij0123456789klmn ' },
     // A bare host would resolve `new URL('/logout', domain)` relative to the frontend and send the
     // learner to a logout URL on the wrong site.
     'bare host domain': { COGNITO_DOMAIN: 'auth.pilot.example.test' },
@@ -199,4 +200,45 @@ test('NEGATIVE: each malformed Cognito value fails closed on its own', async () 
     assert.equal(res.status, 500, `${label} must fail closed`);
     assert.equal(res.body.error.code, 'AUTH_MISCONFIGURED', label);
   }
+});
+
+test('NEGATIVE: values shaped like credentials never reach the browser', () => {
+  // These are SERVED PUBLICLY. A secret pasted into one of these variables would be published to
+  // every browser that loads the page, so the check is shape rather than presence — the id formats
+  // are narrow, and anything outside them is a misconfiguration whatever it turns out to be.
+  const base = {
+    COGNITO_USER_POOL_ID: 'us-east-1_TESTPOOL',
+    COGNITO_CLIENT_ID: 'abcdefghij0123456789klmn',
+    COGNITO_DOMAIN: 'https://auth.pilot.example.test',
+  };
+  const rejected = {
+    'AWS access key id as the pool id': { COGNITO_USER_POOL_ID: 'AKIAIOSFODNN7EXAMPLE' },
+    'ARN as the pool id': { COGNITO_USER_POOL_ID: 'arn:aws:cognito-idp:us-east-1:000000000000:userpool/x' },
+    'JWT as the client id': { COGNITO_CLIENT_ID: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig' },
+    'provider token as the client id': { COGNITO_CLIENT_ID: 'ghp_0123456789abcdefghijklmnopqrstuvwx' },
+    'URL in an id field': { COGNITO_USER_POOL_ID: 'https://auth.example.test' },
+    'PEM block': { COGNITO_CLIENT_ID: '-----BEGIN PRIVATE KEY-----abc' },
+    'control character': { COGNITO_CLIENT_ID: `abcdefghij${String.fromCharCode(9)}0123456789` },
+    'implausibly long id': { COGNITO_CLIENT_ID: 'a'.repeat(300) },
+    // A path is not cosmetic: `new URL('/logout', base)` DISCARDS it, so the logout URL would
+    // silently differ from what the operator configured.
+    'domain carrying a path': { COGNITO_DOMAIN: 'https://auth.pilot.example.test/oauth2' },
+  };
+
+  for (const [label, override] of Object.entries(rejected)) {
+    assert.throws(
+      () => resolveCognitoConfig({ ...base, ...override }, { deployed: true }),
+      (err) => {
+        // The rejected value must never be echoed — that is how a secret ends up in a log.
+        const value = Object.values(override)[0];
+        assert.equal(err.message.includes(value), false, `${label}: the message echoed the value`);
+        return true;
+      },
+      label,
+    );
+  }
+
+  // The domain is returned NORMALISED to its origin, so callers join paths against a stable base.
+  const ok = resolveCognitoConfig({ ...base, COGNITO_DOMAIN: 'https://auth.pilot.example.test/' }, { deployed: true });
+  assert.equal(ok.domain, 'https://auth.pilot.example.test');
 });

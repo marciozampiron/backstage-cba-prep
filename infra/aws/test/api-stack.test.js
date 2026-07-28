@@ -119,10 +119,9 @@ test('NEGATIVE: the CORS list holds at most one stable origin, and never a previ
     JSON.stringify(origins),
   );
 
-  // The count rule is what enforces the preview policy. Ephemeral previews validate UI only and
-  // are never allow-listed (pilot-environment-contract §1); with a maximum of one, a per-change
-  // preview URL cannot be APPENDED — it can only replace the stable origin, which is a visible
-  // edit rather than an accumulation nobody notices.
+  // The count rule stops an origin being APPENDED. It does NOT stop a preview URL replacing the
+  // stable one, which is the likelier mistake — so the origin is also bound to the environment's
+  // Worker below. Both rules are needed; neither is sufficient.
   reject(
     ['https://dev.example.test', 'https://preview-abc123.example.test'],
     /at most ONE stable origin/,
@@ -146,6 +145,45 @@ test('NEGATIVE: the CORS list holds at most one stable origin, and never a previ
   const ok = apiTemplate('dev', { corsAllowedOrigins: '["https://dev.example.test"]' });
   const api = Object.values(ok.findResources('AWS::ApiGatewayV2::Api'))[0];
   assert.deepEqual(api.Properties.CorsConfiguration.AllowOrigins, ['https://dev.example.test']);
+});
+
+test('NEGATIVE: a workers.dev origin must be this environment\'s stable Worker, never a preview', () => {
+  const reject = (env, origins, pattern) => assert.throws(
+    () => buildStacks(new App({ context: { environment: env, corsAllowedOrigins: JSON.stringify(origins) } })),
+    pattern,
+    `${env}: ${JSON.stringify(origins)}`,
+  );
+
+  // A Workers preview URL is the stable hostname WITH A PREFIX. Both documented shapes must fail,
+  // and neither is caught by counting: each one is a single origin replacing the stable entry,
+  // which is exactly what a developer pastes after testing a preview.
+  reject('dev', ['https://a1b2c3d4-cba-study-coach-dev-web.acct.workers.dev'], /stable Worker on workers\.dev/);
+  reject('dev', ['https://my-feature-cba-study-coach-dev-web.acct.workers.dev'], /stable Worker on workers\.dev/);
+  reject('pilot', ['https://v42-cba-study-coach-pilot-web.acct.workers.dev'], /stable Worker on workers\.dev/);
+
+  // The OTHER environment's Worker is rejected by the same rule — a dev origin must never be able
+  // to reach the pilot BFF.
+  reject('pilot', ['https://cba-study-coach-dev-web.acct.workers.dev'], /expected "cba-study-coach-pilot-web"/);
+  reject('dev', ['https://cba-study-coach-pilot-web.acct.workers.dev'], /expected "cba-study-coach-dev-web"/);
+
+  // A host that EMBEDS the Cloudflare domain without being on it would otherwise fall through to
+  // the unconstrained custom-domain path, purely because the suffix check does not match.
+  reject('dev', ['https://cba-study-coach-dev-web.acct.workers.dev.evil.test'], /imitates a Cloudflare domain/);
+  reject('dev', ['https://x.pages.dev.evil.test'], /imitates a Cloudflare domain/);
+
+  // The exact stable Worker hostname is accepted for its own environment.
+  for (const env of ['dev', 'pilot']) {
+    const origin = `https://cba-study-coach-${env}-web.acct.workers.dev`;
+    const tpl = apiTemplate(env, { corsAllowedOrigins: JSON.stringify([origin]) });
+    const api = Object.values(tpl.findResources('AWS::ApiGatewayV2::Api'))[0];
+    assert.deepEqual(api.Properties.CorsConfiguration.AllowOrigins, [origin], env);
+  }
+
+  // A custom domain stays unconstrained beyond the exact-origin rules: whether the pilot uses one
+  // is an open decision, and pinning a shape here would pre-empt it.
+  const custom = apiTemplate('pilot', { corsAllowedOrigins: '["https://app.example.test"]' });
+  const customApi = Object.values(custom.findResources('AWS::ApiGatewayV2::Api'))[0];
+  assert.deepEqual(customApi.Properties.CorsConfiguration.AllowOrigins, ['https://app.example.test']);
 });
 
 test('invalid environment and missing table both fail construction', () => {

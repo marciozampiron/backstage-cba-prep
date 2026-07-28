@@ -148,7 +148,7 @@ export async function getBffConfig() {
  * @returns {{ userPoolId: string, clientId: string, domain: string }}
  */
 export function resolveCognitoConfig(env = {}, { deployed = false } = {}) {
-  const read = (key) => {
+  const read = (key, { isUrl = false } = {}) => {
     const raw = env[key];
     if (typeof raw !== 'string' || raw.trim() === '') {
       throw new Error(`${key} is required when CBA_WEB_AUTH=cognito.`);
@@ -156,27 +156,46 @@ export function resolveCognitoConfig(env = {}, { deployed = false } = {}) {
     if (raw !== raw.trim()) {
       throw new Error(`${key} must not have leading/trailing whitespace.`);
     }
+    // These values are SERVED PUBLICLY by /auth/config. A misconfiguration that put a secret in one
+    // of these variables would publish it to every browser that loads the page, so shape is checked
+    // rather than mere presence — the id formats are narrow, and anything outside them is a
+    // misconfiguration whatever it turns out to be.
+    assertNotCredentialShaped(key, raw, { isUrl });
     return raw;
   };
 
   const userPoolId = read('COGNITO_USER_POOL_ID');
   const clientId = read('COGNITO_CLIENT_ID');
-  const domain = read('COGNITO_DOMAIN');
+  // The domain IS a URL by contract, so the URL tripwire does not apply to it — every other
+  // tripwire still does, and its shape is validated as a URL below.
+  const domain = read('COGNITO_DOMAIN', { isUrl: true });
+
+  // `<region>_<suffix>` — the documented Cognito user-pool id format.
+  if (!/^[a-z]{2}(-[a-z]+)+-\d_[A-Za-z0-9]{1,32}$/.test(userPoolId)) {
+    throw new Error('COGNITO_USER_POOL_ID must look like "<region>_<id>".');
+  }
+  // App client ids are lowercase alphanumeric. The bound is generous rather than exactly 26, so a
+  // format change does not break a deployment, but it still excludes JWTs, ARNs and URLs.
+  if (!/^[a-z0-9]{16,64}$/.test(clientId)) {
+    throw new Error('COGNITO_CLIENT_ID must be 16-64 lowercase alphanumeric characters.');
+  }
 
   // `auth-settings.js` uses the domain as a URL BASE (`new URL('/logout', domain)`), so it must be
-  // an absolute origin — a bare host would silently produce a relative resolution against the
-  // frontend and send the learner to a logout URL on the wrong site.
+  // an absolute origin — a bare host would resolve relative to the frontend and send the learner to
+  // a logout URL on the wrong site.
   let parsed;
   try {
     parsed = new URL(domain);
   } catch {
-    throw new Error(`COGNITO_DOMAIN must be an absolute URL — got "${domain}".`);
+    throw new Error('COGNITO_DOMAIN must be an absolute URL.');
   }
   if (parsed.protocol !== 'https:') {
     throw new Error('COGNITO_DOMAIN must use https://.');
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error('COGNITO_DOMAIN must be an origin — no credentials, query string or fragment.');
+  // A path is not cosmetic here: `new URL('/logout', base)` DISCARDS it, so a domain carrying one
+  // would silently produce a different logout URL than the operator configured.
+  if (parsed.pathname !== '/' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('COGNITO_DOMAIN must be an origin only — no path, credentials, query string or fragment.');
   }
   if (deployed && (parsed.hostname === 'invalid' || parsed.hostname.endsWith('.invalid'))) {
     throw new Error(
@@ -185,5 +204,38 @@ export function resolveCognitoConfig(env = {}, { deployed = false } = {}) {
     );
   }
 
-  return { userPoolId, clientId, domain };
+  // Normalised: the origin, with no trailing path, so callers join paths against a stable base.
+  return { userPoolId, clientId, domain: parsed.origin };
+}
+
+/**
+ * Refuse values that carry the shape of credential material.
+ *
+ * This is defence in depth, not a boundary — the real boundary is that these variables are supposed
+ * to hold ids. It exists because the consequence of being wrong is asymmetric: an id in the wrong
+ * place is a broken sign-in, while a secret in the wrong place is published to every browser.
+ *
+ * The rejected VALUE is never included in the message, and `/auth/config` answers with a generic
+ * code, so a mistake cannot be echoed into a log or a response.
+ */
+function assertNotCredentialShaped(key, value, { isUrl = false } = {}) {
+  if (/[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${key} must not contain control characters.`);
+  }
+  if (value.length > 256) {
+    throw new Error(`${key} is implausibly long for an identifier.`);
+  }
+  const tripwires = [
+    [/^eyJ[A-Za-z0-9_-]/, 'a JSON Web Token'],
+    [/^(AKIA|ASIA)[A-Z0-9]{16}$/, 'an AWS access key id'],
+    [/^arn:/i, 'an ARN'],
+    [/^https?:\/\//i, 'a URL'],
+    [/-----BEGIN [A-Z ]+-----/, 'a PEM block'],
+    [/^(?:xox[abposr]-|ghp_|github_pat_|sk-)/i, 'a provider token'],
+  ];
+  for (const [pattern, what] of tripwires) {
+    // COGNITO_DOMAIN is a URL by contract; every other tripwire still applies to it.
+    if (what === 'a URL' && isUrl) continue;
+    if (pattern.test(value)) throw new Error(`${key} looks like ${what}, not an identifier.`);
+  }
 }

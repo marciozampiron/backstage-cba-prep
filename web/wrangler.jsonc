@@ -39,12 +39,34 @@
   // and the `COGNITO_*` values are Worker RUNTIME variables supplied per environment at deploy
   // time by #70. A committed value here would be both an endpoint in a tracked file and a
   // build-time freeze of something the contract requires to be resolved per request.
+  //
+  // `workers_dev` and `preview_urls` are set EXPLICITLY on every environment because both default
+  // to true. Left unset, deploying the pilot Worker would publish versioned and aliased preview
+  // URLs on `workers.dev` — public origins pointing at pilot, which the environment contract
+  // forbids outright. A default that silently exposes an environment is not a default worth
+  // inheriting.
   "env": {
+    // dev DOES get previews: the contract gives it ephemeral, UI-only preview URLs alongside one
+    // stable dev URL. Previews are never added to any BFF CORS allow-list, so an authenticated
+    // flow cannot run on them — they validate rendering only.
     "dev": {
-      "name": "cba-study-coach-dev-web"
+      "name": "cba-study-coach-dev-web",
+      "workers_dev": true,
+      "preview_urls": true
     },
+    // pilot gets NEITHER, and the two settings are refused for different reasons.
+    //
+    // `preview_urls: false` is permanent: "previews must never point at pilot" is a contract rule,
+    // not a preference.
+    //
+    // `workers_dev: false` is the fail-closed side of an OPEN DECISION. If the pilot ends up
+    // serving from the `workers.dev` origin rather than a custom domain, this flips to true as
+    // part of that decision — together with the CORS origin and the Cognito callback/logout URLs.
+    // Until then it stays off, so nothing is published by default while the decision is pending.
     "pilot": {
-      "name": "cba-study-coach-pilot-web"
+      "name": "cba-study-coach-pilot-web",
+      "workers_dev": false,
+      "preview_urls": false
     }
   }
 

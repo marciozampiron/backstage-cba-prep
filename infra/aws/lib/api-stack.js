@@ -88,7 +88,29 @@ const ACCESS_LOG_FORMAT = JSON.stringify({
   integrationStatus: '$context.integrationStatus',
 });
 
-function parseCorsOrigins(value) {
+/**
+ * The stable Cloudflare Worker hostname for an environment, on the `workers.dev` origin.
+ *
+ * A Workers PREVIEW URL is the stable hostname with a prefix — `<version>-<worker>.<subdomain>
+ * .workers.dev` for a versioned preview, `<alias>-<worker>.…` for an aliased one. The leftmost
+ * label of a stable URL is therefore EXACTLY the worker name, and anything longer is a preview.
+ */
+const WORKER_NAME = (environment) => `cba-study-coach-${environment}-web`;
+
+/**
+ * Validate the BFF CORS allow-list.
+ *
+ * The environment contract allows exactly ONE stable origin per environment; ephemeral previews
+ * validate UI only and are never allow-listed, because their per-change URLs would make an
+ * exact-origin list unmanageable and a preview must never reach the pilot BFF.
+ *
+ * Counting is NOT what enforces that. A limit of one stops an origin being APPENDED; it does
+ * nothing about a preview URL that REPLACES the stable one, which is the likelier mistake — a
+ * developer pasting the URL they were just testing. So the origin is bound to the environment: on
+ * `workers.dev` the hostname must be exactly this environment's Worker, which rejects every preview
+ * shape and the other environment's Worker at the same time.
+ */
+function parseCorsOrigins(value, environment) {
   let list = value ?? [];
   if (typeof list === 'string') {
     try {
@@ -103,22 +125,14 @@ function parseCorsOrigins(value) {
   if (list.includes('*')) {
     throw new Error('corsAllowedOrigins must be EXACT origins — "*" is forbidden (credentials mode, #69).');
   }
-
-  // #67 Stage B / pilot-environment-contract §1: ephemeral Cloudflare previews validate UI ONLY and
-  // are never added to any BFF CORS allow-list — their per-change URLs would make an exact-origin
-  // list unmanageable, and a preview must never be able to reach the pilot BFF. Authenticated
-  // integration goes through ONE stable URL per environment, which is the single origin the BFF
-  // allows.
-  //
-  // The count rule is what actually enforces the preview policy: with a maximum of one, a per-change
-  // preview URL cannot be appended — it can only REPLACE the stable origin, which is a visible edit
-  // rather than an accumulation nobody notices.
   if (list.length > 1) {
     throw new Error(
       `corsAllowedOrigins allows at most ONE stable origin per environment — got ${list.length}. `
       + 'Ephemeral previews are never allow-listed (pilot-environment-contract §1).',
     );
   }
+
+  const expectedWorker = WORKER_NAME(environment);
   for (const origin of list) {
     let parsed;
     try {
@@ -129,14 +143,43 @@ function parseCorsOrigins(value) {
     if (parsed.protocol !== 'https:') {
       throw new Error(`corsAllowedOrigins must use https — got "${origin}".`);
     }
-    if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-      throw new Error(`corsAllowedOrigins must be origins only, with no path, query or fragment — got "${origin}".`);
+    if (parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password) {
+      throw new Error(`corsAllowedOrigins must be origins only, with no path, query, fragment or credentials — got "${origin}".`);
     }
+
     // Cloudflare Pages preview hosts are unmistakably ephemeral, and this project does not use
-    // Pages at all, so any `.pages.dev` origin here is a mistake rather than a decision.
+    // Pages at all, so such an origin here is a mistake rather than a decision.
     if (parsed.hostname.endsWith('.pages.dev')) {
       throw new Error(`corsAllowedOrigins must not contain an ephemeral preview origin — got "${origin}".`);
     }
+
+    // A host that EMBEDS a Cloudflare domain without being on it — `…workers.dev.evil.test` — is a
+    // lookalike, not a custom domain. It would otherwise fall through to the unconstrained
+    // custom-domain path purely because the suffix check does not match.
+    for (const cloudflare of ['.workers.dev', '.pages.dev']) {
+      if (parsed.hostname.includes(cloudflare) && !parsed.hostname.endsWith(cloudflare)) {
+        throw new Error(
+          `corsAllowedOrigins contains a host that imitates a Cloudflare domain without being on it — got "${origin}".`,
+        );
+      }
+    }
+
+    if (parsed.hostname.endsWith('.workers.dev')) {
+      // `<label>.<subdomain>.workers.dev` — the leftmost label identifies the Worker, and a preview
+      // prefixes it. Requiring an exact match rejects `<version>-<worker>`, `<alias>-<worker>`, and
+      // the other environment's Worker, all with the same rule.
+      const [label] = parsed.hostname.split('.');
+      if (label !== expectedWorker) {
+        throw new Error(
+          `corsAllowedOrigins must name this environment's stable Worker on workers.dev — expected `
+          + `"${expectedWorker}" as the leftmost label of "${parsed.hostname}". Versioned and aliased `
+          + 'preview URLs are never allow-listed (pilot-environment-contract §1).',
+        );
+      }
+    }
+    // A custom domain is deliberately NOT constrained further: whether the pilot serves from one is
+    // an open decision on #67, and pinning a shape here would pre-empt it. The one-origin rule and
+    // the exact-origin requirement still apply.
   }
   return list;
 }
@@ -241,7 +284,7 @@ class ApiStack extends Stack {
       }),
     );
 
-    const corsOrigins = parseCorsOrigins(getContext(this.node, 'corsAllowedOrigins', []));
+    const corsOrigins = parseCorsOrigins(getContext(this.node, 'corsAllowedOrigins', []), environment);
     this.httpApi = new apigwv2.HttpApi(this, 'BffHttpApi', {
       apiName: `cba-study-coach-${environment}-bff`,
       ...(corsOrigins.length > 0

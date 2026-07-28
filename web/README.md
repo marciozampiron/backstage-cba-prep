@@ -120,12 +120,35 @@ Deploy stays out of this package: there is no `deploy` or `preview` script in `p
 local `npm run` cannot mutate a Cloudflare account. `opennextjs-cloudflare deploy` is invoked only
 from the #70 workflow behind the GitHub Environment approval.
 
+`workers_dev` and `preview_urls` are set **explicitly on every environment**, because both default
+to `true`. Left unset, deploying the pilot Worker would publish versioned and aliased preview URLs
+on `workers.dev` — public origins pointing at pilot, which the contract forbids outright.
+
+| | `workers_dev` | `preview_urls` |
+| --- | --- | --- |
+| `dev` | `true` | `true` — ephemeral, UI-only previews, exactly what the contract gives dev |
+| `pilot` | `false` | `false` — permanent: previews must never point at pilot |
+
+`pilot.workers_dev: false` is the fail-closed side of the open origin decision: nothing is
+published by default while it is pending. If the pilot ends up serving from `workers.dev` rather
+than a custom domain, it flips to `true` as part of that decision, together with the CORS origin
+and the Cognito callback/logout URLs.
+
 **Ephemeral previews are never CORS-allow-listed** (pilot-environment-contract §1). Authenticated
-integration goes through one stable URL per environment, and `ApiStack` now enforces that
-structurally: `corsAllowedOrigins` accepts at most one exact `https` origin and rejects
-`.pages.dev` preview hosts. The count rule is what does the work — with a maximum of one, a
-per-change preview URL cannot be appended, only substituted, which is a visible edit rather than an
-accumulation nobody notices.
+integration goes through one stable URL per environment, enforced by `ApiStack` with two rules that
+are both necessary and neither sufficient:
+
+- **at most one** exact `https` origin — this stops an origin being *appended*;
+- **the origin is bound to the environment's Worker** — on `workers.dev` the leftmost hostname label
+  must be exactly `cba-study-coach-<env>-web`. A preview URL is the stable hostname with a prefix
+  (`<version>-<worker>.…` or `<alias>-<worker>.…`), so this rejects every preview shape, and the
+  other environment's Worker, with the same rule.
+
+The count rule alone does **not** enforce the preview policy: it only prevents appending. A preview
+URL *replacing* the stable one is the likelier mistake — a developer pasting the URL they were just
+testing — and it is the Worker-name binding that catches that. Hosts embedding a Cloudflare domain
+without being on it (`…workers.dev.evil.test`) are rejected too; custom domains are otherwise
+unconstrained, because pinning a shape would pre-empt the open decision.
 
 ## Identity / auth
 
