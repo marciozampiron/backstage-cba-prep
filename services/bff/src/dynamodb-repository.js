@@ -286,48 +286,6 @@ export class DynamoDbSimulationRepository {
     }
   }
 
-  async #legacySmokeScopedWrite({ runId, kind, record }) {
-    const type = { session: 'SESSION', mock: 'MOCK', attempt: 'ATTEMPT' }[kind];
-    const id = record.practiceSessionId ?? record.mockExamId ?? record.attemptId;
-    const key = `${type}#${id}`;
-    try {
-      await this.client.transactWrite({
-        TransactItems: [
-          {
-            ConditionCheck: {
-              TableName: this.tableName,
-              Key: recordKey('SMOKERUN', runId),
-              ConditionExpression: 'record.#s = :active',
-              ExpressionAttributeNames: { '#s': 'status' },
-              ExpressionAttributeValues: { ':active': 'active' },
-            },
-          },
-          {
-            Put: {
-              TableName: this.tableName,
-              Item: {
-                ...recordKey(type, id),
-                record,
-                learnerId: record.learnerId,
-                rev: 1,
-                gsi1pk: `LEARNER#${record.learnerId}`,
-                gsi1sk: key,
-              },
-            },
-          },
-        ],
-      });
-      this.revs.set(record, 1);
-      return true;
-    } catch (err) {
-      if (runConditionFailed(err)) return false;
-      // Every OTHER cancellation — TransactionConflict, capacity, an unrelated item — is a real
-      // error. Reporting it as a closed run told the caller something false about the run's state
-      // and hid a fault that deserves to surface.
-      throw err;
-    }
-  }
-
   /** The claim is a projection and needs the same fence, conditioned on the run in one transaction. */
   async claimActiveMock(learnerId, mockExamId, { runId = null } = {}) {
     if (!runId) return this.#claimWithoutRun(learnerId, mockExamId);
@@ -355,7 +313,10 @@ export class DynamoDbSimulationRepository {
       return true;
     } catch (err) {
       if (runConditionFailed(err)) throw new RepositoryConflictError('This smoke run stopped accepting records.');
-      if (this.isConditionalFailure(err) || err?.name === 'TransactionCanceledException') return false;
+      // `false` means EXACTLY one thing: somebody else already holds the claim. Resolving every
+      // other cancellation to `false` turned a transaction conflict or a capacity failure into
+      // MOCK_EXAM_IN_PROGRESS, telling the caller a story about state while hiding a fault.
+      if (recordConditionFailed(err)) return false;
       throw err;
     }
   }

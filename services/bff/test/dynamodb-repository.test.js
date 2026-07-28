@@ -99,8 +99,20 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
           const expected = item.ConditionCheck.ExpressionAttributeValues[':active'];
           if (!existing || existing.record?.status !== expected) return { Code: 'ConditionalCheckFailed' };
         }
-        if (item.Put?.ConditionExpression === 'attribute_not_exists(pk)' && store.items.has(keyOf(item.Put.Item))) {
-          return { Code: 'ConditionalCheckFailed' };
+        if (item.Put?.ConditionExpression) {
+          // Every supported Put condition, not just one: ignoring `rev = :expected` inside a
+          // transaction let a stale smoke-scoped update overwrite the winner, while the
+          // non-transactional path enforced it — the fence was weaker exactly where it was newest.
+          const existing = store.items.get(keyOf(item.Put.Item));
+          const cond = item.Put.ConditionExpression;
+          if (cond === 'attribute_not_exists(pk)') {
+            if (existing) return { Code: 'ConditionalCheckFailed' };
+          } else if (cond === 'rev = :expected') {
+            const expected = item.Put.ExpressionAttributeValues?.[':expected'];
+            if (!existing || existing.rev !== expected) return { Code: 'ConditionalCheckFailed' };
+          } else {
+            throw new Error(`fake client: unsupported transactional Put condition "${cond}"`);
+          }
         }
         return { Code: 'None' };
       });
@@ -350,6 +362,59 @@ test('a cancellation that is NOT the run condition is not reported as a closed r
       kind: 'attempt',
       record: { attemptId: 'att_x', learnerId: 'l-classify', answers: {} },
     }),
+    (err) => err.name === 'TransactionCanceledException',
+  );
+});
+
+test('a stale smoke-scoped update loses to the winner inside the transaction too', async () => {
+  // The transactional path is the newest and was the weakest: the fake ignored `rev = :expected`
+  // inside TransactWrite, so a stale update overwrote the winner where the plain Put path would
+  // have refused it.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({ runId: 'run-stale00000000000000', learnerId: 'l-stale', status: 'active' });
+  await repo.saveAttempt({ attemptId: 'att_stale', learnerId: 'l-stale', runId: 'run-stale00000000000000', answers: {} });
+
+  const a = await repo.getAttempt('att_stale');
+  const b = await repo.getAttempt('att_stale');
+  a.answers = { 1: { selectedOption: 'A' } };
+  b.answers = { 1: { selectedOption: 'B' } };
+
+  await repo.saveAttempt(a);
+  await assert.rejects(() => repo.saveAttempt(b), (err) => err.name === 'RepositoryConflictError');
+  assert.deepEqual((await repo.getAttempt('att_stale')).answers, { 1: { selectedOption: 'A' } });
+});
+
+test('a claim collision returns false, but an infrastructure cancellation does not', async () => {
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({ runId: 'run-claimcollision0000', learnerId: 'l-cc', status: 'active' });
+
+  // A genuine collision: somebody already holds the claim.
+  assert.equal(await repo.claimActiveMock('l-cc', 'mock_1', { runId: 'run-claimcollision0000' }), true);
+  assert.equal(await repo.claimActiveMock('l-cc', 'mock_2', { runId: 'run-claimcollision0000' }), false);
+
+  // An unrelated cancellation must NOT resolve to false: that became MOCK_EXAM_IN_PROGRESS and
+  // hid the fault behind a story about state.
+  repo.client.transactWrite = async () => {
+    const err = new Error('TransactionCanceledException');
+    err.name = 'TransactionCanceledException';
+    err.CancellationReasons = [{ Code: 'None' }, { Code: 'TransactionConflict' }];
+    throw err;
+  };
+  await assert.rejects(
+    () => repo.claimActiveMock('l-cc2', 'mock_3', { runId: 'run-claimcollision0000' }),
+    (err) => err.name === 'TransactionCanceledException',
+  );
+
+  // Missing reasons entirely is also not a collision.
+  repo.client.transactWrite = async () => {
+    const err = new Error('TransactionCanceledException');
+    err.name = 'TransactionCanceledException';
+    throw err;
+  };
+  await assert.rejects(
+    () => repo.claimActiveMock('l-cc3', 'mock_4', { runId: 'run-claimcollision0000' }),
     (err) => err.name === 'TransactionCanceledException',
   );
 });

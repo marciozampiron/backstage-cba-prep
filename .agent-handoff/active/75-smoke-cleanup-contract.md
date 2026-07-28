@@ -353,55 +353,108 @@ condition. Worth separating, because only the first was a defect in the contract
 - `#saveRecord` in the managed adapter now transacts against the active run whenever the record
   carries a run id, so UPDATES are fenced and not only creation.
 
-## Retention design (recorded before implementation, per the review sequence)
+## Retention design — REVISION 2 (recorded before implementation)
+
+Revision 1 is superseded. It named two clocks and stopped there, which left three holes: expiry was
+not part of the write fence, two learner-scoped projections had no bounded life at all, and the
+child anchor was stated without saying how an update preserves it. Each is addressed below.
 
 ### The problem with one field
 
-`expiresAt` currently serves two unrelated purposes, which is why it is wrong in both directions. It
-is set at creation to bound an ABANDONED run, and reused at completion to bound a TOMBSTONE. Because
-first-write wins, a run completed on day six keeps one day instead of a fresh seven. Because child
-records carry no expiry of their own, an abandoned run can vanish while its learner data remains —
-and with the run gone, `ownedSmokeRun` returns `null`, so cleanup becomes unreachable and the data
-is stranded permanently. `closeSmokeRun` also rewrites the run row without the top-level `ttl`, so a
-cleanup that fails midway leaves a `closing` row with no physical expiry at all.
+`expiresAt` serves two unrelated purposes today, so it is wrong in both directions. It is set at
+creation to bound an ABANDONED run and reused at completion to bound a TOMBSTONE. First-write wins,
+so a run completed on day six keeps one day instead of a fresh seven. Child records carry no expiry,
+so an abandoned run can vanish while its data remains — and with the run gone `ownedSmokeRun`
+returns `null`, cleanup becomes unreachable, and the data is stranded permanently.
 
-### Two clocks, never one
+### Two clocks, named unambiguously
 
 | Field | Meaning | Set when | Bound |
 | --- | --- | --- | --- |
-| `abandonedAt` | the run was opened and never finished | at mint | 24h |
+| `abandonmentExpiresAt` | the run was opened and never finished | at mint | 24h |
 | `expiresAt` | the tombstone may be forgotten | at FIRST completion | 7d from `completedAt` |
 
-`ttl` (epoch seconds, the DynamoDB TTL attribute) always mirrors whichever of the two is currently
-in force, and is re-written on every state transition — including `closing`, which is the gap today.
+`ttl` (epoch seconds) mirrors whichever is in force and is rewritten on EVERY transition, including
+`closing` — the gap today, where a failed cleanup leaves a row with no physical bound.
 
-- **Active**: `ttl` = `abandonedAt`. A run nobody cleans up stops holding learner ownership within a
-  day, not seven.
-- **Closing**: `ttl` unchanged. A failed cleanup must not extend or lose its bound.
-- **Completed**: `ttl` = `expiresAt`, anchored on the FIRST `completedAt`. A replay never moves it —
-  that is what stopped repeated replays retaining the tombstone indefinitely — and the anchor is
-  fresh rather than inherited from the active clock, so a run completed on day six still gets seven.
+- **active**: `ttl` = `abandonmentExpiresAt`.
+- **closing**: `ttl` unchanged. A failed cleanup must neither extend nor lose the bound.
+- **completed**: `ttl` = `expiresAt`, anchored on the FIRST `completedAt`, fresh rather than
+  inherited from the abandonment clock. A replay never moves it.
 
-### Child records expire independently
+### Expiry belongs INSIDE the fence (finding 1)
 
-Every smoke-scoped session, mock and attempt carries its own `ttl` at 7 days from creation. Two
-reasons, and the second is the one that matters: it bounds the data even if the run row disappears
-first, and it removes the stranding failure entirely — data can no longer outlive the ownership
-needed to delete it.
+The dispatcher checks expiry before the handler; the repository checked only `status === 'active'`.
+A request can therefore pass `ownedSmokeRun`, cross the boundary, and still commit — reproduced in
+both adapters with an expiry in the year 2000. Expiry is not a separate concern from status; it is
+the same question asked about time.
 
-### Expiry is an application decision
+Every smoke-scoped write and claim must require, ATOMICALLY:
 
-`ownedSmokeRun` already refuses an expired run. That stays, and it is the point: DynamoDB TTL can
-lag by days, so nothing may treat "the row is still there" as "the run is still valid". TTL is
-housekeeping; the application decides.
+```
+status = 'active' AND abandonmentExpiresAt > now
+```
+
+- **memory/file**: both conditions in `#assertRunAccepts`, evaluated against the injected clock.
+- **DynamoDB**: one `ConditionCheck` carrying both —
+  `record.#s = :active AND record.#a > :now` — so the row's presence never implies validity. TTL
+  lag becomes irrelevant: an expired row fails the condition whether or not it still exists.
+
+Tests: a delayed write and a delayed claim that cross the boundary between the dispatcher check and
+the commit, in all three adapters, with an injected clock.
+
+### Learner-scoped projections (finding 3)
+
+Two projections have neither a run id nor a bound, and after run expiry cleanup cannot reach them.
+
+**ACTIVE_MOCK becomes run-bound.** The claim item carries `runId` and `ttl` mirroring the run's
+current clock. It is written in the same transaction as the run condition, so it cannot outlive the
+run's validity. A stale claim is the projection that blocks every future mock for that learner, so
+it must be the one that expires with the run rather than the one that survives it.
+
+**PROFILE is not run-bound and must not be.** It is a learner cache, not smoke data: an ordinary
+learner has one, and a TTL on it would silently degrade real accounts. For a SMOKE learner it is
+already deleted by cleanup once no records remain. The bounded path for the abandoned case is
+therefore explicit and separate: `deleteSmokeRunData` removes it when the learner has no records
+left, and a run that expires without cleanup leaves a profile whose only content is a cached display
+name for a dedicated smoke identity — no attempts, no answers.
+
+**This is a residual, not a solved problem, and it is recorded as such:** an abandoned smoke run
+whose profile was cached leaves that cache until the smoke learner is next cleaned up. Bounding it
+properly needs an owner for smoke-identity lifecycle, which is #70's provisioning story, not this
+contract's. Flagging it rather than inventing a TTL on a shared learner projection.
+
+Tests: with no further request at all, a run past its abandonment bound has no reachable claim, and
+the profile case is asserted as the documented residual rather than silently passing.
+
+### Child TTL: an immutable creation anchor (finding 5)
+
+"Seven days from creation" is not implementable as stated, because the adapter reconstructs the
+top-level item on every save and does not read the previous `ttl` back. A naive implementation drops
+the attribute on the first answer update, or recomputes it and slides retention forward on every
+write — the same defect the tombstone had.
+
+The anchor therefore lives IN THE RECORD, not in the item: each smoke-scoped record carries
+`retainUntil`, set once at creation and never recomputed. `#saveRecord` derives the top-level `ttl`
+from `record.retainUntil` on every write, so an update reproduces the same value rather than a new
+one. Absence of `retainUntil` on a stamped record is a defect, not a default.
+
+Tests: repeated updates neither remove nor extend a child's retention; the top-level `ttl` after the
+tenth answer equals the value written at creation.
+
+### Expiry stays an application decision
+
+`ownedSmokeRun` refuses an expired run, and now the write fence does too. DynamoDB TTL can lag by
+days, so nothing may read "the row is still there" as "the run is still valid". TTL is housekeeping.
 
 ### Tests to write with an injected clock
 
-1. abandoned run, day two → the run reads as gone, `ttl` was the 24h bound;
-2. completion on day six → `expiresAt` is `completedAt + 7d`, NOT one day;
+1. abandoned run at 25h → reads as gone; `ttl` was the 24h bound;
+2. completion on day six → `expiresAt` is `completedAt + 7d`, not one day;
 3. replay on day ten → `expiresAt` unchanged from the first completion;
-4. cleanup that fails during `closing` → the row keeps its `ttl`, and a retry still converges;
-5. child record TTL is present and independent of the run's;
-6. an expired run refuses cleanup through the application, with the row still present.
+4. cleanup failing during `closing` → the row keeps its `ttl`; a retry converges;
+5. child `retainUntil` is set once and survives ten updates unchanged;
+6. an expired run refuses cleanup through the application, with the row still present;
+7. a write and a claim that cross the expiry boundary mid-request are refused, in all three adapters.
 
-Implementation follows in a separate commit, after this design is reviewed.
+Implementation follows only after this revision is approved.
