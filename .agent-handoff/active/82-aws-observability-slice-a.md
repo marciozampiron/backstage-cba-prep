@@ -331,3 +331,73 @@ valid / 0 errors** · `git diff --check` clean · `npm run agent-refresh` ok · 
 OTEL/Application Signals enablement, no Bedrock invocation, no secret operation, no push, no PR and
 no merge. #67, #10, #91/#93, `.vscode/`, `CURRENT.md` and `EVENTS.md` are preserved; the stale
 primary worktree was never touched.
+
+### Codex independent review — findings and fix-forward (Slice B)
+
+Both reviewed commits are preserved; every correction lands in a third commit. Each finding was
+reproduced against the synthesized template before being fixed.
+
+**MEDIUM — `cloudwatch:GetDashboard` was account-wide.** It supports resource-level authorization,
+so it did not belong in the wildcard statement, where it let the gate read every dashboard in the
+account. Moved to a `ReadOnlyEnvironmentDashboard` statement scoped to this environment's dashboard
+ARN. `GATE_WILDCARD_ACTIONS` is now four actions and the test asserts `GetDashboard` is absent from
+it — reintroducing it fails two tests.
+
+**MEDIUM — provider ordering was not encoded.** The role reconstructed the provider ARN from pseudo
+parameters, which synthesises cleanly and creates no dependency, so in a clean account the role
+could be created before the provider existed. `SecurityStack` now publishes
+`githubOidcProviderArn`, `app.js` passes it, and `observability.addDependency(security)` covers the
+case where an operator supplies an existing ARN by context (no CloudFormation reference, therefore
+no implicit ordering). The synthesized trust is now `Fn::ImportValue` and the assembly lists
+`SecurityStack` as a dependency; both are asserted.
+
+**MEDIUM — `DeleteItem` was missing from the SystemErrors alarm.** The adapter's
+`releaseActiveMock` deletes the `ACTIVE_MOCK` claim and IAM grants it, so a server-side error there
+would have left learners unable to release a mock exam with nothing alarming. The operation list is
+now one shared constant used by both the alarm and the dashboard panel, and the test asserts it
+equals the set the ApiStack IAM policy actually grants — read from the real ApiStack template, so
+adapter, IAM and alarm cannot drift apart.
+
+**MEDIUM — the KMS guards failed open.** The old exemption accepted any `kms:*` statement merely
+*containing* the root principal, and the CloudWatch check accepted mixed or additional
+service-principal statements. Both now match exact whole shapes: the root statement must be
+`Allow`/`kms:*`/`Resource:"*"` with no condition and exactly the account-root principal, and the key
+policy must hold exactly one non-root grant with exactly the CloudWatch principal, the two actions
+and the `aws:SourceAccount` condition. Seven new negative controls cover a foreign account mixed
+into the grant, a second service in the same statement, an extra principal in its own statement, a
+dropped condition, `GenerateDataKey*`, a root statement carrying a condition, and a root-shaped
+statement for a foreign account. The comment is corrected: the root statement is what lets IAM
+policies delegate key use at all, so it does more than restate existing administrator access.
+
+**MEDIUM — "bounded" was a false claim about the saved queries.** `| limit N` caps rows returned,
+not what is scanned, and Logs Insights has no time clause in its language — the window is
+`startTime`/`endTime` on `StartQuery`, so a saved query text cannot carry it. The code comment, the
+test name and baseline §10 now say exactly that, execution-time enforcement is assigned to #70, and
+a new test asserts the gate role holds no `logs:StartQuery`/`GetQueryResults`/`StopQuery`, so it
+cannot execute a query and bypass the window at all.
+
+**MEDIUM — the notification invariant ignored the target.** It proved only that one composite had a
+non-empty action, so retargeting it at another account's topic passed. It now requires
+`AlarmActions` to equal exactly `[{Ref: <this stack's topic>}]`, with negative controls for a
+foreign ARN, a literal ARN string, this topic plus an extra target, and no target.
+
+**LOW — dashboard content did not match the baseline.** The panel titled "throttling and system
+errors" plotted only throttles; `SystemErrors` is now on its right axis, sharing the alarm's
+operation list. Row 5 gained the slow-routes query the baseline names. Tests assert the actual
+metric and query sets rather than row titles. Baseline §8 is reconciled with what HTTP APIs
+actually expose: there is no native "integration errors" metric — integration failures surface as
+route `5xx` — so row 2 lists `IntegrationLatency`.
+
+**Guards proven non-decorative.** Four mutations were applied to the implementation and each was
+observed to fail the suite before being reverted: SystemErrors removed from the panel (1 failure),
+`DELETE_ITEM` removed (1), the slow-routes widget removed (1), and `GetDashboard` returned to the
+wildcard set (2).
+
+### Validation after the fix
+
+root **311/311** · infra/aws **99/99** (62 pre-existing + 37 new) · services/bff **164 / 163 pass /
+1 skip** · web **62/62** · bank **60 valid / 0 errors** · `git diff --check` clean · credential-free
+`cdk synth` OK for `dev` and `pilot`, refused for `staging`.
+
+Residual risks are unchanged except that the surviving `kms:*` is now pinned to one exact shape;
+the synth-time-only caveat and the untuned thresholds still stand.

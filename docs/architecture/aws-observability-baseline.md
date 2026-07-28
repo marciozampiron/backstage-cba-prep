@@ -164,10 +164,14 @@ periods. Use a stable 24-column layout:
 | Row | Panels |
 | --- | --- |
 | 1 - Service health | Alarm status for the complete minimum set and the aggregate operational-health alarm |
-| 2 - HTTP API | Request count, `4xx`, `5xx`, integration errors, p50/p95/p99 latency |
+| 2 - HTTP API | Request count, `4xx`, `5xx`, p50/p95/p99 latency, integration latency |
 | 3 - Lambda BFF | Invocations, errors, throttles, p95 duration, concurrent executions |
 | 4 - DynamoDB | Consumed capacity, successful-request latency, throttling, system errors |
 | 5 - Investigation | Recent sanitized 5xx events, errors grouped by `errorCode`/`routeKey`, slow routes |
+
+HTTP APIs expose no native "integration errors" metric — integration failures surface as `5xx` on
+the route, and `IntegrationLatency` is the supported signal for the integration itself, so row 2
+uses those rather than a metric that does not exist.
 
 Generic API `4xx` remains dashboard telemetry, not a release-blocking alarm: authentication and
 learner input errors would create noisy incidents. The dashboard contains no learner/product
@@ -230,8 +234,17 @@ Version these operational queries with the ObservabilityStack:
 5. API-to-Lambda correlation by the canonical API Gateway `requestId`, which is copied unchanged
    into the BFF completion event and error envelope.
 
-Queries must select only allowlisted fields and use bounded time windows. They are investigation
-tools, not durable product analytics or scheduled learner-data exports.
+Queries must select only allowlisted fields. They are investigation tools, not durable product
+analytics or scheduled learner-data exports.
+
+**Two different bounds, enforced in two different places.** A saved query carries `| limit N`, which
+caps the rows returned — it does not cap what the query scans. Logs Insights has no time clause in
+its query language; the window is `startTime`/`endTime` on the `StartQuery` call. A saved query text
+therefore cannot be time-bounded, and treating `limit` as a time bound would be a false assurance
+about both cost and exposure. **Every execution must pass an explicit bounded window**, and that
+enforcement belongs to the caller: #70 for the release gates, the operator otherwise. The
+ObservabilityStack ships the query definitions only — it has no query runner, and the gate role
+deliberately holds no `logs:StartQuery`.
 
 ## 11. Cross-Cloud Boundary
 

@@ -45,9 +45,28 @@ const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com';
 const GATE_WILDCARD_ACTIONS = [
   'logs:DescribeLogGroups',
   'logs:DescribeQueryDefinitions',
-  'cloudwatch:GetDashboard',
   'cloudwatch:DescribeAlarms',
   'cloudwatch:GetMetricData',
+];
+
+/**
+ * `cloudwatch:GetDashboard` DOES support resource-level authorization, so it does not belong in the
+ * wildcard statement: there it would let the gate read every dashboard in the account. It is scoped
+ * to this environment's dashboard ARN instead (Codex review, #82 Slice B).
+ */
+const GATE_DASHBOARD_ACTIONS = ['cloudwatch:GetDashboard'];
+
+/**
+ * The DynamoDB operations watched by the SystemErrors alarm — exactly the operations the adapter
+ * issues and the runtime role is granted (`api-stack.js`). One constant, shared by the alarm and by
+ * the dashboard panel, so the page and the graph explaining it can never drift apart.
+ */
+const DYNAMO_ALARMED_OPERATIONS = [
+  dynamodb.Operation.GET_ITEM,
+  dynamodb.Operation.PUT_ITEM,
+  dynamodb.Operation.QUERY,
+  dynamodb.Operation.UPDATE_ITEM,
+  dynamodb.Operation.DELETE_ITEM,
 ];
 
 /** SNS reads for O1, scoped to the exact environment topic. */
@@ -207,12 +226,7 @@ class ObservabilityStack extends Stack {
         alarmName: `${base}-dynamodb-system-errors`,
         alarmDescription: 'DynamoDB returned a server-side error. Release-blocking.',
         metric: table.metricSystemErrorsForOperations({
-          operations: [
-            dynamodb.Operation.GET_ITEM,
-            dynamodb.Operation.PUT_ITEM,
-            dynamodb.Operation.QUERY,
-            dynamodb.Operation.UPDATE_ITEM,
-          ],
+          operations: DYNAMO_ALARMED_OPERATIONS,
           period: PERIOD,
         }),
         threshold: 1,
@@ -385,6 +399,11 @@ class ObservabilityStack extends Stack {
               period: PERIOD,
             }),
           ],
+          // The panel is titled "system errors" and must actually show them: SystemErrors is the
+          // metric the release-blocking alarm watches, so the dashboard has to explain a page.
+          right: [
+            table.metricSystemErrorsForOperations({ operations: DYNAMO_ALARMED_OPERATIONS, period: PERIOD }),
+          ],
         }),
       ),
     );
@@ -395,23 +414,33 @@ class ObservabilityStack extends Stack {
       new cloudwatch.Row(
         new cloudwatch.LogQueryWidget({
           title: '5 - Investigation: recent server failures',
-          width: 12,
+          width: 8,
           height: 6,
           logGroupNames: [bffLogGroup.logGroupName],
           queryString: QUERY_RECENT_FAILURES,
         }),
         new cloudwatch.LogQueryWidget({
           title: '5 - Investigation: errors by errorCode and routeKey',
-          width: 12,
+          width: 8,
           height: 6,
           logGroupNames: [bffLogGroup.logGroupName],
           queryString: QUERY_ERRORS_BY_CODE,
+        }),
+        // Baseline §8 row 5 asks for slow routes as well; without it the row shows what failed but
+        // not what is degrading, which is the earlier signal.
+        new cloudwatch.LogQueryWidget({
+          title: '5 - Investigation: slow routes',
+          width: 8,
+          height: 6,
+          logGroupNames: [bffLogGroup.logGroupName],
+          queryString: QUERY_LATENCY_BY_ROUTE,
         }),
       ),
     );
 
     // --- versioned Logs Insights queries (baseline §10) -------------------------------------------
-    // Bounded and allowlist-only: investigation tools, not a durable learner-data export path.
+    // Row-limited and allowlist-only: investigation tools, not a durable learner-data export path.
+    // See the query-text block below for why the TIME window is not — and cannot be — set here.
     const savedQueries = [
       { id: 'RecentServerFailures', name: `${base}/1-recent-server-failures`, groups: [bffLogGroup], query: QUERY_RECENT_FAILURES },
       { id: 'ErrorsByCodeAndRoute', name: `${base}/2-errors-by-code-and-route`, groups: [bffLogGroup], query: QUERY_ERRORS_BY_CODE },
@@ -432,12 +461,16 @@ class ObservabilityStack extends Stack {
     // never creates a second one. Two providers for the same issuer is a deploy-time conflict, and
     // an account-level identity boundary should have exactly one owner.
     //
-    // The default ARN is derived from pseudo parameters — the provider's path is fixed by GitHub's
-    // issuer URL — so the template stays free of a literal account id. Override with
-    // `-c githubOidcProviderArn=...` if the account holds it under a different path.
+    // `props.githubOidcProviderArn` is SecurityStack's own reference, which is what makes the
+    // dependency real: reconstructing the ARN from pseudo parameters synthesises fine and creates
+    // NO dependency, so in a clean account the role could be created before the provider exists and
+    // the deploy would fail (or worse, succeed against a provider someone else created).
+    // The pseudo-parameter form remains only as a last-resort fallback for a standalone synth of
+    // this stack; `-c githubOidcProviderArn=...` overrides both.
     const providerArn = ctx(
       'githubOidcProviderArn',
-      `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_HOST}`,
+      props.githubOidcProviderArn
+        || `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_HOST}`,
     );
     const githubRepo = ctx('githubRepo', 'marciozampiron/backstage-cba-prep');
 
@@ -466,6 +499,17 @@ class ObservabilityStack extends Stack {
         effect: iam.Effect.ALLOW,
         actions: [...GATE_WILDCARD_ACTIONS],
         resources: ['*'],
+      }),
+    );
+
+    // CloudWatch dashboards support resource-level authorization too, so the gate reads exactly this
+    // environment's dashboard. Dashboard ARNs are region-less, which is why `region` is emptied.
+    gateRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadOnlyEnvironmentDashboard',
+        effect: iam.Effect.ALLOW,
+        actions: [...GATE_DASHBOARD_ACTIONS],
+        resources: [dashboard.dashboardArn],
       }),
     );
 
@@ -515,6 +559,13 @@ class ObservabilityStack extends Stack {
 // Every projected field below is on the Slice A telemetry allowlist. There is deliberately no
 // `@message` projection: it would return the whole event and defeat the field allowlist, and these
 // are investigation tools rather than an export path.
+//
+// TWO DIFFERENT BOUNDS, and only one of them lives here. `| limit N` caps the ROWS RETURNED; it does
+// NOT cap what the query scans. Logs Insights has no time clause in the query language at all — the
+// window is `startTime`/`endTime` on the StartQuery call, so a saved query text simply cannot carry
+// it, and reading `limit` as a time bound would be a false assurance about both cost and exposure.
+// Enforcing an explicit bounded window at execution belongs to whoever runs these queries: #70 for
+// the release gates, and the console operator otherwise. Slice B ships no query runner.
 
 const QUERY_RECENT_FAILURES = [
   'fields @timestamp, requestId, routeKey, statusCode, errorCode, durationMs',
@@ -562,6 +613,8 @@ module.exports = {
   ObservabilityStack,
   ALARM_KEYS,
   GATE_WILDCARD_ACTIONS,
+  GATE_DASHBOARD_ACTIONS,
   GATE_TOPIC_ACTIONS,
+  DYNAMO_ALARMED_OPERATIONS,
   DURATION_P95_THRESHOLD_MS,
 };

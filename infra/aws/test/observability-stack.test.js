@@ -17,7 +17,9 @@ const {
   ObservabilityStack,
   ALARM_KEYS,
   GATE_WILDCARD_ACTIONS,
+  GATE_DASHBOARD_ACTIONS,
   GATE_TOPIC_ACTIONS,
+  DYNAMO_ALARMED_OPERATIONS,
   DURATION_P95_THRESHOLD_MS,
 } = require('../lib/observability-stack');
 
@@ -188,7 +190,11 @@ test('NEGATIVE: removing an alarm resource entirely fails the invariant', () => 
 
 /* ================= INVARIANT 2: exactly one SNS publisher ==================================== */
 
-/** The composite must be the only resource in the environment carrying an SNS alarm action. */
+/**
+ * The composite must be the only resource carrying an SNS alarm action, AND that action must target
+ * this stack's own topic. Proving only that "one composite has some action" would accept a composite
+ * pointing at a topic in another account — the alarm still looks wired, and the page goes elsewhere.
+ */
 function assertSingleSnsPublisher(tpl) {
   const publishers = [];
   for (const [id, r] of Object.entries(tpl.Resources)) {
@@ -206,11 +212,44 @@ function assertSingleSnsPublisher(tpl) {
   if (publishers[0].type !== 'AWS::CloudWatch::CompositeAlarm') {
     throw new Error(`the sole publisher must be the composite alarm, found ${publishers[0].type}`);
   }
+
+  const topics = resourcesOfType(tpl, 'AWS::SNS::Topic');
+  if (topics.length !== 1) throw new Error(`expected exactly one alert topic, found ${topics.length}`);
+  const expected = JSON.stringify([{ Ref: topics[0][0] }]);
+  const actual = JSON.stringify(tpl.Resources[publishers[0].id].Properties.AlarmActions ?? []);
+  if (actual !== expected) {
+    throw new Error(`the composite must publish to exactly this stack's topic; expected ${expected}, got ${actual}`);
+  }
 }
 
-test('the composite is the only SNS publisher', () => {
+test('the composite is the only SNS publisher and targets this stack topic', () => {
   for (const env of ['dev', 'pilot']) {
     assert.doesNotThrow(() => assertSingleSnsPublisher(synth(env)), env);
+  }
+});
+
+test('NEGATIVE: retargeting or padding the composite action fails', () => {
+  const tpl = synth('pilot');
+  const compositeId = resourcesOfType(tpl, 'AWS::CloudWatch::CompositeAlarm')[0][0];
+  const topicRef = { Ref: resourcesOfType(tpl, 'AWS::SNS::Topic')[0][0] };
+
+  const mutations = {
+    'a foreign topic ARN': [{ 'Fn::Sub': 'arn:aws:sns:us-east-2:111122223333:someone-elses-topic' }],
+    'a literal ARN string': ['arn:aws:sns:us-east-2:111122223333:someone-elses-topic'],
+    // The real topic is still there, so a "contains our topic" assertion would pass while every
+    // page is also copied somewhere else.
+    'this topic plus an extra target': [topicRef, { 'Fn::Sub': 'arn:aws:sns:us-east-2:111122223333:extra' }],
+    'no target at all': [],
+  };
+
+  for (const [label, actions] of Object.entries(mutations)) {
+    const mutated = JSON.parse(JSON.stringify(tpl));
+    mutated.Resources[compositeId].Properties.AlarmActions = actions;
+    assert.throws(
+      () => assertSingleSnsPublisher(mutated),
+      /must publish to exactly this stack's topic|expected exactly one SNS publisher/,
+      `${label} must fail`,
+    );
   }
 });
 
@@ -259,18 +298,35 @@ function assertWildcardStatementIsExact(tpl) {
   if (wildcard[0].Effect !== 'Allow') throw new Error('the wildcard statement must be an Allow');
 }
 
-test('the gate role holds exactly the five read-only wildcard actions', () => {
+test('the wildcard statement holds only actions that cannot be resource-scoped', () => {
   for (const env of ['dev', 'pilot']) {
     assert.doesNotThrow(() => assertWildcardStatementIsExact(synth(env)), env);
   }
   // Named explicitly, so a silent edit to the constant is visible in the diff of this test too.
   assert.deepEqual([...GATE_WILDCARD_ACTIONS].sort(), [
     'cloudwatch:DescribeAlarms',
-    'cloudwatch:GetDashboard',
     'cloudwatch:GetMetricData',
     'logs:DescribeLogGroups',
     'logs:DescribeQueryDefinitions',
   ]);
+  // GetDashboard DOES support resource-level authorization, so it must not be in the wildcard set —
+  // there it would have read every dashboard in the account.
+  assert.equal(GATE_WILDCARD_ACTIONS.includes('cloudwatch:GetDashboard'), false);
+  assert.deepEqual(GATE_DASHBOARD_ACTIONS, ['cloudwatch:GetDashboard']);
+});
+
+test('GetDashboard is scoped to this environment dashboard, not to "*"', () => {
+  for (const env of ['dev', 'pilot']) {
+    const tpl = synth(env);
+    const dashboardStatements = gatePolicyStatements(tpl).filter(
+      (st) => [].concat(st.Action ?? []).includes('cloudwatch:GetDashboard'),
+    );
+    assert.equal(dashboardStatements.length, 1, `${env}: one dashboard statement`);
+    assert.deepEqual(dashboardStatements[0].Action, 'cloudwatch:GetDashboard');
+    const resource = JSON.stringify(dashboardStatements[0].Resource);
+    assert.equal(resource.includes('"*"'), false, `${env}: must not be a wildcard`);
+    assert.match(resource, new RegExp(`dashboard/cba-study-coach-${env}-operational`), env);
+  }
 });
 
 test('NEGATIVE: expanding the read-only action set fails', () => {
@@ -318,21 +374,31 @@ test('SNS reads are scoped to the environment topic, never to "*"', () => {
   assert.match(asJson, /Ref|Fn::GetAtt/, 'the topic is referenced by construct, not a literal ARN');
 });
 
+/** The account-root principal, as CloudFormation renders it. Compared structurally, not by substring. */
+const ACCOUNT_ROOT_PRINCIPAL = {
+  AWS: { 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':iam::', { Ref: 'AWS::AccountId' }, ':root']] },
+};
+
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
 /**
- * No statement may hold a wildcard ACTION, with exactly one asserted exception.
+ * The ONE permitted wildcard action, matched on its exact whole shape.
  *
- * `kms.Key` always emits an account-root administration statement (`kms:*` to `arn:...:root`), and
- * AWS documents that removing it produces a key nobody can manage or recover — a worse outcome than
- * the statement itself, which grants nothing beyond what an account administrator already has. So it
- * is allowed, narrowly: it must be on a KMS key, the principal must be this account's root, the
- * action must be exactly `kms:*`, and there may be at most one such statement in the whole template.
- * Every other wildcard action anywhere fails.
+ * `kms.Key` always emits an account-root administration statement, and AWS documents that removing
+ * it produces a key nobody can manage or recover — the statement is what lets IAM policies delegate
+ * key use at all, so without it the key is inert as well as unrecoverable. It is therefore allowed,
+ * but only as EXACTLY this statement: any extra principal, condition or resource alongside the root
+ * makes it a different grant wearing the same shape, and must not be waved through.
  */
 function isKmsRootAdministration(resourceType, statement) {
   if (resourceType !== 'AWS::KMS::Key') return false;
-  if (statement.Action !== 'kms:*') return false;
-  const principal = JSON.stringify(statement.Principal ?? {});
-  return principal.includes('AWS::AccountId') && principal.includes(':root');
+  return (
+    statement.Effect === 'Allow'
+    && statement.Action === 'kms:*'
+    && statement.Resource === '*'
+    && statement.Condition === undefined
+    && eq(statement.Principal, ACCOUNT_ROOT_PRINCIPAL)
+  );
 }
 
 function assertNoWildcardActions(tpl) {
@@ -360,10 +426,109 @@ function assertNoWildcardActions(tpl) {
       }
     }
   }
-  if (rootAdminStatements > 1) {
-    throw new Error(`only one KMS root-administration statement is permitted, found ${rootAdminStatements}`);
+  if (rootAdminStatements !== 1) {
+    throw new Error(`exactly one KMS root-administration statement is permitted, found ${rootAdminStatements}`);
   }
 }
+
+/**
+ * Beyond the root statement, the key policy must hold exactly ONE grant, to exactly the CloudWatch
+ * service principal, with exactly the two actions and the account condition. Counting statements is
+ * what stops a second principal being added beside a correct one and passing on the strength of its
+ * neighbour.
+ */
+function assertKmsGrantsAreExact(tpl) {
+  const [id, key] = resourcesOfType(tpl, 'AWS::KMS::Key')[0];
+  const statements = key.Properties.KeyPolicy.Statement;
+  const grants = statements.filter((st) => !isKmsRootAdministration('AWS::KMS::Key', st));
+  if (grants.length !== 1) {
+    throw new Error(`${id}: expected exactly one non-root key grant, found ${grants.length}`);
+  }
+  const [grant] = grants;
+  if (!eq(grant.Principal, { Service: 'cloudwatch.amazonaws.com' })) {
+    throw new Error(`${id}: the only key grant must be to the CloudWatch service principal alone, got ${JSON.stringify(grant.Principal)}`);
+  }
+  if (!eq([...grant.Action].sort(), ['kms:Decrypt', 'kms:GenerateDataKey'])) {
+    throw new Error(`${id}: key grant actions must be exactly kms:Decrypt + kms:GenerateDataKey, got ${JSON.stringify(grant.Action)}`);
+  }
+  if (grant.Effect !== 'Allow') throw new Error(`${id}: key grant must be an Allow`);
+  if (!eq(grant.Condition, { StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } })) {
+    throw new Error(`${id}: key grant must be conditioned on exactly aws:SourceAccount, got ${JSON.stringify(grant.Condition)}`);
+  }
+}
+
+test('the key policy holds exactly the root statement and one exact CloudWatch grant', () => {
+  for (const env of ['dev', 'pilot']) {
+    assert.doesNotThrow(() => assertKmsGrantsAreExact(synth(env)), env);
+  }
+});
+
+test('NEGATIVE: mixed or additional KMS principals fail', () => {
+  const tpl = synth('pilot');
+  const keyId = resourcesOfType(tpl, 'AWS::KMS::Key')[0][0];
+  const grantIndex = tpl.Resources[keyId].Properties.KeyPolicy.Statement.findIndex(
+    (st) => !isKmsRootAdministration('AWS::KMS::Key', st),
+  );
+
+  const mutations = {
+    // The grant stays correct-looking, but a second principal now rides along inside it.
+    'a foreign account mixed into the CloudWatch grant': (m) => {
+      m.Resources[keyId].Properties.KeyPolicy.Statement[grantIndex].Principal = {
+        Service: 'cloudwatch.amazonaws.com',
+        AWS: 'arn:aws:iam::111122223333:root',
+      };
+    },
+    'a second service mixed into the CloudWatch grant': (m) => {
+      m.Resources[keyId].Properties.KeyPolicy.Statement[grantIndex].Principal = {
+        Service: ['cloudwatch.amazonaws.com', 'events.amazonaws.com'],
+      };
+    },
+    // A correct CloudWatch grant PLUS an extra statement — the shape that passes a "some statement
+    // is correct" test.
+    'an additional principal in its own statement': (m) => {
+      m.Resources[keyId].Properties.KeyPolicy.Statement.push({
+        Effect: 'Allow',
+        Principal: { Service: 'events.amazonaws.com' },
+        Action: ['kms:Decrypt', 'kms:GenerateDataKey'],
+        Resource: '*',
+        Condition: { StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } },
+      });
+    },
+    'the account condition dropped': (m) => {
+      delete m.Resources[keyId].Properties.KeyPolicy.Statement[grantIndex].Condition;
+    },
+    'the actions widened to GenerateDataKey*': (m) => {
+      m.Resources[keyId].Properties.KeyPolicy.Statement[grantIndex].Action = ['kms:Decrypt', 'kms:GenerateDataKey*'];
+    },
+    'a root statement carrying an extra condition': (m) => {
+      const root = m.Resources[keyId].Properties.KeyPolicy.Statement.find((st) => st.Action === 'kms:*');
+      root.Condition = { StringEquals: { 'aws:PrincipalOrgID': 'o-example' } };
+    },
+    'a root-shaped statement for a foreign account': (m) => {
+      m.Resources[keyId].Properties.KeyPolicy.Statement.push({
+        Effect: 'Allow',
+        Principal: { AWS: 'arn:aws:iam::111122223333:root' },
+        Action: 'kms:*',
+        Resource: '*',
+      });
+    },
+  };
+
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const mutated = JSON.parse(JSON.stringify(tpl));
+    mutate(mutated);
+    // Each mutation must be caught by at least one of the two guards.
+    let caught = false;
+    for (const guard of [assertKmsGrantsAreExact, assertNoWildcardActions]) {
+      try {
+        guard(mutated);
+      } catch {
+        caught = true;
+      }
+    }
+    assert.equal(caught, true, `${label} must fail`);
+  }
+});
 
 test('no policy anywhere grants a wildcard action', () => {
   for (const env of ['dev', 'pilot']) {
@@ -403,7 +568,7 @@ test('NEGATIVE: a wildcard action in any policy fails', () => {
     mutate(mutated);
     assert.throws(
       () => assertNoWildcardActions(mutated),
-      /grants wildcard action|only one KMS root-administration statement/,
+      /grants wildcard action|exactly one KMS root-administration statement/,
       `${type} must fail`,
     );
   }
@@ -571,7 +736,68 @@ test('the dashboard has the five baseline rows and no learner content', () => {
   }
 });
 
-test('the five saved queries are bounded and project only allowlisted fields', () => {
+test('each dashboard row shows the metrics its title claims', () => {
+  for (const env of ['dev', 'pilot']) {
+    const [, dash] = resourcesOfType(synth(env), 'AWS::CloudWatch::Dashboard')[0];
+    // The body is a Fn::Join of literal fragments and refs; the metric names are in the literals.
+    const body = JSON.stringify(dash.Properties.DashboardBody);
+    const widgets = JSON.parse(
+      JSON.stringify(dash.Properties.DashboardBody['Fn::Join'][1].filter((f) => typeof f === 'string').join('')),
+    );
+
+    for (const metric of [
+      'Count', '4xx', '5xx', 'Latency', 'IntegrationLatency',            // row 2
+      'Invocations', 'Errors', 'Throttles', 'Duration', 'ConcurrentExecutions', // row 3
+      'ConsumedReadCapacityUnits', 'ConsumedWriteCapacityUnits', 'SuccessfulRequestLatency',
+      'ReadThrottleEvents', 'WriteThrottleEvents',
+      // The panel is titled "throttling and system errors" — it must actually plot SystemErrors,
+      // which is the metric the release-blocking alarm watches.
+      'SystemErrors',
+    ]) {
+      assert.ok(widgets.includes(metric), `${env}: dashboard must plot ${metric}`);
+    }
+
+    // Row 5 must carry all three investigation views the baseline names, slow routes included.
+    for (const title of [
+      '5 - Investigation: recent server failures',
+      '5 - Investigation: errors by errorCode and routeKey',
+      '5 - Investigation: slow routes',
+    ]) {
+      assert.ok(body.includes(title), `${env}: ${title}`);
+    }
+  }
+});
+
+test('the SystemErrors alarm covers exactly the operations the adapter issues', () => {
+  // Not a subset: an operation the runtime performs but the alarm ignores is an unmonitored failure
+  // path, and one the runtime cannot perform is a metric that will never report.
+  assert.deepEqual([...DYNAMO_ALARMED_OPERATIONS].sort(), [
+    'DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem',
+  ]);
+
+  const alarm = resourcesOfType(synth('pilot'), 'AWS::CloudWatch::Alarm')
+    .map(([, a]) => a.Properties)
+    .find((a) => a.AlarmName.endsWith('-dynamodb-system-errors'));
+  const operations = (alarm.Metrics ?? [])
+    .flatMap((m) => m.MetricStat?.Metric?.Dimensions ?? [])
+    .filter((d) => d.Name === 'Operation')
+    .map((d) => d.Value)
+    .sort();
+  assert.deepEqual(operations, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
+
+  // And the IAM grant the runtime actually holds is the same set — read from the real ApiStack.
+  const apiTpl = Template.fromStack(build('pilot').api).toJSON();
+  const granted = Object.values(apiTpl.Resources)
+    .filter((r) => r.Type === 'AWS::IAM::Policy')
+    .flatMap((r) => r.Properties.PolicyDocument.Statement)
+    .flatMap((st) => [].concat(st.Action ?? []))
+    .filter((a) => a.startsWith('dynamodb:'))
+    .map((a) => a.replace('dynamodb:', ''))
+    .sort();
+  assert.deepEqual(granted, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
+});
+
+test('saved queries cap the rows returned; the TIME window is not, and cannot be, set here', () => {
   // The Slice A telemetry allowlist plus the Lambda runtime's own REPORT fields. Anything else in a
   // projection would defeat the field allowlist at query time.
   const ALLOWED = new Set([
@@ -583,7 +809,11 @@ test('the five saved queries are bounded and project only allowlisted fields', (
     assert.equal(queries.length, 5, `${env}: five queries`);
     for (const [id, q] of queries) {
       const text = q.Properties.QueryString;
-      assert.match(text, /\|\s*limit\s+\d+/, `${env}/${id} must be bounded by a limit`);
+      // `| limit N` caps ROWS RETURNED. It does not cap what the query scans, and Logs Insights has
+      // no time clause in its language at all — the window is startTime/endTime on StartQuery. This
+      // assertion therefore claims only the row cap; the bounded execution window is #70's, and the
+      // gate role deliberately holds no logs:StartQuery (asserted separately).
+      assert.match(text, /\|\s*limit\s+\d+/, `${env}/${id} must cap the rows returned`);
       // `@message` returns the whole event and would bypass the field allowlist entirely.
       assert.equal(text.includes('@message'), false, `${env}/${id} must not project @message`);
       const fieldsLine = text.split('\n')[0];
@@ -591,6 +821,15 @@ test('the five saved queries are bounded and project only allowlisted fields', (
       for (const field of fieldsLine.replace(/^fields /, '').split(',').map((f) => f.trim())) {
         assert.ok(ALLOWED.has(field), `${env}/${id} projects non-allowlisted field "${field}"`);
       }
+    }
+  }
+});
+
+test('the gate role cannot execute a query, so it cannot bypass the execution-time window', () => {
+  for (const env of ['dev', 'pilot']) {
+    const actions = gatePolicyStatements(synth(env)).flatMap((st) => [].concat(st.Action ?? []));
+    for (const forbidden of ['logs:StartQuery', 'logs:GetQueryResults', 'logs:StopQuery']) {
+      assert.equal(actions.includes(forbidden), false, `${env}: ${forbidden}`);
     }
   }
 });
@@ -671,6 +910,34 @@ test('NEGATIVE: an unsupported environment fails synth', () => {
   for (const env of ['staging', 'production', 'prod', '']) {
     assert.throws(() => build(env), /context "environment" must be one of dev\|pilot/, env);
   }
+});
+
+test('the gate role consumes the SecurityStack provider and depends on that stack', () => {
+  const { buildStacks } = require('../lib/app');
+  const app = new App({ context: { environment: 'pilot' } });
+  const stacks = buildStacks(app);
+
+  // An explicit stack dependency, so ordering holds even when an operator supplies an existing
+  // provider ARN by context (which produces no CloudFormation reference on its own).
+  assert.ok(
+    stacks.observability.dependencies.includes(stacks.security),
+    'ObservabilityStack must depend on SecurityStack',
+  );
+
+  const assembly = app.synth();
+  const artifact = assembly.getStackArtifact(stacks.observability.artifactId);
+  assert.ok(
+    artifact.dependencies.some((d) => d.id === stacks.security.artifactId),
+    'the synthesized assembly must order SecurityStack before ObservabilityStack',
+  );
+
+  // And the trust actually consumes that provider rather than a reconstructed ARN.
+  const principal = JSON.stringify(
+    artifact.template.Resources[
+      Object.keys(artifact.template.Resources).find((k) => artifact.template.Resources[k].Type === 'AWS::IAM::Role')
+    ].Properties.AssumeRolePolicyDocument.Statement[0].Principal,
+  );
+  assert.match(principal, /Fn::ImportValue/, 'the provider must be imported from SecurityStack');
 });
 
 test('the app wires the observability stack to the real workload constructs', () => {
