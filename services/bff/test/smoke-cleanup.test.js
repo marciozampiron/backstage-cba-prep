@@ -567,3 +567,98 @@ test('a malformed deadline fails closed rather than reading as "no deadline"', a
     assert.equal(runOwnershipExpired({ ownershipExpiresAt: bad }, now), true, JSON.stringify(bad));
   }
 });
+
+test('the write fence is exact at the deadline, on memory and file alike', async () => {
+  // deadline-1ms, deadline, deadline+1ms — the boundary is where an off-by-one lets a write in
+  // after cleanup was told the run was closed.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem, FileSimulationRepository: File } =
+    await import('../src/repository.js');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { startSmokeRun, startDrill } = await import('../src/store.js');
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'cba-fence-'));
+  try {
+    for (const [label, make] of Object.entries({
+      memory: (clock) => new Mem(clock),
+      file: (clock) => new File(path.join(dir, `${Math.random().toString(36).slice(2)}.json`), clock),
+    })) {
+      let clock = Date.parse('2026-07-28T00:00:00Z');
+      const repo = make({ now: () => clock });
+      cfg({ repository: repo, now: () => clock });
+
+      const run = await startSmokeRun(`l-${label}`);
+      const deadline = Date.parse((await repo.getSmokeRun(run.runId)).writeDeadlineAt);
+
+      clock = deadline - 1;
+      await startDrill(`l-${label}`, { questionCount: 5, runId: run.runId });
+
+      clock = deadline;
+      await assert.rejects(
+        () => startDrill(`l-${label}`, { questionCount: 5, runId: run.runId }),
+        (err) => err.code === 'RUN_CLOSED',
+        `${label}: the deadline itself must already be closed`,
+      );
+
+      clock = deadline + 1;
+      await assert.rejects(
+        () => startDrill(`l-${label}`, { questionCount: 5, runId: run.runId }),
+        (err) => err.code === 'RUN_CLOSED',
+        label,
+      );
+      reset();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an injected repository without its own clock is adopted onto the runtime clock', async () => {
+  // Otherwise the application evaluates the deadline on the injected clock while the fence uses
+  // wall time, and the two disagree about the same instant.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun, startDrill } = await import('../src/store.js');
+
+  let clock = Date.parse('2026-07-28T00:00:00Z');
+  const repo = new Mem();               // no clock of its own
+  cfg({ repository: repo, now: () => clock });
+  try {
+    const run = await startSmokeRun('l-adopted');
+    clock += 25 * 60 * 60 * 1000;       // past the deadline on the INJECTED clock only
+    await assert.rejects(
+      () => startDrill('l-adopted', { questionCount: 5, runId: run.runId }),
+      (err) => err.code === 'RUN_CLOSED',
+      'the fence must see the injected clock, not wall time',
+    );
+  } finally {
+    reset();
+  }
+});
+
+test('completion derives both anchor and horizon from one clock read', async () => {
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun, cleanupSmokeRun, SMOKE_RUN_RETENTION_MS } = await import('../src/store.js');
+
+  // A clock that MOVES on every read: two reads would make the horizon differ from exactly seven
+  // days after the recorded completion.
+  let tick = Date.parse('2026-07-28T00:00:00Z');
+  const repo = new Mem({ now: () => tick });
+  cfg({ repository: repo, now: () => (tick += 1000) });
+  try {
+    const run = await startSmokeRun('l-onetick');
+    const result = await cleanupSmokeRun('l-onetick', run.runId);
+    const stored = await repo.getSmokeRun(run.runId);
+    assert.equal(
+      Date.parse(stored.expiresAt) - Date.parse(stored.completedAt),
+      SMOKE_RUN_RETENTION_MS,
+      'the horizon must be exactly the retention constant from the anchor',
+    );
+    assert.equal(result.completedAt, stored.completedAt);
+  } finally {
+    reset();
+  }
+});

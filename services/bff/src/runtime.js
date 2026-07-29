@@ -18,8 +18,12 @@ const state = globalThis[globalKey];
 
 function createRepositoryFromEnv() {
   const config = resolveRuntimeConfig();
-  if (config.store === 'memory') return new InMemorySimulationRepository();
-  if (config.store === 'file') return new FileSimulationRepository(dataFilePath(config.dataDir));
+  // ONE clock, owned by composition and shared with the adapter. Without this the application can
+  // evaluate a deadline on the injected clock while the repository fence evaluates it on wall time
+  // — the fence would be measuring a different instant than the check that led to it.
+  const clock = { now: () => state.now() };
+  if (config.store === 'memory') return new InMemorySimulationRepository(clock);
+  if (config.store === 'file') return new FileSimulationRepository(dataFilePath(config.dataDir), clock);
   // dynamodb (#77 Stage B): the SDK-backed document client is created lazily on first use so the
   // AWS SDK is only ever loaded in a deployed runtime; the application layer below this seam
   // never learns which adapter it got.
@@ -43,8 +47,14 @@ function createRepositoryFromEnv() {
 
 /** Test/composition hook: inject a repository and/or a clock. */
 export function configureRuntime({ repository, now } = {}) {
-  if (repository !== undefined) state.repository = repository;
   if (now !== undefined) state.now = now;
+  if (repository !== undefined) {
+    // A repository injected WITHOUT its own clock is adopted onto the runtime's, so the two can
+    // never silently diverge. One that brought its own is left alone — a test may be exercising
+    // exactly that skew on purpose.
+    if (repository && typeof repository.now !== 'function') repository.now = () => state.now();
+    state.repository = repository;
+  }
 }
 
 /** Reset to environment-driven composition (tests). */

@@ -15,6 +15,7 @@ import {
   toQuestionPayload,
 } from './bank.js';
 import { RepositoryConflictError } from './repository.js';
+import { parseInstant, toInstant } from './instant.js';
 import { isValidSmokeRunId } from './smoke-run.js';
 import { randomUUID } from 'node:crypto';
 import { activeRepository, now, nowIso } from './runtime.js';
@@ -828,12 +829,6 @@ export const SMOKE_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;      // may new record
 export const SMOKE_OWNERSHIP_MS = 8 * 24 * 60 * 60 * 1000;     // may this run still be cleaned up?
 export const SMOKE_CHILD_RETENTION_MS = SMOKE_RUN_RETENTION_MS; // how long a child record lives
 
-/** Parse an ISO instant, or `null`. A malformed stored deadline must never read as "no deadline". */
-function instant(value) {
-  const ms = typeof value === 'string' ? Date.parse(value) : NaN;
-  return Number.isFinite(ms) ? ms : null;
-}
-
 /**
  * May this run still accept new records?
  *
@@ -843,7 +838,7 @@ function instant(value) {
 export function runIsClosed(run, atMs = now()) {
   if (!run) return true;
   if (run.status !== 'active') return true;
-  const deadline = instant(run.writeDeadlineAt);
+  const deadline = parseInstant(run.writeDeadlineAt);
   return deadline === null || atMs >= deadline;
 }
 
@@ -854,7 +849,7 @@ export function runIsClosed(run, atMs = now()) {
  * path after a cancelled workflow, and refusing it would strand the data it was meant to remove.
  */
 export function runOwnershipExpired(run, atMs = now()) {
-  const horizon = instant(run?.ownershipExpiresAt);
+  const horizon = parseInstant(run?.ownershipExpiresAt);
   return horizon === null || atMs >= horizon;
 }
 
@@ -896,15 +891,18 @@ export async function cleanupSmokeRun(learnerId, runId) {
       // before anything was verified, so a failure in between produced a run that looked done.
       // The tombstone anchor is FRESH from completion, not inherited from either active clock —
       // a run completed on day six gets seven more days, not the one it had left.
-      const completedAt = nowIso();
+      // ONE clock read for both. Two reads let a moving clock make the retention window differ
+      // from exactly seven days after the recorded completion — small, but it means the anchor and
+      // the horizon describe different instants.
+      const completedMs = now();
       await db().completeSmokeRun({
         runId,
-        completedAt,
-        expiresAt: new Date(now() + SMOKE_RUN_RETENTION_MS).toISOString(),
+        completedAt: toInstant(completedMs),
+        expiresAt: toInstant(completedMs + SMOKE_RUN_RETENTION_MS),
       });
       // The run id is echoed because #70 correlates the summary with the run it just executed; the
       // learner id is NOT, because the response is written into a workflow log.
-      return { runId, deleted, completedAt };
+      return { runId, deleted, completedAt: toInstant(completedMs) };
     }
   }
 

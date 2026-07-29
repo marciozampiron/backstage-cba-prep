@@ -14,6 +14,7 @@
 //
 // Adapter selection lives in the composition seam (runtime.js + config.js), not here.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
+import { parseInstant } from './instant.js';
 import path from 'node:path';
 
 /** Storage-level optimistic-concurrency violation — NEUTRAL port error (any adapter may raise
@@ -79,8 +80,8 @@ export class InMemorySimulationRepository {
     // Status AND the write deadline, together. They are the same question asked about time, and
     // checking one here while the other is checked in the dispatcher leaves a window a request can
     // cross. A malformed deadline fails closed — an unreadable bound is not the absence of one.
-    const deadline = typeof run?.writeDeadlineAt === 'string' ? Date.parse(run.writeDeadlineAt) : NaN;
-    if (!run || run.status !== 'active' || !Number.isFinite(deadline) || this.now() >= deadline) {
+    const deadline = parseInstant(run?.writeDeadlineAt);
+    if (!run || run.status !== 'active' || deadline === null || this.now() >= deadline) {
       throw new RepositoryConflictError('This smoke run stopped accepting records.');
     }
   }
@@ -297,8 +298,10 @@ export class InMemorySimulationRepository {
 // Runtime-only data paths: the turbopackIgnore comments keep Next's build-time file tracing (NFT)
 // from treating these dynamic fs calls as bundle-able imports of the whole project.
 export class FileSimulationRepository extends InMemorySimulationRepository {
-  constructor(filePath) {
-    super();
+  /** Forwards the composition-owned clock: an adapter on wall time fences on a different instant
+      than the use case that asked it to. */
+  constructor(filePath, { now } = {}) {
+    super({ now });
     this.filePath = filePath;
     mkdirSync(/*turbopackIgnore: true*/ path.dirname(filePath), { recursive: true });
     if (existsSync(/*turbopackIgnore: true*/ filePath)) {
