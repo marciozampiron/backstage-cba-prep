@@ -99,7 +99,16 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
     // The run record has to exist and be ACTIVE: stamped writes are fenced on it, so seeding
     // records for a run that was never opened is not a state the application can produce.
     if (!(await repo.getSmokeRun(runId))) {
-      await repo.saveSmokeRun({ runId, learnerId, status: 'active', startedAt: new Date(0).toISOString() });
+      // A seeded run needs a real write deadline: the fence reads it, and a missing one fails
+      // closed by design.
+      await repo.saveSmokeRun({
+        runId,
+        learnerId,
+        status: 'active',
+        startedAt: new Date(0).toISOString(),
+        writeDeadlineAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        ownershipExpiresAt: new Date(Date.now() + 8 * 24 * 60 * 60 * 1000).toISOString(),
+      });
     }
     await repo.saveSession({ practiceSessionId: `ps_${suffix}`, attemptId: `att_${suffix}`, learnerId, runId });
     await repo.saveMock({ mockExamId: `mock_${suffix}`, attemptId: `att_${suffix}m`, learnerId, runId });

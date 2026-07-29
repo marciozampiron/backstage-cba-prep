@@ -310,7 +310,7 @@ test('cleanup skips a record written since it was read, instead of deleting it b
   // operation safe to repeat — #70 runs it with always(), including after a partial failure.
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
-  await repo.saveSmokeRun({ runId: 'run-race-000001', learnerId: 'l-race', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-race-000001', learnerId: 'l-race', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
   await repo.saveSession({ practiceSessionId: 'ps_race', attemptId: 'att_race', learnerId: 'l-race', runId: 'run-race-000001' });
 
   const originalDelete = repo.client.delete;
@@ -335,7 +335,7 @@ test('cleanup never scans: the fake client has no scan method at all', async () 
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
   assert.equal(repo.client.scan, undefined, 'a scan would read every learner in the table');
-  await repo.saveSmokeRun({ runId: 'run-noscan-0001', learnerId: 'l-ns', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-noscan-0001', learnerId: 'l-ns', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
   await repo.saveSession({ practiceSessionId: 'ps_ns', attemptId: 'a', learnerId: 'l-ns', runId: 'run-noscan-0001' });
   await repo.deleteSmokeRunData({ learnerId: 'l-ns', runId: 'run-noscan-0001' });
 });
@@ -346,7 +346,7 @@ test('a cancellation that is NOT the run condition is not reported as a closed r
   // deserves to surface.
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
-  await repo.saveSmokeRun({ runId: 'run-classify0000000000', learnerId: 'l-classify', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-classify0000000000', learnerId: 'l-classify', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
 
   repo.client.transactWrite = async () => {
     const err = new Error('TransactionCanceledException');
@@ -372,7 +372,7 @@ test('a stale smoke-scoped update loses to the winner inside the transaction too
   // have refused it.
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
-  await repo.saveSmokeRun({ runId: 'run-stale00000000000000', learnerId: 'l-stale', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-stale00000000000000', learnerId: 'l-stale', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
   await repo.saveAttempt({ attemptId: 'att_stale', learnerId: 'l-stale', runId: 'run-stale00000000000000', answers: {} });
 
   const a = await repo.getAttempt('att_stale');
@@ -388,7 +388,7 @@ test('a stale smoke-scoped update loses to the winner inside the transaction too
 test('a claim collision returns false, but an infrastructure cancellation does not', async () => {
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
-  await repo.saveSmokeRun({ runId: 'run-claimcollision0000', learnerId: 'l-cc', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-claimcollision0000', learnerId: 'l-cc', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
 
   // A genuine collision: somebody already holds the claim.
   assert.equal(await repo.claimActiveMock('l-cc', 'mock_1', { runId: 'run-claimcollision0000' }), true);

@@ -333,7 +333,7 @@ export async function handleApiRequest({
       // A CLEANED-UP run is closed. Cleanup may be replayed against it — that is what makes replay
       // deterministic — but a new write must not join a run that was already reported clean, or the
       // next cleanup would find records the previous one swore were gone.
-      if (runIsClosed(owned) && !matched.route.routeKey.startsWith('DELETE ')) {
+      if (runIsClosed(owned, now()) && !matched.route.routeKey.startsWith('DELETE ')) {
         throw new ApiError(409, 'RUN_CLOSED', 'This smoke run has been cleaned up and accepts no new records.');
       }
       smokeRun = { runId: owned.runId };

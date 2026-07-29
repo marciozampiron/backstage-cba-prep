@@ -772,12 +772,14 @@ export async function startSmokeRun(learnerId) {
   const runId = `run-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
   // Abandoned runs need a bound too: a run that is never cleaned up would otherwise keep learner
   // ownership forever. It gets the same retention from creation, and completion re-anchors it.
+  const startedMs = now();
   const run = {
     runId,
     learnerId,
     status: 'active',
-    startedAt: nowIso(),
-    expiresAt: new Date(now() + SMOKE_RUN_RETENTION_MS).toISOString(),
+    startedAt: new Date(startedMs).toISOString(),
+    writeDeadlineAt: new Date(startedMs + SMOKE_WRITE_WINDOW_MS).toISOString(),
+    ownershipExpiresAt: new Date(startedMs + SMOKE_OWNERSHIP_MS).toISOString(),
   };
   await db().saveSmokeRun(run);
   return run;
@@ -793,9 +795,9 @@ export async function ownedSmokeRun(learnerId, runId) {
   if (!isValidSmokeRunId(runId) || typeof learnerId !== 'string' || learnerId === '') return null;
   const run = await db().getSmokeRun(runId);
   if (!run || run.learnerId !== learnerId) return null;
-  // TTL is eventually consistent, so the application decides — a row that has outlived its
-  // retention is treated as gone whether or not DynamoDB has removed it yet.
-  if (runIsExpired(run)) return null;
+  // TTL is eventually consistent, so the application decides. Scoped to OWNERSHIP: a run past its
+  // write deadline is still cleanable, and that is the point.
+  if (runOwnershipExpired(run)) return null;
   return run;
 }
 
@@ -814,15 +816,46 @@ const CLEANUP_ATTEMPTS = 3;
  */
 export const SMOKE_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** A run that is closing or completed accepts no new records; cleanup may still be replayed. */
-export function runIsClosed(run) {
-  return Boolean(run) && run.status !== 'active';
+/**
+ * The three clocks of the approved retention model (design revision 6).
+ *
+ * They answer three DIFFERENT questions, which is why one field could not serve them: collapsing
+ * write eligibility into cleanup authority made cleanup unreachable exactly when it was needed.
+ * Ownership deliberately outlives child retention by a day, so there is always a window in which
+ * the children still exist and the run that owns them can still be named.
+ */
+export const SMOKE_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;      // may new records join this run?
+export const SMOKE_OWNERSHIP_MS = 8 * 24 * 60 * 60 * 1000;     // may this run still be cleaned up?
+export const SMOKE_CHILD_RETENTION_MS = SMOKE_RUN_RETENTION_MS; // how long a child record lives
+
+/** Parse an ISO instant, or `null`. A malformed stored deadline must never read as "no deadline". */
+function instant(value) {
+  const ms = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(ms) ? ms : null;
 }
 
-/** An expired run is refused by the APPLICATION — never by waiting for eventual TTL deletion. */
-export function runIsExpired(run, atMs = now()) {
-  const expiresAt = run?.expiresAt ? Date.parse(run.expiresAt) : NaN;
-  return Number.isFinite(expiresAt) && atMs >= expiresAt;
+/**
+ * May this run still accept new records?
+ *
+ * Closed OR past the write deadline. A malformed deadline fails closed: a run whose bound cannot be
+ * read is not a run with no bound.
+ */
+export function runIsClosed(run, atMs = now()) {
+  if (!run) return true;
+  if (run.status !== 'active') return true;
+  const deadline = instant(run.writeDeadlineAt);
+  return deadline === null || atMs >= deadline;
+}
+
+/**
+ * May this run still be cleaned up?
+ *
+ * Ownership, NOT the write deadline. Cleanup against a write-expired run is the manual-recovery
+ * path after a cancelled workflow, and refusing it would strand the data it was meant to remove.
+ */
+export function runOwnershipExpired(run, atMs = now()) {
+  const horizon = instant(run?.ownershipExpiresAt);
+  return horizon === null || atMs >= horizon;
 }
 
 /**
@@ -861,6 +894,8 @@ export async function cleanupSmokeRun(learnerId, runId) {
       // Finalized ONLY here — after the scope has been re-queried and proven empty. Marking the run
       // complete inside the delete marked it finished while a projection was still pending and
       // before anything was verified, so a failure in between produced a run that looked done.
+      // The tombstone anchor is FRESH from completion, not inherited from either active clock —
+      // a run completed on day six gets seven more days, not the one it had left.
       const completedAt = nowIso();
       await db().completeSmokeRun({
         runId,

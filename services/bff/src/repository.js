@@ -39,8 +39,10 @@ function emptyState() {
 }
 
 export class InMemorySimulationRepository {
-  constructor() {
+  /** @param {{ now?: () => number }} [opts] injected clock — retention is never read from Date.now */
+  constructor({ now } = {}) {
     this.state = emptyState();
+    this.now = now ?? (() => Date.now());
   }
 
   /** Write-through hook — no-op in memory. */
@@ -74,7 +76,11 @@ export class InMemorySimulationRepository {
   #assertRunAccepts(record) {
     if (!record?.runId) return;
     const run = this.state.smokeRuns[record.runId];
-    if (!run || run.status !== 'active') {
+    // Status AND the write deadline, together. They are the same question asked about time, and
+    // checking one here while the other is checked in the dispatcher leaves a window a request can
+    // cross. A malformed deadline fails closed — an unreadable bound is not the absence of one.
+    const deadline = typeof run?.writeDeadlineAt === 'string' ? Date.parse(run.writeDeadlineAt) : NaN;
+    if (!run || run.status !== 'active' || !Number.isFinite(deadline) || this.now() >= deadline) {
       throw new RepositoryConflictError('This smoke run stopped accepting records.');
     }
   }

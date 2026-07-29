@@ -317,7 +317,7 @@ test('NEGATIVE: a record that survives every attempt makes cleanup FAIL, not suc
     }
   }
   const repo = new ContendedRepository();
-  await repo.saveSmokeRun({ runId: 'run-contended000000000', learnerId: 'l-contended', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-contended000000000', learnerId: 'l-contended', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
   await repo.saveSession({
     practiceSessionId: 'ps_contended',
     attemptId: 'att_contended',
@@ -354,7 +354,7 @@ test('a later uncontended retry succeeds idempotently after a contended one', as
     }
   }
   const repo = new SometimesContendedRepository();
-  await repo.saveSmokeRun({ runId: 'run-retryable000000000', learnerId: 'l-retry', status: 'active' });
+  await repo.saveSmokeRun({ runId: 'run-retryable000000000', learnerId: 'l-retry', status: 'active', writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(), ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString() });
   await repo.saveSession({
     practiceSessionId: 'ps_retry',
     attemptId: 'att_retry',
@@ -516,12 +516,54 @@ test('an expired run is refused by the application, not by waiting for TTL', asy
     const run = await startSmokeRun('l-expired');
     assert.ok(await ownedSmokeRun('l-expired', run.runId), 'valid while unexpired');
 
+    // OWNERSHIP is what gates cleanup. Past the write deadline the run is still cleanable — that
+    // is the manual-recovery path — so the boundary tested here is ownershipExpiresAt.
     const stored = await repo.getSmokeRun(run.runId);
-    stored.expiresAt = new Date(Date.now() - 1000).toISOString();
+    stored.ownershipExpiresAt = new Date(Date.now() - 1000).toISOString();
     await repo.saveSmokeRun(stored);
 
-    assert.equal(await ownedSmokeRun('l-expired', run.runId), null, 'expired reads as gone');
+    assert.equal(await ownedSmokeRun('l-expired', run.runId), null, 'expired ownership reads as gone');
   } finally {
     reset();
+  }
+});
+
+/* ============================ the three clocks =============================================== */
+
+test('a write-expired run refuses writes but is still cleanable', async () => {
+  // Collapsing these two into one deadline made cleanup unreachable exactly when it was needed:
+  // after 24h the route answered 403 while days of learner data remained.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Repo } = await import('../src/repository.js');
+  const { startSmokeRun, startDrill, cleanupSmokeRun, runIsClosed, runOwnershipExpired } =
+    await import('../src/store.js');
+
+  // The repository gets the SAME injected clock: retention is never read from Date.now, and a
+  // repository on a different clock than the use case would fence on the wrong instant.
+  let clock = Date.parse('2026-07-28T00:00:00Z');
+  const repo = new Repo({ now: () => clock });
+  cfg({ repository: repo, now: () => clock });
+  try {
+    const run = await startSmokeRun('l-clocks');
+    await startDrill('l-clocks', { questionCount: 5, runId: run.runId });
+
+    clock += 25 * 60 * 60 * 1000; // past the write deadline, well inside ownership
+    const stored = await repo.getSmokeRun(run.runId);
+    assert.equal(runIsClosed(stored, clock), true, 'writes are refused');
+    assert.equal(runOwnershipExpired(stored, clock), false, 'ownership survives');
+
+    const result = await cleanupSmokeRun('l-clocks', run.runId);
+    assert.ok(result.deleted.practiceSessions >= 1, 'the manual-recovery path must still work');
+  } finally {
+    reset();
+  }
+});
+
+test('a malformed deadline fails closed rather than reading as "no deadline"', async () => {
+  const { runIsClosed, runOwnershipExpired } = await import('../src/store.js');
+  const now = Date.parse('2026-07-28T00:00:00Z');
+  for (const bad of [undefined, null, '', 'soon', {}, 42]) {
+    assert.equal(runIsClosed({ status: 'active', writeDeadlineAt: bad }, now), true, JSON.stringify(bad));
+    assert.equal(runOwnershipExpired({ ownershipExpiresAt: bad }, now), true, JSON.stringify(bad));
   }
 });
