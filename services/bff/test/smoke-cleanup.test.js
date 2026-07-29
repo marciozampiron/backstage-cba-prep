@@ -728,10 +728,10 @@ test('NEGATIVE: a refused configuration changes nothing', async () => {
     assert.equal(first.now(), 111);
     assert.equal(activeRepository(), first);
 
-    // The RUNTIME clock itself must be unchanged, which the assertions above cannot show: each
-    // repository captured the clock of the call that bound it, so a state.now mutated during a
-    // refused call is invisible through them. A later repository bound WITHOUT its own clock
-    // adopts state.now, so it reports what the refusals actually left behind.
+    // The assertions above now read the runtime clock directly — a bound repository resolves the
+    // composition delegate on every call — but a repository bound AFTER the refusals proves the
+    // same thing from a second direction: it adopts state.now at bind time, so it reports what the
+    // refused calls actually left behind rather than what an earlier binding remembered.
     const probe = new Mem();
     cfg({ repository: probe });
     assert.equal(probe.now(), 111, 'a refused configuration must not have moved the runtime clock');
@@ -752,5 +752,55 @@ test('a successful configuration changes the clock and the repository together',
     assert.equal(second.now(), 222, 'the new repository is on the new clock');
   } finally {
     reset();
+  }
+});
+
+test('a clock-only reconfiguration moves the ACTIVE repository too', async () => {
+  // The third supported transition. Replacing repository+clock together was covered, and refusal
+  // rollback was covered, but `configureRuntime({ now })` on an already-bound repository was not:
+  // the adapter had captured the clock of the call that bound it, so the application moved to the
+  // new instant while the repository write fence stayed on the old one. Same divergence the
+  // bindClock contract exists to prevent, reached through a supported path instead of a refused one.
+  const { configureRuntime: cfg, resetRuntime: reset, activeRepository, now } =
+    await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  try {
+    const repo = new Mem();
+    cfg({ repository: repo, now: () => 111 });
+    assert.equal(repo.now(), 111);
+
+    cfg({ now: () => 222 });
+    assert.equal(activeRepository(), repo, 'the repository is untouched by a clock-only update');
+    assert.equal(now(), 222, 'the application observes the new clock');
+    assert.equal(repo.now(), 222, 'and so does the repository it will fence against');
+  } finally {
+    reset();
+  }
+});
+
+test('the env-composed repository fences on the composition clock, not wall time', async () => {
+  // createRepositoryFromEnv must use the same delegate as the injection path, or a runtime that
+  // never injected a repository gets an adapter on Date.now() while the application runs on the
+  // configured clock.
+  const { configureRuntime: cfg, resetRuntime: reset, activeRepository } =
+    await import('../src/runtime.js');
+  const priorStore = process.env.CBA_WEB_STORE;
+  const priorEnv = process.env.CBA_RUNTIME_ENV;
+  process.env.CBA_WEB_STORE = 'memory';
+  process.env.CBA_RUNTIME_ENV = 'local';
+  const restore = (key, value) => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
+  try {
+    reset();
+    cfg({ now: () => 111 });
+    assert.equal(activeRepository().now(), 111, 'the env-composed adapter adopts the runtime clock');
+    cfg({ now: () => 222 });
+    assert.equal(activeRepository().now(), 222, 'and follows it when it changes');
+  } finally {
+    reset();
+    restore('CBA_WEB_STORE', priorStore);
+    restore('CBA_RUNTIME_ENV', priorEnv);
   }
 });
