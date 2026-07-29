@@ -353,103 +353,117 @@ condition. Worth separating, because only the first was a defect in the contract
 - `#saveRecord` in the managed adapter now transacts against the active run whenever the record
   carries a run id, so UPDATES are fenced and not only creation.
 
-## Retention design — REVISION 5 (recorded before implementation)
+## Retention design — REVISION 6 (recorded before implementation)
 
-Revisions 1–4 are superseded. R4's model is carried forward; R5 fixes two places where it inferred
-a fact from an absence, which is the same mistake in two costumes.
+Revisions 1–5 are superseded. R6 changes one thing: the retention lease I introduced in R5 to bound
+the profile arrived with no bound of its own. Bounding one record by adding an unbounded one is the
+same defect wearing a different label, and it is worth naming rather than quietly fixing.
 
-### Carried forward from R3/R4 (approved, unchanged)
+### Carried forward (approved, unchanged)
 
 Three clocks — `writeDeadlineAt` (24h), `ownershipExpiresAt` (8d), `expiresAt` (7d from first
-completion). `ttl` mirrors ownership. Cleanup stays authorized after the write deadline. Application
-reads are logically filtered; cleanup enumeration is RAW and is a distinct named method, so
-verification can never measure its own blindfold. The active-mock claim is reclaimed logically with
-its deadline pinned by the transaction. `retainUntil` on children is repository-owned and write-once.
-Ordinary profile updates cannot extend smoke retention. Expired-profile replacement is
-revision-conditional.
+completion). `ttl` mirrors ownership. Cleanup stays authorized after the write deadline and reads
+RAW, so verification cannot measure its own blindfold. Children are classified by `runId`; a stamped
+child with a missing, malformed or non-finite anchor fails closed on application reads and stays
+visible to cleanup. `retainUntil` is repository-owned and write-once. The active-mock claim is
+reclaimed logically with its deadline pinned by the transaction. Renewal is monotonic; the horizon is
+derived from the stored run; ordinary profile updates never extend it.
 
-### A child is smoke data because of `runId`, never because of `retainUntil` (finding 1)
+### The lease is a record like any other, and is bounded like one
 
-R4 said a record with no `retainUntil` is an ordinary learner's and is never filtered. That infers a
-classification from a missing field. A smoke child is identified by its trusted `runId`, and one can
-carry `runId` with `retainUntil` absent or malformed — a legacy row written before this design, a
-partial write, a corrupted value. Under R4's rule that record became permanently visible through
-normal reads, so the failure mode of the retention contract was *unbounded exposure*, reached by
-losing a field.
+| Field | Meaning |
+| --- | --- |
+| `learnerId` | the key; one lease per learner |
+| `retainUntil` | monotonic — `max(current, run.ownershipExpiresAt)` |
+| `rev` | optimistic revision, so every write is conditional |
+| `ttl` | epoch seconds derived from `retainUntil` |
 
-Classification and behaviour are now separate:
+An **expired lease is ignored logically**, before TTL removes it — the same rule as every other
+record here, and for the same reason: TTL lags by days and must never answer "is this still valid".
 
-| Child | Application reads | RAW cleanup enumeration |
-| --- | --- | --- |
-| no `runId` | ordinary learner data; never filtered | not in scope |
-| `runId` + valid `retainUntil` | hidden once `retainUntil` has passed | discovered and deleted |
-| `runId` + missing, malformed or non-finite `retainUntil` | **fail closed** — treated as absent, no learner data exposed | **still discovered and deleted** |
+### Consumption is application, not deletion
 
-Failing closed is the right asymmetry: a smoke record hidden too early costs a test its data, and one
-exposed too long is confidential data with no bound. The row remains fully visible to cleanup, so
-failing closed hides it without stranding it.
+R5 said `loadOrBootstrap` "consumes" the lease without saying what that meant, and the natural
+reading — read it, stamp the profile, delete it — produces the exact race reported: bootstrap reads
+H1, a concurrent mint advances the lease to H2, bootstrap stamps H1 and deletes the lease, and the
+profile now expires before the H2 run's own horizon.
 
-Tests: missing and malformed `retainUntil` — including a non-finite value and a non-string — through
-`getSession`, `getAttempt`, `getMock`, `listAttempts` and `listMocks`, in all three adapters; and the
-same physical rows asserted still discovered by cleanup and counted by verification.
+**The lease is never deleted by bootstrap.** It stays authoritative until its own TTL. Bootstrap
+reads it and stamps the new profile from that snapshot, but the snapshot is a convenience, not the
+source of truth:
 
-### Profile binding: durable when there is nothing to update, and monotonic (finding 2)
+```
+effectiveHorizon(learner) = max(profile.retainUntil ?? 0, unexpired lease.retainUntil ?? 0)
+```
 
-R4 had `bindProfileToSmokeRun` update a profile at mint, which silently assumed one exists. A learner
-can mint a run before their first `/api/me`; the binding then has nothing to update, and the later
-bootstrap creates an **unbounded** profile. Again a fact inferred from an absence.
+`getProfile` hides a smoke profile only past the EFFECTIVE horizon. This makes the required
+invariant hold **by construction** rather than by protocol:
 
-**The binding is a lease, not an update.** At mint the repository writes a retention lease keyed by
-learner, whether or not a profile exists. `loadOrBootstrap` **consumes** the lease: a profile created
-afterwards is stamped from it at creation, so there is no window in which an unbounded smoke profile
-can exist. An existing profile is stamped directly, as in R4.
+> while an unexpired smoke lease exists, any visible profile has an effective retention horizon
+> >= the lease horizon.
 
-**Renewal is monotonic.** `retainUntil = max(current trusted retainUntil, run ownershipExpiresAt)`.
-R4's "each mint re-anchors" was unsafe under concurrency: two mints completing out of order let the
-older write replace a later horizon with an earlier one, expiring a profile while a newer run still
-owned data. A maximum cannot move backwards, so completion order stops mattering.
+A stale bootstrap can no longer shorten anything, because it cannot remove the longer horizon — it
+can only fail to copy it, and the lease still supplies it. The partial-write window closes the same
+way: if the lease is durable and stamping an existing profile fails, the mint does not report
+success AND the effective horizon already includes the lease, so no visible profile is
+under-retained in the meantime.
 
-**The horizon is derived, not supplied.** The port takes `{ learnerId, runId }` and reads the
-horizon from the STORED run. If an implementation passes the value for efficiency, the write is
-conditional on it equalling that run's `ownershipExpiresAt` — a supplied deadline is a proposal the
-stored run must confirm, never an input that is trusted.
+Every lease write is conditional on its revision, so an older concurrent mint loses rather than
+overwriting a newer horizon — and because the value is a maximum, losing that race is harmless.
 
-**Failure ordering.** `POST /smoke-runs` does not report success until the lease is durable. If the
-lease write fails, the run is not reported to the caller; an orphan run row keeps its own
-`ownershipExpiresAt` and `ttl`, so it is bounded, and the caller never learns its id, so it is
-unreachable. The failure direction is a run that cannot be used, never a profile that cannot expire.
+**Failure path A** — a run minted, `/api/me` never called — is now bounded by the lease's own
+`retainUntil` and `ttl`: it expires logically at the horizon and is removed physically afterwards,
+consumed or not.
 
-Tests:
-a. mint before any profile exists, then `/api/me` → the created profile is already bounded;
-b. two concurrent mints completing in reverse order → the later horizon survives;
-c. a stale binding cannot shorten a newer horizon;
-d. a failed lease write → no successful run is returned, and the orphan run is bounded and
-   unreachable;
-e. an expired physical profile reclaim still loses safely to a concurrent fresh write;
-f. an ordinary learner is never leased, never stamped, never hidden.
+### Binding is refused unless the run backs it
+
+`bindProfileToSmokeRun({ learnerId, runId })` reads the STORED run and refuses when it is absent,
+expired past `ownershipExpiresAt`, or owned by a different learner. The horizon is taken from that
+run, never from the caller. A mismatch is a refusal, not a re-scope — the same rule the cleanup
+route already follows.
+
+### Order of operations at mint
+
+1. write the run record (bounded by its own `ownershipExpiresAt`/`ttl`);
+2. write or extend the lease, conditional on its revision, monotonic;
+3. stamp an existing profile if there is one, revision-conditional;
+4. only then report success.
+
+A failure at any step leaves the earlier ones bounded: an orphan run carries its own TTL and its id
+is never returned, and a lease without a profile expires on its own. The failure direction is always
+a run that cannot be used, never data that cannot expire.
 
 ### Expiry stays an application decision, on every path
 
-`ownedSmokeRun`, `getActiveMock`, `getProfile`, the write fence and every child read path evaluate
-time themselves. TTL is housekeeping and never the answer to "is this still valid".
+`ownedSmokeRun`, `getActiveMock`, `getProfile`, the lease read, the write fence and every child read
+path evaluate time themselves.
 
 ### Full test plan, injected clock throughout
 
 1. run at 25h → writes refused, cleanup still authorized;
-2. run at 8d + 1h → cleanup refused, and no reachable child remains;
+2. run at 8d + 1h → cleanup refused, no reachable child remains;
 3. completion on day six → `expiresAt` is `completedAt + 7d`;
 4. replay on day ten → `expiresAt` unchanged;
 5. cleanup failing during `closing` → the row keeps its `ttl`; a retry converges;
 6. claim at hour one → logically absent at hour 25 with the row present; a new claim succeeds;
-7. claim transaction with a deadline that does not match the run's → refused;
+7. claim transaction with a deadline not matching the run's → refused;
 8. child `retainUntil` survives ten updates; supplied, removed, mutated and malformed values are
    rejected or preserved, never adopted;
-9. expired child hidden from get/list, still found and deleted by cleanup, and verification cannot
+9. expired child hidden from get/list, still found and deleted by cleanup; verification cannot
    report zero while the row exists;
-10. child with `runId` and missing/malformed `retainUntil` → hidden on every named accessor in every
+10. child with `runId` and missing/malformed anchor → hidden on every named accessor in every
     adapter, still discovered by cleanup;
-11. profile: lease before first profile, reverse-order mints, stale binding, failed lease, race with
-    a fresh write, ordinary learner untouched;
-12. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
+11. lease lifecycle:
+    a. lease exists and `/api/me` is never called → it expires logically, then physically;
+    b. bootstrap reads H1 while a concurrent mint advances to H2 → H2 survives and the profile stays
+       visible to H2;
+    c. a stale bootstrap cannot delete or shorten a newer lease;
+    d. lease durable but the existing-profile stamp fails → no successful mint, and no visible
+       profile has an effective horizon shorter than the lease;
+    e. an expired physical lease is ignored before TTL removes it;
+    f. an absent, expired or mismatched run is refused at binding;
+12. profile: bounded before the first profile exists, reverse-order mints, race with a fresh write,
+    ordinary learner never leased or stamped;
+13. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
 
 Implementation begins only after this revision receives REVIEW_APPROVED.
