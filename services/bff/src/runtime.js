@@ -47,19 +47,32 @@ function createRepositoryFromEnv() {
 
 /** Test/composition hook: inject a repository and/or a clock. */
 export function configureRuntime({ repository, now } = {}) {
-  if (now !== undefined) state.now = now;
-  if (repository !== undefined) {
-    // Binding is a CONTRACT, not a heuristic. A repository that cannot be bound is refused rather
-    // than silently left on wall time, because the failure that produces — the application ruling a
-    // write out while the repository accepts it — is invisible until it matters.
-    if (repository) {
-      if (typeof repository.bindClock !== 'function') {
-        throw new Error('configureRuntime: the repository must implement bindClock(now).');
-      }
-      repository.bindClock(() => state.now());
+  // VALIDATE AND BIND THE WHOLE CANDIDATE BEFORE COMMITTING ANYTHING. Assigning the clock first and
+  // validating afterwards left a refused configuration half-applied: the caller was told the
+  // repository was rejected while the new clock — and any repository already bound to it — had
+  // already changed underneath them.
+  const nextNow = now !== undefined ? now : state.now;
+  if (typeof nextNow !== 'function') throw new Error('configureRuntime: now must be a function.');
+
+  if (repository !== undefined && repository !== null) {
+    if (typeof repository.bindClock !== 'function') {
+      throw new Error('configureRuntime: the repository must implement bindClock(now).');
     }
-    state.repository = repository;
+    // A `false` result means the repository brought its own clock, so it would evaluate the same
+    // write boundary at a different instant than the application. Ignoring that was the whole
+    // defect: the contract existed and its answer was discarded. Deliberate skew is legitimate,
+    // but it belongs outside runtime composition — construct and drive the adapter directly.
+    if (!repository.bindClock(() => nextNow())) {
+      throw new Error(
+        'configureRuntime: this repository carries its own clock and would diverge from the runtime. '
+        + 'Exercise deliberate skew outside configureRuntime().',
+      );
+    }
   }
+
+  // Only now, with nothing left that can fail.
+  state.now = nextNow;
+  if (repository !== undefined) state.repository = repository;
 }
 
 /** Reset to environment-driven composition (tests). */

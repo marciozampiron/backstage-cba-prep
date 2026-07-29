@@ -540,8 +540,9 @@ test('a write-expired run refuses writes but is still cleanable', async () => {
 
   // The repository gets the SAME injected clock: retention is never read from Date.now, and a
   // repository on a different clock than the use case would fence on the wrong instant.
+  // No explicit clock: composition binds it, which is the path the application actually uses.
   let clock = Date.parse('2026-07-28T00:00:00Z');
-  const repo = new Repo({ now: () => clock });
+  const repo = new Repo();
   cfg({ repository: repo, now: () => clock });
   try {
     const run = await startSmokeRun('l-clocks');
@@ -582,11 +583,11 @@ test('the write fence is exact at the deadline, on memory and file alike', async
   const dir = mkdtempSync(path.join(os.tmpdir(), 'cba-fence-'));
   try {
     for (const [label, make] of Object.entries({
-      memory: (clock) => new Mem(clock),
-      file: (clock) => new File(path.join(dir, `${Math.random().toString(36).slice(2)}.json`), clock),
+      memory: () => new Mem(),
+      file: () => new File(path.join(dir, `${Math.random().toString(36).slice(2)}.json`)),
     })) {
       let clock = Date.parse('2026-07-28T00:00:00Z');
-      const repo = make({ now: () => clock });
+      const repo = make();
       cfg({ repository: repo, now: () => clock });
 
       const run = await startSmokeRun(`l-${label}`);
@@ -673,7 +674,7 @@ test('completion derives both anchor and horizon from one clock read', async () 
   // A clock that MOVES on every read: two reads would make the horizon differ from exactly seven
   // days after the recorded completion.
   let tick = Date.parse('2026-07-28T00:00:00Z');
-  const repo = new Mem({ now: () => tick });
+  const repo = new Mem();
   cfg({ repository: repo, now: () => (tick += 1000) });
   try {
     const run = await startSmokeRun('l-onetick');
@@ -685,6 +686,70 @@ test('completion derives both anchor and horizon from one clock read', async () 
       'the horizon must be exactly the retention constant from the anchor',
     );
     assert.equal(result.completedAt, stored.completedAt);
+  } finally {
+    reset();
+  }
+});
+
+/* ============================ composition is atomic ========================================== */
+
+test('NEGATIVE: a repository with its own clock is refused by runtime composition', async () => {
+  // The bindClock contract existed and its answer was discarded, which is the same as not having
+  // it: application and repository could evaluate the same write boundary at different instants.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  try {
+    const own = new Mem({ now: () => 111 });
+    assert.throws(() => cfg({ repository: own, now: () => 222 }), /would diverge/);
+    // Deliberate skew is still possible — outside composition, driving the adapter directly.
+    assert.equal(own.now(), 111);
+  } finally {
+    reset();
+  }
+});
+
+test('NEGATIVE: a refused configuration changes nothing', async () => {
+  const { configureRuntime: cfg, resetRuntime: reset, activeRepository } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  try {
+    const first = new Mem();
+    cfg({ repository: first, now: () => 111 });
+    assert.equal(first.now(), 111);
+
+    // Refused for missing bindClock. The clock must NOT have moved, and the already-bound
+    // repository must not have been dragged onto it — a caller told "rejected" would otherwise be
+    // running on state they were told was not applied.
+    assert.throws(() => cfg({ repository: { getSmokeRun: async () => null }, now: () => 222 }), /bindClock/);
+    assert.equal(first.now(), 111, 'the prior repository keeps its clock');
+    assert.equal(activeRepository(), first, 'the prior repository stays active');
+
+    // And the same for a repository refused because it brought its own clock.
+    assert.throws(() => cfg({ repository: new Mem({ now: () => 333 }), now: () => 444 }), /would diverge/);
+    assert.equal(first.now(), 111);
+    assert.equal(activeRepository(), first);
+
+    // The RUNTIME clock itself must be unchanged, which the assertions above cannot show: each
+    // repository captured the clock of the call that bound it, so a state.now mutated during a
+    // refused call is invisible through them. A later repository bound WITHOUT its own clock
+    // adopts state.now, so it reports what the refusals actually left behind.
+    const probe = new Mem();
+    cfg({ repository: probe });
+    assert.equal(probe.now(), 111, 'a refused configuration must not have moved the runtime clock');
+  } finally {
+    reset();
+  }
+});
+
+test('a successful configuration changes the clock and the repository together', async () => {
+  const { configureRuntime: cfg, resetRuntime: reset, activeRepository } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  try {
+    const first = new Mem();
+    cfg({ repository: first, now: () => 111 });
+    const second = new Mem();
+    cfg({ repository: second, now: () => 222 });
+    assert.equal(activeRepository(), second);
+    assert.equal(second.now(), 222, 'the new repository is on the new clock');
   } finally {
     reset();
   }
