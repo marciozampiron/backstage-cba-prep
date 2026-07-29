@@ -884,3 +884,36 @@ test('NEGATIVE: binding refuses an absent, expired or mismatched run', async () 
     reset();
   }
 });
+
+test('a mint stamps the WINNING lease horizon, never its own', async () => {
+  // A newer run's lease is already durable when an older mint completes. If that mint stamped its
+  // OWN horizon onto a not-yet-stamped profile, the profile's anchor — and, in the managed adapter,
+  // its physical ttl — would sit BELOW the effective lease horizon: the row could be TTL-deleted
+  // while the lease still promised it. Monotonic stamping cannot save the FIRST stamp, so the value
+  // stamped must be the winner the lease answered with.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun } = await import('../src/store.js');
+
+  let clock = Date.parse('2026-07-29T00:00:00Z');
+  const repo = new Mem();
+  cfg({ repository: repo, now: () => clock });
+  try {
+    // An ordinary, unstamped profile exists before any of this learner's runs.
+    await repo.saveProfile({ learnerId: 'l-winner-e2e', email: 'x@local.invalid', displayName: 'W' });
+
+    // A newer concurrent run's lease has already committed a farther horizon.
+    const h2 = new Date(clock + 16 * 864e5).toISOString();
+    await repo.extendSmokeLease({ learnerId: 'l-winner-e2e', retainUntil: h2 });
+
+    // The OLDER mint completes now: its own ownership horizon (8d) loses to the lease (16d).
+    const run = await startSmokeRun('l-winner-e2e');
+    const own = (await repo.getSmokeRun(run.runId)).ownershipExpiresAt;
+    assert.ok(Date.parse(own) < Date.parse(h2), 'the fixture requires the run to lose');
+
+    const stored = repo.state.profiles['l-winner-e2e'];
+    assert.equal(stored.retainUntil, h2, 'the first stamp must carry the winning horizon');
+  } finally {
+    reset();
+  }
+});

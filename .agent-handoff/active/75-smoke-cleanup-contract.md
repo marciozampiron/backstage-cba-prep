@@ -510,3 +510,40 @@ Test coverage maps to R6 items 11a–f and 12: never-consumed lease expiry, reve
 stale binding, failed stamp with the invariant held, expired physical lease ignored, binding
 refusals, pre-existing profile bound at mint, reclaim racing a fresh write, and ordinary learners
 never leased, stamped or hidden.
+
+## Codex review — parcel 4 findings, closed as one lease read/CAS contract
+
+All four findings were symptoms of the lease not having a single read/CAS discipline, and they are
+closed as one contract rather than four patches.
+
+**Raw is adapter-private and STRONG.** `#getRecordRaw` reads with `ConsistentRead: true` — every
+caller is either a compare-and-set (which must see the revision it conditions on) or a physical
+inspection. `getSmokeRun` moved onto that path, because it AUTHORIZES: mint binding, ownership and
+claim pinning hang off it, and an eventually consistent read let a just-written run appear absent to
+the very mint that had written it. The fake records every GetItem's consistency flag, and a test
+asserts the authority reads are strong — the one gap it caught was real (`getSmokeRun` was on the
+filtered path).
+
+**The public lease read is LOGICAL**: a clone (mutating the returned object cannot alter stored
+state), expired hidden before TTL, and unreadable control data reads as absent.
+
+**Extension is CAS on the revision, bounded retry.** The horizon-only condition had two failure
+modes at once: a malformed stored value sorting above an ISO timestamp read as "already satisfied"
+— so a mint could succeed with no valid retention bound at all — and two writers from the same
+revision could both commit. Now: unreadable control data (horizon OR revision) is a CONFLICT with
+`LEASE_UNREADABLE`, a valid stored horizon >= the request returns the stored winning lease, and
+everything else writes conditionally on the exact revision the strong read saw. The mint surfaces
+the conflict as a generic 409 with no run id returned.
+
+**The stamp carries the WINNING horizon.** Monotonic stamping cannot save the FIRST stamp: an older
+mint completing over a newer lease would anchor a not-yet-stamped profile — and its physical ttl —
+below the effective lease horizon, so the row could be TTL-deleted while the lease still promised
+it. `bindProfileToSmokeRun` now stamps and returns what the lease answered.
+
+The dead lease condition (`record.#ru < :new`) and its fake branch and rebind guard were removed
+with it — a guard for a condition production no longer sends guards nothing.
+
+Mutation checks: malformed-reads-as-satisfied fails 1; own-horizon stamping fails 1 (a store-level
+test added after the first attempt at this check showed the port-level test alone did not
+discriminate); eventually consistent raw reads fail 1; the duplicate-revision race and the winning-
+horizon ttl are asserted directly.

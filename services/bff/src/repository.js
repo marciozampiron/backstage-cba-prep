@@ -322,17 +322,37 @@ export class InMemorySimulationRepository {
     this.persist();
   }
 
-  /* Profile retention lease (#75 R6). Never deleted by bootstrap: it stays authoritative until its
-     own horizon, so consumption is APPLICATION of the value, not removal of the record. */
-  async getSmokeLease(learnerId) {
+  /* Profile retention lease (#75 R6) — ONE read/CAS contract, shared in shape with the managed
+     adapter. RAW access is adapter-private; the public read is LOGICAL: a clone, expired hidden,
+     malformed fail-closed. Never deleted by bootstrap — consumption is application of the value. */
+
+  #rawLease(learnerId) {
     this.state.profileLeases ??= {}; // state loaded from an older file may predate the bag
     return this.state.profileLeases[learnerId] ?? null;
   }
 
   /**
-   * Extend the lease monotonically — `max(current, requested)` — so two mints completing out of
-   * order cannot shorten a newer horizon: the older write loses, and losing is harmless because the
-   * value it wanted is already covered.
+   * The learner's lease, or `null` — a CLONE, so a caller cannot mutate repository state through
+   * the returned object; expired leases read as absent before TTL; and a lease whose control data
+   * is unreadable reads as absent too, because an unreadable authority is not an authority.
+   */
+  async getSmokeLease(learnerId) {
+    const lease = this.#rawLease(learnerId);
+    if (!lease) return null;
+    const horizon = parseInstant(lease.retainUntil);
+    if (horizon === null || this.now() >= horizon) return null;
+    return structuredClone(lease);
+  }
+
+  /**
+   * Extend the lease monotonically, by compare-and-set on its revision.
+   *
+   * The contract, in order: a stored lease whose control data is unreadable is a CONFLICT — the
+   * previous version treated every lost comparison as "already satisfied", so a malformed value
+   * that happened to sort above an ISO timestamp was accepted as a retention bound it never was.
+   * A valid stored horizon >= the request returns the STORED lease (the winning value, which the
+   * caller must propagate). Anything else is a revision-conditional write, retried a bounded
+   * number of times, so two writers from the same revision cannot both commit.
    */
   async extendSmokeLease({ learnerId, retainUntil }) {
     const requested = parseInstant(retainUntil);
@@ -340,13 +360,25 @@ export class InMemorySimulationRepository {
       throw new RepositoryConflictError('The lease horizon is unreadable and will not be written.');
     }
     this.state.profileLeases ??= {};
-    const current = this.state.profileLeases[learnerId];
-    const stored = parseInstant(current?.retainUntil);
-    if (stored !== null && stored >= requested) return current;
-    const next = { learnerId, retainUntil: toInstant(requested), rev: (current?.rev ?? 0) + 1 };
+    const current = this.#rawLease(learnerId);
+    if (current) {
+      const stored = parseInstant(current.retainUntil);
+      const rev = Number.isInteger(current.rev) && current.rev > 0 ? current.rev : null;
+      if (stored === null || rev === null) {
+        const err = new RepositoryConflictError('This lease has no readable control data; it cannot satisfy or be extended.');
+        err.reason = 'LEASE_UNREADABLE';
+        throw err;
+      }
+      if (stored >= requested) return structuredClone(current);
+      const next = { learnerId, retainUntil: toInstant(requested), rev: rev + 1 };
+      this.state.profileLeases[learnerId] = next;
+      this.persist();
+      return structuredClone(next);
+    }
+    const next = { learnerId, retainUntil: toInstant(requested), rev: 1 };
     this.state.profileLeases[learnerId] = next;
     this.persist();
-    return next;
+    return structuredClone(next);
   }
 
   /**

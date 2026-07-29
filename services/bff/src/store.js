@@ -807,9 +807,12 @@ export async function bindProfileToSmokeRun(learnerId, runId) {
     throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
   }
   const horizon = run.ownershipExpiresAt;
-  await db().extendSmokeLease({ learnerId, retainUntil: horizon });
-  await db().stampProfileRetention({ learnerId, retainUntil: horizon });
-  return { runId, retainUntil: horizon };
+  // The lease returns the WINNING horizon — this run's, or a newer concurrent run's. The stamp
+  // must use that value: stamping this run's own horizon after losing the race left the profile's
+  // anchor and physical ttl short of the effective lease horizon.
+  const lease = await db().extendSmokeLease({ learnerId, retainUntil: horizon });
+  await db().stampProfileRetention({ learnerId, retainUntil: lease.retainUntil });
+  return { runId, retainUntil: lease.retainUntil };
 }
 
 /**

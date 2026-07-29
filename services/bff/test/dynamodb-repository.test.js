@@ -20,7 +20,9 @@ function conditionalError() {
 }
 
 export function createFakeDynamoStore() {
-  return { items: new Map() }; // key: `${pk}|${sk}` -> item
+  // `reads` records every GetItem with its consistency flag, so a test can assert which reads were
+  // strong — an eventually consistent authority read is invisible in results and only shows here.
+  return { items: new Map(), reads: [] };
 }
 
 /**
@@ -33,7 +35,8 @@ const CLAIM_REPLACE_CONDITION = 'attribute_not_exists(pk) OR (attribute_exists(#
 export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize } = {}) {
   const keyOf = (k) => `${k.pk}|${k.sk}`;
   return {
-    async get({ Key }) {
+    async get({ Key, ConsistentRead }) {
+      store.reads.push({ key: keyOf(Key), consistent: ConsistentRead === true });
       const item = store.items.get(keyOf(Key));
       return item ? { Item: structuredClone(item) } : {};
     },
@@ -43,15 +46,6 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const existing = store.items.get(key);
       if (ConditionExpression === 'attribute_not_exists(pk)') {
         if (existing) throw conditionalError();
-      } else if (ConditionExpression === 'attribute_not_exists(pk) OR record.#ru < :new') {
-        // The lease's monotonic condition. Binding pinned like the others: rebinding #ru would keep
-        // the text identical while comparing a different field.
-        if (ExpressionAttributeNames?.['#ru'] !== 'retainUntil') {
-          throw new Error('fake client: the lease condition must bind #ru=retainUntil');
-        }
-        if (existing && !(existing.record?.retainUntil < ExpressionAttributeValues[':new'])) {
-          throw conditionalError();
-        }
       } else if (ConditionExpression === 'rev = :expected') {
         if (!existing || existing.rev !== ExpressionAttributeValues[':expected']) throw conditionalError();
       } else if (ConditionExpression !== undefined) {
@@ -93,15 +87,6 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const existing = store.items.get(key);
       if (ConditionExpression === 'mockExamId = :id') {
         if (!existing || existing.mockExamId !== ExpressionAttributeValues[':id']) throw conditionalError();
-      } else if (ConditionExpression === 'attribute_not_exists(pk) OR record.#ru < :new') {
-        // The lease's monotonic condition. Binding pinned like the others: rebinding #ru would keep
-        // the text identical while comparing a different field.
-        if (ExpressionAttributeNames?.['#ru'] !== 'retainUntil') {
-          throw new Error('fake client: the lease condition must bind #ru=retainUntil');
-        }
-        if (existing && !(existing.record?.retainUntil < ExpressionAttributeValues[':new'])) {
-          throw conditionalError();
-        }
       } else if (ConditionExpression === 'rev = :expected') {
         // #75 cleanup deletes conditionally on the rev it read, so a record written since the read
         // is skipped rather than removed blind. The fake enforces the same rule as the real table.
@@ -711,17 +696,82 @@ test('a stale profile reclaim loses to a concurrent fresh write', async () => {
   assert.equal(survivor.record.displayName, 'OLD', 'the concurrently-refreshed row survived');
 });
 
-test('the fake refuses a lease condition with #ru rebound', async () => {
+
+test('two writers from the same revision cannot both commit a lease', async () => {
+  // The horizon-only condition let both land; the rev condition makes exactly one win, and the
+  // loser re-reads and retries against the revision the winner committed.
   const store = createFakeDynamoStore();
   const repo = makeRepoWith(store);
-  await assert.rejects(
-    () => repo.client.put({
-      TableName: 'fake-table',
-      Item: { pk: 'LEASE#x', sk: 'REC', record: {} },
-      ConditionExpression: 'attribute_not_exists(pk) OR record.#ru < :new',
-      ExpressionAttributeNames: { '#ru': 'ownershipExpiresAt' },
-      ExpressionAttributeValues: { ':new': 'x' },
-    }),
-    /must bind #ru=retainUntil/,
-  );
+  const h1 = new Date(Date.now() + 864e5).toISOString();
+  await repo.extendSmokeLease({ learnerId: 'l-dup-rev', retainUntil: h1 });
+
+  const h2 = new Date(Date.now() + 2 * 864e5).toISOString();
+  const h3 = new Date(Date.now() + 3 * 864e5).toISOString();
+  const realPut = repo.client.put;
+  let raced = false;
+  repo.client.put = async (params) => {
+    if (!raced && params.Item?.pk === 'LEASE#l-dup-rev') {
+      raced = true;
+      // The competing writer lands first, from the same starting revision.
+      for (const [, item] of store.items) {
+        if (item.pk === 'LEASE#l-dup-rev') {
+          item.rev = 2;
+          item.record = { learnerId: 'l-dup-rev', retainUntil: h2, rev: 2 };
+        }
+      }
+    }
+    return realPut(params);
+  };
+
+  const result = await repo.extendSmokeLease({ learnerId: 'l-dup-rev', retainUntil: h3 });
+  assert.equal(result.rev, 3, 'the loser retried on top of the winner, never alongside it');
+  assert.equal(result.retainUntil, h3);
+  const stored = [...store.items.values()].find((i) => i.pk === 'LEASE#l-dup-rev');
+  assert.equal(stored.rev, 3, 'one revision per commit — no duplicates');
+});
+
+test('mint authorization and lease CAS read strongly', async () => {
+  // An eventually consistent authority read let a just-written run appear absent during mint and a
+  // stale lease pose as the winner. Invisible in results — only the recorded flags show it.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({
+    runId: 'run-strongread0000000',
+    learnerId: 'l-strong',
+    status: 'active',
+    writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
+    ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
+  });
+  store.reads.length = 0;
+
+  await repo.getSmokeRun('run-strongread0000000');
+  await repo.extendSmokeLease({ learnerId: 'l-strong', retainUntil: new Date(Date.now() + 6912e5).toISOString() });
+  await repo.getSmokeLease('l-strong');
+
+  const authority = store.reads.filter((r) => r.key.startsWith('SMOKERUN#') || r.key.startsWith('LEASE#'));
+  assert.ok(authority.length >= 3, 'the authority reads must have happened');
+  for (const read of authority) {
+    assert.equal(read.consistent, true, `${read.key} must be a strong read`);
+  }
+});
+
+test('reverse-order stamping reaches the winning horizon and its physical ttl', async () => {
+  // The lease returns the winning value, and the stamp must use it: stamping the losing run's own
+  // horizon left the profile's anchor and ttl short of the effective lease horizon.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const h2 = new Date(Date.now() + 16 * 864e5).toISOString();
+  const h1 = new Date(Date.now() + 8 * 864e5).toISOString();
+
+  await repo.extendSmokeLease({ learnerId: 'l-winning', retainUntil: h2 });
+  await repo.saveProfile({ learnerId: 'l-winning', email: 'x@local.invalid', displayName: 'W' });
+
+  // The OLDER mint completes last: its extension loses, and the winning horizon is what it stamps.
+  const winner = await repo.extendSmokeLease({ learnerId: 'l-winning', retainUntil: h1 });
+  assert.equal(winner.retainUntil, h2, 'the lease answers with the winning horizon');
+  await repo.stampProfileRetention({ learnerId: 'l-winning', retainUntil: winner.retainUntil });
+
+  const item = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-winning');
+  assert.equal(item.record.retainUntil, h2, 'the profile anchor is the winning horizon');
+  assert.equal(item.ttl, Math.floor(Date.parse(h2) / 1000), 'and so is the physical ttl');
 });

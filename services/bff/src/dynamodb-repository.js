@@ -88,9 +88,19 @@ export class DynamoDbSimulationRepository {
     return err?.name === 'ConditionalCheckFailedException' || err?.name === 'RepositoryConflictError';
   }
 
-  /** RAW single read — no expiry filter. Used by the anchor lookup and by cleanup only. */
+  /**
+   * RAW single read — no expiry filter, and STRONGLY CONSISTENT. Every caller of this path is
+   * either a compare-and-set (which must see the revision it will condition on) or a physical
+   * inspection (cleanup, which must see the row ordinary reads hide). An eventually consistent
+   * read here let a just-written run appear absent during mint authorization, and a stale lease
+   * pose as the winning value.
+   */
   async #getRecordRaw(type, id) {
-    const res = await this.client.get({ TableName: this.tableName, Key: recordKey(type, id) });
+    const res = await this.client.get({
+      TableName: this.tableName,
+      Key: recordKey(type, id),
+      ConsistentRead: true,
+    });
     if (!res.Item) return null;
     this.revs.set(res.Item.record, res.Item.rev);
     return res.Item.record;
@@ -249,16 +259,26 @@ export class DynamoDbSimulationRepository {
     return (await this.#listRecords(learnerId, 'MOCK')).filter((m) => smokeChildVisible(m, at));
   }
 
-  /* Profile retention lease (#75 R6): a LEASE item keyed by learner, never deleted by bootstrap. */
+  /* Profile retention lease (#75 R6) — the same read/CAS contract as the local adapters. */
+
+  /** Logical read: a clone; expired hidden before TTL; unreadable control data reads as absent. */
   async getSmokeLease(learnerId) {
-    return this.#getRecordRaw('LEASE', learnerId);
+    const lease = await this.#getRecordRaw('LEASE', learnerId);
+    if (!lease) return null;
+    const horizon = parseInstant(lease.retainUntil);
+    if (horizon === null || this.now() >= horizon) return null;
+    return structuredClone(lease);
   }
 
   /**
-   * Monotonic extension in ONE conditional write: the put succeeds only when no lease exists or the
-   * stored horizon is lexically below the requested one (both sides canonical full-millisecond
-   * renderings, so lexical and temporal order agree). A failed condition means the stored horizon
-   * already satisfies the request — the older concurrent mint loses, and losing is harmless.
+   * Monotonic extension by compare-and-set on the revision, with bounded retry.
+   *
+   * The previous version conditioned on the horizon comparison alone and read every lost condition
+   * as "already satisfied" — so a malformed stored value that happened to sort above an ISO
+   * timestamp was returned as if it were a valid retention bound, and two writers from the same
+   * revision could both commit. Now: unreadable control data is a CONFLICT; a valid stored horizon
+   * >= the request returns the stored (winning) lease; anything else writes conditionally on the
+   * exact revision the strong read saw, and a lost race re-reads and tries again, bounded.
    */
   async extendSmokeLease({ learnerId, retainUntil }) {
     const requested = parseInstant(retainUntil);
@@ -266,29 +286,61 @@ export class DynamoDbSimulationRepository {
       throw new RepositoryConflictError('The lease horizon is unreadable and will not be written.');
     }
     const canonical = toInstant(requested);
-    const current = await this.getSmokeLease(learnerId);
-    const record = { learnerId, retainUntil: canonical, rev: (current?.rev ?? 0) + 1 };
-    try {
-      await this.client.put({
-        TableName: this.tableName,
-        Item: {
-          ...recordKey('LEASE', learnerId),
-          record,
-          learnerId,
-          rev: record.rev,
-          gsi1pk: `LEARNER#${learnerId}`,
-          gsi1sk: `LEASE#${learnerId}`,
-          ttl: Math.floor(requested / 1000),
-        },
-        ConditionExpression: 'attribute_not_exists(pk) OR record.#ru < :new',
-        ExpressionAttributeNames: { '#ru': 'retainUntil' },
-        ExpressionAttributeValues: { ':new': canonical },
-      });
-      return record;
-    } catch (err) {
-      if (this.isConditionalFailure(err)) return this.getSmokeLease(learnerId); // already satisfied
-      throw err;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await this.#getRecordRaw('LEASE', learnerId);
+      if (current) {
+        const stored = parseInstant(current.retainUntil);
+        const rev = Number.isInteger(current.rev) && current.rev > 0 ? current.rev : null;
+        if (stored === null || rev === null) {
+          const err = new RepositoryConflictError('This lease has no readable control data; it cannot satisfy or be extended.');
+          err.reason = 'LEASE_UNREADABLE';
+          throw err;
+        }
+        if (stored >= requested) return structuredClone(current);
+        const record = { learnerId, retainUntil: canonical, rev: rev + 1 };
+        try {
+          await this.client.put({
+            TableName: this.tableName,
+            Item: {
+              ...recordKey('LEASE', learnerId),
+              record,
+              learnerId,
+              rev: record.rev,
+              gsi1pk: `LEARNER#${learnerId}`,
+              gsi1sk: `LEASE#${learnerId}`,
+              ttl: Math.floor(requested / 1000),
+            },
+            ConditionExpression: 'rev = :expected',
+            ExpressionAttributeValues: { ':expected': rev },
+          });
+          return record;
+        } catch (err) {
+          if (this.isConditionalFailure(err)) continue; // somebody committed first: re-read, retry
+          throw err;
+        }
+      }
+      const record = { learnerId, retainUntil: canonical, rev: 1 };
+      try {
+        await this.client.put({
+          TableName: this.tableName,
+          Item: {
+            ...recordKey('LEASE', learnerId),
+            record,
+            learnerId,
+            rev: 1,
+            gsi1pk: `LEARNER#${learnerId}`,
+            gsi1sk: `LEASE#${learnerId}`,
+            ttl: Math.floor(requested / 1000),
+          },
+          ConditionExpression: 'attribute_not_exists(pk)',
+        });
+        return record;
+      } catch (err) {
+        if (this.isConditionalFailure(err)) continue;
+        throw err;
+      }
     }
+    throw new RepositoryConflictError('The lease could not be extended after repeated contention.');
   }
 
   /** Stamp an EXISTING profile's retention, monotonically and revision-conditionally. */
@@ -416,7 +468,10 @@ export class DynamoDbSimulationRepository {
   }
 
   async getSmokeRun(runId) {
-    return this.#getRecord('SMOKERUN', runId);
+    // RAW, therefore strong: this read AUTHORIZES — mint binding, ownership checks, claim deadline
+    // pinning all hang off it, and an eventually consistent read let a just-written run appear
+    // absent to the very mint that had just written it.
+    return this.#getRecordRaw('SMOKERUN', runId);
   }
 
   /**

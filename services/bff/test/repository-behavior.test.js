@@ -595,6 +595,52 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     assert.ok(Date.parse(reclaimed.retainUntil) > later, 'stamped from the new lease');
   });
 
+  test(`${name}: a physically malformed lease is a CONFLICT, whichever way it sorts`, async () => {
+    // "tomorrow" sorts ABOVE an ISO timestamp lexically, so the old horizon-only condition read it
+    // as "already satisfied" and the mint succeeded with no valid retention bound at all. A
+    // low-sorting garbage value failed the other way. Both are the same answer now: unreadable
+    // control data cannot satisfy anything and cannot be extended — only expire by its own ttl.
+    const repo = await makeRepo();
+    for (const garbage of ['tomorrow', '!not-a-date', '2099', 42]) {
+      await corruptLease(repo, 'l-lease-garbage', { retainUntil: garbage });
+      await assert.rejects(
+        () => repo.extendSmokeLease({ learnerId: 'l-lease-garbage', retainUntil: H(8) }),
+        (err) => err.reason === 'LEASE_UNREADABLE',
+        JSON.stringify(garbage),
+      );
+      assert.equal(await repo.getSmokeLease('l-lease-garbage'), null, 'and the logical read hides it');
+    }
+    // Unreadable REVISION is the same defect in the other field.
+    await corruptLease(repo, 'l-lease-garbage', { retainUntil: H(8), rev: 'one' });
+    await assert.rejects(
+      () => repo.extendSmokeLease({ learnerId: 'l-lease-garbage', retainUntil: H(16) }),
+      (err) => err.reason === 'LEASE_UNREADABLE',
+    );
+  });
+
+  test(`${name}: mutating a returned lease cannot alter stored state`, async () => {
+    const repo = await makeRepo();
+    const h8 = H(8);
+    await repo.extendSmokeLease({ learnerId: 'l-lease-clone', retainUntil: h8 });
+    const held = await repo.getSmokeLease('l-lease-clone');
+    held.retainUntil = H(400);
+    held.rev = 99;
+    const reread = await repo.getSmokeLease('l-lease-clone');
+    assert.equal(reread.retainUntil, h8, 'the stored horizon must be untouched');
+    assert.equal(reread.rev, 1);
+  });
+
+  test(`${name}: an expired lease reads as absent while its physical row remains`, async () => {
+    const repo = await makeRepo();
+    await repo.extendSmokeLease({ learnerId: 'l-lease-gone', retainUntil: H(1) });
+    repo.now = () => Date.now() + 2 * 864e5;
+    assert.equal(await repo.getSmokeLease('l-lease-gone'), null, 'logically absent before TTL');
+    // And a NEW extension over the expired row still works — expiry is not a dead end.
+    const fresh = new Date(Date.now() + 10 * 864e5).toISOString();
+    const next = await repo.extendSmokeLease({ learnerId: 'l-lease-gone', retainUntil: fresh });
+    assert.equal(next.retainUntil, fresh);
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();
@@ -620,6 +666,26 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
       assert.equal((await fresh.getMock('mock_persist')).learnerId, 'l1');
     });
   }
+}
+
+/** Corrupt a LEASE's stored control data in place — physical, as a legacy or partial write would. */
+async function corruptLease(repo, learnerId, patch) {
+  if (repo.state) {
+    repo.state.profileLeases ??= {};
+    repo.state.profileLeases[learnerId] = { learnerId, retainUntil: 'x', rev: 1, ...patch };
+    repo.persist();
+    return;
+  }
+  for (const [, item] of repo._fakeStore.items) {
+    if (item.pk === `LEASE#${learnerId}`) {
+      Object.assign(item.record, { learnerId, retainUntil: 'x', rev: 1 }, patch);
+      return;
+    }
+  }
+  repo._fakeStore.items.set(`LEASE#${learnerId}|REC`, {
+    pk: `LEASE#${learnerId}`, sk: 'REC', rev: 1,
+    record: { learnerId, retainUntil: 'x', rev: 1, ...patch },
+  });
 }
 
 /** Corrupt a PROFILE's stored anchor in place, for the lease-invariant tests. */
