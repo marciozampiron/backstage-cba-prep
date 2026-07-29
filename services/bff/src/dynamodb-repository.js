@@ -21,7 +21,7 @@
 // of silently overwriting answers. Application-level idempotency (identical practice retry OK,
 // different selection 409 ALREADY_ANSWERED, mock replace pre-submit only) lives in the store and
 // is unchanged by this adapter.
-import { RepositoryConflictError } from './repository.js';
+import { RepositoryConflictError, SMOKE_CHILD_RETENTION_MS, smokeChildVisible } from './repository.js';
 
 const REC = 'REC';
 
@@ -87,6 +87,14 @@ export class DynamoDbSimulationRepository {
     return err?.name === 'ConditionalCheckFailedException' || err?.name === 'RepositoryConflictError';
   }
 
+  /** RAW single read — no expiry filter. Used by the anchor lookup and by cleanup only. */
+  async #getRecordRaw(type, id) {
+    const res = await this.client.get({ TableName: this.tableName, Key: recordKey(type, id) });
+    if (!res.Item) return null;
+    this.revs.set(res.Item.record, res.Item.rev);
+    return res.Item.record;
+  }
+
   async #getRecord(type, id) {
     const res = await this.client.get({ TableName: this.tableName, Key: recordKey(type, id) });
     if (!res.Item) return null;
@@ -95,8 +103,21 @@ export class DynamoDbSimulationRepository {
     return record;
   }
 
-  async #saveRecord(type, id, learnerId, record, extra = {}) {
+  async #saveRecord(type, id, learnerId, incoming, extra = {}) {
     const key = `${type}#${id}`;
+    // Write-once anchor, owned here (#75 R6). On update the STORED value is rewritten verbatim; the
+    // incoming one is ignored rather than trusted, because a caller that can extend its own
+    // retention has no retention.
+    let record = incoming;
+    if (incoming?.runId && ['SESSION', 'MOCK', 'ATTEMPT'].includes(type)) {
+      const stored = (await this.#getRecordRaw(type, id))?.retainUntil;
+      record = {
+        ...incoming,
+        retainUntil: stored ?? new Date(this.now() + SMOKE_CHILD_RETENTION_MS).toISOString(),
+      };
+      this.revs.set(record, this.revs.get(incoming));
+      extra = { ...extra, ttl: Math.floor(Date.parse(record.retainUntil) / 1000) };
+    }
     const expected = this.revs.get(record);
     const item = {
       ...recordKey(type, id),
@@ -188,8 +209,10 @@ export class DynamoDbSimulationRepository {
     return `${prefix}_${Number(res.Attributes.n).toString(36)}`;
   }
 
+  /* ORDINARY reads are filtered; cleanup uses the RAW path. */
   async getSession(id) {
-    return this.#getRecord('SESSION', id);
+    const found = await this.#getRecord('SESSION', id);
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveSession(session) {
@@ -197,7 +220,8 @@ export class DynamoDbSimulationRepository {
   }
 
   async getAttempt(id) {
-    return this.#getRecord('ATTEMPT', id);
+    const found = await this.#getRecord('ATTEMPT', id);
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveAttempt(attempt) {
@@ -205,11 +229,13 @@ export class DynamoDbSimulationRepository {
   }
 
   async listAttempts(learnerId) {
-    return this.#listRecords(learnerId, 'ATTEMPT');
+    const at = this.now();
+    return (await this.#listRecords(learnerId, 'ATTEMPT')).filter((a) => smokeChildVisible(a, at));
   }
 
   async getMock(id) {
-    return this.#getRecord('MOCK', id);
+    const found = await this.#getRecord('MOCK', id);
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveMock(mock) {
@@ -217,7 +243,8 @@ export class DynamoDbSimulationRepository {
   }
 
   async listMocks(learnerId) {
-    return this.#listRecords(learnerId, 'MOCK');
+    const at = this.now();
+    return (await this.#listRecords(learnerId, 'MOCK')).filter((m) => smokeChildVisible(m, at));
   }
 
   async getProfile(learnerId) {
@@ -371,15 +398,20 @@ export class DynamoDbSimulationRepository {
    * "nothing existed" from "a record survived contention" — both report zero — so the use case
    * verifies with this instead of inferring completeness from what it removed.
    */
+  /** RAW children matching learner + run — expired included, by design. Cleanup only. */
+  async rawSmokeChildren({ learnerId, runId }) {
+    const owns = (r) => r?.learnerId === learnerId && r?.runId === runId;
+    const of = async (type) => (await this.#listItems(learnerId, type)).map((i) => i.record).filter(owns);
+    return { sessions: await of('SESSION'), mocks: await of('MOCK'), attempts: await of('ATTEMPT') };
+  }
+
   async countSmokeRunRecords({ learnerId, runId }) {
-    const counts = { practiceSessions: 0, mockExams: 0, attempts: 0 };
-    const byType = { SESSION: 'practiceSessions', MOCK: 'mockExams', ATTEMPT: 'attempts' };
-    for (const [type, key] of Object.entries(byType)) {
-      for (const { record } of await this.#listItems(learnerId, type)) {
-        if (record?.learnerId === learnerId && record?.runId === runId) counts[key] += 1;
-      }
-    }
-    return counts;
+    const raw = await this.rawSmokeChildren({ learnerId, runId });
+    return {
+      practiceSessions: raw.sessions.length,
+      mockExams: raw.mocks.length,
+      attempts: raw.attempts.length,
+    };
   }
 
   /**
@@ -448,7 +480,12 @@ export class DynamoDbSimulationRepository {
         ExpressionAttributeValues: { ':pk': `LEARNER#${learnerId}`, ':prefix': `${type}#` },
         ...(ExclusiveStartKey ? { ExclusiveStartKey } : {}),
       });
-      for (const item of res.Items ?? []) out.push({ record: item.record, item });
+      for (const item of res.Items ?? []) {
+        // Track the revision like the filtered list does: a record read RAW and then written back
+        // must carry its rev, or the write looks like a create and fails attribute_not_exists.
+        this.revs.set(item.record, item.rev);
+        out.push({ record: item.record, item });
+      }
       ExclusiveStartKey = res.LastEvaluatedKey;
     } while (ExclusiveStartKey);
     return out;

@@ -20,6 +20,28 @@ import path from 'node:path';
 /** Storage-level optimistic-concurrency violation — NEUTRAL port error (any adapter may raise
  *  it); the dispatcher maps it to 409 CONFLICT. Lives here so application code never imports
  *  from an infrastructure adapter. */
+/**
+ * How long a smoke-scoped CHILD record lives (#75 R6, parcel 1).
+ *
+ * Lives here rather than in the application layer because the repository owns the anchor: a value a
+ * caller can set is not a retention bound, it is a suggestion.
+ */
+export const SMOKE_CHILD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Is this child visible to ORDINARY reads?
+ *
+ * A record with no `runId` is an ordinary learner's and is never filtered. A stamped one is hidden
+ * once its anchor has passed — and hidden too when the anchor is missing or malformed, because an
+ * unreadable bound is not the absence of one. Failing closed costs a test its data; failing open is
+ * confidential data with no bound.
+ */
+export function smokeChildVisible(record, nowMs) {
+  if (!record?.runId) return true;
+  const until = parseInstant(record.retainUntil);
+  return until !== null && nowMs < until;
+}
+
 export class RepositoryConflictError extends Error {
   constructor(message) {
     super(message ?? 'Concurrent modification detected.');
@@ -74,13 +96,17 @@ export class InMemorySimulationRepository {
     return id;
   }
 
+  /* ORDINARY reads are filtered (#75 R6). Cleanup uses the RAW path below — reusing a filtered read
+     there would let verification report zero while the rows sat in the table. */
   async getSession(practiceSessionId) {
-    return this.state.sessions[practiceSessionId] ?? null;
+    const found = this.state.sessions[practiceSessionId] ?? null;
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveSession(session) {
     this.#assertRunAccepts(session);
-    this.state.sessions[session.practiceSessionId] = session;
+    this.state.sessions[session.practiceSessionId] =
+      this.#withAnchor(session, this.state.sessions[session.practiceSessionId]);
     this.persist();
   }
 
@@ -92,6 +118,20 @@ export class InMemorySimulationRepository {
    * cleanup could reinsert an attempt the cleanup had already verified gone — and every future
    * write path would have had to remember the rule.
    */
+  /**
+   * Return the record to persist, with the retention anchor the REPOSITORY owns.
+   *
+   * Write-once: on create it is stamped from the injected clock; on update the stored anchor is
+   * rewritten verbatim and the incoming value is ignored entirely rather than trusted. A caller
+   * that could extend it — or drop it — would be setting its own retention.
+   */
+  #withAnchor(record, existing) {
+    if (!record?.runId) return record;
+    const stored = existing?.retainUntil;
+    if (stored !== undefined) return { ...record, retainUntil: stored };
+    return { ...record, retainUntil: new Date(this.now() + SMOKE_CHILD_RETENTION_MS).toISOString() };
+  }
+
   #assertRunAccepts(record) {
     if (!record?.runId) return;
     const run = this.state.smokeRuns[record.runId];
@@ -105,31 +145,41 @@ export class InMemorySimulationRepository {
   }
 
   async getAttempt(attemptId) {
-    return this.state.attempts[attemptId] ?? null;
+    const found = this.state.attempts[attemptId] ?? null;
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveAttempt(attempt) {
     this.#assertRunAccepts(attempt);
-    this.state.attempts[attempt.attemptId] = attempt;
+    this.state.attempts[attempt.attemptId] =
+      this.#withAnchor(attempt, this.state.attempts[attempt.attemptId]);
     this.persist();
   }
 
   async listAttempts(learnerId) {
-    return Object.values(this.state.attempts).filter((a) => a.learnerId === learnerId);
+    const at = this.now();
+    return Object.values(this.state.attempts)
+      .filter((a) => a.learnerId === learnerId)
+      .filter((a) => smokeChildVisible(a, at));
   }
 
   async getMock(mockExamId) {
-    return this.state.mocks[mockExamId] ?? null;
+    const found = this.state.mocks[mockExamId] ?? null;
+    return smokeChildVisible(found, this.now()) ? found : null;
   }
 
   async saveMock(mock) {
     this.#assertRunAccepts(mock);
-    this.state.mocks[mock.mockExamId] = mock;
+    this.state.mocks[mock.mockExamId] =
+      this.#withAnchor(mock, this.state.mocks[mock.mockExamId]);
     this.persist();
   }
 
   async listMocks(learnerId) {
-    return Object.values(this.state.mocks).filter((m) => m.learnerId === learnerId);
+    const at = this.now();
+    return Object.values(this.state.mocks)
+      .filter((m) => m.learnerId === learnerId)
+      .filter((m) => smokeChildVisible(m, at));
   }
 
   /* One-active-mock claim (#77): the ATOMIC per-learner guard the store relies on instead of
@@ -233,15 +283,31 @@ export class InMemorySimulationRepository {
     return run;
   }
 
+  /**
+   * RAW children matching learner + run — expired ones included, by design.
+   *
+   * Named and separate so it is asked for deliberately. Cleanup's job is to delete rows that
+   * ordinary reads already hide; if it shared their filter it would report a clean run while the
+   * data remained, and the verification would be measuring its own blindfold.
+   */
+  async rawSmokeChildren({ learnerId, runId }) {
+    const owns = (r) => r && r.learnerId === learnerId && r.runId === runId;
+    return {
+      sessions: Object.values(this.state.sessions).filter(owns),
+      mocks: Object.values(this.state.mocks).filter(owns),
+      attempts: Object.values(this.state.attempts).filter(owns),
+    };
+  }
+
   /** Records still matching learner + run, per class. Zero everywhere is the only proof of a
       COMPLETE cleanup: counting what was deleted cannot distinguish "nothing existed" from
       "something survived contention". */
   async countSmokeRunRecords({ learnerId, runId }) {
-    const owns = (r) => r && r.learnerId === learnerId && r.runId === runId;
+    const raw = await this.rawSmokeChildren({ learnerId, runId });
     return {
-      practiceSessions: Object.values(this.state.sessions).filter(owns).length,
-      mockExams: Object.values(this.state.mocks).filter(owns).length,
-      attempts: Object.values(this.state.attempts).filter(owns).length,
+      practiceSessions: raw.sessions.length,
+      mockExams: raw.mocks.length,
+      attempts: raw.attempts.length,
     };
   }
 

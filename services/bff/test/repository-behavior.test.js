@@ -243,6 +243,112 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
     assert.equal(await repo.claimActiveMock('l-plain-claim', 'mock_plain'), true);
   });
 
+  /* ---------------- #75 R6 parcel 1+2: child retention ---------------- */
+
+  const ANCHOR_RUN = 'run-anchor000000000000';
+
+  async function seedChild(repo, learnerId, runId) {
+    if (!(await repo.getSmokeRun(runId))) {
+      await repo.saveSmokeRun({
+        runId,
+        learnerId,
+        status: 'active',
+        writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
+        ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
+      });
+    }
+    await repo.saveAttempt({ attemptId: 'att_anchor', learnerId, runId, status: 'in_progress', answers: {} });
+    return (await repo.getAttempt('att_anchor')).retainUntil;
+  }
+
+  test(`${name}: the repository stamps retainUntil, and a caller cannot set it`, async () => {
+    const repo = await makeRepo();
+    const anchor = await seedChild(repo, 'l-anchor', ANCHOR_RUN);
+    assert.ok(anchor, 'a stamped child must carry an anchor');
+
+    // A caller that can set its own retention has no retention. Each of these is IGNORED, never
+    // adopted: the stored anchor is rewritten verbatim on every update.
+    const far = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+    for (const supplied of [far, undefined, null, 'not-a-date', 0, {}]) {
+      const record = { attemptId: 'att_anchor', learnerId: 'l-anchor', runId: ANCHOR_RUN, answers: {} };
+      if (supplied !== undefined) record.retainUntil = supplied;
+      const current = await repo.getAttempt('att_anchor');
+      if (repo.revs) repo.revs.set(record, repo.revs.get(current));
+      await repo.saveAttempt(record);
+      assert.equal((await repo.getAttempt('att_anchor')).retainUntil, anchor, JSON.stringify(supplied));
+    }
+  });
+
+  test(`${name}: an ordinary child is never stamped and never filtered`, async () => {
+    const repo = await makeRepo();
+    await repo.saveAttempt({ attemptId: 'att_plain2', learnerId: 'l-plain2', status: 'submitted', answers: {} });
+    const plain = await repo.getAttempt('att_plain2');
+    assert.equal(plain.retainUntil, undefined, 'no runId means no retention metadata');
+    assert.equal((await repo.listAttempts('l-plain2')).length, 1);
+  });
+
+  test(`${name}: an expired child is hidden everywhere, and still reachable by cleanup`, async () => {
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-expired-child', ANCHOR_RUN);
+    await repo.saveSession({ practiceSessionId: 'ps_anchor', attemptId: 'att_anchor', learnerId: 'l-expired-child', runId: ANCHOR_RUN });
+    await repo.saveMock({ mockExamId: 'mock_anchor', attemptId: 'att_anchor', learnerId: 'l-expired-child', runId: ANCHOR_RUN });
+
+    // The PHYSICAL rows stay: DynamoDB TTL lags by days, so the application must decide.
+    repo.now = () => Date.now() + 8 * 24 * 60 * 60 * 1000;
+
+    assert.equal(await repo.getAttempt('att_anchor'), null);
+    assert.equal(await repo.getSession('ps_anchor'), null);
+    assert.equal(await repo.getMock('mock_anchor'), null);
+    assert.deepEqual(await repo.listAttempts('l-expired-child'), []);
+    assert.deepEqual(await repo.listMocks('l-expired-child'), []);
+
+    // Cleanup reads RAW. Sharing the filter here would report a clean run while the rows remained.
+    const raw = await repo.rawSmokeChildren({ learnerId: 'l-expired-child', runId: ANCHOR_RUN });
+    assert.equal(raw.attempts.length, 1);
+    assert.equal(raw.sessions.length, 1);
+    assert.equal(raw.mocks.length, 1);
+
+    const counted = await repo.countSmokeRunRecords({ learnerId: 'l-expired-child', runId: ANCHOR_RUN });
+    assert.deepEqual(counted, { practiceSessions: 1, mockExams: 1, attempts: 1 },
+      'verification must not report zero while physical rows remain');
+
+    const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-expired-child', runId: ANCHOR_RUN });
+    assert.equal(deleted.attempts, 1);
+    assert.deepEqual(await repo.countSmokeRunRecords({ learnerId: 'l-expired-child', runId: ANCHOR_RUN }),
+      { practiceSessions: 0, mockExams: 0, attempts: 0 });
+  });
+
+  test(`${name}: a missing or malformed anchor fails CLOSED on reads, not open`, async () => {
+    // An unreadable bound is not the absence of one. Failing open here would make the retention
+    // contract's failure mode unbounded exposure, reached by losing a field.
+    for (const broken of [undefined, '', 'soon', '2099', '2026-13-01T00:00:00Z', 42, {}]) {
+      const repo = await makeRepo();
+      await repo.saveSmokeRun({
+        runId: ANCHOR_RUN,
+        learnerId: 'l-broken',
+        status: 'active',
+        writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
+        ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
+      });
+      // Written straight into storage, as a legacy or partially-written row would be.
+      const record = { attemptId: 'att_broken', learnerId: 'l-broken', runId: ANCHOR_RUN, answers: {} };
+      if (broken !== undefined) record.retainUntil = broken;
+      await repo.saveAttempt(record);
+      if (broken !== undefined) {
+        const stored = await repo.rawSmokeChildren({ learnerId: 'l-broken', runId: ANCHOR_RUN });
+        stored.attempts[0].retainUntil = broken;
+        await repo.saveAttempt(stored.attempts[0]);
+      }
+
+      const raw = await repo.rawSmokeChildren({ learnerId: 'l-broken', runId: ANCHOR_RUN });
+      if (raw.attempts[0]?.retainUntil === broken) {
+        assert.equal(await repo.getAttempt('att_broken'), null, JSON.stringify(broken));
+        assert.deepEqual(await repo.listAttempts('l-broken'), [], JSON.stringify(broken));
+        assert.equal(raw.attempts.length, 1, 'and cleanup still sees it');
+      }
+    }
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();
