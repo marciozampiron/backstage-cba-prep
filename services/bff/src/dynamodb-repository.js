@@ -22,6 +22,7 @@
 // different selection 409 ALREADY_ANSWERED, mock replace pre-submit only) lives in the store and
 // is unchanged by this adapter.
 import { RepositoryConflictError, resolveChildAnchor, smokeChildVisible } from './repository.js';
+import { parseInstant } from './instant.js';
 
 const REC = 'REC';
 
@@ -271,12 +272,18 @@ export class DynamoDbSimulationRepository {
     }
   }
 
+  /** Logically reclaimed: a claim past its run's write deadline reads as absent, TTL or not. */
   async getActiveMock(learnerId) {
     const res = await this.client.get({
       TableName: this.tableName,
       Key: { pk: `LEARNER#${learnerId}`, sk: 'ACTIVE_MOCK' },
     });
-    return res.Item?.mockExamId ?? null;
+    const item = res.Item;
+    if (!item) return null;
+    if (!item.runId) return item.mockExamId ?? null;
+    const deadline = parseInstant(item.writeDeadlineAt);
+    if (deadline === null || this.now() >= deadline) return null;
+    return item.mockExamId ?? null;
   }
 
   async releaseActiveMock(learnerId, mockExamId) {
@@ -328,6 +335,12 @@ export class DynamoDbSimulationRepository {
   /** The claim is a projection and needs the same fence, conditioned on the run in one transaction. */
   async claimActiveMock(learnerId, mockExamId, { runId = null } = {}) {
     if (!runId) return this.#claimWithoutRun(learnerId, mockExamId);
+    // The deadline comes from the STORED run — never the caller — and the condition below PINS it:
+    // the claim can only be written while the run still holds exactly that horizon, and only while
+    // the horizon is in the future.
+    const run = await this.getSmokeRun(runId);
+    const deadline = run?.writeDeadlineAt ?? null;
+    const nowIso = new Date(this.now()).toISOString();
     try {
       await this.client.transactWrite({
         TransactItems: [
@@ -335,15 +348,23 @@ export class DynamoDbSimulationRepository {
             ConditionCheck: {
               TableName: this.tableName,
               Key: recordKey('SMOKERUN', runId),
-              ConditionExpression: 'record.#s = :active',
-              ExpressionAttributeNames: { '#s': 'status' },
-              ExpressionAttributeValues: { ':active': 'active' },
+              ConditionExpression: 'record.#s = :active AND record.#d = :deadline AND record.#d > :now',
+              ExpressionAttributeNames: { '#s': 'status', '#d': 'writeDeadlineAt' },
+              ExpressionAttributeValues: { ':active': 'active', ':deadline': deadline, ':now': nowIso },
             },
           },
           {
             Put: {
               TableName: this.tableName,
-              Item: { pk: `LEARNER#${learnerId}`, sk: 'ACTIVE_MOCK', mockExamId },
+              // The claim carries the run and its deadline, so `getActiveMock` can reclaim it
+              // logically instead of waiting for TTL.
+              Item: {
+                pk: `LEARNER#${learnerId}`,
+                sk: 'ACTIVE_MOCK',
+                mockExamId,
+                runId,
+                writeDeadlineAt: deadline,
+              },
               ConditionExpression: 'attribute_not_exists(pk)',
             },
           },

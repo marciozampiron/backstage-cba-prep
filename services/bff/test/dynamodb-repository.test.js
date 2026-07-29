@@ -96,8 +96,17 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const reasons = TransactItems.map((item) => {
         if (item.ConditionCheck) {
           const existing = store.items.get(keyOf(item.ConditionCheck.Key));
-          const expected = item.ConditionCheck.ExpressionAttributeValues[':active'];
-          if (!existing || existing.record?.status !== expected) return { Code: 'ConditionalCheckFailed' };
+          const v = item.ConditionCheck.ExpressionAttributeValues;
+          const record = existing?.record;
+          if (!record || record.status !== v[':active']) return { Code: 'ConditionalCheckFailed' };
+          // The claim's condition also PINS the deadline and requires it to be in the future, so
+          // the fake must evaluate those too — otherwise the pinning is untested.
+          if (v[':deadline'] !== undefined && record.writeDeadlineAt !== v[':deadline']) {
+            return { Code: 'ConditionalCheckFailed' };
+          }
+          if (v[':now'] !== undefined && !(record.writeDeadlineAt > v[':now'])) {
+            return { Code: 'ConditionalCheckFailed' };
+          }
         }
         if (item.Put?.ConditionExpression) {
           // Every supported Put condition, not just one: ignoring `rev = :expected` inside a

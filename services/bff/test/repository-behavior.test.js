@@ -379,6 +379,45 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     }
   });
 
+  /* ---------------- #75 R6 parcel 3: the active-mock claim ---------------- */
+
+  test(`${name}: a claim is reclaimed LOGICALLY once its run's write window closes`, async () => {
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-claim-exp', ANCHOR_RUN);
+    assert.equal(await repo.claimActiveMock('l-claim-exp', 'mock_held', { runId: ANCHOR_RUN }), true);
+    assert.equal(await repo.getActiveMock('l-claim-exp'), 'mock_held');
+
+    // The PHYSICAL claim stays — TTL lags by days. A stale claim blocks every future mock for this
+    // learner, which is the exact failure the fence exists to prevent, so the application reclaims.
+    repo.now = () => Date.now() + 25 * 60 * 60 * 1000;
+    assert.equal(await repo.getActiveMock('l-claim-exp'), null, 'an expired claim reads as absent');
+  });
+
+  test(`${name}: an ordinary claim carries no run and is never reclaimed`, async () => {
+    const repo = await makeRepo();
+    assert.equal(await repo.claimActiveMock('l-claim-plain', 'mock_plain2'), true);
+    repo.now = () => Date.now() + 400 * 24 * 60 * 60 * 1000;
+    assert.equal(await repo.getActiveMock('l-claim-plain'), 'mock_plain2', 'no run, no reclaim');
+  });
+
+  test(`${name}: a claim cannot be written once the run's window has closed`, async () => {
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-claim-pin', ANCHOR_RUN);
+
+    // Move the run's horizon into the past, as a concurrent close would. The claim write is pinned
+    // to the run holding a FUTURE deadline, so it must be refused — not written and reclaimed later.
+    const run = await repo.getSmokeRun(ANCHOR_RUN);
+    run.writeDeadlineAt = new Date(Date.now() - 1000).toISOString();
+    await repo.saveSmokeRun(run);
+
+    await assert.rejects(
+      () => repo.claimActiveMock('l-claim-pin', 'mock_pin', { runId: ANCHOR_RUN }),
+      (err) => err.name === 'RepositoryConflictError',
+      'a closed window must refuse the claim outright',
+    );
+    assert.equal(await repo.getActiveMock('l-claim-pin'), null, 'and nothing may have been written');
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();

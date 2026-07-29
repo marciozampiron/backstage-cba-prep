@@ -222,18 +222,38 @@ export class InMemorySimulationRepository {
     // undefined and the fence checked nothing at all. A guard that cannot see its subject is not a
     // guard.
     this.#assertRunAccepts({ runId });
-    if (this.state.activeMocks[learnerId]) return false;
-    this.state.activeMocks[learnerId] = mockExamId;
+    if (await this.getActiveMock(learnerId)) return false;
+    // The deadline is copied from the STORED run, never chosen by the caller, so the claim can only
+    // ever carry the horizon its own run is under.
+    const deadline = runId ? this.state.smokeRuns[runId]?.writeDeadlineAt ?? null : null;
+    this.state.activeMocks[learnerId] = { mockExamId, runId, writeDeadlineAt: deadline };
     this.persist();
     return true;
   }
 
+  /**
+   * The learner's active mock, or `null` once its run's write window has closed.
+   *
+   * RECLAIMED LOGICALLY, not by TTL. A physical row can linger for days, and a stale claim blocks
+   * every future mock for that learner — the exact failure the fence exists to prevent. A claim with
+   * a run and an unreadable deadline reads as absent, for the same reason a child with a broken
+   * anchor does.
+   */
   async getActiveMock(learnerId) {
-    return this.state.activeMocks[learnerId] ?? null;
+    const claim = this.state.activeMocks[learnerId];
+    if (!claim) return null;
+    // Legacy shape: a bare id, from before the claim carried its run.
+    if (typeof claim === 'string') return claim;
+    if (!claim.runId) return claim.mockExamId;
+    const deadline = parseInstant(claim.writeDeadlineAt);
+    if (deadline === null || this.now() >= deadline) return null;
+    return claim.mockExamId;
   }
 
   async releaseActiveMock(learnerId, mockExamId) {
-    if (this.state.activeMocks[learnerId] === mockExamId) {
+    const claim = this.state.activeMocks[learnerId];
+    const held = typeof claim === 'string' ? claim : claim?.mockExamId;
+    if (held === mockExamId) {
       delete this.state.activeMocks[learnerId];
       this.persist();
     }
@@ -381,7 +401,8 @@ export class InMemorySimulationRepository {
     // The one-active-mock claim is a projection, not a record: it is keyed by learner alone, so it
     // is only released when the mock it points at belonged to this run. Left behind, it would block
     // every future mock for that learner — a smoke that cleans up and then cannot run again.
-    const active = this.state.activeMocks[learnerId];
+    const rawClaim = this.state.activeMocks[learnerId];
+    const active = typeof rawClaim === 'string' ? rawClaim : rawClaim?.mockExamId;
     if (active !== undefined && this.state.mocks[active] === undefined) {
       delete this.state.activeMocks[learnerId];
       deleted.projections += 1;
