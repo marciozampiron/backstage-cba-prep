@@ -14,7 +14,7 @@
 //
 // Adapter selection lives in the composition seam (runtime.js + config.js), not here.
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
-import { parseInstant } from './instant.js';
+import { parseInstant, toInstant } from './instant.js';
 import path from 'node:path';
 
 /** Storage-level optimistic-concurrency violation — NEUTRAL port error (any adapter may raise
@@ -36,6 +36,25 @@ export const SMOKE_CHILD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * unreadable bound is not the absence of one. Failing closed costs a test its data; failing open is
  * confidential data with no bound.
  */
+/**
+ * Is this profile visible to ordinary reads? (#75 R6, profile lease.)
+ *
+ * The EFFECTIVE horizon is the maximum of the profile's own anchor and the unexpired lease — which
+ * is what makes the R6 invariant hold by construction: while an unexpired lease exists, any visible
+ * profile has an effective horizon >= the lease horizon, and a stale bootstrap cannot shorten what
+ * it cannot remove. An UNSTAMPED profile is an ordinary learner's and is never filtered; a stamped
+ * one with a malformed anchor contributes nothing and is covered only while a live lease covers it.
+ */
+export function profileVisible(profile, lease, nowMs) {
+  if (!profile) return false;
+  if (profile.retainUntil === undefined) return true;
+  const anchor = parseInstant(profile.retainUntil);
+  const leaseHorizon = lease ? parseInstant(lease.retainUntil) : null;
+  const activeLease = leaseHorizon !== null && nowMs < leaseHorizon ? leaseHorizon : null;
+  const effective = Math.max(anchor ?? -Infinity, activeLease ?? -Infinity);
+  return nowMs < effective;
+}
+
 export function smokeChildVisible(record, nowMs) {
   if (!record?.runId) return true;
   const until = parseInstant(record.retainUntil);
@@ -84,7 +103,7 @@ function countAnswers(record) {
 }
 
 function emptyState() {
-  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {}, smokeRuns: {} };
+  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {}, smokeRuns: {}, profileLeases: {} };
 }
 
 export class InMemorySimulationRepository {
@@ -262,12 +281,97 @@ export class InMemorySimulationRepository {
   /* Learner profile (#69 Slice B): the /api/me cache that keeps the identity provider's
      UserInfo endpoint off the per-request path. */
   async getProfile(learnerId) {
-    return this.state.profiles[learnerId] ?? null;
+    const profile = this.state.profiles[learnerId] ?? null;
+    const lease = await this.getSmokeLease(learnerId);
+    // A CLONE, matching the managed adapter's read semantics. Handing out the stored reference let
+    // a caller mutate `retainUntil` on the object the repository would later consult as its own
+    // source of truth — the repository-owned rule can only hold if the store is not aliased.
+    return profileVisible(profile, lease, this.now()) ? structuredClone(profile) : null;
   }
 
   async saveProfile(profile) {
-    this.state.profiles[profile.learnerId] = profile;
+    // The anchor is repository-owned, exactly like a child's: whatever the caller sent is discarded.
+    const next = { ...profile };
+    delete next.retainUntil;
+
+    const existing = this.state.profiles[profile.learnerId];
+    if (!existing) {
+      // CREATE consumes the lease: a profile born under an unexpired lease is stamped from it, so
+      // there is no window in which an unbounded smoke profile can exist.
+      const lease = await this.getSmokeLease(profile.learnerId);
+      const horizon = parseInstant(lease?.retainUntil);
+      if (horizon !== null && this.now() < horizon) next.retainUntil = toInstant(horizon);
+    } else if (existing.retainUntil !== undefined) {
+      const stored = parseInstant(existing.retainUntil);
+      if (stored === null) {
+        const err = new RepositoryConflictError('This profile has no readable retention anchor; only cleanup may touch it.');
+        err.reason = 'RETENTION_ANCHOR_UNREADABLE';
+        throw err;
+      }
+      if (this.now() < stored) {
+        next.retainUntil = existing.retainUntil; // live: preserved verbatim, updates never extend it
+      } else {
+        // Expired-but-present: RECLAIM with fresh-creation semantics. Without this, bootstrap sees
+        // null, the create hits the row that is still there, and the learner is stuck until TTL.
+        const lease = await this.getSmokeLease(profile.learnerId);
+        const horizon = parseInstant(lease?.retainUntil);
+        if (horizon !== null && this.now() < horizon) next.retainUntil = toInstant(horizon);
+      }
+    }
+    this.state.profiles[profile.learnerId] = next;
     this.persist();
+  }
+
+  /* Profile retention lease (#75 R6). Never deleted by bootstrap: it stays authoritative until its
+     own horizon, so consumption is APPLICATION of the value, not removal of the record. */
+  async getSmokeLease(learnerId) {
+    this.state.profileLeases ??= {}; // state loaded from an older file may predate the bag
+    return this.state.profileLeases[learnerId] ?? null;
+  }
+
+  /**
+   * Extend the lease monotonically — `max(current, requested)` — so two mints completing out of
+   * order cannot shorten a newer horizon: the older write loses, and losing is harmless because the
+   * value it wanted is already covered.
+   */
+  async extendSmokeLease({ learnerId, retainUntil }) {
+    const requested = parseInstant(retainUntil);
+    if (requested === null) {
+      throw new RepositoryConflictError('The lease horizon is unreadable and will not be written.');
+    }
+    this.state.profileLeases ??= {};
+    const current = this.state.profileLeases[learnerId];
+    const stored = parseInstant(current?.retainUntil);
+    if (stored !== null && stored >= requested) return current;
+    const next = { learnerId, retainUntil: toInstant(requested), rev: (current?.rev ?? 0) + 1 };
+    this.state.profileLeases[learnerId] = next;
+    this.persist();
+    return next;
+  }
+
+  /**
+   * Stamp an EXISTING profile's retention, monotonically. Called only from the trusted mint path —
+   * the repository never accepts smoke classification from a profile record itself. A stamped
+   * profile whose stored anchor is unreadable is refused: only cleanup may touch it, and the mint
+   * that asked must fail rather than report a run whose profile state it cannot bound.
+   */
+  async stampProfileRetention({ learnerId, retainUntil }) {
+    const requested = parseInstant(retainUntil);
+    if (requested === null) {
+      throw new RepositoryConflictError('The retention horizon is unreadable and will not be written.');
+    }
+    const profile = this.state.profiles[learnerId];
+    if (!profile) return false; // nothing yet — bootstrap consumes the lease at creation instead
+    if (profile.retainUntil !== undefined && parseInstant(profile.retainUntil) === null) {
+      const err = new RepositoryConflictError('This profile has no readable retention anchor; only cleanup may touch it.');
+      err.reason = 'RETENTION_ANCHOR_UNREADABLE';
+      throw err;
+    }
+    const stored = parseInstant(profile.retainUntil);
+    if (stored !== null && stored >= requested) return true;
+    profile.retainUntil = toInstant(requested);
+    this.persist();
+    return true;
   }
 
   /* Smoke-run records (#75): the BFF-minted proof that a run belongs to a learner. Stored rather

@@ -486,6 +486,115 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     assert.equal(await repo.getActiveMock('l-claim-pin'), null, 'and nothing may have been written');
   });
 
+  /* ---------------- #75 R6: the profile retention lease ---------------- */
+
+  const H = (days) => new Date(Date.now() + days * 864e5).toISOString();
+
+  test(`${name}: the lease is monotonic — an older mint can never shorten a newer horizon`, async () => {
+    const repo = await makeRepo();
+    const h8 = H(8);
+    const h16 = H(16);
+    await repo.extendSmokeLease({ learnerId: 'l-lease-mono', retainUntil: h8 });
+    const extended = await repo.extendSmokeLease({ learnerId: 'l-lease-mono', retainUntil: h16 });
+    assert.equal(extended.retainUntil, h16, 'extends forward');
+
+    // The OLDER mint completes last — reverse order. Max cannot move backwards, so completion
+    // order stops mattering; the older write loses and losing is harmless.
+    const after = await repo.extendSmokeLease({ learnerId: 'l-lease-mono', retainUntil: h8 });
+    assert.equal(after.retainUntil, h16, 'the newer horizon survives');
+    assert.equal((await repo.getSmokeLease('l-lease-mono')).retainUntil, h16);
+  });
+
+  test(`${name}: a malformed lease horizon is refused, never written`, async () => {
+    const repo = await makeRepo();
+    for (const bad of ['tomorrow', '2099', '', null, undefined, 42]) {
+      await assert.rejects(
+        () => repo.extendSmokeLease({ learnerId: 'l-lease-bad', retainUntil: bad }),
+        (err) => err.name === 'RepositoryConflictError',
+        JSON.stringify(bad),
+      );
+    }
+    assert.equal(await repo.getSmokeLease('l-lease-bad'), null);
+  });
+
+  test(`${name}: a profile CREATED under an unexpired lease is stamped from it`, async () => {
+    // 12a: the learner minted before their first /api/me. The lease is what makes that safe — the
+    // profile is bounded AT CREATION, so no window exists in which an unbounded smoke profile can.
+    const repo = await makeRepo();
+    const lease = await repo.extendSmokeLease({ learnerId: 'l-lease-birth', retainUntil: H(8) });
+    await repo.saveProfile({ learnerId: 'l-lease-birth', email: 'x@local.invalid', displayName: 'S' });
+
+    const visible = await repo.getProfile('l-lease-birth');
+    assert.ok(visible, 'visible while the lease is live');
+    assert.equal(visible.retainUntil, lease.retainUntil, 'stamped from the lease at creation');
+
+    // 11a + 11e: /api/me never called again; past the horizon the profile AND the lease are
+    // logically expired while both rows physically remain — TTL is housekeeping, not the answer.
+    repo.now = () => Date.now() + 9 * 864e5;
+    assert.equal(await repo.getProfile('l-lease-birth'), null, 'hidden with the row still present');
+  });
+
+  test(`${name}: an ordinary learner is never leased, stamped or hidden`, async () => {
+    const repo = await makeRepo();
+    await repo.saveProfile({ learnerId: 'l-ordinary-p', email: 'o@local.invalid', displayName: 'O' });
+    const p = await repo.getProfile('l-ordinary-p');
+    assert.equal(p.retainUntil, undefined, 'no lease means no stamp');
+    repo.now = () => Date.now() + 400 * 864e5;
+    assert.ok(await repo.getProfile('l-ordinary-p'), 'and never hidden, however far the clock goes');
+  });
+
+  test(`${name}: a caller-supplied retainUntil is discarded, and updates never extend a live anchor`, async () => {
+    const repo = await makeRepo();
+    const lease = await repo.extendSmokeLease({ learnerId: 'l-lease-own', retainUntil: H(8) });
+    await repo.saveProfile({ learnerId: 'l-lease-own', email: 'x@local.invalid', displayName: 'A', retainUntil: H(400) });
+    const born = await repo.getProfile('l-lease-own');
+    assert.equal(born.retainUntil, lease.retainUntil, 'the supplied far-future anchor was discarded');
+
+    born.displayName = 'B';
+    born.retainUntil = H(400); // discarded again on update
+    await repo.saveProfile(born);
+    const updated = await repo.getProfile('l-lease-own');
+    assert.equal(updated.retainUntil, lease.retainUntil, 'an ordinary update cannot extend retention');
+    assert.equal(updated.displayName, 'B');
+  });
+
+  test(`${name}: the invariant — while an unexpired lease exists, the profile stays visible`, async () => {
+    // 11d shape: a stamped profile whose anchor is CORRUPT contributes nothing, but the lease still
+    // supplies the effective horizon. The stamp itself refuses, so the mint fails — and nothing
+    // visible is under-retained meanwhile.
+    assert.equal(typeof corruptAnchor, 'function', `${name} must supply a corruption seam`);
+    const repo = await makeRepo();
+    await repo.extendSmokeLease({ learnerId: 'l-lease-inv', retainUntil: H(8) });
+    await repo.saveProfile({ learnerId: 'l-lease-inv', email: 'x@local.invalid', displayName: 'I' });
+    await corruptProfileAnchor(repo, 'l-lease-inv', 'soon');
+
+    assert.ok(await repo.getProfile('l-lease-inv'), 'the live lease keeps it visible');
+    await assert.rejects(
+      () => repo.stampProfileRetention({ learnerId: 'l-lease-inv', retainUntil: H(8) }),
+      (err) => err.reason === 'RETENTION_ANCHOR_UNREADABLE',
+      'the stamp must refuse a corrupt anchor rather than repair it',
+    );
+  });
+
+  test(`${name}: an expired-but-present profile is reclaimed, and the learner is never stuck`, async () => {
+    const repo = await makeRepo();
+    await repo.extendSmokeLease({ learnerId: 'l-reclaim', retainUntil: H(1) });
+    await repo.saveProfile({ learnerId: 'l-reclaim', email: 'x@local.invalid', displayName: 'R1' });
+
+    // Past the horizon: hidden, physically present — the shape that used to deadlock bootstrap.
+    const later = Date.now() + 2 * 864e5;
+    repo.now = () => later;
+    assert.equal(await repo.getProfile('l-reclaim'), null);
+
+    // A new run's lease, then the bootstrap-shaped create: it must RECLAIM, not conflict forever.
+    await repo.extendSmokeLease({ learnerId: 'l-reclaim', retainUntil: new Date(later + 8 * 864e5).toISOString() });
+    await repo.saveProfile({ learnerId: 'l-reclaim', email: 'x@local.invalid', displayName: 'R2' });
+    const reclaimed = await repo.getProfile('l-reclaim');
+    assert.ok(reclaimed, 'the learner is not stuck until TTL');
+    assert.equal(reclaimed.displayName, 'R2');
+    assert.ok(Date.parse(reclaimed.retainUntil) > later, 'stamped from the new lease');
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();
@@ -510,6 +619,18 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
       assert.equal((await fresh.getAttempt('att_persist')).status, 'submitted');
       assert.equal((await fresh.getMock('mock_persist')).learnerId, 'l1');
     });
+  }
+}
+
+/** Corrupt a PROFILE's stored anchor in place, for the lease-invariant tests. */
+async function corruptProfileAnchor(repo, learnerId, value) {
+  if (repo.state) {
+    repo.state.profiles[learnerId].retainUntil = value;
+    repo.persist();
+    return;
+  }
+  for (const [, item] of repo._fakeStore.items) {
+    if (item.pk === `PROFILE#${learnerId}`) item.record.retainUntil = value;
   }
 }
 

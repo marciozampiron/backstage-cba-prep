@@ -21,7 +21,7 @@
 // of silently overwriting answers. Application-level idempotency (identical practice retry OK,
 // different selection 409 ALREADY_ANSWERED, mock replace pre-submit only) lives in the store and
 // is unchanged by this adapter.
-import { RepositoryConflictError, resolveChildAnchor, smokeChildVisible } from './repository.js';
+import { RepositoryConflictError, profileVisible, resolveChildAnchor, smokeChildVisible } from './repository.js';
 import { parseInstant, toInstant } from './instant.js';
 
 const REC = 'REC';
@@ -249,12 +249,119 @@ export class DynamoDbSimulationRepository {
     return (await this.#listRecords(learnerId, 'MOCK')).filter((m) => smokeChildVisible(m, at));
   }
 
+  /* Profile retention lease (#75 R6): a LEASE item keyed by learner, never deleted by bootstrap. */
+  async getSmokeLease(learnerId) {
+    return this.#getRecordRaw('LEASE', learnerId);
+  }
+
+  /**
+   * Monotonic extension in ONE conditional write: the put succeeds only when no lease exists or the
+   * stored horizon is lexically below the requested one (both sides canonical full-millisecond
+   * renderings, so lexical and temporal order agree). A failed condition means the stored horizon
+   * already satisfies the request — the older concurrent mint loses, and losing is harmless.
+   */
+  async extendSmokeLease({ learnerId, retainUntil }) {
+    const requested = parseInstant(retainUntil);
+    if (requested === null) {
+      throw new RepositoryConflictError('The lease horizon is unreadable and will not be written.');
+    }
+    const canonical = toInstant(requested);
+    const current = await this.getSmokeLease(learnerId);
+    const record = { learnerId, retainUntil: canonical, rev: (current?.rev ?? 0) + 1 };
+    try {
+      await this.client.put({
+        TableName: this.tableName,
+        Item: {
+          ...recordKey('LEASE', learnerId),
+          record,
+          learnerId,
+          rev: record.rev,
+          gsi1pk: `LEARNER#${learnerId}`,
+          gsi1sk: `LEASE#${learnerId}`,
+          ttl: Math.floor(requested / 1000),
+        },
+        ConditionExpression: 'attribute_not_exists(pk) OR record.#ru < :new',
+        ExpressionAttributeNames: { '#ru': 'retainUntil' },
+        ExpressionAttributeValues: { ':new': canonical },
+      });
+      return record;
+    } catch (err) {
+      if (this.isConditionalFailure(err)) return this.getSmokeLease(learnerId); // already satisfied
+      throw err;
+    }
+  }
+
+  /** Stamp an EXISTING profile's retention, monotonically and revision-conditionally. */
+  async stampProfileRetention({ learnerId, retainUntil }) {
+    const requested = parseInstant(retainUntil);
+    if (requested === null) {
+      throw new RepositoryConflictError('The retention horizon is unreadable and will not be written.');
+    }
+    const profile = await this.#getRecordRaw('PROFILE', learnerId);
+    if (!profile) return false; // bootstrap consumes the lease at creation instead
+    if (profile.retainUntil !== undefined && parseInstant(profile.retainUntil) === null) {
+      const err = new RepositoryConflictError('This profile has no readable retention anchor; only cleanup may touch it.');
+      err.reason = 'RETENTION_ANCHOR_UNREADABLE';
+      throw err;
+    }
+    const stored = parseInstant(profile.retainUntil);
+    if (stored !== null && stored >= requested) return true;
+    profile.retainUntil = toInstant(requested);
+    await this.#saveRecord('PROFILE', learnerId, learnerId, profile, {
+      ttl: Math.floor(requested / 1000),
+    });
+    return true;
+  }
+
   async getProfile(learnerId) {
-    return this.#getRecord('PROFILE', learnerId);
+    const profile = await this.#getRecordRaw('PROFILE', learnerId);
+    const lease = await this.getSmokeLease(learnerId);
+    return profileVisible(profile, lease, this.now()) ? profile : null;
   }
 
   async saveProfile(profile) {
-    await this.#saveRecord('PROFILE', profile.learnerId, profile.learnerId, profile);
+    const learnerId = profile.learnerId;
+    // The anchor is repository-owned: whatever the caller sent is discarded, and the rev the caller's
+    // object carried (from a filtered read) is transferred to the rebuilt record.
+    const next = { ...profile };
+    delete next.retainUntil;
+    this.revs.set(next, this.revs.get(profile));
+
+    const existing = await this.#getRecordRaw('PROFILE', learnerId);
+    let ttlExtra = {};
+    if (!existing) {
+      // CREATE consumes the lease: a profile born under an unexpired lease is stamped from it.
+      const lease = await this.getSmokeLease(learnerId);
+      const horizon = parseInstant(lease?.retainUntil);
+      if (horizon !== null && this.now() < horizon) {
+        next.retainUntil = toInstant(horizon);
+        ttlExtra = { ttl: Math.floor(horizon / 1000) };
+      }
+    } else if (existing.retainUntil !== undefined) {
+      const stored = parseInstant(existing.retainUntil);
+      if (stored === null) {
+        const err = new RepositoryConflictError('This profile has no readable retention anchor; only cleanup may touch it.');
+        err.reason = 'RETENTION_ANCHOR_UNREADABLE';
+        throw err;
+      }
+      if (this.now() < stored) {
+        next.retainUntil = existing.retainUntil; // live: preserved verbatim
+        ttlExtra = { ttl: Math.floor(stored / 1000) };
+      } else {
+        // Expired-but-present: RECLAIM, conditional on the PHYSICAL revision the raw read saw.
+        // Without it, bootstrap's create hits attribute_not_exists against the row the filtered
+        // read hides, and the learner is stuck until TTL fires — days. A concurrent fresh write
+        // bumps the rev, this condition fails, and the stale reclaim loses to it.
+        this.revs.set(next, this.revs.get(existing));
+        const lease = await this.getSmokeLease(learnerId);
+        const horizon = parseInstant(lease?.retainUntil);
+        if (horizon !== null && this.now() < horizon) {
+          next.retainUntil = toInstant(horizon);
+          ttlExtra = { ttl: Math.floor(horizon / 1000) };
+        }
+      }
+    }
+    await this.#saveRecord('PROFILE', learnerId, learnerId, next, ttlExtra);
   }
 
   /** The unfenced claim, for ordinary learners with no run. */
@@ -508,7 +615,9 @@ export class DynamoDbSimulationRepository {
     // Removing it while another run's data survives would damage a run this call never scoped.
     const remaining = await this.#anyRecordsRemain(learnerId);
     if (!remaining) {
-      const profile = await this.getProfile(learnerId);
+      // RAW, like every other cleanup read: the filtered getProfile hides an expired profile, and
+      // cleanup exists precisely to delete rows the ordinary paths no longer show.
+      const profile = await this.#getRecordRaw('PROFILE', learnerId);
       if (profile) {
         await this.client.delete({ TableName: this.tableName, Key: recordKey('PROFILE', learnerId) });
         deleted.projections += 1;

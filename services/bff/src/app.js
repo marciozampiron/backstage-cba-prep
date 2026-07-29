@@ -220,7 +220,17 @@ const ROUTES = [
     // and reach a deletion endpoint — an opaque id and an absent CORS method are obscurity, not
     // authorization.
     if (!smokeCapable) throw new ApiError(403, 'FORBIDDEN', 'This operation requires the smoke capability.');
-    return { status: 201, body: { runId: (await startSmokeRun(learnerId)).runId } };
+    try {
+      return { status: 201, body: { runId: (await startSmokeRun(learnerId)).runId } };
+    } catch (err) {
+      // A mint that could not bind the profile retention is a CONFLICT, not a server fault: the
+      // orphan run is bounded and unreachable, and the caller may simply mint again. The internal
+      // reason never leaves the envelope.
+      if (err instanceof RepositoryConflictError) {
+        throw new ApiError(409, 'CONFLICT', 'The smoke run could not be established.');
+      }
+      throw err;
+    }
   }],
   // --- #75 smoke-run cleanup -------------------------------------------------------------------
   // DELETE, not POST: it is a deletion, and an idempotent one — repeating it is defined and safe,

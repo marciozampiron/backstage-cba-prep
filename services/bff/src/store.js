@@ -783,7 +783,33 @@ export async function startSmokeRun(learnerId) {
     ownershipExpiresAt: new Date(startedMs + SMOKE_OWNERSHIP_MS).toISOString(),
   };
   await db().saveSmokeRun(run);
+  // R6 mint order: run, then lease, then stamp — and only then success. A failure past this point
+  // leaves an orphan run that is bounded by its own ttl and whose id is never returned, so the
+  // failure direction is always a run that cannot be used, never data that cannot expire.
+  await bindProfileToSmokeRun(learnerId, runId);
   return run;
+}
+
+/**
+ * Bind the learner's profile retention to a smoke run (#75 R6).
+ *
+ * Runs in the trusted server context at mint — the repository never accepts smoke classification
+ * from request data or from a profile record. The horizon is read from the STORED run, never
+ * supplied: an absent, ownership-expired or mismatched run is refused outright.
+ *
+ * The lease is written whether or not a profile exists yet, which is what covers a learner who
+ * mints before their first /api/me: bootstrap consumes the lease at creation, so there is no window
+ * in which an unbounded smoke profile can exist. An existing profile is stamped monotonically.
+ */
+export async function bindProfileToSmokeRun(learnerId, runId) {
+  const run = await db().getSmokeRun(runId);
+  if (!run || run.learnerId !== learnerId || runOwnershipExpired(run)) {
+    throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+  }
+  const horizon = run.ownershipExpiresAt;
+  await db().extendSmokeLease({ learnerId, retainUntil: horizon });
+  await db().stampProfileRetention({ learnerId, retainUntil: horizon });
+  return { runId, retainUntil: horizon };
 }
 
 /**

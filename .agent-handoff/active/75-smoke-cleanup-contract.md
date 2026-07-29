@@ -467,3 +467,46 @@ path evaluate time themselves.
 13. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
 
 Implementation begins only after this revision receives REVIEW_APPROVED.
+
+## R6 implementation — parcel 4: the profile retention lease
+
+Implements the lease exactly as the approved Revision 6 specifies, across all three adapters.
+
+**The lease is a record like any other**: `learnerId`, monotonic `retainUntil`, `rev`, and a `ttl`
+derived from the horizon. It is written at mint whether or not a profile exists, is NEVER deleted by
+bootstrap, and expires logically before TTL removes it. Extension is `max(current, requested)` in
+one conditional write — in DynamoDB, `attribute_not_exists(pk) OR record.#ru < :new` over canonical
+full-millisecond renderings, so a failed condition MEANS the stored horizon already satisfies the
+request and the older concurrent mint loses harmlessly.
+
+**Consumption is application, not deletion.** `getProfile` computes the effective horizon as
+`max(profile anchor, unexpired lease)`, which makes the R6 invariant hold by construction: while an
+unexpired lease exists, any visible profile has an effective horizon >= the lease's. A stale
+bootstrap cannot shorten what it cannot remove. Profile creation under an unexpired lease is stamped
+from it AT CREATION, so a learner who mints before their first `/api/me` never produces an unbounded
+smoke profile. Ordinary updates discard any caller-supplied anchor and preserve a live one verbatim.
+
+**Mint order (R6): run → lease → stamp → success.** `bindProfileToSmokeRun` runs in the trusted
+server context, reads the horizon from the STORED run, and refuses an absent, ownership-expired or
+mismatched run. A stamp that fails (e.g. a corrupt existing anchor) fails the mint with a generic
+`409 CONFLICT` — the orphan run is bounded by its own ttl and its id is never returned, and the
+already-durable lease keeps the profile covered meanwhile.
+
+**Reclaim.** An expired-but-present profile is replaced with fresh-creation semantics, conditional
+on the physical revision the raw read saw — closing the deadlock where bootstrap's create failed
+`attribute_not_exists` against a row the filtered read hides. A concurrent fresh write bumps the
+revision and the stale reclaim loses to it.
+
+**A defect found while writing the tests, fixed in the adapter rather than the test**: the in-memory
+`getProfile` handed out the STORED reference, so a caller mutating `retainUntil` on the returned
+object corrupted the repository's own source of truth. Profile reads now return a clone, matching
+the managed adapter's semantics — the repository-owned rule can only hold if the store is not
+aliased.
+
+Mutation checks: making the lease shortenable fails 4 tests; ignoring the lease in the effective
+horizon fails 6; skipping lease consumption at creation fails 13.
+
+Test coverage maps to R6 items 11a–f and 12: never-consumed lease expiry, reverse-order mints,
+stale binding, failed stamp with the invariant held, expired physical lease ignored, binding
+refusals, pre-existing profile bound at mint, reclaim racing a fresh write, and ordinary learners
+never leased, stamped or hidden.

@@ -37,12 +37,21 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const item = store.items.get(keyOf(Key));
       return item ? { Item: structuredClone(item) } : {};
     },
-    async put({ Item, ConditionExpression, ExpressionAttributeValues }) {
+    async put({ Item, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues }) {
       if (failNextPutWith?.length) throw failNextPutWith.shift();
       const key = keyOf(Item);
       const existing = store.items.get(key);
       if (ConditionExpression === 'attribute_not_exists(pk)') {
         if (existing) throw conditionalError();
+      } else if (ConditionExpression === 'attribute_not_exists(pk) OR record.#ru < :new') {
+        // The lease's monotonic condition. Binding pinned like the others: rebinding #ru would keep
+        // the text identical while comparing a different field.
+        if (ExpressionAttributeNames?.['#ru'] !== 'retainUntil') {
+          throw new Error('fake client: the lease condition must bind #ru=retainUntil');
+        }
+        if (existing && !(existing.record?.retainUntil < ExpressionAttributeValues[':new'])) {
+          throw conditionalError();
+        }
       } else if (ConditionExpression === 'rev = :expected') {
         if (!existing || existing.rev !== ExpressionAttributeValues[':expected']) throw conditionalError();
       } else if (ConditionExpression !== undefined) {
@@ -84,6 +93,15 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const existing = store.items.get(key);
       if (ConditionExpression === 'mockExamId = :id') {
         if (!existing || existing.mockExamId !== ExpressionAttributeValues[':id']) throw conditionalError();
+      } else if (ConditionExpression === 'attribute_not_exists(pk) OR record.#ru < :new') {
+        // The lease's monotonic condition. Binding pinned like the others: rebinding #ru would keep
+        // the text identical while comparing a different field.
+        if (ExpressionAttributeNames?.['#ru'] !== 'retainUntil') {
+          throw new Error('fake client: the lease condition must bind #ru=retainUntil');
+        }
+        if (existing && !(existing.record?.retainUntil < ExpressionAttributeValues[':new'])) {
+          throw conditionalError();
+        }
       } else if (ConditionExpression === 'rev = :expected') {
         // #75 cleanup deletes conditionally on the rev it read, so a record written since the read
         // is skipped rather than removed blind. The fake enforces the same rule as the real table.
@@ -655,5 +673,55 @@ test('the fake refuses a replacement condition with #wd rebound to another attri
       }],
     }),
     /must bind #wd=writeDeadlineAt/,
+  );
+});
+
+test('a stale profile reclaim loses to a concurrent fresh write', async () => {
+  // The reclaim is conditional on the PHYSICAL revision the raw read saw. A concurrent refresh
+  // bumps it, the stale reclaim fails its condition, and the fresh profile survives — the loser
+  // re-reads, exactly like the first-bootstrap race.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const later = Date.now() + 2 * 864e5;
+
+  await repo.extendSmokeLease({ learnerId: 'l-race-reclaim', retainUntil: new Date(Date.now() + 864e5).toISOString() });
+  await repo.saveProfile({ learnerId: 'l-race-reclaim', email: 'x@local.invalid', displayName: 'OLD' });
+  repo.now = () => later; // the stamped profile is now expired-but-present
+
+  await repo.extendSmokeLease({ learnerId: 'l-race-reclaim', retainUntil: new Date(later + 8 * 864e5).toISOString() });
+
+  const realPut = repo.client.put;
+  repo.client.put = async (params) => {
+    // A concurrent fresh write lands between the raw read and the reclaim's conditional put.
+    if (params.Item?.pk === 'PROFILE#l-race-reclaim') {
+      for (const [, item] of store.items) {
+        if (item.pk === 'PROFILE#l-race-reclaim') item.rev += 1;
+      }
+      repo.client.put = realPut;
+    }
+    return realPut(params);
+  };
+
+  await assert.rejects(
+    () => repo.saveProfile({ learnerId: 'l-race-reclaim', email: 'x@local.invalid', displayName: 'STALE' }),
+    (err) => err.name === 'RepositoryConflictError',
+    'the stale reclaim must lose, never overwrite',
+  );
+  const survivor = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-race-reclaim');
+  assert.equal(survivor.record.displayName, 'OLD', 'the concurrently-refreshed row survived');
+});
+
+test('the fake refuses a lease condition with #ru rebound', async () => {
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await assert.rejects(
+    () => repo.client.put({
+      TableName: 'fake-table',
+      Item: { pk: 'LEASE#x', sk: 'REC', record: {} },
+      ConditionExpression: 'attribute_not_exists(pk) OR record.#ru < :new',
+      ExpressionAttributeNames: { '#ru': 'ownershipExpiresAt' },
+      ExpressionAttributeValues: { ':new': 'x' },
+    }),
+    /must bind #ru=retainUntil/,
   );
 });

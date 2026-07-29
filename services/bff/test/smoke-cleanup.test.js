@@ -804,3 +804,83 @@ test('the env-composed repository fences on the composition clock, not wall time
     restore('CBA_RUNTIME_ENV', priorEnv);
   }
 });
+
+/* ============================ the profile lease, end to end ================================== */
+
+test('a run minted before the first /api/me leaves the profile bounded at creation', async () => {
+  // R6 12a, through the routes: the lease is written at mint whether or not a profile exists, and
+  // bootstrap consumes it — so there is no window in which an unbounded smoke profile can exist.
+  const { activeRepository } = await import('../src/runtime.js');
+  const learner = 'smoke-lease-e2e';
+
+  const run = await mintRun(learner);
+  const lease = await activeRepository().getSmokeLease(`dev-${learner}`);
+  assert.ok(lease, 'the mint must have written the lease');
+
+  const me = await call('GET', '/me', { learner });
+  assert.equal(me.status, 200);
+
+  const stored = activeRepository().state.profiles[`dev-${learner}`];
+  assert.equal(stored.retainUntil, lease.retainUntil, 'the profile was stamped from the lease at creation');
+
+  const storedRun = await activeRepository().getSmokeRun(run);
+  assert.equal(lease.retainUntil, storedRun.ownershipExpiresAt, 'and the horizon is the run\'s, derived server-side');
+});
+
+test('an existing profile is stamped at mint, and an ordinary learner never is', async () => {
+  const { activeRepository } = await import('../src/runtime.js');
+
+  const learner = 'smoke-lease-existing';
+  const first = await call('GET', '/me', { learner, capable: false }); // profile exists before any run
+  assert.equal(first.status, 200);
+  assert.equal(activeRepository().state.profiles[`dev-${learner}`].retainUntil, undefined);
+
+  await mintRun(learner);
+  assert.ok(activeRepository().state.profiles[`dev-${learner}`].retainUntil,
+    'a profile that predates the capability is bound the first time its learner mints a run');
+
+  const plain = 'never-smokes';
+  await call('GET', '/me', { learner: plain, capable: false });
+  assert.equal(activeRepository().state.profiles[`dev-${plain}`].retainUntil, undefined);
+  assert.equal(await activeRepository().getSmokeLease(`dev-${plain}`), null, 'ordinary learners are never leased');
+});
+
+test('NEGATIVE: a mint that cannot bind the profile fails, and the lease still covers it', async () => {
+  // R6 11d: the lease is durable before the stamp, so a failed mint reports no run — while the
+  // effective horizon already includes the lease, and nothing visible is under-retained meanwhile.
+  const { activeRepository } = await import('../src/runtime.js');
+  const learner = 'smoke-lease-corrupt';
+
+  await call('GET', '/me', { learner, capable: false });
+  activeRepository().state.profiles[`dev-${learner}`].retainUntil = 'soon'; // physical corruption
+
+  const mint = await call('POST', '/smoke-runs', { learner, body: {} });
+  assert.equal(mint.status, 409, 'no successful mint over a profile that cannot be bounded');
+  assert.equal(mint.body.error.code, 'CONFLICT');
+  assert.equal(JSON.stringify(mint.body).includes('anchor'), false, 'the internal reason stays internal');
+
+  const me = await call('GET', '/me', { learner, capable: false });
+  assert.equal(me.status, 200, 'the lease keeps the corrupt-anchored profile visible — the invariant');
+});
+
+test('NEGATIVE: binding refuses an absent, expired or mismatched run', async () => {
+  // R6 11f, at the use-case seam the mint calls.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun, bindProfileToSmokeRun } = await import('../src/store.js');
+
+  let clock = Date.parse('2026-07-29T00:00:00Z');
+  const repo = new Mem();
+  cfg({ repository: repo, now: () => clock });
+  try {
+    await assert.rejects(() => bindProfileToSmokeRun('l-bind', 'run-absent0000000000'), (e) => e.status === 403);
+
+    const run = await startSmokeRun('l-bind');
+    await assert.rejects(() => bindProfileToSmokeRun('l-somebody-else', run.runId), (e) => e.status === 403);
+
+    clock += 9 * 864e5; // past ownership
+    await assert.rejects(() => bindProfileToSmokeRun('l-bind', run.runId), (e) => e.status === 403);
+  } finally {
+    reset();
+  }
+});
