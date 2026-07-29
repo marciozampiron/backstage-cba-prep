@@ -353,103 +353,85 @@ condition. Worth separating, because only the first was a defect in the contract
 - `#saveRecord` in the managed adapter now transacts against the active run whenever the record
   carries a run id, so UPDATES are fenced and not only creation.
 
-## Retention design — REVISION 4 (recorded before implementation)
+## Retention design — REVISION 5 (recorded before implementation)
 
-Revisions 1–3 are superseded. The three-clock model from R3 is carried forward unchanged and
-approved; R4 adds the two contracts R3 asserted but never specified — what "logically expired" means
-on every read path, and how a profile actually becomes smoke-bounded given that the repository has
-no idea what a capability is.
+Revisions 1–4 are superseded. R4's model is carried forward; R5 fixes two places where it inferred
+a fact from an absence, which is the same mistake in two costumes.
 
-### Carried forward from R3 (unchanged)
+### Carried forward from R3/R4 (approved, unchanged)
 
-| Field | Question | Set when | Bound |
-| --- | --- | --- | --- |
-| `writeDeadlineAt` | may new records join this run? | at mint | 24h |
-| `ownershipExpiresAt` | may this run still be cleaned up? | at mint | 8d |
-| `expiresAt` | may the tombstone be forgotten? | at FIRST completion | 7d from `completedAt` |
+Three clocks — `writeDeadlineAt` (24h), `ownershipExpiresAt` (8d), `expiresAt` (7d from first
+completion). `ttl` mirrors ownership. Cleanup stays authorized after the write deadline. Application
+reads are logically filtered; cleanup enumeration is RAW and is a distinct named method, so
+verification can never measure its own blindfold. The active-mock claim is reclaimed logically with
+its deadline pinned by the transaction. `retainUntil` on children is repository-owned and write-once.
+Ordinary profile updates cannot extend smoke retention. Expired-profile replacement is
+revision-conditional.
 
-`ttl` mirrors ownership, never the write deadline. Ownership deliberately outlives child retention
-by a day, so cleanup is reachable for as long as anything remains to clean. Cleanup stays authorized
-after the write deadline — that is the manual-recovery path. `retainUntil` on children is
-repository-owned and write-once. The active-mock claim is reclaimed logically, and its deadline is
-pinned by the transaction to the run's own.
+### A child is smoke data because of `runId`, never because of `retainUntil` (finding 1)
 
-### Logical expiry is a property of the READ PATH, and cleanup does not use it (finding 1)
+R4 said a record with no `retainUntil` is an ordinary learner's and is never filtered. That infers a
+classification from a missing field. A smoke child is identified by its trusted `runId`, and one can
+carry `runId` with `retainUntil` absent or malformed — a legacy row written before this design, a
+partial write, a corrupted value. Under R4's rule that record became permanently visible through
+normal reads, so the failure mode of the retention contract was *unbounded exposure*, reached by
+losing a field.
 
-R3 said "no reachable child remains" and named only four functions. That is not a contract: TTL is
-eventual, so an expired session or attempt stays physically present and every unlisted read path
-would still return it.
+Classification and behaviour are now separate:
 
-**Two distinct read modes, and the distinction is the whole point.**
+| Child | Application reads | RAW cleanup enumeration |
+| --- | --- | --- |
+| no `runId` | ordinary learner data; never filtered | not in scope |
+| `runId` + valid `retainUntil` | hidden once `retainUntil` has passed | discovered and deleted |
+| `runId` + missing, malformed or non-finite `retainUntil` | **fail closed** — treated as absent, no learner data exposed | **still discovered and deleted** |
 
-*Application reads* hide an expired smoke child. `getSession`, `getAttempt`, `getMock`,
-`listAttempts`, `listMocks` and everything built on them — dashboard, results, missed review,
-`onlyMissed` pools — treat a record whose `retainUntil` has passed as ABSENT. A record with no
-`retainUntil` is an ordinary learner's and is never filtered.
+Failing closed is the right asymmetry: a smoke record hidden too early costs a test its data, and one
+exposed too long is confidential data with no bound. The row remains fully visible to cleanup, so
+failing closed hides it without stranding it.
 
-*Cleanup reads* are RAW. `deleteSmokeRunData` and `countSmokeRunRecords` enumerate physically and
-see expired rows, because their job is to delete them while ownership is still valid. This is the
-trap R3 walked into without noticing: had cleanup reused the filtered list, it would have reported
-zero — verified, complete, green — while the rows sat in the table. Verification would have been
-measuring its own blindfold.
+Tests: missing and malformed `retainUntil` — including a non-finite value and a non-string — through
+`getSession`, `getAttempt`, `getMock`, `listAttempts` and `listMocks`, in all three adapters; and the
+same physical rows asserted still discovered by cleanup and counted by verification.
 
-The port therefore separates them explicitly rather than by convention: the filtered accessors are
-the default, and the raw enumeration is a distinct, named method that only cleanup calls. A future
-read path gets filtering by default; a future cleanup path has to ask for raw access deliberately.
+### Profile binding: durable when there is nothing to update, and monotonic (finding 2)
 
-Tests, all with the physical row still present:
-a. direct `getAttempt` returns `null`;
-b. dashboard and `listAttempts` exclude it;
-c. cleanup before ownership expiry still discovers and deletes it;
-d. verification cannot report zero while a physical row matching learner + run remains — asserted
-   by seeding a row the filtered path hides and requiring cleanup to both find it and count it.
+R4 had `bindProfileToSmokeRun` update a profile at mint, which silently assumed one exists. A learner
+can mint a run before their first `/api/me`; the binding then has nothing to update, and the later
+bootstrap creates an **unbounded** profile. Again a fact inferred from an absence.
 
-### The profile lifecycle is a server-derived operation, not a stamp (finding 2)
+**The binding is a lease, not an update.** At mint the repository writes a retention lease keyed by
+learner, whether or not a profile exists. `loadOrBootstrap` **consumes** the lease: a profile created
+afterwards is stamped from it at creation, so there is no window in which an unbounded smoke profile
+can exist. An existing profile is stamped directly, as in R4.
 
-R3 said "the repository stamps a profile when the principal holds the smoke capability". The
-repository receives a profile record and nothing else; the capability lives at the transport
-boundary. As written it was unimplementable, and closing the gap by passing a flag through the
-record would have made smoke classification caller-influenced — the opposite of the rule.
+**Renewal is monotonic.** `retainUntil = max(current trusted retainUntil, run ownershipExpiresAt)`.
+R4's "each mint re-anchors" was unsafe under concurrency: two mints completing out of order let the
+older write replace a later horizon with an earlier one, expiring a profile while a newer run still
+owned data. A maximum cannot move backwards, so completion order stops mattering.
 
-**Binding happens at run mint, as an explicit port operation.** `startSmokeRun` already runs in the
-trusted server context, has already verified the capability, and knows the run's
-`ownershipExpiresAt`. It calls `bindProfileToSmokeRun({ learnerId, retainUntil })`. Nothing about
-smoke classification travels in request data or in the profile record.
+**The horizon is derived, not supplied.** The port takes `{ learnerId, runId }` and reads the
+horizon from the STORED run. If an implementation passes the value for efficiency, the write is
+conditional on it equalling that run's `ownershipExpiresAt` — a supplied deadline is a proposal the
+stored run must confirm, never an input that is trusted.
 
-**A profile that predates the capability** is covered by exactly this: binding is keyed on the run,
-not on a profile write, so a profile created months earlier is bound the first time that learner
-mints a run. `loadOrBootstrap` never needing another write is no longer a problem, because the
-binding is not waiting for one.
-
-**Renewal is bound to run ownership, and only to that.** Each mint re-anchors `retainUntil` to that
-run's `ownershipExpiresAt`. So a learner running smokes weekly keeps a profile that never expires
-mid-run, and a learner who stops running them loses it eight days after the last run. Ordinary
-profile updates — `PUT /me`, a UserInfo refresh — never extend it. Retention follows the reason the
-data exists, which is the runs, not the last time somebody touched the record.
-
-**Reclaiming a logically expired but physically present profile.** This is the deadlock R3 would
-have produced: `getProfile` hides the row, bootstrap then creates with `attribute_not_exists(pk)`,
-that fails against the row that is still there, the re-read hides it again, and the learner is stuck
-until TTL fires — days.
-
-The reclaim is a CONDITIONAL REPLACE on the row's revision, not a blind write: read the physical
-row, and replace it only if the revision is still the one that was read. A concurrent refresh bumps
-the revision, the replace fails its condition, and the fresh profile wins — the stale reclaim can
-never overwrite it. On that failure the caller re-reads and uses the fresh profile.
+**Failure ordering.** `POST /smoke-runs` does not report success until the lease is durable. If the
+lease write fails, the run is not reported to the caller; an orphan run row keeps its own
+`ownershipExpiresAt` and `ttl`, so it is bounded, and the caller never learns its id, so it is
+unreachable. The failure direction is a run that cannot be used, never a profile that cannot expire.
 
 Tests:
-a. a profile created before the capability becomes bounded at the next run mint, with no profile
-   write in between;
-b. an expired-but-present row is reclaimed before TTL deletion, and the learner is never stuck;
-c. an ordinary learner's profile is never stamped, never hidden and never expires;
-d. a stale reclaim racing a fresh write loses, and the fresh profile survives;
-e. two runs a week apart never let the profile expire mid-run, and a `PUT /me` between them does
-   not extend it beyond the last run's horizon.
+a. mint before any profile exists, then `/api/me` → the created profile is already bounded;
+b. two concurrent mints completing in reverse order → the later horizon survives;
+c. a stale binding cannot shorten a newer horizon;
+d. a failed lease write → no successful run is returned, and the orphan run is bounded and
+   unreachable;
+e. an expired physical profile reclaim still loses safely to a concurrent fresh write;
+f. an ordinary learner is never leased, never stamped, never hidden.
 
 ### Expiry stays an application decision, on every path
 
-`ownedSmokeRun`, `getActiveMock`, `getProfile`, the write fence, and now every child read path
-evaluate time themselves. TTL is housekeeping and is never the answer to "is this still valid".
+`ownedSmokeRun`, `getActiveMock`, `getProfile`, the write fence and every child read path evaluate
+time themselves. TTL is housekeeping and never the answer to "is this still valid".
 
 ### Full test plan, injected clock throughout
 
@@ -462,10 +444,12 @@ evaluate time themselves. TTL is housekeeping and is never the answer to "is thi
 7. claim transaction with a deadline that does not match the run's → refused;
 8. child `retainUntil` survives ten updates; supplied, removed, mutated and malformed values are
    rejected or preserved, never adopted;
-9. expired child: hidden from get/list, still found and deleted by cleanup, and verification cannot
+9. expired child hidden from get/list, still found and deleted by cleanup, and verification cannot
    report zero while the row exists;
-10. profile: pre-existing binding, reclaim before TTL, ordinary profile untouched, stale reclaim
-    loses a race, repeated runs neither expire nor indefinitely extend;
-11. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
+10. child with `runId` and missing/malformed `retainUntil` → hidden on every named accessor in every
+    adapter, still discovered by cleanup;
+11. profile: lease before first profile, reverse-order mints, stale binding, failed lease, race with
+    a fresh write, ordinary learner untouched;
+12. a write and a claim crossing the write deadline mid-request are refused in all three adapters.
 
 Implementation begins only after this revision receives REVIEW_APPROVED.
