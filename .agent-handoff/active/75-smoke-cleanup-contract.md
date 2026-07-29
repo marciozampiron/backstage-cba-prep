@@ -573,3 +573,25 @@ Mutation checks: committing without consulting the lease fails 14 tests in the l
 dropping the lease condition from the transaction fails the crossing regression in the managed one.
 The stale-reclaim race seam moved from `client.put` to `client.transactWrite` with the
 implementation, so it keeps exercising the real path.
+
+## Codex review — expired-lease classification and a discriminating harness
+
+**The expired physical lease deadlocked the managed adapter.** Translating "logically absent" into
+`attribute_not_exists` failed every retry while the expired row lingered — days, until TTL — while
+the memory adapter sailed through: adapter drift on exactly the state R6 11e names. The linearized
+write now classifies the PHYSICAL lease into four states with four answers: absent conditions on
+the key staying absent; active pins revision+horizon AND stamps; expired-valid pins revision+horizon
+and does NOT stamp — the pin still matters, because a concurrent renewal must fail it and force a
+retry that stamps from the renewed lease instead of committing unanchored beside it; unreadable
+fails closed. Regressions cover create and reclaim under an expired row, plus the concurrent-renewal
+control landing the renewed horizon and its ttl.
+
+**My race regression did not discriminate, again.** The barrier sat before `saveProfile` was
+entered, so by the time either implementation looked at the lease the mint had already landed it —
+the OLD awaited read would have observed it, stamped, and passed. The replacement harness captures
+the observation FIRST and delays its return, so an implementation with an await between observing
+and committing parks there while the whole mint completes and then commits on a stale "no lease".
+The reviewer's required mutation — restoring the old awaited read — now fails the test; before the
+rewrite it passed. This is the third non-discriminating test I have written in this issue, and the
+pattern is the same each time: I verified that the fixed code passes, not that the broken code
+fails, and only the second check makes a regression worth anything.

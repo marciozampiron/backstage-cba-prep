@@ -921,39 +921,47 @@ test('a mint stamps the WINNING lease horizon, never its own', async () => {
 /* ============================ bootstrap crossing the mint ==================================== */
 
 test('NEGATIVE: a bootstrap that crosses the mint cannot commit an unanchored profile', async () => {
-  // The reviewer's reproduction: the bootstrap decides "no lease" before the mint, the whole mint
-  // lands in the gap — lease written, stamp finding no profile, success reported — and the delayed
-  // commit then produced an UNANCHORED profile, which is classified ordinary and never filtered:
-  // it would have outlived the lease forever. The fix is linearization, not post-write repair —
-  // a crash between a put and its repair leaves exactly the same state.
+  // The barrier sits at the LEASE-OBSERVATION/WRITE boundary, which is where the old defect lived:
+  // the previous version of this test paused before saveProfile was even entered, so by the time
+  // either implementation looked at the lease the mint had already landed it — the old awaited
+  // read would have observed it, stamped, and passed. This harness captures the observation FIRST
+  // and delays the return, so an implementation with an await between observing and committing
+  // parks there while the whole mint completes, and then commits on a stale "no lease". The fixed
+  // implementation never calls the async read from its commit path at all: it consults the lease
+  // synchronously inside the atomic block, commits before the mint runs, and the mint's stamp
+  // covers it. Reintroducing the awaited read makes this test fail.
   const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
   const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
   const { startSmokeRun } = await import('../src/store.js');
-  const { getMe } = await import('../src/profile.js');
 
   let clock = Date.parse('2026-07-29T00:00:00Z');
+  let armed = false;
   let release;
   const gate = new Promise((r) => { release = r; });
-  let pause = true;
-  class DelayedCommit extends Mem {
-    async saveProfile(profile) {
-      if (pause && profile.learnerId === 'l-crossing') {
-        pause = false;
-        await gate; // the bootstrap's commit is delayed past the whole mint
+  class StaleObservation extends Mem {
+    async getSmokeLease(learnerId) {
+      const observed = await super.getSmokeLease(learnerId); // the observation happens…
+      if (armed && learnerId === 'l-crossing') {
+        armed = false;
+        await gate;                                          // …and its return is delayed past the mint
       }
-      return super.saveProfile(profile);
+      return observed;                                       // stale by the time anyone uses it
     }
   }
-  const repo = new DelayedCommit();
+  const repo = new StaleObservation();
   cfg({ repository: repo, now: () => clock });
   try {
-    const inflight = getMe('l-crossing');            // bootstrap reads "no profile, no lease"…
-    await new Promise((r) => setImmediate(r));       // …and parks at the commit
-    const run = await startSmokeRun('l-crossing');   // the mint completes in the gap
-    assert.ok(run.runId, 'the mint reported success with no profile to stamp');
+    // The bootstrap's decision is already taken: no profile exists.
+    assert.equal(await repo.getProfile('l-crossing'), null);
+    armed = true;
+
+    // The bootstrap-shaped commit is issued, and the mint runs against it.
+    const commit = repo.saveProfile({ learnerId: 'l-crossing', email: 'x@local.invalid', displayName: 'X' });
+    const run = await startSmokeRun('l-crossing');
+    assert.ok(run.runId, 'the mint reported success');
 
     release();
-    await inflight;
+    await commit;
 
     const stored = repo.state.profiles['l-crossing'];
     const lease = repo.state.profileLeases['l-crossing'];

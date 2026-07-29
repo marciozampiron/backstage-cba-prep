@@ -388,30 +388,52 @@ export class DynamoDbSimulationRepository {
   async #linearizedProfileWrite(next, { expectedRev }) {
     const learnerId = next.learnerId;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const lease = await this.getSmokeLease(learnerId); // strong + logical
+      // The PHYSICAL lease, classified — not the logical read. Translating "logically absent" into
+      // attribute_not_exists deadlocked this write whenever an EXPIRED lease row lingered: the row
+      // can outlive its horizon by days, the condition failed every retry, and the learner was
+      // stuck until TTL — while the memory adapter sailed through. Four states, four answers:
+      //   absent         -> condition on the key staying absent;
+      //   active         -> pin rev+horizon AND stamp from it;
+      //   expired-valid  -> pin rev+horizon, do NOT stamp — the pin still matters, because a
+      //                     concurrent renewal must fail it, forcing a retry that stamps from the
+      //                     renewed lease instead of committing unanchored beside it;
+      //   unreadable     -> fail closed.
+      const rawLease = await this.#getRecordRaw('LEASE', learnerId);
+      let leaseCheck;
+      let stampFrom = null;
+      if (!rawLease) {
+        leaseCheck = {
+          ConditionCheck: {
+            TableName: this.tableName,
+            Key: recordKey('LEASE', learnerId),
+            ConditionExpression: 'attribute_not_exists(pk)',
+          },
+        };
+      } else {
+        const horizon = parseInstant(rawLease.retainUntil);
+        const rev = Number.isInteger(rawLease.rev) && rawLease.rev > 0 ? rawLease.rev : null;
+        if (horizon === null || rev === null) {
+          const err = new RepositoryConflictError('This lease has no readable control data; it cannot satisfy or be extended.');
+          err.reason = 'LEASE_UNREADABLE';
+          throw err;
+        }
+        leaseCheck = {
+          ConditionCheck: {
+            TableName: this.tableName,
+            Key: recordKey('LEASE', learnerId),
+            ConditionExpression: 'rev = :leaserev AND record.#ru = :ru',
+            ExpressionAttributeNames: { '#ru': 'retainUntil' },
+            ExpressionAttributeValues: { ':leaserev': rev, ':ru': rawLease.retainUntil },
+          },
+        };
+        if (this.now() < horizon) stampFrom = rawLease.retainUntil;
+      }
       const record = { ...next };
       let ttlExtra = {};
-      if (lease) {
-        record.retainUntil = lease.retainUntil;
-        ttlExtra = { ttl: Math.floor(Date.parse(lease.retainUntil) / 1000) };
+      if (stampFrom) {
+        record.retainUntil = stampFrom;
+        ttlExtra = { ttl: Math.floor(Date.parse(stampFrom) / 1000) };
       }
-      const leaseCheck = lease
-        ? {
-            ConditionCheck: {
-              TableName: this.tableName,
-              Key: recordKey('LEASE', learnerId),
-              ConditionExpression: 'rev = :leaserev AND record.#ru = :ru',
-              ExpressionAttributeNames: { '#ru': 'retainUntil' },
-              ExpressionAttributeValues: { ':leaserev': lease.rev, ':ru': lease.retainUntil },
-            },
-          }
-        : {
-            ConditionCheck: {
-              TableName: this.tableName,
-              Key: recordKey('LEASE', learnerId),
-              ConditionExpression: 'attribute_not_exists(pk)',
-            },
-          };
       const item = {
         ...recordKey('PROFILE', learnerId),
         record,

@@ -824,3 +824,64 @@ test('a profile create that crosses a lease creation loses, retries and lands st
   assert.equal(item.record.retainUntil, horizon, 'the retry landed stamped from the lease');
   assert.equal(item.ttl, Math.floor(Date.parse(horizon) / 1000), 'with the matching physical ttl');
 });
+
+test('an expired physical lease does not deadlock profile creation or reclaim', async () => {
+  // Translating "logically absent" into attribute_not_exists did: the expired row lingers for days,
+  // the condition failed every retry, and the learner was stuck until TTL — while the memory
+  // adapter sailed through. The expired-valid lease is PINNED instead, and not stamped from.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const past = new Date(Date.now() - 864e5).toISOString();
+  store.items.set('LEASE#l-expired-lease|REC', {
+    pk: 'LEASE#l-expired-lease', sk: 'REC', rev: 1, learnerId: 'l-expired-lease',
+    record: { learnerId: 'l-expired-lease', retainUntil: past, rev: 1 },
+  });
+
+  // CREATE with the expired row present: no deadlock, and no stamp from a dead horizon.
+  await repo.saveProfile({ learnerId: 'l-expired-lease', email: 'x@local.invalid', displayName: 'C' });
+  const created = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-expired-lease');
+  assert.ok(created, 'the create must succeed before TTL removes the lease');
+  assert.equal(created.record.retainUntil, undefined, 'an expired lease stamps nothing');
+
+  // RECLAIM under the same expired row: seed an expired-anchored profile, then reclaim it.
+  created.record.retainUntil = past;
+  const reread = await repo.getProfile('l-expired-lease');
+  assert.equal(reread, null, 'the profile reads as expired');
+  await repo.saveProfile({ learnerId: 'l-expired-lease', email: 'x@local.invalid', displayName: 'R' });
+  const reclaimed = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-expired-lease');
+  assert.equal(reclaimed.record.displayName, 'R', 'the reclaim must succeed too');
+});
+
+test('a renewal concurrent with an expired-lease write fails the pin and stamps the renewed horizon', async () => {
+  // The pin on the EXPIRED lease is what makes this safe: a mint renewing the lease between the
+  // read and the transaction bumps the revision, the pin fails, and the retry stamps from the
+  // renewed lease instead of committing unanchored beside it.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const past = new Date(Date.now() - 864e5).toISOString();
+  const renewed = new Date(Date.now() + 8 * 864e5).toISOString();
+  store.items.set('LEASE#l-renewal|REC', {
+    pk: 'LEASE#l-renewal', sk: 'REC', rev: 1, learnerId: 'l-renewal',
+    record: { learnerId: 'l-renewal', retainUntil: past, rev: 1 },
+  });
+
+  const realTransact = repo.client.transactWrite;
+  let crossed = false;
+  repo.client.transactWrite = async (params) => {
+    if (!crossed && params.TransactItems?.some((t) => t.Put?.Item?.pk === 'PROFILE#l-renewal')) {
+      crossed = true;
+      // The concurrent mint renews the lease between the raw read and the transaction.
+      store.items.set('LEASE#l-renewal|REC', {
+        pk: 'LEASE#l-renewal', sk: 'REC', rev: 2, learnerId: 'l-renewal',
+        record: { learnerId: 'l-renewal', retainUntil: renewed, rev: 2 },
+      });
+    }
+    return realTransact(params);
+  };
+
+  await repo.saveProfile({ learnerId: 'l-renewal', email: 'x@local.invalid', displayName: 'N' });
+  assert.equal(crossed, true, 'the renewal must actually have crossed');
+  const item = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-renewal');
+  assert.equal(item.record.retainUntil, renewed, 'the retry stamped from the RENEWED lease');
+  assert.equal(item.ttl, Math.floor(Date.parse(renewed) / 1000));
+});
