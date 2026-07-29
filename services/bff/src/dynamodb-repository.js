@@ -62,14 +62,25 @@ export class DynamoDbSimulationRepository {
   /**
    * @param {{ tableName: string, client: {get:Function,put:Function,update:Function,query:Function,delete:Function} }} opts
    */
-  constructor({ tableName, client }) {
+  constructor({ tableName, client, now }) {
     if (!tableName) throw new Error('DynamoDbSimulationRepository requires a tableName.');
     if (!client) throw new Error('DynamoDbSimulationRepository requires a document client.');
     this.tableName = tableName;
     this.client = client;
+    // Same contract as the local adapters (#75): composition owns the clock, and an adapter that
+    // cannot be bound is refused rather than silently left on wall time.
+    this.hasExplicitClock = now !== undefined;
+    this.now = now ?? (() => Date.now());
     // Optimistic token per READ OBJECT (WeakMap): every read carries its own rev, so two reads
     // of the same record in the SAME instance still conflict when the second save is stale.
     this.revs = new WeakMap();
+  }
+
+  bindClock(now) {
+    if (typeof now !== 'function') throw new Error('bindClock requires a clock function.');
+    if (this.hasExplicitClock) return false;
+    this.now = now;
+    return true;
   }
 
   isConditionalFailure(err) {

@@ -43,7 +43,25 @@ export class InMemorySimulationRepository {
   /** @param {{ now?: () => number }} [opts] injected clock — retention is never read from Date.now */
   constructor({ now } = {}) {
     this.state = emptyState();
+    // Whether a clock was EXPLICITLY supplied is the thing composition needs to know. A `typeof`
+    // check cannot tell: the default is also a function, so an adapter that never received a clock
+    // is indistinguishable from one that did.
+    this.hasExplicitClock = now !== undefined;
     this.now = now ?? (() => Date.now());
+  }
+
+  /**
+   * Adopt the composition's clock, unless this adapter was built with one of its own.
+   *
+   * Explicit rather than inferred: the application and the repository must evaluate the same write
+   * boundary on the same instant, and a repository silently left on wall time would accept a write
+   * the application had already ruled out.
+   */
+  bindClock(now) {
+    if (typeof now !== 'function') throw new Error('bindClock requires a clock function.');
+    if (this.hasExplicitClock) return false;
+    this.now = now;
+    return true;
   }
 
   /** Write-through hook — no-op in memory. */

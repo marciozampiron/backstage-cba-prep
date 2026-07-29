@@ -21,7 +21,9 @@ test('NEGATIVE: everything Date.parse would have widened is refused', () => {
   // retention field would then EXTEND write eligibility or ownership instead of being refused —
   // a bound that can be widened by malforming it is not a bound.
   for (const widening of ['2099', '07/28/2099', 'Jul 28 2099', '2099-07-28', '2099-07-28T00:00:00']) {
-    assert.notEqual(Date.parse(widening), Number.NaN, `${widening} parses under Date.parse`);
+    // NaN !== NaN, so `notEqual(..., NaN)` passes even when Date.parse fails — the control has to
+    // assert a FINITE result or it proves nothing about what the old boundary would have accepted.
+    assert.ok(Number.isFinite(Date.parse(widening)), `${widening} must parse under Date.parse`);
     assert.equal(parseInstant(widening), null, `${widening} must be refused`);
   }
 });

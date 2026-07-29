@@ -49,10 +49,15 @@ function createRepositoryFromEnv() {
 export function configureRuntime({ repository, now } = {}) {
   if (now !== undefined) state.now = now;
   if (repository !== undefined) {
-    // A repository injected WITHOUT its own clock is adopted onto the runtime's, so the two can
-    // never silently diverge. One that brought its own is left alone — a test may be exercising
-    // exactly that skew on purpose.
-    if (repository && typeof repository.now !== 'function') repository.now = () => state.now();
+    // Binding is a CONTRACT, not a heuristic. A repository that cannot be bound is refused rather
+    // than silently left on wall time, because the failure that produces — the application ruling a
+    // write out while the repository accepts it — is invisible until it matters.
+    if (repository) {
+      if (typeof repository.bindClock !== 'function') {
+        throw new Error('configureRuntime: the repository must implement bindClock(now).');
+      }
+      repository.bindClock(() => state.now());
+    }
     state.repository = repository;
   }
 }

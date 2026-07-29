@@ -616,18 +616,23 @@ test('the write fence is exact at the deadline, on memory and file alike', async
 });
 
 test('an injected repository without its own clock is adopted onto the runtime clock', async () => {
-  // Otherwise the application evaluates the deadline on the injected clock while the fence uses
-  // wall time, and the two disagree about the same instant.
+  // WALL-CLOCK INDEPENDENT by construction. The earlier version used a fixed 2026 date and passed
+  // by accident: that instant is already past real time, so the repository refused using Date.now
+  // rather than the injected clock, and the adoption it claimed to prove was never happening.
+  // Starting a year AHEAD of Date.now means only the injected clock can be past the deadline.
   const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
   const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
   const { startSmokeRun, startDrill } = await import('../src/store.js');
 
-  let clock = Date.parse('2026-07-28T00:00:00Z');
+  const YEAR = 365 * 24 * 60 * 60 * 1000;
+  let clock = Date.now() + YEAR;
   const repo = new Mem();               // no clock of its own
   cfg({ repository: repo, now: () => clock });
   try {
     const run = await startSmokeRun('l-adopted');
-    clock += 25 * 60 * 60 * 1000;       // past the deadline on the INJECTED clock only
+    clock += 25 * 60 * 60 * 1000;       // past the deadline on the INJECTED clock ONLY
+    assert.ok(Date.now() < Date.parse((await repo.getSmokeRun(run.runId)).writeDeadlineAt),
+      'wall time must still be BEFORE the deadline, so only adoption can explain a refusal');
     await assert.rejects(
       () => startDrill('l-adopted', { questionCount: 5, runId: run.runId }),
       (err) => err.code === 'RUN_CLOSED',
@@ -636,6 +641,28 @@ test('an injected repository without its own clock is adopted onto the runtime c
   } finally {
     reset();
   }
+});
+
+test('a repository that cannot be bound is refused, not silently left on wall time', async () => {
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  try {
+    assert.throws(() => cfg({ repository: { getSmokeRun: async () => null }, now: () => 0 }),
+      /bindClock/);
+  } finally {
+    reset();
+  }
+});
+
+test('a repository built WITH its own clock keeps it', async () => {
+  // Deliberate skew belongs outside normal composition, so an explicit clock is never overridden.
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const own = new Mem({ now: () => 111 });
+  assert.equal(own.bindClock(() => 222), false);
+  assert.equal(own.now(), 111);
+
+  const adopted = new Mem();
+  assert.equal(adopted.bindClock(() => 222), true);
+  assert.equal(adopted.now(), 222);
 });
 
 test('completion derives both anchor and horizon from one clock read', async () => {
