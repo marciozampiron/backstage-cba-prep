@@ -97,6 +97,17 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
         if (item.ConditionCheck) {
           const existing = store.items.get(keyOf(item.ConditionCheck.Key));
           const v = item.ConditionCheck.ExpressionAttributeValues;
+          const expr = item.ConditionCheck.ConditionExpression;
+          // The EXPRESSION is checked, not just the values. Evaluating values alone let production
+          // drop a relation from the expression while still passing `:deadline` — the fake would
+          // keep enforcing a rule the real table no longer would.
+          if (v[':deadline'] !== undefined) {
+            for (const required of ['record.#s = :active', 'record.#d = :deadline', 'record.#d > :now']) {
+              if (!expr.includes(required)) {
+                throw new Error(`fake client: the run condition must pin "${required}"`);
+              }
+            }
+          }
           const record = existing?.record;
           if (!record || record.status !== v[':active']) return { Code: 'ConditionalCheckFailed' };
           // The claim's condition also PINS the deadline and requires it to be in the future, so
@@ -108,7 +119,16 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
             return { Code: 'ConditionalCheckFailed' };
           }
         }
-        if (item.Put?.ConditionExpression) {
+        if (item.Put?.ConditionExpression === 'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd < :now)') {
+          // Replaceable only when the stored claim is provably expired.
+          const existing = store.items.get(keyOf(item.Put.Item));
+          if (existing) {
+            const held = existing.writeDeadlineAt;
+            if (!(typeof held === 'string' && held < item.Put.ExpressionAttributeValues[':now'])) {
+              return { Code: 'ConditionalCheckFailed' };
+            }
+          }
+        } else if (item.Put?.ConditionExpression) {
           // Every supported Put condition, not just one: ignoring `rev = :expected` inside a
           // transaction let a stale smoke-scoped update overwrite the winner, while the
           // non-transactional path enforced it — the fence was weaker exactly where it was newest.
@@ -464,4 +484,60 @@ test('the physical ttl equals the retention anchor and does not move across upda
     assert.equal(item().record.retainUntil, anchor, `update ${i}: the anchor must not move`);
     assert.equal(item().ttl, expected, `update ${i}: the ttl must not move`);
   }
+});
+
+test('a deadline that changes BETWEEN the read and the transaction refuses the claim', async () => {
+  // This is the window the transaction exists to close. Changing the run before claimActiveMock
+  // tests the application's own check; changing it after getSmokeRun and before transactWrite is
+  // what proves the condition pins the exact value the read saw.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const runId = 'run-pinwindow00000000';
+  await repo.saveSmokeRun({
+    runId,
+    learnerId: 'l-pin',
+    status: 'active',
+    writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
+    ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
+  });
+
+  const realTransact = repo.client.transactWrite;
+  repo.client.transactWrite = async (params) => {
+    // A concurrent mint or close moves the horizon after the read.
+    for (const [, item] of store.items) {
+      if (item.pk === `SMOKERUN#${runId}`) item.record.writeDeadlineAt = new Date(Date.now() + 999e5).toISOString();
+    }
+    return realTransact(params);
+  };
+
+  // A REJECTION, not `false`. `false` means somebody already holds the claim; here the run's own
+  // condition failed, which is a different answer and must not be reported as a collision.
+  await assert.rejects(
+    () => repo.claimActiveMock('l-pin', 'mock_pin', { runId }),
+    (err) => err.name === 'RepositoryConflictError',
+    'the pinned deadline no longer matches, so the claim must not be written',
+  );
+  assert.equal(await repo.getActiveMock('l-pin'), null, 'and nothing was written');
+});
+
+test('the fake refuses a run condition that stops pinning the deadline', async () => {
+  // Guards the guard: evaluating values alone would let production drop a relation from the
+  // expression while still passing `:deadline`, and the fake would keep enforcing a rule the real
+  // table no longer would.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await assert.rejects(
+    () => repo.client.transactWrite({
+      TransactItems: [{
+        ConditionCheck: {
+          TableName: 'fake-table',
+          Key: { pk: 'SMOKERUN#x', sk: 'REC' },
+          ConditionExpression: 'record.#s = :active',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: { ':active': 'active', ':deadline': 'x', ':now': 'y' },
+        },
+      }],
+    }),
+    /must pin "record\.#d = :deadline"/,
+  );
 });

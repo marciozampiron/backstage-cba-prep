@@ -339,8 +339,18 @@ export class DynamoDbSimulationRepository {
     // the claim can only be written while the run still holds exactly that horizon, and only while
     // the horizon is in the future.
     const run = await this.getSmokeRun(runId);
+    // VALIDATED with the strict parser against ONE clock snapshot, before the transaction. Comparing
+    // strings alone let `writeDeadlineAt: "tomorrow"` satisfy the condition and write a claim the
+    // read path then had to hide — an unreadable bound must be refused, not written and papered over.
+    const nowMs = this.now();
     const deadline = run?.writeDeadlineAt ?? null;
-    const nowIso = new Date(this.now()).toISOString();
+    const parsed = parseInstant(deadline);
+    if (parsed === null || nowMs >= parsed) {
+      const err = new RepositoryConflictError('This smoke run stopped accepting records.');
+      err.reason = 'RUN_WINDOW_CLOSED';
+      throw err;
+    }
+    const nowIso = new Date(nowMs).toISOString();
     try {
       await this.client.transactWrite({
         TransactItems: [
@@ -365,7 +375,15 @@ export class DynamoDbSimulationRepository {
                 runId,
                 writeDeadlineAt: deadline,
               },
-              ConditionExpression: 'attribute_not_exists(pk)',
+              // An EXPIRED physical claim may be replaced — atomically, and only when provably
+              // expired. Requiring absence alone left a dead row blocking every future mock for
+              // that learner, which is the failure this whole parcel exists to prevent. Mutual
+              // exclusion between LIVE claims is untouched: a claim still inside its window fails
+              // both branches.
+              ConditionExpression:
+                'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd < :now)',
+              ExpressionAttributeNames: { '#wd': 'writeDeadlineAt' },
+              ExpressionAttributeValues: { ':now': nowIso },
             },
           },
         ],

@@ -391,6 +391,48 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     // learner, which is the exact failure the fence exists to prevent, so the application reclaims.
     repo.now = () => Date.now() + 25 * 60 * 60 * 1000;
     assert.equal(await repo.getActiveMock('l-claim-exp'), null, 'an expired claim reads as absent');
+
+    // Invisible is not enough. The physical row is still there, and requiring its ABSENCE left it
+    // blocking every future mock for this learner — the exact failure this parcel exists to
+    // prevent. A new run must be able to claim over a provably expired one.
+    const NEXT_RUN = 'run-next00000000000000';
+    await repo.saveSmokeRun({
+      runId: NEXT_RUN,
+      learnerId: 'l-claim-exp',
+      status: 'active',
+      writeDeadlineAt: new Date(repo.now() + 864e5).toISOString(),
+      ownershipExpiresAt: new Date(repo.now() + 6912e5).toISOString(),
+    });
+    assert.equal(await repo.claimActiveMock('l-claim-exp', 'mock_next', { runId: NEXT_RUN }), true,
+      'a new run must be able to claim over an expired row');
+    assert.equal(await repo.getActiveMock('l-claim-exp'), 'mock_next');
+  });
+
+  test(`${name}: a LIVE claim still excludes another, expired or not`, async () => {
+    // The replacement must not weaken mutual exclusion between claims that are still inside their
+    // window — that is the invariant the whole projection exists for.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-claim-live', ANCHOR_RUN);
+    assert.equal(await repo.claimActiveMock('l-claim-live', 'mock_a', { runId: ANCHOR_RUN }), true);
+    assert.equal(await repo.claimActiveMock('l-claim-live', 'mock_b', { runId: ANCHOR_RUN }), false);
+    assert.equal(await repo.getActiveMock('l-claim-live'), 'mock_a');
+  });
+
+  test(`${name}: a malformed run deadline refuses the claim, and writes nothing`, async () => {
+    // The transaction exists to close the window between the application's check and the write.
+    // Accepting an unreadable bound there wrote a claim the read path then had to hide.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-claim-bad', ANCHOR_RUN);
+    const run = await repo.getSmokeRun(ANCHOR_RUN);
+    run.writeDeadlineAt = 'tomorrow';
+    await repo.saveSmokeRun(run);
+
+    await assert.rejects(
+      () => repo.claimActiveMock('l-claim-bad', 'mock_bad', { runId: ANCHOR_RUN }),
+      (err) => err.name === 'RepositoryConflictError',
+      'an unreadable deadline must be refused, not written',
+    );
+    assert.equal(await repo.getActiveMock('l-claim-bad'), null, 'and nothing may have been written');
   });
 
   test(`${name}: an ordinary claim carries no run and is never reclaimed`, async () => {
