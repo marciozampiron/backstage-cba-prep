@@ -408,6 +408,32 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     assert.equal(await repo.getActiveMock('l-claim-exp'), 'mock_next');
   });
 
+  test(`${name}: at the EXACT deadline the old claim is gone and a new one succeeds`, async () => {
+    // The boundary the two rules disagreed on: the read said absent at `now >= deadline` while the
+    // write allowed replacement only at `deadline < now`. At exact equality the caller got
+    // MOCK_EXAM_IN_PROGRESS naming a winner that read as null — a state nothing can act on.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-claim-edge', ANCHOR_RUN);
+    assert.equal(await repo.claimActiveMock('l-claim-edge', 'mock_old', { runId: ANCHOR_RUN }), true);
+
+    const deadline = Date.parse((await repo.getSmokeRun(ANCHOR_RUN)).writeDeadlineAt);
+    repo.now = () => deadline; // EXACTLY the deadline, not one millisecond past it
+
+    assert.equal(await repo.getActiveMock('l-claim-edge'), null, 'the old claim must read as absent');
+
+    const EDGE_RUN = 'run-edge00000000000000';
+    await repo.saveSmokeRun({
+      runId: EDGE_RUN,
+      learnerId: 'l-claim-edge',
+      status: 'active',
+      writeDeadlineAt: new Date(deadline + 864e5).toISOString(),
+      ownershipExpiresAt: new Date(deadline + 6912e5).toISOString(),
+    });
+    assert.equal(await repo.claimActiveMock('l-claim-edge', 'mock_edge', { runId: EDGE_RUN }), true,
+      'and the new claim must succeed at the same instant');
+    assert.equal(await repo.getActiveMock('l-claim-edge'), 'mock_edge');
+  });
+
   test(`${name}: a LIVE claim still excludes another, expired or not`, async () => {
     // The replacement must not weaken mutual exclusion between claims that are still inside their
     // window — that is the invariant the whole projection exists for.

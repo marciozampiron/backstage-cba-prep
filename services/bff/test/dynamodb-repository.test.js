@@ -23,6 +23,13 @@ export function createFakeDynamoStore() {
   return { items: new Map() }; // key: `${pk}|${sk}` -> item
 }
 
+/**
+ * The exact conditions the adapter must send. Hard-coded HERE on purpose: importing them from
+ * production would make the fake follow production wherever it went, which is not a guard.
+ */
+const RUN_PIN_CONDITION = 'record.#s = :active AND record.#d = :deadline AND record.#d > :now';
+const CLAIM_REPLACE_CONDITION = 'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd <= :now)';
+
 export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize } = {}) {
   const keyOf = (k) => `${k.pk}|${k.sk}`;
   return {
@@ -98,14 +105,18 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
           const existing = store.items.get(keyOf(item.ConditionCheck.Key));
           const v = item.ConditionCheck.ExpressionAttributeValues;
           const expr = item.ConditionCheck.ConditionExpression;
-          // The EXPRESSION is checked, not just the values. Evaluating values alone let production
-          // drop a relation from the expression while still passing `:deadline` — the fake would
-          // keep enforcing a rule the real table no longer would.
+          // EXACT canonical shape, not substrings. `includes` accepted an INVERTED expression —
+          // `... AND NOT (record.#d = :deadline) AND ...` contains every required fragment while
+          // meaning the opposite, and the fake would have gone on simulating the rule production
+          // had stopped applying. The names are pinned too: rebinding `#d` to another attribute
+          // would keep the text identical and change what is compared.
           if (v[':deadline'] !== undefined) {
-            for (const required of ['record.#s = :active', 'record.#d = :deadline', 'record.#d > :now']) {
-              if (!expr.includes(required)) {
-                throw new Error(`fake client: the run condition must pin "${required}"`);
-              }
+            if (expr !== RUN_PIN_CONDITION) {
+              throw new Error(`fake client: the run condition must be exactly "${RUN_PIN_CONDITION}"`);
+            }
+            const names = item.ConditionCheck.ExpressionAttributeNames ?? {};
+            if (names['#s'] !== 'status' || names['#d'] !== 'writeDeadlineAt') {
+              throw new Error('fake client: the run condition must bind #s=status and #d=writeDeadlineAt');
             }
           }
           const record = existing?.record;
@@ -119,12 +130,13 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
             return { Code: 'ConditionalCheckFailed' };
           }
         }
-        if (item.Put?.ConditionExpression === 'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd < :now)') {
+        if (item.Put?.ConditionExpression === CLAIM_REPLACE_CONDITION) {
           // Replaceable only when the stored claim is provably expired.
           const existing = store.items.get(keyOf(item.Put.Item));
           if (existing) {
             const held = existing.writeDeadlineAt;
-            if (!(typeof held === 'string' && held < item.Put.ExpressionAttributeValues[':now'])) {
+            // `<=`, matching the logical read: at exact equality the claim is already absent.
+            if (!(typeof held === 'string' && held <= item.Put.ExpressionAttributeValues[':now'])) {
               return { Code: 'ConditionalCheckFailed' };
             }
           }
@@ -538,6 +550,45 @@ test('the fake refuses a run condition that stops pinning the deadline', async (
         },
       }],
     }),
-    /must pin "record\.#d = :deadline"/,
+    /must be exactly/,
   );
 });
+
+test('the fake refuses an INVERTED or weakened run condition', async () => {
+  // The earlier guard used substring matching, so `NOT (record.#d = :deadline)` contained every
+  // required fragment while meaning the opposite — the fake would have kept simulating a rule
+  // production had inverted. Rebinding an attribute name is the same class of change with no text
+  // difference at all.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const send = (ConditionExpression, ExpressionAttributeNames) => repo.client.transactWrite({
+    TransactItems: [{
+      ConditionCheck: {
+        TableName: 'fake-table',
+        Key: { pk: 'SMOKERUN#x', sk: 'REC' },
+        ConditionExpression,
+        ExpressionAttributeNames,
+        ExpressionAttributeValues: { ':active': 'active', ':deadline': 'x', ':now': 'y' },
+      },
+    }],
+  });
+  const NAMES = { '#s': 'status', '#d': 'writeDeadlineAt' };
+
+  // Inverted: contains every fragment, means the opposite.
+  await assert.rejects(
+    () => send('record.#s = :active AND NOT (record.#d = :deadline) AND record.#d > :now', NAMES),
+    /must be exactly/,
+  );
+  // Weakened: the future check becomes a tautology.
+  await assert.rejects(
+    () => send('record.#s = :active AND record.#d = :deadline AND record.#d > :now OR attribute_exists(pk)', NAMES),
+    /must be exactly/,
+  );
+  // Rebound: identical text, comparing a different attribute.
+  await assert.rejects(
+    () => send(RUN_PIN_CONDITION_FOR_TEST, { '#s': 'status', '#d': 'ownershipExpiresAt' }),
+    /must bind #s=status and #d=writeDeadlineAt/,
+  );
+});
+
+const RUN_PIN_CONDITION_FOR_TEST = 'record.#s = :active AND record.#d = :deadline AND record.#d > :now';

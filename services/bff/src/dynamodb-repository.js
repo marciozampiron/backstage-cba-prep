@@ -380,8 +380,11 @@ export class DynamoDbSimulationRepository {
               // that learner, which is the failure this whole parcel exists to prevent. Mutual
               // exclusion between LIVE claims is untouched: a claim still inside its window fails
               // both branches.
+              // `<=`, matching `getActiveMock`'s `now >= deadline`. At exact equality the read
+              // said absent while the write said occupied, so the use case reported
+              // MOCK_EXAM_IN_PROGRESS with a null winner — a state the caller cannot act on.
               ConditionExpression:
-                'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd < :now)',
+                'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd <= :now)',
               ExpressionAttributeNames: { '#wd': 'writeDeadlineAt' },
               ExpressionAttributeValues: { ':now': nowIso },
             },
