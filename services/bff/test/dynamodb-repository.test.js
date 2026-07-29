@@ -138,7 +138,17 @@ function makeRepoWith(store) {
 
 /* ---------------- the shared behavioral suite (same as memory/file) ---------------- */
 
+/** Physical corruption seam for the managed adapter: mutate the stored ITEM, not a read clone. */
+const corruptDynamoAnchor = async (repo, type, id, value) => {
+  for (const [, item] of repo._fakeStore.items) {
+    if (item.pk !== `${type}#${id}`) continue;
+    if (value === undefined) delete item.record.retainUntil;
+    else item.record.retainUntil = value;
+  }
+};
+
 runRepositorySuite('dynamodb', async () => makeRepoWith(createFakeDynamoStore()), {
+  corruptAnchor: corruptDynamoAnchor,
   // Re-instantiation shares the fake table (a new adapter instance over the same store) — this is
   // exactly the Lambda-restart shape the durability guarantee covers.
   reopen: async (repo) => makeRepoWith(repo._fakeStore),
@@ -417,4 +427,32 @@ test('a claim collision returns false, but an infrastructure cancellation does n
     () => repo.claimActiveMock('l-cc3', 'mock_4', { runId: 'run-claimcollision0000' }),
     (err) => err.name === 'TransactionCanceledException',
   );
+});
+
+test('the physical ttl equals the retention anchor and does not move across updates', async () => {
+  // The top-level ttl is what DynamoDB actually acts on. Deriving it from a re-read anchor on every
+  // save would slide retention forward with every answer, and nothing in the record would show it.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await repo.saveSmokeRun({
+    runId: 'run-ttlanchor00000000',
+    learnerId: 'l-ttl',
+    status: 'active',
+    writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
+    ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
+  });
+  await repo.saveAttempt({ attemptId: 'att_ttl', learnerId: 'l-ttl', runId: 'run-ttlanchor00000000', answers: {} });
+
+  const item = () => [...store.items.values()].find((i) => i.pk === 'ATTEMPT#att_ttl');
+  const anchor = item().record.retainUntil;
+  const expected = Math.floor(Date.parse(anchor) / 1000);
+  assert.equal(item().ttl, expected, 'the ttl must be the anchor, in epoch seconds');
+
+  for (let i = 0; i < 3; i++) {
+    const current = await repo.getAttempt('att_ttl');
+    current.answers = { ...current.answers, [i + 1]: { selectedOption: 'A' } };
+    await repo.saveAttempt(current);
+    assert.equal(item().record.retainUntil, anchor, `update ${i}: the anchor must not move`);
+    assert.equal(item().ttl, expected, `update ${i}: the ttl must not move`);
+  }
 });

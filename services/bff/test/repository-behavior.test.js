@@ -11,7 +11,7 @@ import {
   FileSimulationRepository,
 } from '../src/repository.js';
 
-export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
+export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {}) {
   test(`${name}: nextId is awaitable, unique, and prefix-scoped`, async () => {
     const repo = await makeRepo();
     const a = await repo.nextId('att');
@@ -318,34 +318,53 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
       { practiceSessions: 0, mockExams: 0, attempts: 0 });
   });
 
-  test(`${name}: a missing or malformed anchor fails CLOSED on reads, not open`, async () => {
-    // An unreadable bound is not the absence of one. Failing open here would make the retention
-    // contract's failure mode unbounded exposure, reached by losing a field.
-    for (const broken of [undefined, '', 'soon', '2099', '2026-13-01T00:00:00Z', 42, {}]) {
-      const repo = await makeRepo();
-      await repo.saveSmokeRun({
-        runId: ANCHOR_RUN,
-        learnerId: 'l-broken',
-        status: 'active',
-        writeDeadlineAt: new Date(Date.now() + 864e5).toISOString(),
-        ownershipExpiresAt: new Date(Date.now() + 6912e5).toISOString(),
-      });
-      // Written straight into storage, as a legacy or partially-written row would be.
-      const record = { attemptId: 'att_broken', learnerId: 'l-broken', runId: ANCHOR_RUN, answers: {} };
-      if (broken !== undefined) record.retainUntil = broken;
-      await repo.saveAttempt(record);
-      if (broken !== undefined) {
-        const stored = await repo.rawSmokeChildren({ learnerId: 'l-broken', runId: ANCHOR_RUN });
-        stored.attempts[0].retainUntil = broken;
-        await repo.saveAttempt(stored.attempts[0]);
-      }
+  test(`${name}: a corrupted anchor on an EXISTING record fails closed and cannot be restarted`, async () => {
+    // No conditional assertions. The previous version guarded everything behind
+    // `if (raw.attempts[0]?.retainUntil === broken)`, and for DynamoDB the raw read is a structural
+    // clone — so the mutation never persisted, the guard was false, and the test asserted NOTHING
+    // while reporting success. That is why the suite stayed green while the defect reproduced.
+    assert.equal(typeof corruptAnchor, 'function', `${name} must supply a physical-corruption seam`);
 
-      const raw = await repo.rawSmokeChildren({ learnerId: 'l-broken', runId: ANCHOR_RUN });
-      if (raw.attempts[0]?.retainUntil === broken) {
-        assert.equal(await repo.getAttempt('att_broken'), null, JSON.stringify(broken));
-        assert.deepEqual(await repo.listAttempts('l-broken'), [], JSON.stringify(broken));
-        assert.equal(raw.attempts.length, 1, 'and cleanup still sees it');
-      }
+    for (const broken of [undefined, null, '', 'soon', '2099', '2026-13-01T00:00:00Z', 42, {}]) {
+      const repo = await makeRepo();
+      await seedChild(repo, 'l-broken', ANCHOR_RUN);
+
+      await corruptAnchor(repo, 'ATTEMPT', 'att_anchor', broken);
+      const rawBefore = await repo.rawSmokeChildren({ learnerId: 'l-broken', runId: ANCHOR_RUN });
+      assert.equal(rawBefore.attempts.length, 1, `${JSON.stringify(broken)}: the row must still exist`);
+
+      // Hidden from every ordinary accessor…
+      assert.equal(await repo.getAttempt('att_anchor'), null, JSON.stringify(broken));
+      assert.deepEqual(await repo.listAttempts('l-broken'), [], JSON.stringify(broken));
+
+      // …and NOT rewritable: restarting retention here is how confidential data outlives its bound.
+      await assert.rejects(
+        () => repo.saveAttempt({ attemptId: 'att_anchor', learnerId: 'l-broken', runId: ANCHOR_RUN, answers: {} }),
+        (err) => err.name === 'RepositoryConflictError',
+        `${JSON.stringify(broken)}: a corrupted existing record must not be re-anchored`,
+      );
+
+      // …while cleanup still reaches it, which is what stops failing closed from stranding it.
+      assert.deepEqual(
+        await repo.countSmokeRunRecords({ learnerId: 'l-broken', runId: ANCHOR_RUN }),
+        { practiceSessions: 0, mockExams: 0, attempts: 1 },
+        JSON.stringify(broken),
+      );
+      const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-broken', runId: ANCHOR_RUN });
+      assert.equal(deleted.attempts, 1, JSON.stringify(broken));
+    }
+  });
+
+  test(`${name}: POSITIVE CONTROL — a valid existing anchor stays writable and does not move`, async () => {
+    const repo = await makeRepo();
+    const anchor = await seedChild(repo, 'l-valid-anchor', ANCHOR_RUN);
+    for (let i = 0; i < 3; i++) {
+      // Mutated IN PLACE, as the application does: a spread would be a new object and would lose
+      // the optimistic revision the adapter tracks per read.
+      const current = await repo.getAttempt('att_anchor');
+      current.answers = { ...current.answers, [i + 1]: { selectedOption: 'A' } };
+      await repo.saveAttempt(current);
+      assert.equal((await repo.getAttempt('att_anchor')).retainUntil, anchor, `update ${i}`);
     }
   });
 
@@ -376,14 +395,23 @@ export function runRepositorySuite(name, makeRepo, { reopen } = {}) {
   }
 }
 
-runRepositorySuite('memory', async () => new InMemorySimulationRepository());
+/** Physical corruption seam: write straight into storage, as a legacy or partial write would. */
+const corruptLocalAnchor = async (repo, type, id, value) => {
+  const bag = { ATTEMPT: 'attempts', SESSION: 'sessions', MOCK: 'mocks' }[type];
+  const record = repo.state[bag][id];
+  if (value === undefined) delete record.retainUntil;
+  else record.retainUntil = value;
+  repo.persist();
+};
+
+runRepositorySuite('memory', async () => new InMemorySimulationRepository(), { corruptAnchor: corruptLocalAnchor });
 
 const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'cba-repo-suite-'));
 let fileCounter = 0;
 runRepositorySuite(
   'file',
   async () => new FileSimulationRepository(path.join(tmpRoot, `s${++fileCounter}`, 'simulation.json')),
-  { reopen: async (repo) => new FileSimulationRepository(repo.filePath) },
+  { reopen: async (repo) => new FileSimulationRepository(repo.filePath), corruptAnchor: corruptLocalAnchor },
 );
 
 test('file suite cleanup', () => {

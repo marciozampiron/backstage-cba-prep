@@ -21,7 +21,7 @@
 // of silently overwriting answers. Application-level idempotency (identical practice retry OK,
 // different selection 409 ALREADY_ANSWERED, mock replace pre-submit only) lives in the store and
 // is unchanged by this adapter.
-import { RepositoryConflictError, SMOKE_CHILD_RETENTION_MS, smokeChildVisible } from './repository.js';
+import { RepositoryConflictError, resolveChildAnchor, smokeChildVisible } from './repository.js';
 
 const REC = 'REC';
 
@@ -110,13 +110,14 @@ export class DynamoDbSimulationRepository {
     // retention has no retention.
     let record = incoming;
     if (incoming?.runId && ['SESSION', 'MOCK', 'ATTEMPT'].includes(type)) {
-      const stored = (await this.#getRecordRaw(type, id))?.retainUntil;
-      record = {
-        ...incoming,
-        retainUntil: stored ?? new Date(this.now() + SMOKE_CHILD_RETENTION_MS).toISOString(),
-      };
+      // `exists` is the PHYSICAL item, not the presence of a field: `stored ?? fresh` treated a
+      // corrupted existing row as new and restarted its retention.
+      const existing = await this.#getRecordRaw(type, id);
+      const retainUntil = resolveChildAnchor({ exists: existing !== null, existing, nowMs: this.now() });
+      record = { ...incoming, retainUntil };
       this.revs.set(record, this.revs.get(incoming));
-      extra = { ...extra, ttl: Math.floor(Date.parse(record.retainUntil) / 1000) };
+      // ttl derives from the VALIDATED anchor only.
+      extra = { ...extra, ttl: Math.floor(Date.parse(retainUntil) / 1000) };
     }
     const expected = this.revs.get(record);
     const item = {

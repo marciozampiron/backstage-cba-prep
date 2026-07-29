@@ -42,6 +42,28 @@ export function smokeChildVisible(record, nowMs) {
   return until !== null && nowMs < until;
 }
 
+/**
+ * The retention anchor to persist, or a refusal — ONE rule, shared by every adapter.
+ *
+ * The distinction that matters is "this item does not exist yet" versus "this item exists and its
+ * anchor is unreadable". Only the first may be stamped. Treating the second as new silently
+ * RESTARTS retention on a legacy, partially written or corrupted row, so confidential data outlives
+ * the bound it was written under — reached by nothing more than a later ordinary write.
+ *
+ * An existing row with a broken anchor is therefore refused. It stays exactly where it was: hidden
+ * from ordinary reads and fully visible to cleanup, which is the only thing that should touch it.
+ */
+export function resolveChildAnchor({ exists, existing, nowMs }) {
+  if (!exists) return new Date(nowMs + SMOKE_CHILD_RETENTION_MS).toISOString();
+  const stored = existing?.retainUntil;
+  if (parseInstant(stored) === null) {
+    throw new RepositoryConflictError(
+      'This record has no readable retention anchor and cannot be rewritten; only cleanup may touch it.',
+    );
+  }
+  return stored;
+}
+
 export class RepositoryConflictError extends Error {
   constructor(message) {
     super(message ?? 'Concurrent modification detected.');
@@ -127,9 +149,14 @@ export class InMemorySimulationRepository {
    */
   #withAnchor(record, existing) {
     if (!record?.runId) return record;
-    const stored = existing?.retainUntil;
-    if (stored !== undefined) return { ...record, retainUntil: stored };
-    return { ...record, retainUntil: new Date(this.now() + SMOKE_CHILD_RETENTION_MS).toISOString() };
+    return {
+      ...record,
+      retainUntil: resolveChildAnchor({
+        exists: existing !== undefined,
+        existing,
+        nowMs: this.now(),
+      }),
+    };
   }
 
   #assertRunAccepts(record) {
