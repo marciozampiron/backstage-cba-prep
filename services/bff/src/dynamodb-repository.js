@@ -371,6 +371,80 @@ export class DynamoDbSimulationRepository {
     return profileVisible(profile, lease, this.now()) ? profile : null;
   }
 
+  /**
+   * Write a profile CREATE or RECLAIM linearized against the lease, in one transaction.
+   *
+   * A strong read followed by a plain conditional put still left the window the reviewer
+   * reproduced: the bootstrap reads "no lease", a whole mint lands in the gap — lease written,
+   * stamp finding no profile, success reported — and the delayed put commits an UNANCHORED profile
+   * that outlives the lease forever, because an unanchored profile is classified ordinary and
+   * never filtered. A post-write repair is not enough either: a crash between the put and the
+   * repair leaves the same state. So the write CONDITIONS on the lease itself — absent stays
+   * absent, or present at the exact revision and horizon the stamp was taken from — and a lease
+   * that moved makes the write lose, re-read and retry with the new truth.
+   *
+   * `expectedRev` is the profile's own physical revision for a reclaim, or undefined for a create.
+   */
+  async #linearizedProfileWrite(next, { expectedRev }) {
+    const learnerId = next.learnerId;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const lease = await this.getSmokeLease(learnerId); // strong + logical
+      const record = { ...next };
+      let ttlExtra = {};
+      if (lease) {
+        record.retainUntil = lease.retainUntil;
+        ttlExtra = { ttl: Math.floor(Date.parse(lease.retainUntil) / 1000) };
+      }
+      const leaseCheck = lease
+        ? {
+            ConditionCheck: {
+              TableName: this.tableName,
+              Key: recordKey('LEASE', learnerId),
+              ConditionExpression: 'rev = :leaserev AND record.#ru = :ru',
+              ExpressionAttributeNames: { '#ru': 'retainUntil' },
+              ExpressionAttributeValues: { ':leaserev': lease.rev, ':ru': lease.retainUntil },
+            },
+          }
+        : {
+            ConditionCheck: {
+              TableName: this.tableName,
+              Key: recordKey('LEASE', learnerId),
+              ConditionExpression: 'attribute_not_exists(pk)',
+            },
+          };
+      const item = {
+        ...recordKey('PROFILE', learnerId),
+        record,
+        learnerId,
+        rev: (expectedRev ?? 0) + 1,
+        gsi1pk: `LEARNER#${learnerId}`,
+        gsi1sk: `PROFILE#${learnerId}`,
+        ...ttlExtra,
+      };
+      const putCondition = expectedRev === undefined
+        ? { ConditionExpression: 'attribute_not_exists(pk)' }
+        : { ConditionExpression: 'rev = :expected', ExpressionAttributeValues: { ':expected': expectedRev } };
+      try {
+        await this.client.transactWrite({
+          TransactItems: [leaseCheck, { Put: { TableName: this.tableName, Item: item, ...putCondition } }],
+        });
+        this.revs.set(record, item.rev);
+        return;
+      } catch (err) {
+        if (err?.name === 'TransactionCanceledException' && Array.isArray(err.CancellationReasons)) {
+          // Index 1 is the profile's own condition: a genuine race loser, same as before.
+          if (err.CancellationReasons[1]?.Code === 'ConditionalCheckFailed') {
+            throw new RepositoryConflictError('Lost update on profile record.');
+          }
+          // Index 0 is the lease: it moved under us — re-read and retry with the new truth.
+          if (err.CancellationReasons[0]?.Code === 'ConditionalCheckFailed') continue;
+        }
+        throw err;
+      }
+    }
+    throw new RepositoryConflictError('The profile write could not be linearized against the lease.');
+  }
+
   async saveProfile(profile) {
     const learnerId = profile.learnerId;
     // The anchor is repository-owned: whatever the caller sent is discarded, and the rev the caller's
@@ -380,16 +454,11 @@ export class DynamoDbSimulationRepository {
     this.revs.set(next, this.revs.get(profile));
 
     const existing = await this.#getRecordRaw('PROFILE', learnerId);
-    let ttlExtra = {};
     if (!existing) {
-      // CREATE consumes the lease: a profile born under an unexpired lease is stamped from it.
-      const lease = await this.getSmokeLease(learnerId);
-      const horizon = parseInstant(lease?.retainUntil);
-      if (horizon !== null && this.now() < horizon) {
-        next.retainUntil = toInstant(horizon);
-        ttlExtra = { ttl: Math.floor(horizon / 1000) };
-      }
-    } else if (existing.retainUntil !== undefined) {
+      // CREATE: linearized against the lease.
+      return this.#linearizedProfileWrite(next, { expectedRev: undefined });
+    }
+    if (existing.retainUntil !== undefined) {
       const stored = parseInstant(existing.retainUntil);
       if (stored === null) {
         const err = new RepositoryConflictError('This profile has no readable retention anchor; only cleanup may touch it.');
@@ -397,25 +466,21 @@ export class DynamoDbSimulationRepository {
         throw err;
       }
       if (this.now() < stored) {
-        next.retainUntil = existing.retainUntil; // live: preserved verbatim
-        ttlExtra = { ttl: Math.floor(stored / 1000) };
-      } else {
-        // Expired-but-present: RECLAIM, conditional on the PHYSICAL revision the raw read saw.
-        // Without it, bootstrap's create hits attribute_not_exists against the row the filtered
-        // read hides, and the learner is stuck until TTL fires — days. A concurrent fresh write
-        // bumps the rev, this condition fails, and the stale reclaim loses to it.
-        this.revs.set(next, this.revs.get(existing));
-        const lease = await this.getSmokeLease(learnerId);
-        const horizon = parseInstant(lease?.retainUntil);
-        if (horizon !== null && this.now() < horizon) {
-          next.retainUntil = toInstant(horizon);
-          ttlExtra = { ttl: Math.floor(horizon / 1000) };
-        }
+        // LIVE: preserved verbatim — an ordinary update never extends retention.
+        next.retainUntil = existing.retainUntil;
+        return this.#saveRecord('PROFILE', learnerId, learnerId, next, {
+          ttl: Math.floor(stored / 1000),
+        });
       }
+      // EXPIRED-but-present: RECLAIM — linearized like a create, conditional on the physical
+      // revision the raw read saw, so a stale reclaim loses to a concurrent fresh write.
+      return this.#linearizedProfileWrite(next, { expectedRev: this.revs.get(existing) });
     }
-    await this.#saveRecord('PROFILE', learnerId, learnerId, next, ttlExtra);
+    // Ordinary existing profile: a plain update, rev riding the caller's object.
+    return this.#saveRecord('PROFILE', learnerId, learnerId, next);
   }
 
+  /** The unfenced claim, for ordinary learners with no run. */
   /** The unfenced claim, for ordinary learners with no run. */
   async #claimWithoutRun(learnerId, mockExamId) {
     try {

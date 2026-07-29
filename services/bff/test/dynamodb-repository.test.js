@@ -31,6 +31,7 @@ export function createFakeDynamoStore() {
  */
 const RUN_PIN_CONDITION = 'record.#s = :active AND record.#d = :deadline AND record.#d > :now';
 const CLAIM_REPLACE_CONDITION = 'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd <= :now)';
+const LEASE_PIN_CONDITION = 'rev = :leaserev AND record.#ru = :ru';
 
 export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize } = {}) {
   const keyOf = (k) => `${k.pk}|${k.sk}`;
@@ -106,8 +107,23 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       const reasons = TransactItems.map((item) => {
         if (item.ConditionCheck) {
           const existing = store.items.get(keyOf(item.ConditionCheck.Key));
-          const v = item.ConditionCheck.ExpressionAttributeValues;
+          const v = item.ConditionCheck.ExpressionAttributeValues ?? {};
           const expr = item.ConditionCheck.ConditionExpression;
+          // Lease-family checks (#75 profile linearization): absence, or the exact pinned
+          // revision+horizon the stamp was taken from. Dispatched BEFORE the run-fence family,
+          // which requires :active.
+          if (expr === 'attribute_not_exists(pk)') {
+            return existing ? { Code: 'ConditionalCheckFailed' } : { Code: 'None' };
+          }
+          if (expr === LEASE_PIN_CONDITION) {
+            if ((item.ConditionCheck.ExpressionAttributeNames ?? {})['#ru'] !== 'retainUntil') {
+              throw new Error('fake client: the lease pin must bind #ru=retainUntil');
+            }
+            if (!existing || existing.rev !== v[':leaserev'] || existing.record?.retainUntil !== v[':ru']) {
+              return { Code: 'ConditionalCheckFailed' };
+            }
+            return { Code: 'None' };
+          }
           // EXACT canonical shape, not substrings. `includes` accepted an INVERTED expression —
           // `... AND NOT (record.#d = :deadline) AND ...` contains every required fragment while
           // meaning the opposite, and the fake would have gone on simulating the rule production
@@ -675,16 +691,18 @@ test('a stale profile reclaim loses to a concurrent fresh write', async () => {
 
   await repo.extendSmokeLease({ learnerId: 'l-race-reclaim', retainUntil: new Date(later + 8 * 864e5).toISOString() });
 
-  const realPut = repo.client.put;
-  repo.client.put = async (params) => {
-    // A concurrent fresh write lands between the raw read and the reclaim's conditional put.
-    if (params.Item?.pk === 'PROFILE#l-race-reclaim') {
+  // The reclaim is a TRANSACTION now (linearized against the lease), so the race seam sits on
+  // transactWrite: the concurrent fresh write lands between the raw read and the transaction.
+  const realTransact = repo.client.transactWrite;
+  repo.client.transactWrite = async (params) => {
+    const put = params.TransactItems?.find((t) => t.Put?.Item?.pk === 'PROFILE#l-race-reclaim');
+    if (put) {
       for (const [, item] of store.items) {
         if (item.pk === 'PROFILE#l-race-reclaim') item.rev += 1;
       }
-      repo.client.put = realPut;
+      repo.client.transactWrite = realTransact;
     }
-    return realPut(params);
+    return realTransact(params);
   };
 
   await assert.rejects(
@@ -774,4 +792,35 @@ test('reverse-order stamping reaches the winning horizon and its physical ttl', 
   const item = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-winning');
   assert.equal(item.record.retainUntil, h2, 'the profile anchor is the winning horizon');
   assert.equal(item.ttl, Math.floor(Date.parse(h2) / 1000), 'and so is the physical ttl');
+});
+
+test('a profile create that crosses a lease creation loses, retries and lands stamped', async () => {
+  // The managed side of the same window: the bootstrap's transaction conditions on the lease key
+  // staying ABSENT. A mint's lease landing in between fails that check (reasons[0]), the adapter
+  // re-reads, and the retry creates the profile stamped from the lease it now sees.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const horizon = new Date(Date.now() + 8 * 864e5).toISOString();
+
+  const realTransact = repo.client.transactWrite;
+  let crossed = false;
+  repo.client.transactWrite = async (params) => {
+    const put = params.TransactItems?.find((t) => t.Put?.Item?.pk === 'PROFILE#l-cross-dyn');
+    if (put && !crossed) {
+      crossed = true;
+      // The mint's lease lands between the bootstrap's read and its transaction.
+      store.items.set('LEASE#l-cross-dyn|REC', {
+        pk: 'LEASE#l-cross-dyn', sk: 'REC', rev: 1, learnerId: 'l-cross-dyn',
+        record: { learnerId: 'l-cross-dyn', retainUntil: horizon, rev: 1 },
+      });
+    }
+    return realTransact(params);
+  };
+
+  await repo.saveProfile({ learnerId: 'l-cross-dyn', email: 'x@local.invalid', displayName: 'X' });
+  assert.equal(crossed, true, 'the race must actually have happened');
+
+  const item = [...store.items.values()].find((i) => i.pk === 'PROFILE#l-cross-dyn');
+  assert.equal(item.record.retainUntil, horizon, 'the retry landed stamped from the lease');
+  assert.equal(item.ttl, Math.floor(Date.parse(horizon) / 1000), 'with the matching physical ttl');
 });

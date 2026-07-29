@@ -547,3 +547,29 @@ Mutation checks: malformed-reads-as-satisfied fails 1; own-horizon stamping fail
 test added after the first attempt at this check showed the port-level test alone did not
 discriminate); eventually consistent raw reads fail 1; the duplicate-revision race and the winning-
 horizon ttl are asserted directly.
+
+## Codex review — the bootstrap/mint window, closed by linearization
+
+The reviewer reproduced a real TOCTOU through the actual use cases: the bootstrap decides "no
+lease", a whole mint lands in the gap — lease written, stamp finding no profile, success reported —
+and the delayed commit produces an UNANCHORED profile. Unanchored means classified ordinary and
+never filtered, so it would outlive the lease forever. A post-write reread is not a fix: a crash
+between the put and the repair leaves the same state.
+
+**In-memory/file**: the commit block no longer yields. The lease is consulted SYNCHRONOUSLY inside
+`saveProfile` — the earlier `await` on the lease read was itself the window.
+
+**DynamoDB**: profile CREATE and RECLAIM go through one linearized transaction. The write conditions
+on the lease key — absent stays absent, or present at the exact revision and horizon the stamp was
+taken from — plus the profile's own condition. Reasons are positional: the profile's condition
+failing is a lost update as before; the lease's condition failing means it moved underneath, so the
+adapter re-reads and retries with the new truth, bounded. If the profile wins first, the mint's
+existing stamp path covers the other ordering.
+
+The route-level malformed-lease case is also covered as required: a physically unreadable lease
+makes the mint a generic 409 CONFLICT with no run id and no internal reason in the envelope.
+
+Mutation checks: committing without consulting the lease fails 14 tests in the local adapters;
+dropping the lease condition from the transaction fails the crossing regression in the managed one.
+The stale-reclaim race seam moved from `client.put` to `client.transactWrite` with the
+implementation, so it keeps exercising the real path.

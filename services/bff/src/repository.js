@@ -294,13 +294,18 @@ export class InMemorySimulationRepository {
     const next = { ...profile };
     delete next.retainUntil;
 
+    // NO awaits from here to the write. The earlier version awaited the lease read, and that
+    // yield was a real window: a bootstrap could decide "no lease" there, a whole mint could run to
+    // completion in the gap — lease written, stamp finding no profile, success reported — and the
+    // delayed commit then landed an UNANCHORED profile that would outlive the lease forever. In
+    // this single-process adapter, consulting the lease synchronously makes check-and-commit one
+    // atomic block; the managed adapter closes the same window with a transaction.
     const existing = this.state.profiles[profile.learnerId];
     if (!existing) {
       // CREATE consumes the lease: a profile born under an unexpired lease is stamped from it, so
       // there is no window in which an unbounded smoke profile can exist.
-      const lease = await this.getSmokeLease(profile.learnerId);
-      const horizon = parseInstant(lease?.retainUntil);
-      if (horizon !== null && this.now() < horizon) next.retainUntil = toInstant(horizon);
+      const lease = this.#activeLease(profile.learnerId);
+      if (lease) next.retainUntil = lease.retainUntil;
     } else if (existing.retainUntil !== undefined) {
       const stored = parseInstant(existing.retainUntil);
       if (stored === null) {
@@ -313,9 +318,8 @@ export class InMemorySimulationRepository {
       } else {
         // Expired-but-present: RECLAIM with fresh-creation semantics. Without this, bootstrap sees
         // null, the create hits the row that is still there, and the learner is stuck until TTL.
-        const lease = await this.getSmokeLease(profile.learnerId);
-        const horizon = parseInstant(lease?.retainUntil);
-        if (horizon !== null && this.now() < horizon) next.retainUntil = toInstant(horizon);
+        const lease = this.#activeLease(profile.learnerId);
+        if (lease) next.retainUntil = lease.retainUntil;
       }
     }
     this.state.profiles[profile.learnerId] = next;
@@ -331,17 +335,25 @@ export class InMemorySimulationRepository {
     return this.state.profileLeases[learnerId] ?? null;
   }
 
+  /** The ACTIVE lease or `null`, SYNCHRONOUSLY — commit paths consult it inside their atomic
+      block, because an `await` between the consultation and the write is exactly the window a
+      concurrent mint slips through. */
+  #activeLease(learnerId) {
+    const lease = this.#rawLease(learnerId);
+    if (!lease) return null;
+    const horizon = parseInstant(lease.retainUntil);
+    if (horizon === null || this.now() >= horizon) return null;
+    return lease;
+  }
+
   /**
    * The learner's lease, or `null` — a CLONE, so a caller cannot mutate repository state through
    * the returned object; expired leases read as absent before TTL; and a lease whose control data
    * is unreadable reads as absent too, because an unreadable authority is not an authority.
    */
   async getSmokeLease(learnerId) {
-    const lease = this.#rawLease(learnerId);
-    if (!lease) return null;
-    const horizon = parseInstant(lease.retainUntil);
-    if (horizon === null || this.now() >= horizon) return null;
-    return structuredClone(lease);
+    const lease = this.#activeLease(learnerId);
+    return lease ? structuredClone(lease) : null;
   }
 
   /**

@@ -917,3 +917,66 @@ test('a mint stamps the WINNING lease horizon, never its own', async () => {
     reset();
   }
 });
+
+/* ============================ bootstrap crossing the mint ==================================== */
+
+test('NEGATIVE: a bootstrap that crosses the mint cannot commit an unanchored profile', async () => {
+  // The reviewer's reproduction: the bootstrap decides "no lease" before the mint, the whole mint
+  // lands in the gap — lease written, stamp finding no profile, success reported — and the delayed
+  // commit then produced an UNANCHORED profile, which is classified ordinary and never filtered:
+  // it would have outlived the lease forever. The fix is linearization, not post-write repair —
+  // a crash between a put and its repair leaves exactly the same state.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun } = await import('../src/store.js');
+  const { getMe } = await import('../src/profile.js');
+
+  let clock = Date.parse('2026-07-29T00:00:00Z');
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let pause = true;
+  class DelayedCommit extends Mem {
+    async saveProfile(profile) {
+      if (pause && profile.learnerId === 'l-crossing') {
+        pause = false;
+        await gate; // the bootstrap's commit is delayed past the whole mint
+      }
+      return super.saveProfile(profile);
+    }
+  }
+  const repo = new DelayedCommit();
+  cfg({ repository: repo, now: () => clock });
+  try {
+    const inflight = getMe('l-crossing');            // bootstrap reads "no profile, no lease"…
+    await new Promise((r) => setImmediate(r));       // …and parks at the commit
+    const run = await startSmokeRun('l-crossing');   // the mint completes in the gap
+    assert.ok(run.runId, 'the mint reported success with no profile to stamp');
+
+    release();
+    await inflight;
+
+    const stored = repo.state.profiles['l-crossing'];
+    const lease = repo.state.profileLeases['l-crossing'];
+    assert.ok(lease, 'the lease is durable');
+    assert.equal(stored.retainUntil, lease.retainUntil,
+      'a successful mint may never coexist with an unanchored profile');
+
+    clock = Date.parse(lease.retainUntil) + 1;
+    assert.equal(await repo.getProfile('l-crossing'), null, 'and it hides after the winning horizon');
+  } finally {
+    reset();
+  }
+});
+
+test('NEGATIVE: a malformed physical lease makes the mint a generic 409 with no run id', async () => {
+  const { activeRepository } = await import('../src/runtime.js');
+  const repo = activeRepository();
+  repo.state.profileLeases ??= {};
+  repo.state.profileLeases['dev-smoke-badlease'] = { learnerId: 'dev-smoke-badlease', retainUntil: 'tomorrow', rev: 1 };
+
+  const res = await call('POST', '/smoke-runs', { learner: 'smoke-badlease', body: {} });
+  assert.equal(res.status, 409, 'unreadable lease control data must fail the mint');
+  assert.equal(res.body.error.code, 'CONFLICT');
+  assert.equal('runId' in res.body, false, 'no run id may be exposed');
+  assert.equal(JSON.stringify(res.body).toLowerCase().includes('lease'), false, 'the internal reason stays internal');
+});
