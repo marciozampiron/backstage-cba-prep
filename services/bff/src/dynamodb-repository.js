@@ -22,7 +22,7 @@
 // different selection 409 ALREADY_ANSWERED, mock replace pre-submit only) lives in the store and
 // is unchanged by this adapter.
 import { RepositoryConflictError, resolveChildAnchor, smokeChildVisible } from './repository.js';
-import { parseInstant } from './instant.js';
+import { parseInstant, toInstant } from './instant.js';
 
 const REC = 'REC';
 
@@ -351,6 +351,13 @@ export class DynamoDbSimulationRepository {
       throw err;
     }
     const nowIso = new Date(nowMs).toISOString();
+    // The deadline PERSISTED IN THE CLAIM is re-rendered canonically. The parser accepts
+    // milliseconds as optional, but the replacement condition compares lexically against a
+    // full-millisecond `:now` — and at the same instant `...56Z <= ...56.000Z` is FALSE as a
+    // string. A seconds-only run deadline therefore recreated the null-winner state at the exact
+    // boundary. Rendering through toInstant pins one format, so lexical and temporal order agree.
+    // `:deadline` in the run pin stays the RAW stored string: it must equal what the run holds.
+    const canonicalDeadline = toInstant(parsed);
     try {
       await this.client.transactWrite({
         TransactItems: [
@@ -373,7 +380,7 @@ export class DynamoDbSimulationRepository {
                 sk: 'ACTIVE_MOCK',
                 mockExamId,
                 runId,
-                writeDeadlineAt: deadline,
+                writeDeadlineAt: canonicalDeadline,
               },
               // An EXPIRED physical claim may be replaced — atomically, and only when provably
               // expired. Requiring absence alone left a dead row blocking every future mock for

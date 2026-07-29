@@ -131,6 +131,14 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
           }
         }
         if (item.Put?.ConditionExpression === CLAIM_REPLACE_CONDITION) {
+          // The BINDING is pinned too, like the run condition's: rebinding #wd to another
+          // attribute keeps the expression text identical while DynamoDB compares a different
+          // field — and the fake, reading writeDeadlineAt by hand, would keep simulating the rule
+          // production had stopped applying.
+          const putNames = item.Put.ExpressionAttributeNames ?? {};
+          if (putNames['#wd'] !== 'writeDeadlineAt') {
+            throw new Error('fake client: the replacement condition must bind #wd=writeDeadlineAt');
+          }
           // Replaceable only when the stored claim is provably expired.
           const existing = store.items.get(keyOf(item.Put.Item));
           if (existing) {
@@ -592,3 +600,60 @@ test('the fake refuses an INVERTED or weakened run condition', async () => {
 });
 
 const RUN_PIN_CONDITION_FOR_TEST = 'record.#s = :active AND record.#d = :deadline AND record.#d > :now';
+
+test('a seconds-only run deadline still hands over at the exact boundary', async () => {
+  // parseInstant accepts milliseconds as OPTIONAL, but the replacement condition compares
+  // lexically against a full-millisecond :now — and "...56Z" <= "...56.000Z" is FALSE as a string
+  // at the same instant. Without canonical re-rendering, the read said absent while the write said
+  // occupied: the null-winner state again, reached through a perfectly valid timestamp format.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const base = Date.parse('2026-07-28T12:00:00Z');
+  let clock = base;
+  repo.now = () => clock;
+
+  const secondsOnly = '2026-07-29T12:34:56Z'; // valid, canonical, no milliseconds
+  await repo.saveSmokeRun({
+    runId: 'run-secondsonly000000',
+    learnerId: 'l-secs',
+    status: 'active',
+    writeDeadlineAt: secondsOnly,
+    ownershipExpiresAt: new Date(base + 6912e5).toISOString(),
+  });
+  assert.equal(await repo.claimActiveMock('l-secs', 'mock_old', { runId: 'run-secondsonly000000' }), true);
+
+  clock = Date.parse(secondsOnly); // EXACTLY the boundary
+  assert.equal(await repo.getActiveMock('l-secs'), null, 'the old claim must read as absent');
+
+  await repo.saveSmokeRun({
+    runId: 'run-secondsnext000000',
+    learnerId: 'l-secs',
+    status: 'active',
+    writeDeadlineAt: new Date(clock + 864e5).toISOString(),
+    ownershipExpiresAt: new Date(clock + 6912e5).toISOString(),
+  });
+  assert.equal(await repo.claimActiveMock('l-secs', 'mock_new', { runId: 'run-secondsnext000000' }), true,
+    'the new claim must succeed at that same instant');
+  assert.equal(await repo.getActiveMock('l-secs'), 'mock_new');
+});
+
+test('the fake refuses a replacement condition with #wd rebound to another attribute', async () => {
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await assert.rejects(
+    () => repo.client.transactWrite({
+      TransactItems: [{
+        Put: {
+          TableName: 'fake-table',
+          Item: { pk: 'LEARNER#x', sk: 'ACTIVE_MOCK', mockExamId: 'm' },
+          ConditionExpression: 'attribute_not_exists(pk) OR (attribute_exists(#wd) AND #wd <= :now)',
+          // Identical text, different attribute: DynamoDB would compare ownershipExpiresAt while
+          // the fake read writeDeadlineAt by hand.
+          ExpressionAttributeNames: { '#wd': 'ownershipExpiresAt' },
+          ExpressionAttributeValues: { ':now': new Date().toISOString() },
+        },
+      }],
+    }),
+    /must bind #wd=writeDeadlineAt/,
+  );
+});
