@@ -57,9 +57,13 @@ export function resolveChildAnchor({ exists, existing, nowMs }) {
   if (!exists) return new Date(nowMs + SMOKE_CHILD_RETENTION_MS).toISOString();
   const stored = existing?.retainUntil;
   if (parseInstant(stored) === null) {
-    throw new RepositoryConflictError(
+    // A distinguishable reason: a caller (and a test) must be able to tell this apart from a lost
+    // update, which is a different failure with a different remedy.
+    const err = new RepositoryConflictError(
       'This record has no readable retention anchor and cannot be rewritten; only cleanup may touch it.',
     );
+    err.reason = 'RETENTION_ANCHOR_UNREADABLE';
+    throw err;
   }
   return stored;
 }

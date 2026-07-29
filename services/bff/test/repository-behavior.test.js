@@ -325,7 +325,10 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     // while reporting success. That is why the suite stayed green while the defect reproduced.
     assert.equal(typeof corruptAnchor, 'function', `${name} must supply a physical-corruption seam`);
 
-    for (const broken of [undefined, null, '', 'soon', '2099', '2026-13-01T00:00:00Z', 42, {}]) {
+    for (const broken of [
+      undefined, null, '', 'soon', '2099', '2026-13-01T00:00:00Z', 42, {},
+      Number.NaN, Infinity, -Infinity,
+    ]) {
       const repo = await makeRepo();
       await seedChild(repo, 'l-broken', ANCHOR_RUN);
 
@@ -337,10 +340,18 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
       assert.equal(await repo.getAttempt('att_anchor'), null, JSON.stringify(broken));
       assert.deepEqual(await repo.listAttempts('l-broken'), [], JSON.stringify(broken));
 
-      // …and NOT rewritable: restarting retention here is how confidential data outlives its bound.
+      // …and NOT rewritable. The update must use the record READ FROM STORAGE, which carries the
+      // adapter's revision token: a fresh object has none, so the managed adapter would fall back to
+      // `attribute_not_exists(pk)` and be refused for ALREADY EXISTING — the right answer for the
+      // wrong reason, and a regression that restarts retention would slip past it.
       await assert.rejects(
-        () => repo.saveAttempt({ attemptId: 'att_anchor', learnerId: 'l-broken', runId: ANCHOR_RUN, answers: {} }),
-        (err) => err.name === 'RepositoryConflictError',
+        () => repo.saveAttempt(rawBefore.attempts[0]),
+        (err) => {
+          assert.equal(err.name, 'RepositoryConflictError', JSON.stringify(broken));
+          assert.equal(err.reason, 'RETENTION_ANCHOR_UNREADABLE',
+            `${JSON.stringify(broken)}: refused for the anchor, not as a lost update`);
+          return true;
+        },
         `${JSON.stringify(broken)}: a corrupted existing record must not be re-anchored`,
       );
 
