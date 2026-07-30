@@ -23,17 +23,21 @@ Append meaningful coordination changes here. Newest entries should go at the top
   `git branch -d`, and the #75 scope, gate and both publication artifacts removed from `/tmp`. The
   remote branch `task/75-smoke-cleanup-contract` was preserved. The #91 worktree was not touched.
 - ACTIVE-HANDOFF AUDIT against GitHub issues and the board, to stop an ownership collision before
-  #70 opens:
-  - #67 OPEN, owner Opus — Stage B's in-repo half is merged (PR #100, `9c8e03be`); what remains is
-    the custom-domain decision and the account-level half, which lands WITH #70. #70 must not
-    re-open the merged in-repo scope. Kept in `active/`.
+  #70 opens. `active/` now holds exactly one owner, #91:
   - #91 OPEN, Stage B not built, own worktree — preserved untouched.
-  - #85 CLOSED, its three canonical documents on `main`, no agent or worktree holding it — moved to
-    `done/`, policy moved with it.
-  - #93 CLOSED but LEFT in `active/` on purpose: `src/lib/authority-policy.js` and
-    `test/governance-model.test.js` hard-code its path, so relocating it edits the guard itself.
-    That belongs in its own reviewed commit.
-- #70 is the next work.
+  - #67 -> `done/`. The in-repo delivery is merged (PR #100) and issue #67 stays OPEN, but nothing
+    implementable remains in the repository. An active handoff that owns the same files would have
+    blocked #70 from opening; the remaining scope moved to `inbox/70-*` instead.
+  - #75 -> `done/`, CLOSED, delivered in PR #101.
+  - #85 -> `done/`, CLOSED, its three canonical documents on `main`, no agent or worktree holding it.
+  - #93 -> `done/`, CLOSED. Held back for one commit because `src/lib/authority-policy.js`,
+    `test/governance-model.test.js` and `spec/authority-policy.json` hard-code its path. Codex named
+    that inversion correctly — real state must drive the guard, not the reverse — so all three moved
+    with the file, and a new control asserts the `done/` path and refuses the `active/` one.
+- `inbox/70-cloudflare-aws-deploy-pipeline.md` created for the next work, owned by nobody until Zamp
+  assigns an executor. It inherits #67's account-level half, the AWS deploys of the synth-only
+  stacks, the live SNS/KMS notification proof and the deployed smoke lane — and states explicitly
+  that it must not re-open PR #100's or PR #101's merged scope.
 - Dependabot reported 8 alerts on the default branch (6 high, 2 moderate) during the #75 push. Not
   triaged, no upgrade attempted; the 6 high are a pilot-GO prerequisite.
 

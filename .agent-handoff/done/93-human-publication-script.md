@@ -5,16 +5,30 @@ mechanism is canonical in
 [`../../docs/architecture/agent-publication-runbook.md`](../../docs/architecture/agent-publication-runbook.md).
 This file does not restate either.
 
-## Ownership
+## Status
+
+DONE. Issue #93 is CLOSED/Done since 2026-07-27. The bridge it delivers is on `main` and in routine
+use: `agent-human-publish-script` prepared the artifacts for #98, #99, #100 and #101, and the
+`AGENT-HANDOFF v1` contract is canonical in `../MESSAGE-PROTOCOL.md`.
+
+Moved out of `active/` on 2026-07-30 during the #75 closeout audit. It was held back one commit
+because `src/lib/authority-policy.js`, `test/governance-model.test.js` and
+`spec/authority-policy.json` hard-code its path; Codex called that inversion correctly — real state
+must drive the guard, not the reverse — so all three moved with the file, and a control now asserts
+the `done/` path and refuses the `active/` one.
+
+Its worktree `../cba-issue-93` and branch no longer exist. The Ownership section below is the
+historical record of who did the work, not a live assignment.
+
+## Ownership (historical)
 
 - Implementation executor and publication operator: **Opus** (worktree `../cba-issue-93`, branch
   `task/93-human-publication-script`, cut from `origin/main`)
 - Architect / independent technical and security reviewer, read-only: **Codex**
 - Approval, risk acceptance and merge authority: **Zamp**
-- Next owner: **Codex** (read-only review)
 
-Do not touch `active/82-*`, `active/85-*` or `active/91-*`, or the main working tree — #82 has an
-active owner with local changes.
+The "do not touch `active/82-*`, `active/85-*`, `active/91-*`" note that stood here was scoped to the
+live ownership of #82 in July 2026. Both #82 and #85 are closed; #91 remains the one active owner.
 
 ## CANONICAL CURRENT STATE (read this first)
 

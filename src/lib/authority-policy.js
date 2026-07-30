@@ -171,7 +171,7 @@ export const REQUIRED_SURFACES = [
   '.agent-handoff/templates/task.md',
   '.agent-handoff/templates/message.md',
   '.agent-handoff/templates/decision.md',
-  '.agent-handoff/active/93-human-publication-script.md',
+  '.agent-handoff/done/93-human-publication-script.md',
   'spec/security-rules.md',
   'docs/architecture/agent-publication-runbook.md',
   'bin/cli.js',
@@ -185,7 +185,7 @@ export const REQUIRED_SURFACES = [
  * How an operational source relates to authority.
  *
  * Every discovered operational source must be exactly one of these. A source with no classification is
- * a failure, not a default — that gap is how `CURRENT.md`, the active #93 handoff and the CLI help sat
+ * a failure, not a default — that gap is how `CURRENT.md`, the #93 handoff and the CLI help sat
  * outside the authoritative allowlist while looking covered.
  */
 export const SURFACE_CLASSES = ['canonical-authority', 'link-only', 'historical'];

@@ -1846,7 +1846,7 @@ test('the mandatory cold-start inputs are canonical-authority, not merely adviso
   const canonical = new Set(POLICY.surfaceClassification?.['canonical-authority'] ?? []);
   for (const required of [
     '.agent-handoff/CURRENT.md',
-    '.agent-handoff/active/93-human-publication-script.md',
+    '.agent-handoff/done/93-human-publication-script.md',
     'bin/cli.js',
     '.agent-handoff/templates/decision.md',
   ]) {
@@ -1857,6 +1857,33 @@ test('the mandatory cold-start inputs are canonical-authority, not merely adviso
       `${required} must have an allowlist entry, even if empty`,
     );
   }
+});
+
+test('a closed handoff lives in done/, and the guard follows the file rather than pinning it', () => {
+  // #93 is CLOSED. Its handoff was kept in `active/` for one commit BECAUSE three sources hard-code
+  // its path, which inverts the responsibility: real state must drive the guard, not the reverse.
+  // This asserts the direction. `active/` must not hold a closed issue's handoff, and no source may
+  // still name the old path — a rename that updates only two of the three leaves the suite green in
+  // exactly the way the #75 close did.
+  const rel = '.agent-handoff/done/93-human-publication-script.md';
+  // Derived, never written out: this file is one of the sources scanned below, so spelling the old
+  // path here would make the scan find its own assertion and fail for the wrong reason.
+  const superseded = rel.replace('/done/', '/active/');
+
+  assert.ok(fs.existsSync(path.join(ROOT, rel)), `${rel} must exist — a closed handoff belongs in done/`);
+  assert.equal(
+    fs.existsSync(path.join(ROOT, superseded)),
+    false,
+    'the #93 handoff must not be in active/: issue #93 is closed',
+  );
+
+  // Every source that names it must name the done/ path, and none may keep the active/ one.
+  for (const src of ['src/lib/authority-policy.js', 'test/governance-model.test.js', 'spec/authority-policy.json']) {
+    const text = read(src);
+    assert.ok(text.includes(rel), `${src} must reference ${rel}`);
+    assert.equal(text.includes(superseded), false, `${src} still pins the old active/ path`);
+  }
+  assert.ok(REQUIRED_SURFACES.includes(rel), 'the code-side required set must name the done/ path');
 });
 
 test('a link-only surface may not define authority, and must point at the contract', () => {
@@ -1908,7 +1935,7 @@ test('REGRESSION: an authority claim in a newly governed surface fails the allow
   ]) {
     const found = authorityStatements(planted);
     assert.equal(found.length, 1, `must be collected: ${planted}`);
-    for (const rel of ['.agent-handoff/CURRENT.md', '.agent-handoff/active/93-human-publication-script.md', 'bin/cli.js', '.agent-handoff/templates/decision.md']) {
+    for (const rel of ['.agent-handoff/CURRENT.md', '.agent-handoff/done/93-human-publication-script.md', 'bin/cli.js', '.agent-handoff/templates/decision.md']) {
       const allowed = new Set(POLICY.allowedAuthorityStatements[rel] ?? []);
       assert.equal(allowed.has(found[0]), false, `${rel} must not already permit: ${planted}`);
     }

@@ -1,21 +1,24 @@
-# Active: Cloudflare Workers / OpenNext frontend (#67) — Stage B
+# Done: Cloudflare Workers / OpenNext frontend (#67) — Stage B, in-repo delivery
 
 ## Status
 
 - Stage A is DONE and published (`done/67-cloudflare-opennext-stage-a.md`): the frontend builds
   for Cloudflare Workers through the supported OpenNext path, with runtime `CBA_BFF_BASE_URL`,
   a single `apiFetch` door, and a Cloudflare artifact leak scan in CI.
-- **Stage B's in-repo half is DELIVERED**: PR #100, merged `9c8e03be06855590d7ea282d6d4fd12772f5c678`
-  — per-environment Worker declarations, the runtime-variable contract, and the structural CORS
-  guard. CI green. Nothing was deployed and no Cloudflare API call was made.
-- **#67 stays OPEN.** What remains is not repository work: the custom-domain-vs-`workers.dev`
-  decision, plus the account-level half below.
-- Implementation owner: Claude Opus 5 (assigned 2026-07-28). Architect/reviewer: Codex.
-  Human gate required before any push or Cloudflare mutation.
-- Stage B's account-level half still lands **with #70**: the Cloudflare project, the Environment
-  API token, the routes, the runtime variable VALUES and the deploy invocation are all human-gated
-  and none has been performed. **#70 must not re-open the in-repo scope** — it is merged; #70 owns
-  only the account-level half. This is the one place the two issues can collide.
+- **Stage B's in-repo half is DELIVERED and merged in PR #100** — per-environment Worker
+  declarations, the runtime-variable contract, and the structural CORS guard. CI green. Nothing was
+  deployed and no Cloudflare API call was made.
+- **This handoff is closed as the record of that delivery.** It moved to `done/` on 2026-07-30: it
+  no longer owns anything implementable, and leaving it in `active/` would have blocked #70 from
+  opening on the same files.
+- **Issue #67 itself stays OPEN.** What remains is not repository work, and it is now owned by
+  `inbox/70-cloudflare-aws-deploy-pipeline.md`: the custom-domain-vs-`workers.dev` decision, the
+  Cloudflare account/project and Environment API token, the Worker routes and runtime variable
+  VALUES, the deploy invocation, and the F1/F2 frontend gates.
+- **#70 must not re-open the in-repo scope merged in PR #100.** That code is on `main` and reviewed;
+  #70 owns only the account-level half. This is the one place the two issues can collide.
+- Historical ownership: Claude Opus 5 (assigned 2026-07-28), architect/reviewer Codex. The sections
+  below are the delivery record, not a live assignment.
 
 ## Read first
 
