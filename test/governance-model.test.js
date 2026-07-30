@@ -1886,6 +1886,41 @@ test('a closed handoff lives in done/, and the guard follows the file rather tha
   assert.ok(REQUIRED_SURFACES.includes(rel), 'the code-side required set must name the done/ path');
 });
 
+test('the #70 handoff carries both deploy preflight conditions #69 registered against it', () => {
+  // #69 registered two binding conditions on #70 and then closed. A transfer that keeps the domain
+  // DECISION but drops the preflight loses them silently: deciding the origin makes the values
+  // knowable, supplying and verifying them is what clears the deploy. This is a narrow contract on
+  // two labelled clauses — NOT a prose parser. Each clause is identified by its id, and each must
+  // name the specific thing it guards, so rewording the surrounding text stays free while deleting
+  // or hollowing out a condition fails.
+  const text = read('.agent-handoff/inbox/70-cloudflare-aws-deploy-pipeline.md');
+
+  const clause = (id) => {
+    const m = new RegExp(`\\*\\*${id}\\*\\*([\\s\\S]*?)(?=\\n- \\*\\*|\\n#{2,3} )`).exec(text);
+    assert.ok(m, `${id} must be present as a labelled clause in the #70 handoff`);
+    return m[1];
+  };
+
+  for (const [id, required] of [
+    // Must refuse on the RESOLVED value: a committed default and a failed override look identical.
+    ['PREFLIGHT-1', ['.invalid', 'authCallbackUrls', 'authLogoutUrls', 'cdk deploy']],
+    // Must require BOTH explicit supply and regional uniqueness — either alone is not the condition.
+    ['PREFLIGHT-2', ['authDomainPrefix', 'explicitly', 'unique', 'region', 'cdk deploy']],
+  ]) {
+    const body = clause(id);
+    for (const token of required) {
+      assert.ok(body.includes(token), `${id} must name ${token}`);
+    }
+  }
+
+  // The preflight binds every lane, not just the pilot one that first needed it.
+  assert.match(
+    text,
+    /applies to EVERY deploy lane/,
+    'the preflight section must state that it binds every deploy lane',
+  );
+});
+
 test('a link-only surface may not define authority, and must point at the contract', () => {
   // No surface is link-only today; the rule is asserted on the primitive so it holds when one appears.
   for (const rel of POLICY.surfaceClassification?.['link-only'] ?? []) {

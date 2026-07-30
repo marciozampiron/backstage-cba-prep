@@ -40,7 +40,8 @@ Reopening any of those is a scope error, not an improvement.
 
 - **The open decision: custom domain or the `workers.dev` origin.** This is not cosmetic. It fixes
   the exact origin in the #69 CORS list and the Cognito callback/logout URLs, which still default to
-  the reserved `.invalid` placeholder. Decide it before writing any route.
+  the reserved `.invalid` placeholder. Decide it before writing any route, and see the binding
+  preflight below — deciding is not the same as having supplied the value.
 - Cloudflare account/project setup and the Environment-scoped API token — never committed.
 - Per-environment Worker routes and the runtime variable VALUES the Worker serves:
   `CBA_BFF_BASE_URL` first, plus the `COGNITO_*` values `/auth/config` reads.
@@ -50,6 +51,29 @@ Reopening any of those is a scope error, not an improvement.
 - Frontend gates F1/F2 against `FRONTEND_URL`, and the rollback path in runbook §4.1.
 - Cache/incremental-cache backend: Stage A deliberately ships none (no R2/KV/D1/DO). Adding one is a
   #70 decision with its own cost and human gate.
+
+### Deploy preflight (BINDING, registered by #69 — applies to EVERY deploy lane)
+
+Two conditions were registered against #70 by `done/69-cognito-cors-boundary.md` and they are
+carried here unchanged. They are not advice, and not a checklist item for the pilot lane only: every
+deploy lane — dev, pilot, any future environment, and any manual invocation — must evaluate both and
+**fail before `cdk deploy` runs**, not after. A deploy that has already created a User Pool domain
+is not a state you back out of cheaply.
+
+- **PREFLIGHT-1** — refuse to run `cdk deploy` if `.invalid` still appears anywhere in the effective
+  `authCallbackUrls` or `authLogoutUrls` for the target environment. The committed pilot defaults
+  are `https://pilot.invalid/auth/callback` and `https://pilot.invalid/`; `.invalid` is the RFC 2606
+  reserved TLD precisely so that a forgotten override cannot resolve by accident. Check the
+  EFFECTIVE value after context resolution, not the committed default — an override that silently
+  failed to apply looks identical to one that was never attempted.
+- **PREFLIGHT-2** — refuse to run `cdk deploy` unless the pilot `authDomainPrefix` was **explicitly
+  supplied** and **confirmed unique in the target region**. A value existing is not the condition:
+  `identity-stack.js` falls back to `cba-study-coach-<env>`, so an unsupplied prefix is
+  indistinguishable from a deliberate one. Cognito hosted-UI domain prefixes are globally unique per
+  region, so an unverified prefix fails at deploy time, mid-stack, after other resources exist.
+
+Neither condition is satisfied by the domain decision alone. Deciding the origin is what makes the
+values knowable; supplying and verifying them is what clears the preflight.
 
 ### AWS side
 
@@ -78,6 +102,8 @@ Reopening any of those is a scope error, not an improvement.
 - The 6 high Dependabot alerts on the default branch must be fixed or formally risk-accepted.
 - The live SNS/KMS notification-path proof above.
 - The custom-domain decision, since the CORS list and Cognito URLs depend on it.
+- PREFLIGHT-1 and PREFLIGHT-2 above, implemented and failing closed on every deploy lane. GO is not
+  a judgement call about them: the lane must refuse on its own.
 
 ## Explicit exclusions
 
