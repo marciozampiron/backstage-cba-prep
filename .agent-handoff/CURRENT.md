@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-28 (#82 closed; #67 Stage B taken into active ownership)
+Last updated: 2026-07-30 (#67 Stage B and #75 closed; #70 is next)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -107,9 +107,12 @@ Project board remain the source of truth; this file summarizes local coordinatio
   User Pool + PKCE-ready public client, API Gateway JWT authorizer on every route except public
   readiness, access-token-only neutral principal (ID tokens and `x-cba-learner` refused, missing
   bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
-  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. #82 is now
-  CLOSED. Current work: **#67 Stage B** (Cloudflare Workers/OpenNext frontend), then #79, the #75
-  cleanup contract, then #70 -> close #46/#68. Everything is
+  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. **#82 and
+  #75 are CLOSED (Done)**; #75 delivered the smoke-cleanup contract through PR #101, merged at
+  `dcb868d2`. **#67 Stage B's repository work is merged** (PR #100), but #67 stays OPEN: it still
+  needs the custom-domain-vs-`workers.dev` decision and an actual deploy, neither of which is
+  repository work. Current work: **#70** (Cloudflare/AWS deploy pipeline and post-deploy smoke
+  gates), then #79 -> close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
@@ -132,19 +135,36 @@ Project board remain the source of truth; this file summarizes local coordinatio
 - Local MCP inventory for agents: Stitch, Cloudflare Docs, Cloudflare API, AWS, GitHub, and Next.js
   DevTools. GitHub/Cloudflare use IDE OAuth, AWS exposes only the read-only diagnostics role, and
   Next.js DevTools is pinned locally to `0.4.0`. MCP configs remain local, mode `0600`, and ignored.
-- Housekeeping open: the moderate Dependabot `postcss` advisory in `/web` awaits a dependency PR.
-  (Duplicate issue #45 is closed as a duplicate of #42.)
+- Housekeeping open: GitHub reported **8 Dependabot alerts on the default branch (6 high, 2
+  moderate)** during the #75 push on 2026-07-30 — this supersedes the older single-`postcss` note.
+  The 6 high must be fixed or formally risk-accepted before the pilot GO. Triage is not started and
+  no upgrade has been attempted. (Duplicate issue #45 is closed as a duplicate of #42.)
 - Tooling lesson (2026-07-08): verify CI-matrix (Node 20+22) compatibility for tooling changes —
   `node --test` glob-pattern paths need Node >=21; root test uses a shell-expanded `test/*.test.js`.
 
 ## Active handoff
 
-- `active/67-cloudflare-opennext-stage-b.md` — #67 Stage B, taken into active ownership 2026-07-28.
-  Stage A is published and done. Stage B's account-level items (Cloudflare project, Environment
-  API token, Worker names/routes, deploy lane) are human-gated and land WITH #70; only the
-  reviewable in-repo scope is implementable now. `web/package.json` must never gain a `deploy` or
+Audited 2026-07-30 against GitHub issues and the board.
+
+- `active/67-cloudflare-opennext-stage-b.md` — **#67 OPEN**, owner Claude Opus 5 (2026-07-28).
+  Stage A is published and done, and Stage B's **in-repo half is merged** (PR #100, `9c8e03be`).
+  What remains is not repository work: the custom-domain-vs-`workers.dev` decision, plus the
+  account-level items (Cloudflare project, Environment API token, Worker names/routes, deploy lane)
+  which are human-gated and land WITH #70. **#70 must not re-open the merged in-repo scope** — that
+  is the one place #67 and #70 can collide. `web/package.json` must never gain a `deploy` or
   `preview` script, and no Cloudflare token, account id, zone id or endpoint belongs in a tracked
   file.
+- `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
+  own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and
+  authoritative remote enforcement; until it ships, every publication guardrail is process rather
+  than enforcement.
+- `active/93-human-publication-script.md` — **#93 is CLOSED**, but this file stays in `active/`
+  deliberately: relocating it also means editing `src/lib/authority-policy.js` and
+  `test/governance-model.test.js`, which hard-code its path. That is a change to the guard itself
+  and belongs in its own reviewed commit, not in a documentation reconciliation.
+- Moved to `done/` in this audit: `85-security-assurance-architecture.md` (**#85 CLOSED**; its three
+  canonical documents are on `main` and no agent or worktree held ownership) and
+  `75-smoke-cleanup-contract.md` (**#75 CLOSED**).
 
 ## Do not touch without explicit assignment
 

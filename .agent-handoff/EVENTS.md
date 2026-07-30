@@ -2,6 +2,41 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-30 — Claude — #75 closed, documents reconciled, #70 is next
+
+- #75 CLOSED (Done). Codex reviewed the code and the artifact, Zamp sent a `HUMAN_GATE_GRANTED`
+  naming artifact digest `c17b32bb…`, the work was published as PR #101, and Zamp merged it at
+  `dcb868d2b9def97598c35500896d6abe50d3d0a1`. CI green on the pull request and after the merge
+  across Quality, Web Quality, Infra Synth and CodeQL.
+- Handoff moved `active/75-smoke-cleanup-contract.md` -> `done/75-smoke-cleanup-contract.md`, and
+  its Status section rewritten from "awaiting review and publication" to the delivered outcome.
+- `spec/authority-policy.json` moved with it. The policy is closed on exact paths, so the rename
+  alone left the governance suite at 344/360 — 16 failures, all traceable to the three stale
+  references in `governedSurfaces`, `surfaceClassification` and `allowedAuthorityStatements`. Same
+  lesson as the #82 close on 2026-07-28: a handoff rename is never a rename of one file.
+- PROCESS: the initial local attempt was made by Gemini, which holds no collaboration, publication
+  or governance role in this repository. That attempt was NOT accepted: it was never committed, and
+  it left the governance suite red. Opus performed the valid reconciliation on the isolated branch
+  `task/75-governance-closeout`, and Codex reviews the result read-only. Worth recording because the
+  closed policy is what caught it, not a human reading the diff.
+- Local cleanup after the merge, authorized by Zamp: #75 worktree removed, local branch deleted with
+  `git branch -d`, and the #75 scope, gate and both publication artifacts removed from `/tmp`. The
+  remote branch `task/75-smoke-cleanup-contract` was preserved. The #91 worktree was not touched.
+- ACTIVE-HANDOFF AUDIT against GitHub issues and the board, to stop an ownership collision before
+  #70 opens:
+  - #67 OPEN, owner Opus — Stage B's in-repo half is merged (PR #100, `9c8e03be`); what remains is
+    the custom-domain decision and the account-level half, which lands WITH #70. #70 must not
+    re-open the merged in-repo scope. Kept in `active/`.
+  - #91 OPEN, Stage B not built, own worktree — preserved untouched.
+  - #85 CLOSED, its three canonical documents on `main`, no agent or worktree holding it — moved to
+    `done/`, policy moved with it.
+  - #93 CLOSED but LEFT in `active/` on purpose: `src/lib/authority-policy.js` and
+    `test/governance-model.test.js` hard-code its path, so relocating it edits the guard itself.
+    That belongs in its own reviewed commit.
+- #70 is the next work.
+- Dependabot reported 8 alerts on the default branch (6 high, 2 moderate) during the #75 push. Not
+  triaged, no upgrade attempted; the 6 high are a pilot-GO prerequisite.
+
 ## 2026-07-28 — Claude — #82 closed, #67 Stage B opened
 
 - #82 CLOSED (completed) with all three slices on `main`; Roadmap board item confirmed Done.
