@@ -671,14 +671,16 @@ the adapter suite.
 ## Codex artifact review — the gate expiry pattern was not the pattern it printed
 
 The #75 code was approved and the publication artifact prepared. Reviewing the ARTIFACT, Codex
-refused it on a defect in the generator, `src/lib/human-publish-script.js` — #93's surface, not
-#75's. The fix rides on this branch because that is where the artifact was produced and where the
+refused it on a defect in the generator, `src/lib/human-publish-script.js` — the surface of #93, not
+of #75. The fix rides on this branch because that is where the artifact was produced and where the
 regression can be proven; the code under review for #75 is unchanged by it.
 
 `\.` inside the generator's template literal is not an escape sequence JavaScript recognises, so it
-renders as a bare `.`. The execution gate's expiry check reached the artifact as
+renders as a bare `.`. The generated expiry check reached the artifact as
 
-    (.[0-9]+)?
+```text
+(.[0-9]+)?
+```
 
 which in an ERE matches ANY character. Codex reported the comma — `2026-07-30T18:00:00,123Z`, the
 ISO 8601 alternate decimal mark and the value a human is most likely to type. The hole is wider than
