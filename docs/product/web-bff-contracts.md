@@ -659,6 +659,121 @@ may trigger paid AI work**, so the no-spend rules are trivially satisfied. All c
 
 ---
 
+## 18. `POST /api/smoke-runs` · `DELETE /api/smoke-runs/:runId/data` — smoke-run cleanup (#75)
+
+**Not a learner-facing feature.** It exists so the #70 deployed-smoke workflow can remove the data
+its own run created, through the BFF and authenticated as the smoke learner, instead of reaching
+DynamoDB with a deploy role. Both routes are server-side callers only and are deliberately absent
+from the browser CORS method list.
+
+A run has two states. **Active**: it accepts stamped writes. **Completed**: cleanup has verified
+zero leftovers, so it accepts no new records (`409 RUN_CLOSED`) while cleanup itself may still be
+replayed against it. The record is never deleted — it becomes a tombstone so ownership outlives the
+data and replay stays deterministic — and the tombstone carries a bounded expiry.
+
+### Why the run is a record and not a token claim
+
+The first design read a per-run claim from the validated principal. That cannot be issued: a Cognito
+**access** token carries `sub`, `token_use`, `client_id`, `scope` and groups — not custom
+attributes. Putting a per-run value in one needs either an admin call per run or a
+pre-token-generation trigger, and both are infrastructure #75 is not authorized to introduce.
+
+So the boundary is the other one #75 offers — **learner-owned deletion through the BFF**. The run is
+a record the BFF mints:
+
+```
+POST /api/smoke-runs            -> { "runId": "run-…" }   requires the capability; caller OWNS it
+X-CBA-Smoke-Run: <runId>        -> stamps writes; present-but-unowned or malformed FAILS CLOSED
+DELETE /api/smoke-runs/:id/data -> capability + ownership, deletes the run's DATA, closes the run
+```
+
+### The capability is the authorization
+
+Both routes require membership of the `cba-smoke` Cognito group, read from the validated
+`cognito:groups` claim. That claim IS present on an access token, so the capability is genuinely
+issuable: membership is pre-provisioned once per environment for the dedicated smoke learners, and
+nothing is granted per run. An ordinary authenticated learner gets `403` — an opaque run id and an
+absent CORS method are obscurity, not authorization.
+
+The header is a **reference**, the same shape as a session id in a path — it authorizes nothing.
+An unknown run and somebody else's run give the identical `403`, so a caller learns nothing about
+which run ids exist. Run ids are random, not sequential: a guessable id would leave the ownership
+check as the only barrier between two callers.
+
+**The run reference fails closed.** An ABSENT header is ordinary traffic. A PRESENT header that is
+malformed is `400`, and one naming an unknown or unowned run is `403` — the write does not happen.
+Letting it fall through unstamped was worse than it looked: the record landed outside every run, so
+the caller's own cleanup answered `200` with zeros while the row stayed in the table, a false green
+on the exact gate meant to catch leftovers.
+
+### Scope: two bounds, neither supplied as data
+
+| Bound | Source |
+| --- | --- |
+| learner | the authenticated principal, exactly as every other route resolves it |
+| run | a run record owned by that principal |
+
+No request input names a learner, and a body naming one is ignored. Records carry the run id from
+creation, so data created outside a run — every ordinary learner's — is never in scope.
+
+### Success
+
+```json
+{
+  "runId": "run-…",
+  "deleted": { "practiceSessions": 1, "mockExams": 1, "attempts": 2, "answers": 12, "projections": 1 }
+}
+```
+
+The learner id is **not** echoed: this response is written into a workflow summary. Answers are
+counted inside the record that holds them. `projections` covers the one-active-mock claim and the
+profile cache.
+
+A run that created nothing returns zeros with `200`. #70 runs cleanup with `always()`, including
+after a job that failed before creating a record, so "nothing to clean" must be a success rather
+than a blocked promotion.
+
+### Completeness is verified, not inferred
+
+The adapter deletes conditionally on the revision it read, so a record written between the read and
+the delete is skipped rather than removed blind. Counting deletions cannot distinguish *nothing
+existed* from *something survived contention* — both report zero. After a bounded retry the scope is
+therefore **queried again**, and anything still matching fails the operation:
+
+| Status | Code | When |
+| --- | --- | --- |
+| `409` | `CLEANUP_INCOMPLETE` | records matching learner + run remain after the retries |
+| `403` | `FORBIDDEN` | the run does not exist or does not belong to the caller |
+| `400` | `VALIDATION_FAILED` | the run id is malformed |
+
+`CLEANUP_INCOMPLETE` carries per-class leftover counts and never record ids or a learner id. Per
+`deployed-environment-smoke-workflow-design.md` §6 a failed cleanup makes the run outcome FAILURE
+even when every gate passed, and promotion is blocked.
+
+### Two projections keyed by learner alone
+
+- the **active-mock claim** is released once the mock it points at is gone. Left behind it blocks
+  every future mock for that learner — a smoke that cleans up and can then never run again.
+- the **profile cache** goes only once the learner has no records left at all, so a cleanup scoped
+  to one run cannot damage another.
+
+The run record is **never deleted**; it becomes a tombstone once cleanup has VERIFIED zero
+leftovers. Consuming ownership at the end looked tidy and broke replay — a failure after that point
+left the retry unable to prove ownership, and even a successful pass made the second call answer
+`403`. Finalizing it inside the delete was wrong for a different reason: it marked a run complete
+while a projection was still pending and before anything was verified.
+
+**Retention is bounded** (SEC-DATA-01). The tombstone carries `expiresAt`, and the managed adapter
+writes the `ttl` attribute the table's DynamoDB TTL is configured on. TTL is a cleanup mechanism and
+never an authorization one: a completed run is refused immediately by the application, so nothing
+depends on when the row actually disappears.
+
+### Persistence
+
+The rule lives in the use case and the deletion behind the repository port, so DynamoDB stays in the
+adapter. The adapter reads only the learner's own GSI partition — no scan, no cross-learner read, no
+wildcard — and filters by run id there as well as in the port.
+
 ## Deferred endpoints (same conventions, later contract passes)
 
 Only the **admin review actions** remain unspecified: approve / reject / request-changes on a draft

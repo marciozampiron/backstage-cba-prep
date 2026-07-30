@@ -79,6 +79,29 @@ GO only if ALL are true:
       staleness is detectable), and is produced human-gated outside O1/O2 under operator
       credentials — the read-only gate role never gains publish or alarm-state permissions.
       NO-GO if it is absent, negative, or stale relative to the current policy version.
+- [ ] **Smoke operators are in the `cba-smoke` group** (#75) — a one-time, human-gated action per
+      environment. `IdentityStack` creates the group; it deliberately assigns nobody, because
+      attaching members in CDK would give the deploy role a Cognito admin permission over identity.
+      Without membership the deployed cleanup answers `403` and the smoke run cannot clean up after
+      itself.
+
+      ```bash
+      # assign (operator credentials, once per environment, ONLY the dedicated smoke learners)
+      aws cognito-idp admin-add-user-to-group --user-pool-id <pool> \
+        --username <smoke-learner> --group-name cba-smoke
+      # verify
+      aws cognito-idp admin-list-groups-for-user --user-pool-id <pool> --username <smoke-learner>
+      # remove (offboarding, or if a run identity is ever suspected)
+      aws cognito-idp admin-remove-user-from-group --user-pool-id <pool> \
+        --username <smoke-learner> --group-name cba-smoke
+      ```
+
+      Group membership lands in `cognito:groups` on the **next** token, so a session obtained before
+      the assignment keeps failing until it is re-issued — sign in again rather than debugging a
+      stale `403`. Evidence recorded for the GO/NO-GO is logical only: which environment, which
+      date, and that exactly the dedicated smoke learners are members — never a user id, pool id or
+      token.
+
 - [ ] Rollback target identified (SHA + deployment id) and the rollback steps in §4 are usable
       for this specific change (data-shape changes: §4.3 checked).
 - [ ] No open Sev-1 incident on the pilot.

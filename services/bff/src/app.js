@@ -17,6 +17,7 @@
 //                ({ provider, sub, tokenUse, loadProfile? }) — absent in local/dev mode (#69)
 // Neutral response shape: { status, body } — plain JSON-serializable.
 import { resolveLearner } from './identity.js';
+import { SMOKE_RUN_HEADER, hasSmokeCapability, isValidSmokeRunId, readSmokeRunHeader } from './smoke-run.js';
 import { getMe, updateMe } from './profile.js';
 import { resolveRuntimeConfig } from './config.js';
 import { activeRepository } from './runtime.js';
@@ -33,6 +34,10 @@ import {
   submitMockExam,
   missedForAttempt,
   coachMessage,
+  cleanupSmokeRun,
+  ownedSmokeRun,
+  runIsClosed,
+  startSmokeRun,
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
 import { emitCompletionEvent } from './telemetry.js';
@@ -147,9 +152,12 @@ const ROUTES = [
     'POST',
     '/practice-sessions',
     'required-json',
-    async ({ learnerId, body }) => {
+    async ({ learnerId, body, smokeRun }) => {
       requireKnownExam(body.examId);
       const result = await startDrill(learnerId, {
+        // #75: stamped from the principal, never from the body — a request-supplied run id would
+        // let one run's records be attributed to another and deleted by it.
+        runId: smokeRun?.runId ?? null,
         domainId: body.domainId || undefined,
         competencyId: body.competencyId || undefined,
         questionCount: Number(body.questionCount),
@@ -176,9 +184,9 @@ const ROUTES = [
     'POST',
     '/mock-exams',
     'optional-json',
-    async ({ learnerId, body }) => {
+    async ({ learnerId, body, smokeRun }) => {
       requireKnownExam(body.examId);
-      return { status: 201, body: await startMockExam(learnerId) };
+      return { status: 201, body: await startMockExam(learnerId, { runId: smokeRun?.runId ?? null }) };
     },
   ],
   ['GET', '/mock-exams/:id', 'none', ({ learnerId, params, query }) => getMockExam(params.id, learnerId, query.index)],
@@ -202,6 +210,47 @@ const ROUTES = [
     'none',
     ({ learnerId, params, query }) =>
       missedForAttempt(params.id, learnerId, { cursor: query.cursor, limit: query.limit }),
+  ],
+  // --- #75 smoke-run lifecycle -----------------------------------------------------------------
+  // The run is MINTED here and owned by the caller. A Cognito access token cannot carry a per-run
+  // claim without infrastructure this issue may not introduce, so ownership is a record — the same
+  // shape as a practice session — and the header that references it later authorizes nothing.
+  ['POST', '/smoke-runs', 'optional-json', async ({ learnerId, smokeCapable }) => {
+    // The capability is the authorization. Without it any authenticated learner could mint a run
+    // and reach a deletion endpoint — an opaque id and an absent CORS method are obscurity, not
+    // authorization.
+    if (!smokeCapable) throw new ApiError(403, 'FORBIDDEN', 'This operation requires the smoke capability.');
+    try {
+      return { status: 201, body: { runId: (await startSmokeRun(learnerId)).runId } };
+    } catch (err) {
+      // A mint that could not bind the profile retention is a CONFLICT, not a server fault: the
+      // orphan run is bounded and unreachable, and the caller may simply mint again. The internal
+      // reason never leaves the envelope.
+      if (err instanceof RepositoryConflictError) {
+        throw new ApiError(409, 'CONFLICT', 'The smoke run could not be established.');
+      }
+      throw err;
+    }
+  }],
+  // --- #75 smoke-run cleanup -------------------------------------------------------------------
+  // DELETE, not POST: it is a deletion, and an idempotent one — repeating it is defined and safe,
+  // which is exactly what the #70 `always()` cleanup job needs on a rerun.
+  //
+  // The run id is in the PATH only to be CONFIRMED. Both scope bounds come from the authenticated
+  // principal; a path value that disagrees is refused rather than used, so a valid smoke token
+  // cannot delete a different run — and no input anywhere names a learner.
+  [
+    'DELETE',
+    '/smoke-runs/:runId/data',
+    'none',
+    async ({ learnerId, params, smokeCapable }) => {
+      if (!smokeCapable) throw new ApiError(403, 'FORBIDDEN', 'This operation requires the smoke capability.');
+      // Ownership, not possession of an id: an unknown run and somebody else's run are the same
+      // answer, so a caller learns nothing about which run ids exist.
+      const run = await ownedSmokeRun(learnerId, params.runId);
+      if (!run) throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+      return cleanupSmokeRun(learnerId, run.runId);
+    },
   ],
   [
     'POST',
@@ -265,11 +314,46 @@ export async function handleApiRequest({
       return outcome;
     }
     routeKey = matched.route.routeKey;
-    const { learnerId } = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null };
+    const identity = matched.route.auth ? resolveLearner(headers, principal) : { learnerId: null, mode: null };
+    const { learnerId } = identity;
+    // #75: resolved once per request, from the validated principal in a deployed runtime. Ordinary
+    // learners get `null`, so every route below behaves exactly as before for them.
+    const smokeCapable = matched.route.auth
+      ? hasSmokeCapability(headers, principal, { mode: identity.mode })
+      : false;
+
+    // #75: the header only REFERENCES a run, and it FAILS CLOSED. An ABSENT header is ordinary
+    // traffic; a PRESENT one that is malformed, unknown or owned by somebody else is a refusal and
+    // the write never happens. Letting it fall through unstamped was worse than it looked: the
+    // record was created outside every run, so the caller's own cleanup reported success with zeros
+    // while the row stayed in the table — a false green on the exact gate that must catch it.
+    let smokeRun = null;
+    if (matched.route.auth && Object.hasOwn(headers, SMOKE_RUN_HEADER)) {
+      // The capability is checked HERE too, not only at mint and cleanup. Without it, a learner
+      // removed from the smoke group could keep operating the runs they already own.
+      if (!smokeCapable) {
+        throw new ApiError(403, 'FORBIDDEN', 'This operation requires the smoke capability.');
+      }
+      const referenced = readSmokeRunHeader(headers);
+      if (!referenced || !isValidSmokeRunId(referenced)) {
+        throw new ApiError(400, 'VALIDATION_FAILED', 'The smoke-run reference is malformed.');
+      }
+      const owned = await ownedSmokeRun(learnerId, referenced);
+      if (!owned) throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+      // A CLEANED-UP run is closed. Cleanup may be replayed against it — that is what makes replay
+      // deterministic — but a new write must not join a run that was already reported clean, or the
+      // next cleanup would find records the previous one swore were gone.
+      if (runIsClosed(owned, now()) && !matched.route.routeKey.startsWith('DELETE ')) {
+        throw new ApiError(409, 'RUN_CLOSED', 'This smoke run has been cleaned up and accepts no new records.');
+      }
+      smokeRun = { runId: owned.runId };
+    }
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({
       learnerId,
       principal: matched.route.auth ? principal : null,
+      smokeRun,
+      smokeCapable,
       params: matched.params,
       query,
       body: parsedBody,

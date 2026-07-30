@@ -27,7 +27,13 @@ export function principalFromJwtClaims(claims) {
   if (claims.token_use !== 'access') return null; // ID (or any other) tokens: rejected
   const sub = claims.sub;
   if (typeof sub !== 'string' || !SUB_PATTERN.test(sub)) return null;
-  return { provider: 'cognito', sub, tokenUse: 'access' };
+  // `cognito:groups` IS present on an access token, unlike custom attributes — which is what makes
+  // a group-based capability actually issuable (#75). Membership is pre-provisioned once per
+  // environment for the dedicated smoke learners; nothing here is granted per run.
+  const groups = Array.isArray(claims['cognito:groups'])
+    ? claims['cognito:groups'].filter((g) => typeof g === 'string' && g !== '')
+    : [];
+  return { provider: 'cognito', sub, tokenUse: 'access', groups };
 }
 
 /** COGNITO_DOMAIN must be an absolute https base URL (e.g. the hosted-UI domain). */

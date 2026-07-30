@@ -800,8 +800,11 @@ test('each dashboard row shows the metrics its title claims', () => {
 test('the SystemErrors alarm covers exactly the operations the adapter issues', () => {
   // Not a subset: an operation the runtime performs but the alarm ignores is an unmonitored failure
   // path, and one the runtime cannot perform is a metric that will never report.
+  // `TransactWriteItems` is a real Operation dimension — an earlier version of this test filtered
+  // it out on the mistaken belief that it was not, which left the release-blocking alarm blind to
+  // failures on the transactional write path.
   assert.deepEqual([...DYNAMO_ALARMED_OPERATIONS].sort(), [
-    'DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem',
+    'DeleteItem', 'GetItem', 'PutItem', 'Query', 'TransactWriteItems', 'UpdateItem',
   ]);
 
   const alarm = resourcesOfType(synth('pilot'), 'AWS::CloudWatch::Alarm')
@@ -812,7 +815,7 @@ test('the SystemErrors alarm covers exactly the operations the adapter issues', 
     .filter((d) => d.Name === 'Operation')
     .map((d) => d.Value)
     .sort();
-  assert.deepEqual(operations, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
+  assert.deepEqual(operations, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'TransactWriteItems', 'UpdateItem']);
 
   // And the IAM grant the runtime actually holds is the same set — read from the real ApiStack.
   const apiTpl = Template.fromStack(build('pilot').api).toJSON();
@@ -823,7 +826,10 @@ test('the SystemErrors alarm covers exactly the operations the adapter issues', 
     .filter((a) => a.startsWith('dynamodb:'))
     .map((a) => a.replace('dynamodb:', ''))
     .sort();
-  assert.deepEqual(granted, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'UpdateItem']);
+  // The alarm's operation set and the IAM grant must stay aligned: an operation the runtime can
+  // issue but the alarm ignores is an unmonitored failure path, and the reverse is a metric that
+  // will never report.
+  assert.deepEqual(granted, ['DeleteItem', 'GetItem', 'PutItem', 'Query', 'TransactWriteItems', 'UpdateItem']);
 });
 
 test('saved queries cap the rows returned; the execution scan range is set by the caller', () => {

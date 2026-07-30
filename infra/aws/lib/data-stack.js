@@ -23,6 +23,12 @@ class DataStack extends Stack {
 
     // Naming convention: cba-study-coach-<env>-<resource> (aws-iac-foundation.md).
     this.table = new dynamodb.Table(this, 'SimulationTable', {
+      // #75: completed smoke-run tombstones keep ownership alive so a cleanup replay stays
+      // deterministic, and ownership is learner data — it cannot be retained forever (SEC-DATA-01).
+      // The application writes `expiresAt` and TTL removes the row afterwards. TTL is a CLEANUP
+      // mechanism and never an authorization one: a completed run is refused immediately by the
+      // application, so nothing waits on when the row actually disappears.
+      timeToLiveAttribute: 'ttl',
       tableName: `cba-study-coach-${environment}-simulation`,
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },

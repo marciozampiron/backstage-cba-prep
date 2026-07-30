@@ -14,6 +14,10 @@ import {
   seededShuffle,
   toQuestionPayload,
 } from './bank.js';
+import { RepositoryConflictError } from './repository.js';
+import { parseInstant, toInstant } from './instant.js';
+import { isValidSmokeRunId } from './smoke-run.js';
+import { randomUUID } from 'node:crypto';
 import { activeRepository, now, nowIso } from './runtime.js';
 
 // Repository/clock come from the composition seam (runtime.js): tests inject fakes there.
@@ -41,7 +45,7 @@ function requireOwnership(record, learnerId) {
 
 /* ---------------- practice drills (slice 1, contracts §8–§10) ---------------- */
 
-export async function startDrill(learnerId, { domainId, competencyId, questionCount, difficulty, onlyMissed }) {
+export async function startDrill(learnerId, { domainId, competencyId, questionCount, difficulty, onlyMissed, runId = null }) {
   if (![5, 10, 20].includes(questionCount)) {
     throw new ApiError(400, 'VALIDATION_FAILED', 'questionCount must be 5, 10, or 20.');
   }
@@ -103,11 +107,23 @@ export async function startDrill(learnerId, { domainId, competencyId, questionCo
     startedAt: nowIso(),
     submittedAt: null,
     answers: {}, // index -> { questionVersionId, selectedOption, isCorrect, answeredAt, timeSpentSeconds }
+    // #75: the smoke run that created this record, or null outside a run. It is stamped from a run
+    // the caller was proven to OWN — never from the request body — so cleanup is scoped to learner
+    // AND run without any input naming either.
+    runId,
   };
-  const session = { practiceSessionId: sessionId, attemptId, learnerId };
+  const session = { practiceSessionId: sessionId, attemptId, learnerId, runId };
 
-  await db().saveAttempt(attempt);
-  await db().saveSession(session);
+  if (runId) {
+    // Conditional on the run still being active: the dispatcher's check happened before this
+    // handler ran, and on its own it leaves a window in which cleanup can complete underneath us.
+    const ok = (await db().saveSmokeScopedRecord({ runId, kind: 'attempt', record: attempt }))
+      && (await db().saveSmokeScopedRecord({ runId, kind: 'session', record: session }));
+    if (!ok) throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+  } else {
+    await db().saveAttempt(attempt);
+    await db().saveSession(session);
+  }
 
   return {
     practiceSessionId: sessionId,
@@ -330,7 +346,7 @@ async function sweepActiveMock(learnerId) {
   return { mock, attempt };
 }
 
-export async function startMockExam(learnerId) {
+export async function startMockExam(learnerId, { runId = null } = {}) {
   // One-active-mock is enforced by an ATOMIC per-learner claim on the repository port (#77) —
   // never list-then-create. The sweep first finalizes an expired claim so a learner can restart.
   const active = await sweepActiveMock(learnerId);
@@ -341,7 +357,19 @@ export async function startMockExam(learnerId) {
   }
 
   const mockExamId = await db().nextId('mock');
-  if (!(await db().claimActiveMock(learnerId, mockExamId))) {
+  let claimed;
+  try {
+    claimed = await db().claimActiveMock(learnerId, mockExamId, { runId });
+  } catch (err) {
+    // The run stopped accepting records between the dispatcher check and this write. That is a
+    // closed run, not a lost race — reporting it as MOCK_EXAM_IN_PROGRESS would send the caller
+    // looking for a mock that does not exist.
+    if (err instanceof RepositoryConflictError) {
+      throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+    }
+    throw err;
+  }
+  if (!claimed) {
     // Lost a concurrent race: surface the winner's mock, exactly like the sequential case.
     const winnerId = await db().getActiveMock(learnerId);
     throw new ApiError(409, 'MOCK_EXAM_IN_PROGRESS', 'A mock exam is already in progress — resume it instead.', {
@@ -378,10 +406,17 @@ export async function startMockExam(learnerId) {
     expiresAt: new Date(startedAt.getTime() + exam.timeLimitSeconds * 1000).toISOString(),
     submittedAt: null,
     answers: {}, // index -> { questionVersionId, selectedOption|null, flagged, answeredAt } — isCorrect only at submit
+    runId, // #75 — see startDrill
   };
-  const mock = { mockExamId, attemptId, learnerId, autoSubmitted: false };
-  await db().saveAttempt(attempt);
-  await db().saveMock(mock);
+  const mock = { mockExamId, attemptId, learnerId, autoSubmitted: false, runId };
+  if (runId) {
+    const ok = (await db().saveSmokeScopedRecord({ runId, kind: 'attempt', record: attempt }))
+      && (await db().saveSmokeScopedRecord({ runId, kind: 'mock', record: mock }));
+    if (!ok) throw new ApiError(409, 'RUN_CLOSED', 'This smoke run stopped accepting records.');
+  } else {
+    await db().saveAttempt(attempt);
+    await db().saveMock(mock);
+  }
 
   return {
     mockExamId,
@@ -718,4 +753,194 @@ export async function learnerAttemptStats(learnerId) {
     }
   }
   return { attempts, perDomain };
+}
+
+
+/**
+ * Mint a smoke run for the authenticated learner (#75).
+ *
+ * The run is a RECORD, not a token claim: a Cognito access token cannot carry a per-run value
+ * without infrastructure this issue may not introduce, and a design whose identity can never be
+ * issued is not a design. Ownership is what the record establishes, so a later reference to this
+ * run id proves nothing on its own.
+ */
+export async function startSmokeRun(learnerId) {
+  if (typeof learnerId !== 'string' || learnerId === '') {
+    throw new ApiError(401, 'UNAUTHENTICATED', 'A smoke run requires an authenticated learner.');
+  }
+  // Random, not sequential: a guessable run id would let one caller reference another's run, and
+  // the ownership check would then be the only thing standing between them.
+  const runId = `run-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  // Abandoned runs need a bound too: a run that is never cleaned up would otherwise keep learner
+  // ownership forever. It gets the same retention from creation, and completion re-anchors it.
+  const startedMs = now();
+  const run = {
+    runId,
+    learnerId,
+    status: 'active',
+    startedAt: new Date(startedMs).toISOString(),
+    writeDeadlineAt: new Date(startedMs + SMOKE_WRITE_WINDOW_MS).toISOString(),
+    ownershipExpiresAt: new Date(startedMs + SMOKE_OWNERSHIP_MS).toISOString(),
+  };
+  await db().saveSmokeRun(run);
+  // R6 mint order: run, then lease, then stamp — and only then success. A failure past this point
+  // leaves an orphan run that is bounded by its own ttl and whose id is never returned, so the
+  // failure direction is always a run that cannot be used, never data that cannot expire.
+  await bindProfileToSmokeRun(learnerId, runId);
+  return run;
+}
+
+/**
+ * Bind the learner's profile retention to a smoke run (#75 R6).
+ *
+ * Runs in the trusted server context at mint — the repository never accepts smoke classification
+ * from request data or from a profile record. The horizon is read from the STORED run, never
+ * supplied: an absent, ownership-expired or mismatched run is refused outright.
+ *
+ * The lease is written whether or not a profile exists yet, which is what covers a learner who
+ * mints before their first /api/me: bootstrap consumes the lease at creation, so there is no window
+ * in which an unbounded smoke profile can exist. An existing profile is stamped monotonically.
+ */
+export async function bindProfileToSmokeRun(learnerId, runId) {
+  const run = await db().getSmokeRun(runId);
+  if (!run || run.learnerId !== learnerId || runOwnershipExpired(run)) {
+    throw new ApiError(403, 'FORBIDDEN', 'This smoke run does not belong to the caller.');
+  }
+  const horizon = run.ownershipExpiresAt;
+  // The lease returns the WINNING horizon — this run's, or a newer concurrent run's. The stamp
+  // must use that value: stamping this run's own horizon after losing the race left the profile's
+  // anchor and physical ttl short of the effective lease horizon.
+  const lease = await db().extendSmokeLease({ learnerId, retainUntil: horizon });
+  await db().stampProfileRetention({ learnerId, retainUntil: lease.retainUntil });
+  return { runId, retainUntil: lease.retainUntil };
+}
+
+/**
+ * Resolve a referenced run id to a run this learner owns, or `null`.
+ *
+ * `null` for unknown AND for someone else's run, deliberately: distinguishing them would tell a
+ * caller which run ids exist.
+ */
+export async function ownedSmokeRun(learnerId, runId) {
+  if (!isValidSmokeRunId(runId) || typeof learnerId !== 'string' || learnerId === '') return null;
+  const run = await db().getSmokeRun(runId);
+  if (!run || run.learnerId !== learnerId) return null;
+  // TTL is eventually consistent, so the application decides. Scoped to OWNERSHIP: a run past its
+  // write deadline is still cleanable, and that is the point.
+  if (runOwnershipExpired(run)) return null;
+  return run;
+}
+
+/** How many times cleanup retries a contended delete before reporting the run incomplete. */
+const CLEANUP_ATTEMPTS = 3;
+
+/**
+ * How long a completed run tombstone is retained (#75, SEC-DATA-01).
+ *
+ * The tombstone keeps ownership alive so a replay stays deterministic, and ownership is learner
+ * data — it cannot be kept forever. Seven days comfortably outlives any #70 retry window while
+ * still being bounded, and DynamoDB TTL enforces it in the managed adapter.
+ *
+ * TTL is a CLEANUP mechanism, never an authorization one: `runIsClosed` refuses a completed run
+ * immediately, so nothing depends on when the row actually disappears.
+ */
+export const SMOKE_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * The three clocks of the approved retention model (design revision 6).
+ *
+ * They answer three DIFFERENT questions, which is why one field could not serve them: collapsing
+ * write eligibility into cleanup authority made cleanup unreachable exactly when it was needed.
+ * Ownership deliberately outlives child retention by a day, so there is always a window in which
+ * the children still exist and the run that owns them can still be named.
+ */
+export const SMOKE_WRITE_WINDOW_MS = 24 * 60 * 60 * 1000;      // may new records join this run?
+export const SMOKE_OWNERSHIP_MS = 8 * 24 * 60 * 60 * 1000;     // may this run still be cleaned up?
+export const SMOKE_CHILD_RETENTION_MS = SMOKE_RUN_RETENTION_MS; // how long a child record lives
+
+/**
+ * May this run still accept new records?
+ *
+ * Closed OR past the write deadline. A malformed deadline fails closed: a run whose bound cannot be
+ * read is not a run with no bound.
+ */
+export function runIsClosed(run, atMs = now()) {
+  if (!run) return true;
+  if (run.status !== 'active') return true;
+  const deadline = parseInstant(run.writeDeadlineAt);
+  return deadline === null || atMs >= deadline;
+}
+
+/**
+ * May this run still be cleaned up?
+ *
+ * Ownership, NOT the write deadline. Cleanup against a write-expired run is the manual-recovery
+ * path after a cancelled workflow, and refusing it would strand the data it was meant to remove.
+ */
+export function runOwnershipExpired(run, atMs = now()) {
+  const horizon = parseInstant(run?.ownershipExpiresAt);
+  return horizon === null || atMs >= horizon;
+}
+
+/**
+ * Delete every record a smoke RUN created for the authenticated smoke LEARNER (#75).
+ *
+ * Provider-neutral: it validates the scope, retries, verifies, and delegates the physical deletion
+ * to the repository port.
+ *
+ * COMPLETENESS IS VERIFIED, NOT INFERRED. The adapter deletes conditionally on the revision it
+ * read, so a record written between the read and the delete is skipped. Counting deletions cannot
+ * distinguish "nothing existed" from "something survived contention" — both report zero — and a
+ * partial cleanup that answers 200 would let a run be promoted with records left behind. So after a
+ * bounded retry the scope is queried again, and anything still matching makes this a failure with
+ * the leftovers named by class.
+ */
+export async function cleanupSmokeRun(learnerId, runId) {
+  if (typeof learnerId !== 'string' || learnerId === '') {
+    throw new ApiError(401, 'UNAUTHENTICATED', 'Cleanup requires an authenticated learner.');
+  }
+  if (!isValidSmokeRunId(runId)) {
+    throw new ApiError(400, 'VALIDATION_FAILED', 'A smoke run id is required.');
+  }
+
+  // CLOSE FIRST. Every smoke-scoped write is conditional on the run being active, so moving it out
+  // of `active` before deleting anything is what stops a write that already passed the dispatcher
+  // check from committing after this call reports success.
+  await db().closeSmokeRun(runId);
+
+  const deleted = { practiceSessions: 0, mockExams: 0, attempts: 0, answers: 0, projections: 0 };
+  let remaining = null;
+  for (let attempt = 0; attempt < CLEANUP_ATTEMPTS; attempt++) {
+    const round = await db().deleteSmokeRunData({ learnerId, runId });
+    for (const key of Object.keys(deleted)) deleted[key] += round[key] ?? 0;
+    remaining = await db().countSmokeRunRecords({ learnerId, runId });
+    if (remaining.practiceSessions + remaining.mockExams + remaining.attempts === 0) {
+      // Finalized ONLY here — after the scope has been re-queried and proven empty. Marking the run
+      // complete inside the delete marked it finished while a projection was still pending and
+      // before anything was verified, so a failure in between produced a run that looked done.
+      // The tombstone anchor is FRESH from completion, not inherited from either active clock —
+      // a run completed on day six gets seven more days, not the one it had left.
+      // ONE clock read for both. Two reads let a moving clock make the retention window differ
+      // from exactly seven days after the recorded completion — small, but it means the anchor and
+      // the horizon describe different instants.
+      const completedMs = now();
+      await db().completeSmokeRun({
+        runId,
+        completedAt: toInstant(completedMs),
+        expiresAt: toInstant(completedMs + SMOKE_RUN_RETENTION_MS),
+      });
+      // The run id is echoed because #70 correlates the summary with the run it just executed; the
+      // learner id is NOT, because the response is written into a workflow log.
+      return { runId, deleted, completedAt: toInstant(completedMs) };
+    }
+  }
+
+  // Observable, and it blocks: the design (§6) makes a failed cleanup a failed run even when every
+  // gate passed. Leftovers are reported per CLASS — never ids — so the summary says what survived
+  // without naming a learner's records.
+  throw new ApiError(409, 'CLEANUP_INCOMPLETE', 'Cleanup could not remove every record for this run.', {
+    runId,
+    deleted,
+    remaining,
+  });
 }

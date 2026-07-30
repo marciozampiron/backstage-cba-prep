@@ -35,6 +35,9 @@ const EXPECTED_ROUTES = [
   'GET /api/attempts/{id}/results',
   'GET /api/attempts/{id}/missed',
   'POST /api/coach/message',
+  // #75 smoke-run cleanup — server-side only, called by #70 from a workflow job.
+  'POST /api/smoke-runs',
+  'DELETE /api/smoke-runs/{runId}/data',
 ].sort();
 
 test('function: node22 runtime, fail-closed auth env, dynamodb-only runtime config', () => {
@@ -78,7 +81,15 @@ test('IAM: exactly item-CRUD on the table ARN and Query on the gsi1 index ARN �
   const crud = dynamo.find((s) => s.Sid === 'ItemCrudOnExactTable');
   assert.deepEqual(
     [...crud.Action].sort(),
-    ['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem'],
+    [
+      'dynamodb:DeleteItem',
+      'dynamodb:GetItem',
+      'dynamodb:PutItem',
+      // #75: smoke-scoped writes commit the record and the run's state together. Scoped to the
+      // exact table ARN like every other item action — never a wildcard resource.
+      'dynamodb:TransactWriteItems',
+      'dynamodb:UpdateItem',
+    ],
   );
   const query = dynamo.find((s) => s.Sid === 'QueryOnExactGsi1Only');
   assert.equal(query.Action, 'dynamodb:Query');
@@ -288,7 +299,7 @@ test('authorizer: exactly one JWT authorizer reading the Authorization header', 
 test('routes: EVERY route requires the JWT authorizer except public readiness', () => {
   const t = apiTemplate('pilot');
   const routes = Object.values(t.findResources('AWS::ApiGatewayV2::Route'));
-  assert.equal(routes.length, 15, 'authorizer wiring must not add or drop routes');
+  assert.equal(routes.length, 17, 'authorizer wiring must not add or drop routes');
   for (const route of routes) {
     const key = route.Properties.RouteKey;
     if (key === 'GET /api/readiness') {
@@ -307,4 +318,22 @@ test('missing identity references fail construction (no authorizer-less authenti
     () => new ApiStack(app, 'ApiStack', { table: { tableArn: 'arn:fake', tableName: 'fake' } }),
     /requires the IdentityStack userPool/,
   );
+});
+
+test('the #75 cleanup surface is authenticated and stays off the browser CORS methods', () => {
+  const t = apiTemplate('dev', { corsAllowedOrigins: '["https://dev.example.test"]' });
+  const routes = Object.values(t.findResources('AWS::ApiGatewayV2::Route'));
+  const cleanupRoutes = routes.filter((r) => r.Properties.RouteKey.includes('/api/smoke-runs'));
+  assert.equal(cleanupRoutes.length, 2, 'mint and cleanup');
+  for (const route of cleanupRoutes) {
+    // It deletes data. An unauthenticated caller must not even reach the dispatcher.
+    assert.equal(route.Properties.AuthorizationType, 'JWT', route.Properties.RouteKey);
+    assert.ok(route.Properties.AuthorizerId, route.Properties.RouteKey);
+  }
+
+  // #70 is a SERVER-SIDE caller, so DELETE never enters the browser preflight surface. Adding it
+  // would widen what a browser may attempt against the learner API for no caller that exists.
+  const api = Object.values(t.findResources('AWS::ApiGatewayV2::Api'))[0];
+  assert.deepEqual(api.Properties.CorsConfiguration.AllowMethods, ['GET', 'POST', 'PUT']);
+  assert.equal(api.Properties.CorsConfiguration.AllowMethods.includes('DELETE'), false);
 });

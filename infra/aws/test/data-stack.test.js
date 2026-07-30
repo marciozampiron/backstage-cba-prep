@@ -86,3 +86,12 @@ test('no literal 12-digit account id in the synthesized template', () => {
   const flat = JSON.stringify(synth('pilot').toJSON());
   assert.ok(!/\b\d{12}\b/.test(flat), 'pseudo parameters only');
 });
+
+test('the table has TTL for the #75 run tombstones', () => {
+  for (const env of ['dev', 'pilot']) {
+    const table = tableOf(synth(env));
+    // Completed run tombstones keep ownership alive so a cleanup replay stays deterministic, and
+    // ownership is learner data — bounded retention is required (SEC-DATA-01).
+    assert.deepEqual(table.Properties.TimeToLiveSpecification, { AttributeName: 'ttl', Enabled: true }, env);
+  }
+});

@@ -123,3 +123,19 @@ test('invalid environment fails construction; no literal account ids synthesize'
   const flat = JSON.stringify(identityTemplate('pilot').toJSON());
   assert.ok(!/\b\d{12}\b/.test(flat), 'no literal account id');
 });
+
+test('the #75 smoke group exists, and membership is NOT assigned by CI', () => {
+  const t = identityTemplate('pilot');
+  const groups = Object.values(t.findResources('AWS::Cognito::UserPoolGroup'));
+  assert.equal(groups.length, 1, 'exactly one capability group');
+  assert.equal(groups[0].Properties.GroupName, 'cba-smoke');
+
+  // The capability the BFF reads from `cognito:groups` has to be provisioned, or a deployed smoke
+  // learner just gets 403 and #70 is left inventing an untracked step.
+  //
+  // Membership, however, is a human-gated operator action done once per environment — attaching a
+  // user here would mean the deploy role could grant the capability, which is exactly the Cognito
+  // admin permission this contract keeps out of CI.
+  assert.equal(Object.keys(t.findResources('AWS::Cognito::UserPoolUserToGroupAttachment')).length, 0);
+  assert.equal(Object.keys(t.findResources('AWS::Cognito::UserPoolUser')).length, 0);
+});

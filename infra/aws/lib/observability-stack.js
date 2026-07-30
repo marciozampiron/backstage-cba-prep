@@ -67,6 +67,10 @@ const DYNAMO_ALARMED_OPERATIONS = [
   dynamodb.Operation.QUERY,
   dynamodb.Operation.UPDATE_ITEM,
   dynamodb.Operation.DELETE_ITEM,
+  // #75: smoke-scoped writes go through a transaction, and `TransactWriteItems` IS a DynamoDB
+  // metric Operation dimension. Leaving it out made the release-blocking alarm blind to server-side
+  // failures on exactly the newest write path.
+  dynamodb.Operation.TRANSACT_WRITE_ITEMS,
 ];
 
 /** SNS reads for O1, scoped to the exact environment topic. */
