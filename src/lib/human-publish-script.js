@@ -383,7 +383,10 @@ printf '%s' "$gate_id" | grep -Eqi 'akia[0-9a-z]{16}|ghp_|gho_|github_pat_|eyj[0
   && die "the execution gate id looks like it contains credential material and was refused unprinted"
 printf '%s' "$gate_digest" | grep -Eq '^[0-9a-f]{64}$' \\
   || die "the execution gate artifact digest must be 64 lowercase hex characters"
-printf '%s' "$gate_expires" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' \\
+# \`\\\\.\` and not \`\\.\`: this is a template literal, and JavaScript renders an unrecognised \`\\.\`
+# as a bare \`.\`, which in an ERE matches ANY character. The fraction separator would then accept
+# \`,123\`, \`X123\` or \` 123\`, and the artifact would be laxer than the Stage A regex it mirrors.
+printf '%s' "$gate_expires" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' \\
   || die "the execution gate expiry must be strict RFC3339 with Z or an offset"
 gate_json -e '.commits | type == "array" and length > 0 and all(test("^[0-9a-f]{40}$"))' >/dev/null 2>&1 \\
   || die "the execution gate commits must be a non-empty array of full lowercase 40-character SHAs"
