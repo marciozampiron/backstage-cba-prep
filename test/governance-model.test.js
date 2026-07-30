@@ -1886,39 +1886,87 @@ test('a closed handoff lives in done/, and the guard follows the file rather tha
   assert.ok(REQUIRED_SURFACES.includes(rel), 'the code-side required set must name the done/ path');
 });
 
-test('the #70 handoff carries both deploy preflight conditions #69 registered against it', () => {
-  // #69 registered two binding conditions on #70 and then closed. A transfer that keeps the domain
-  // DECISION but drops the preflight loses them silently: deciding the origin makes the values
-  // knowable, supplying and verifying them is what clears the deploy. This is a narrow contract on
-  // two labelled clauses — NOT a prose parser. Each clause is identified by its id, and each must
-  // name the specific thing it guards, so rewording the surrounding text stays free while deleting
-  // or hollowing out a condition fails.
-  const text = read('.agent-handoff/inbox/70-cloudflare-aws-deploy-pipeline.md');
+/**
+ * The two binding deploy conditions #69 registered against #70, checked on SUPPLIED text.
+ *
+ * It takes text rather than reading the file so the contract can be exercised against a mutation in
+ * memory. That is the difference between proving a rule holds and proving it BITES: the previous
+ * version of this check read the file itself, so every regression had to be staged on disk, and the
+ * one property nobody staged — the ordering — went unasserted. Turning `fail before` into
+ * `fail after` passed.
+ *
+ * Narrow and deterministic, not a prose parser: two labelled clauses, the specific thing each one
+ * guards, and the ordering. Rewording the surrounding text stays free.
+ *
+ * @param {string} text
+ * @returns {string[]} one message per violated rule; empty means the contract holds
+ */
+function preflightContractErrors(text) {
+  const errors = [];
 
-  const clause = (id) => {
-    const m = new RegExp(`\\*\\*${id}\\*\\*([\\s\\S]*?)(?=\\n- \\*\\*|\\n#{2,3} )`).exec(text);
-    assert.ok(m, `${id} must be present as a labelled clause in the #70 handoff`);
-    return m[1];
-  };
+  // ORDERING. A preflight that fails AFTER `cdk deploy` is not a preflight: by then the User Pool
+  // domain exists. Every ordering statement must say `before`, and at least one must exist — an
+  // absent statement is as bad as a wrong one.
+  const ordering = [...text.matchAll(/fail\s+(\w+)\s+`cdk deploy`/g)].map((m) => m[1]);
+  if (ordering.length === 0) {
+    errors.push('the preflight must state that it fails BEFORE `cdk deploy` runs');
+  }
+  for (const word of ordering) {
+    if (word !== 'before') errors.push(`the preflight must fail BEFORE \`cdk deploy\`, not ${word}`);
+  }
 
   for (const [id, required] of [
     // Must refuse on the RESOLVED value: a committed default and a failed override look identical.
-    ['PREFLIGHT-1', ['.invalid', 'authCallbackUrls', 'authLogoutUrls', 'cdk deploy']],
+    ['PREFLIGHT-1', ['.invalid', 'authCallbackUrls', 'authLogoutUrls', 'refuse to run `cdk deploy`']],
     // Must require BOTH explicit supply and regional uniqueness — either alone is not the condition.
-    ['PREFLIGHT-2', ['authDomainPrefix', 'explicitly', 'unique', 'region', 'cdk deploy']],
+    ['PREFLIGHT-2', ['authDomainPrefix', 'explicitly', 'unique', 'region', 'refuse to run `cdk deploy`']],
   ]) {
-    const body = clause(id);
+    const m = new RegExp(`\\*\\*${id}\\*\\*([\\s\\S]*?)(?=\\n- \\*\\*|\\n#{2,3} )`).exec(text);
+    if (!m) {
+      errors.push(`${id} must be present as a labelled clause`);
+      continue;
+    }
     for (const token of required) {
-      assert.ok(body.includes(token), `${id} must name ${token}`);
+      if (!m[1].includes(token)) errors.push(`${id} must name ${token}`);
     }
   }
 
   // The preflight binds every lane, not just the pilot one that first needed it.
-  assert.match(
-    text,
-    /applies to EVERY deploy lane/,
-    'the preflight section must state that it binds every deploy lane',
-  );
+  if (!/applies to EVERY deploy lane/.test(text)) {
+    errors.push('the preflight must state that it binds every deploy lane');
+  }
+
+  return errors;
+}
+
+test('the #70 handoff carries both deploy preflight conditions #69 registered against it', () => {
+  // #69 registered two binding conditions on #70 and then closed. A transfer that keeps the domain
+  // DECISION but drops the preflight loses them silently: deciding the origin makes the values
+  // knowable, supplying and verifying them is what clears the deploy.
+  const text = read('.agent-handoff/inbox/70-cloudflare-aws-deploy-pipeline.md');
+  assert.deepEqual(preflightContractErrors(text), [], 'the real #70 handoff must satisfy the contract');
+});
+
+test('POSITIVE CONTROL: the preflight contract rejects each way it can be hollowed out', () => {
+  const text = read('.agent-handoff/inbox/70-cloudflare-aws-deploy-pipeline.md');
+  const rejects = (mutated, why) => {
+    assert.notDeepEqual(preflightContractErrors(mutated), [], `must be rejected: ${why}`);
+  };
+
+  // The ordering. This is the mutation the file-reading version of this check could not see: the
+  // clauses, the tokens and the every-lane sentence all survive it, and the guard still passed.
+  rejects(text.replace('fail before `cdk deploy`', 'fail after `cdk deploy`'), 'before -> after');
+  rejects(text.replace(/fail before `cdk deploy` runs/, 'fail when convenient'), 'ordering removed');
+
+  // The clauses, and the specific thing each one guards.
+  rejects(text.replace('**PREFLIGHT-1**', '**GONE-1**'), 'PREFLIGHT-1 deleted');
+  rejects(text.replace('**PREFLIGHT-2**', '**GONE-2**'), 'PREFLIGHT-2 deleted');
+  rejects(text.replace('**explicitly\n  supplied**', '**supplied**'), 'explicit supply dropped');
+  rejects(text.split('unique').join('set'), 'regional uniqueness dropped');
+  rejects(text.replace(/refuse to run `cdk deploy` if `\.invalid`/, 'refuse if `.invalid`'), 'PREFLIGHT-1 loses its anchor');
+
+  // The scope.
+  rejects(text.replace('applies to EVERY deploy lane', 'applies to the pilot lane'), 'narrowed to pilot');
 });
 
 test('a link-only surface may not define authority, and must point at the contract', () => {
