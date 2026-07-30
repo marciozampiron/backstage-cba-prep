@@ -11,7 +11,7 @@ import {
   FileSimulationRepository,
 } from '../src/repository.js';
 
-export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {}) {
+export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor, inProcess } = {}) {
   test(`${name}: nextId is awaitable, unique, and prefix-scoped`, async () => {
     const repo = await makeRepo();
     const a = await repo.nextId('att');
@@ -641,6 +641,76 @@ export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor } = {
     assert.equal(next.retainUntil, fresh);
   });
 
+  /* ---------------- #75 R6 items 2, 5 and 13 ---------------- */
+
+  test(`${name}: at 8d+1h ownership is gone and no child is reachable publicly`, async () => {
+    // R6 item 2. Ownership outlives child retention by a day, so the LAST thing to go is the run —
+    // and past it nothing may still be reachable through the ordinary read paths.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-ownership-end', ANCHOR_RUN);
+    await repo.saveSession({ practiceSessionId: 'ps_own', attemptId: 'att_anchor', learnerId: 'l-ownership-end', runId: ANCHOR_RUN });
+    await repo.saveMock({ mockExamId: 'mock_own', attemptId: 'att_anchor', learnerId: 'l-ownership-end', runId: ANCHOR_RUN });
+
+    repo.now = () => Date.now() + 8 * 864e5 + 3600e3; // 8d + 1h
+    const run = await repo.getSmokeRun(ANCHOR_RUN);
+    assert.ok(run, 'the physical run row may still be there');
+
+    // No child is reachable through any public accessor.
+    assert.equal(await repo.getAttempt('att_anchor'), null);
+    assert.equal(await repo.getSession('ps_own'), null);
+    assert.equal(await repo.getMock('mock_own'), null);
+    assert.deepEqual(await repo.listAttempts('l-ownership-end'), []);
+    assert.deepEqual(await repo.listMocks('l-ownership-end'), []);
+  });
+
+  test(`${name}: a cleanup that fails during closing keeps its bound and a retry converges`, async () => {
+    // R6 item 5. The row must not lose or slide its horizon because a pass failed midway.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-closing', ANCHOR_RUN);
+    const before = await repo.getSmokeRun(ANCHOR_RUN);
+
+    await repo.closeSmokeRun(ANCHOR_RUN);
+    const closing = await repo.getSmokeRun(ANCHOR_RUN);
+    assert.equal(closing.status, 'closing');
+    assert.equal(closing.ownershipExpiresAt, before.ownershipExpiresAt, 'the horizon must not move');
+
+    // Closing is idempotent, and a retry finishes the job.
+    await repo.closeSmokeRun(ANCHOR_RUN);
+    assert.equal((await repo.getSmokeRun(ANCHOR_RUN)).ownershipExpiresAt, before.ownershipExpiresAt);
+    const deleted = await repo.deleteSmokeRunData({ learnerId: 'l-closing', runId: ANCHOR_RUN });
+    assert.ok(deleted.attempts >= 1, 'the retry converges');
+  });
+
+  // R6 item 13, in-process adapters only. A crossing AFTER the managed adapter's snapshot is not
+  // detectable there — DynamoDB offers no server clock in a ConditionExpression, and claiming
+  // otherwise would be a guarantee the table does not provide. The managed adapter's own tests cover
+  // what it CAN guarantee: the snapshot is taken after the run read, and the transaction pins the
+  // status and stored horizon so a run that closed or moved fails regardless of skew.
+  const crossingTest = inProcess ? test : test.skip;
+  crossingTest(`${name}: a claim crossing the write deadline mid-request is refused`, async () => {
+    // The entry check is not enough: the clock can cross the deadline during the await that
+    // precedes the mutation, so the fence is restated immediately before the write.
+    const repo = await makeRepo();
+    await seedChild(repo, 'l-cross-local', ANCHOR_RUN);
+    const deadline = Date.parse((await repo.getSmokeRun(ANCHOR_RUN)).writeDeadlineAt);
+
+    let crossed = false;
+    const realGet = repo.getActiveMock.bind(repo);
+    repo.getActiveMock = async (learnerId) => {
+      const held = await realGet(learnerId);
+      if (!crossed) { crossed = true; repo.now = () => deadline; } // crosses inside the await
+      return held;
+    };
+
+    await assert.rejects(
+      () => repo.claimActiveMock('l-cross-local', 'mock_cross', { runId: ANCHOR_RUN }),
+      (err) => err.name === 'RepositoryConflictError',
+      'the claim must be refused after the crossing, not written',
+    );
+    repo.getActiveMock = realGet;
+    assert.equal(await repo.getActiveMock('l-cross-local'), null, 'and nothing was written');
+  });
+
   if (reopen) {
     test(`${name}: a cleaned-up run stays cleaned up across re-instantiation`, async () => {
       const repo = await makeRepo();
@@ -709,14 +779,14 @@ const corruptLocalAnchor = async (repo, type, id, value) => {
   repo.persist();
 };
 
-runRepositorySuite('memory', async () => new InMemorySimulationRepository(), { corruptAnchor: corruptLocalAnchor });
+runRepositorySuite('memory', async () => new InMemorySimulationRepository(), { corruptAnchor: corruptLocalAnchor, inProcess: true });
 
 const tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'cba-repo-suite-'));
 let fileCounter = 0;
 runRepositorySuite(
   'file',
   async () => new FileSimulationRepository(path.join(tmpRoot, `s${++fileCounter}`, 'simulation.json')),
-  { reopen: async (repo) => new FileSimulationRepository(repo.filePath), corruptAnchor: corruptLocalAnchor },
+  { reopen: async (repo) => new FileSimulationRepository(repo.filePath), corruptAnchor: corruptLocalAnchor, inProcess: true },
 );
 
 test('file suite cleanup', () => {

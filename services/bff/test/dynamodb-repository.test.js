@@ -885,3 +885,106 @@ test('a renewal concurrent with an expired-lease write fails the pin and stamps 
   assert.equal(item.record.retainUntil, renewed, 'the retry stamped from the RENEWED lease');
   assert.equal(item.ttl, Math.floor(Date.parse(renewed) / 1000));
 });
+
+/* ============================ R6: the run's physical ttl per state =========================== */
+
+function runItem(store, runId) {
+  return [...store.items.values()].find((i) => i.pk === `SMOKERUN#${runId}`);
+}
+
+test('the run ttl mirrors ownership in active and closing, and the tombstone at completion', async () => {
+  // `ttl` was read from run.expiresAt unconditionally — a field that only exists AFTER completion —
+  // so an ACTIVE or abandoned run was written with no ttl at all, while a comment claimed otherwise.
+  // And closing rewrote the row without restating it, dropping the attribute: a cleanup failing
+  // midway left a `closing` run with no physical bound.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const base = Date.parse('2026-07-29T00:00:00Z');
+  let clock = base;
+  repo.now = () => clock;
+
+  const ownership = new Date(base + 8 * 864e5).toISOString();
+  await repo.saveSmokeRun({
+    runId: 'run-ttlstates00000000',
+    learnerId: 'l-ttlstates',
+    status: 'active',
+    writeDeadlineAt: new Date(base + 864e5).toISOString(),
+    ownershipExpiresAt: ownership,
+  });
+  const ownershipTtl = Math.floor(Date.parse(ownership) / 1000);
+  assert.equal(runItem(store, 'run-ttlstates00000000').ttl, ownershipTtl, 'active mirrors ownership');
+
+  await repo.closeSmokeRun('run-ttlstates00000000');
+  assert.equal(runItem(store, 'run-ttlstates00000000').record.status, 'closing');
+  assert.equal(runItem(store, 'run-ttlstates00000000').ttl, ownershipTtl, 'closing does not slide or drop it');
+
+  // Completion re-anchors ONCE, to the tombstone horizon.
+  clock = base + 6 * 864e5;
+  const expiresAt = new Date(clock + 7 * 864e5).toISOString();
+  await repo.completeSmokeRun({ runId: 'run-ttlstates00000000', completedAt: new Date(clock).toISOString(), expiresAt });
+  assert.equal(runItem(store, 'run-ttlstates00000000').ttl, Math.floor(Date.parse(expiresAt) / 1000));
+
+  // A REPLAY must not move it: first completion wins for the horizon, and the ttl follows it.
+  clock = base + 10 * 864e5;
+  await repo.completeSmokeRun({
+    runId: 'run-ttlstates00000000',
+    completedAt: new Date(clock).toISOString(),
+    expiresAt: new Date(clock + 7 * 864e5).toISOString(),
+  });
+  assert.equal(runItem(store, 'run-ttlstates00000000').ttl, Math.floor(Date.parse(expiresAt) / 1000),
+    'the replay must not slide the physical ttl');
+});
+
+test('a run with a missing or malformed horizon is refused, not written unbounded', async () => {
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  for (const horizon of [undefined, null, '', 'tomorrow', '2099', 42]) {
+    const run = { runId: 'run-nohorizon00000000', learnerId: 'l-nh', status: 'active' };
+    if (horizon !== undefined) run.ownershipExpiresAt = horizon;
+    await assert.rejects(
+      () => repo.saveSmokeRun(run),
+      (err) => err.reason === 'RUN_HORIZON_UNREADABLE',
+      JSON.stringify(horizon),
+    );
+    assert.equal(runItem(store, 'run-nohorizon00000000'), undefined, 'nothing unbounded was written');
+  }
+});
+
+test('the claim snapshot is taken AFTER the run read, so a crossing there is caught', async () => {
+  // R6 13, managed side — and stated honestly. DynamoDB exposes no server clock in a
+  // ConditionExpression, so `:now` is this process's reading and a clock advancing between the
+  // snapshot and the commit is NOT detectable by the table. What the transaction does guarantee is
+  // the PIN: a run that closed or moved its horizon in that window fails the condition regardless
+  // of skew (covered separately).
+  //
+  // What IS this adapter's responsibility is taking the snapshot late enough. Capturing it before
+  // the run read would miss a crossing that happens during the read; taken after, the crossing is
+  // caught by the adapter's own check.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const base = Date.parse('2026-07-29T00:00:00Z');
+  let clock = base;
+  repo.now = () => clock;
+  await repo.saveSmokeRun({
+    runId: 'run-crossclaim0000000',
+    learnerId: 'l-crossclaim',
+    status: 'active',
+    writeDeadlineAt: new Date(base + 60_000).toISOString(),
+    ownershipExpiresAt: new Date(base + 8 * 864e5).toISOString(),
+  });
+
+  const realGet = repo.client.get;
+  repo.client.get = async (params) => {
+    const res = await realGet(params);
+    // The clock crosses the deadline DURING the run read — before the snapshot is taken.
+    if (params.Key?.pk === 'SMOKERUN#run-crossclaim0000000') clock = base + 120_000;
+    return res;
+  };
+
+  await assert.rejects(
+    () => repo.claimActiveMock('l-crossclaim', 'mock_cross', { runId: 'run-crossclaim0000000' }),
+    (err) => err.name === 'RepositoryConflictError',
+    'a crossing before the snapshot must be caught',
+  );
+  assert.equal(await repo.getActiveMock('l-crossclaim'), null, 'and nothing was written');
+});

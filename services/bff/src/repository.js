@@ -241,7 +241,12 @@ export class InMemorySimulationRepository {
     // undefined and the fence checked nothing at all. A guard that cannot see its subject is not a
     // guard.
     this.#assertRunAccepts({ runId });
-    if (await this.getActiveMock(learnerId)) return false;
+    const held = await this.getActiveMock(learnerId); // ← the last await before the mutation
+    if (held) return false;
+    // REVALIDATED here, after that await and immediately before the write. Checking only at entry
+    // left a window the length of the await: the clock can cross `writeDeadlineAt` inside it, and
+    // the claim would land in a run that had already stopped accepting records.
+    this.#assertRunAccepts({ runId });
     // The deadline is copied from the STORED run, never chosen by the caller, so the claim can only
     // ever carry the horizon its own run is under.
     const deadline = runId ? this.state.smokeRuns[runId]?.writeDeadlineAt ?? null : null;

@@ -48,6 +48,28 @@ function runConditionFailed(err) {
   return reasons[0]?.Code === 'ConditionalCheckFailed';
 }
 
+/**
+ * The physical `ttl` for a run record, derived from the state it is in (#75 R6).
+ *
+ * `ttl` mirrors OWNERSHIP, never the write deadline, and is restated on every transition:
+ *   active / closing -> `ownershipExpiresAt`; completed -> `expiresAt`, anchored once at completion.
+ *
+ * The previous version read `run.expiresAt` unconditionally — a field that only exists AFTER
+ * completion — so an active or abandoned run was written with NO ttl at all, while a comment claimed
+ * the opposite. A missing or malformed horizon fails closed rather than writing an unbounded row:
+ * a run whose bound cannot be computed must not be persisted as one that has none.
+ */
+function runTtl(run) {
+  const source = run?.status === 'completed' ? run.expiresAt : run?.ownershipExpiresAt;
+  const horizon = parseInstant(source);
+  if (horizon === null) {
+    const err = new RepositoryConflictError('This run has no readable retention horizon and will not be written.');
+    err.reason = 'RUN_HORIZON_UNREADABLE';
+    throw err;
+  }
+  return { ttl: Math.floor(horizon / 1000) };
+}
+
 /** Did the RECORD's own condition fail? `CancellationReasons` index 1 is the record's Put. */
 function recordConditionFailed(err) {
   if (err?.name !== 'TransactionCanceledException') return false;
@@ -548,10 +570,7 @@ export class DynamoDbSimulationRepository {
   /* Logical readiness only: adapter kind + reachability — never table names/ARNs/account ids. */
   /* Smoke-run records (#75): a RUN item keyed like any other record, owned by its learner. */
   async saveSmokeRun(run) {
-    // Even an ACTIVE run carries a TTL: a run abandoned before cleanup would otherwise keep learner
-    // ownership forever.
-    const ttl = run.expiresAt ? { ttl: Math.floor(Date.parse(run.expiresAt) / 1000) } : {};
-    await this.#saveRecord('SMOKERUN', run.runId, run.learnerId, run, ttl);
+    await this.#saveRecord('SMOKERUN', run.runId, run.learnerId, run, runTtl(run));
   }
 
   async getSmokeRun(runId) {
@@ -591,6 +610,15 @@ export class DynamoDbSimulationRepository {
     // VALIDATED with the strict parser against ONE clock snapshot, before the transaction. Comparing
     // strings alone let `writeDeadlineAt: "tomorrow"` satisfy the condition and write a claim the
     // read path then had to hide — an unreadable bound must be refused, not written and papered over.
+    // A FRESH snapshot, taken after the run read — the last await before the transaction. Reusing
+    // an earlier reading would compare the deadline against a clock from before the read.
+    //
+    // WHAT THIS GUARANTEES, precisely: the transaction pins `status` and the EXACT stored
+    // `writeDeadlineAt`, so a run that closed or moved its horizon between the read and the commit
+    // makes the write fail. What it does NOT guarantee is a server-side time check at commit:
+    // DynamoDB exposes no server clock in a ConditionExpression, so `:now` is this process's
+    // reading. Clock skew is bounded by the application, not by the table — and the horizon pin is
+    // what makes that acceptable, because a closing run cannot be written to regardless of skew.
     const nowMs = this.now();
     const deadline = run?.writeDeadlineAt ?? null;
     const parsed = parseInstant(deadline);
@@ -664,7 +692,11 @@ export class DynamoDbSimulationRepository {
     if (!run) return null;
     if (run.status === 'active') {
       run.status = 'closing';
-      await this.#saveRecord('SMOKERUN', runId, run.learnerId, run);
+      // `runTtl` again, so closing carries the SAME horizon. Rewriting the row without it dropped
+      // the attribute entirely: a cleanup that failed midway left a `closing` run with no physical
+      // bound at all — the unbounded-retention defect the whole model exists to close, reached by
+      // a transition that merely forgot to restate it.
+      await this.#saveRecord('SMOKERUN', runId, run.learnerId, run, runTtl(run));
     }
     return run;
   }
@@ -685,7 +717,7 @@ export class DynamoDbSimulationRepository {
     run.expiresAt = run.expiresAt ?? expiresAt;
     run.status = 'completed';
     await this.#saveRecord('SMOKERUN', runId, run.learnerId, run, {
-      ttl: Math.floor(Date.parse(run.expiresAt) / 1000),
+      ...runTtl(run),
     });
     return run;
   }

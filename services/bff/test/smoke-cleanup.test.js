@@ -988,3 +988,38 @@ test('NEGATIVE: a malformed physical lease makes the mint a generic 409 with no 
   assert.equal('runId' in res.body, false, 'no run id may be exposed');
   assert.equal(JSON.stringify(res.body).toLowerCase().includes('lease'), false, 'the internal reason stays internal');
 });
+
+test('completion on day six anchors a FULL seven days, not the remainder', async () => {
+  // R6 item 3. The tombstone horizon must be FRESH from completion, not inherited from either
+  // active clock: a run completed on day six had one day of ownership left, and reusing that would
+  // have given the tombstone one day instead of seven.
+  const { configureRuntime: cfg, resetRuntime: reset } = await import('../src/runtime.js');
+  const { InMemorySimulationRepository: Mem } = await import('../src/repository.js');
+  const { startSmokeRun, cleanupSmokeRun, SMOKE_RUN_RETENTION_MS, SMOKE_OWNERSHIP_MS } =
+    await import('../src/store.js');
+
+  const base = Date.parse('2026-07-29T00:00:00Z');
+  let clock = base;
+  const repo = new Mem();
+  cfg({ repository: repo, now: () => clock });
+  try {
+    const run = await startSmokeRun('l-day-six');
+    const ownership = Date.parse((await repo.getSmokeRun(run.runId)).ownershipExpiresAt);
+
+    clock = base + 6 * 864e5; // day six: one day of ownership left
+    assert.ok(ownership - clock < SMOKE_RUN_RETENTION_MS, 'the fixture requires less than 7d remaining');
+
+    const result = await cleanupSmokeRun('l-day-six', run.runId);
+    const stored = await repo.getSmokeRun(run.runId);
+    assert.equal(
+      Date.parse(stored.expiresAt) - Date.parse(stored.completedAt),
+      SMOKE_RUN_RETENTION_MS,
+      'a full retention window from the completion instant',
+    );
+    assert.ok(Date.parse(stored.expiresAt) > ownership, 'and it reaches BEYOND the old ownership clock');
+    assert.equal(result.completedAt, stored.completedAt);
+    assert.equal(SMOKE_OWNERSHIP_MS > SMOKE_RUN_RETENTION_MS, true, 'ownership outlives child retention');
+  } finally {
+    reset();
+  }
+});

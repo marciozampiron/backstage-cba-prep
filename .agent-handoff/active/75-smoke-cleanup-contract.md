@@ -595,3 +595,57 @@ The reviewer's required mutation — restoring the old awaited read — now fail
 rewrite it passed. This is the third non-discriminating test I have written in this issue, and the
 pattern is the same each time: I verified that the fixed code passes, not that the broken code
 fails, and only the second check makes a regression worth anything.
+
+## R6 final parcel — the run's physical lifecycle, and residual zero
+
+### The run's `ttl` was never implemented
+
+R6 says `ttl` mirrors OWNERSHIP and is restated on every transition. None of the three did it:
+
+- `saveSmokeRun` read `run.expiresAt` unconditionally — a field that exists only AFTER completion —
+  so an ACTIVE or abandoned run was written with **no `ttl` at all**, while a comment beside it
+  claimed the opposite. That is the unbounded-retention defect the whole model exists to close,
+  surviving inside a comment that described the intention instead of the behaviour.
+- `closeSmokeRun` rewrote the row without restating it, dropping the attribute: a cleanup failing
+  midway left a `closing` run with no physical bound.
+- completion was correct.
+
+One `runTtl(run)` helper now derives it from the STATE — `ownershipExpiresAt` for active/closing,
+`expiresAt` for completed — and is used by all three writes. A missing or malformed horizon fails
+closed with `RUN_HORIZON_UNREADABLE`: a run whose bound cannot be computed must not be persisted as
+one that has none.
+
+### Item 13, stated honestly per adapter
+
+- **in-process adapters**: the fence is restated after the last await and immediately before the
+  mutation. The entry check alone left a window the length of that await.
+- **managed adapter**: the `:now` snapshot is taken AFTER the run read, so a crossing during the
+  read is caught; and the transaction pins `status` and the exact stored `writeDeadlineAt`, so a run
+  that closed or moved its horizon fails regardless of skew. A crossing AFTER the snapshot is **not**
+  detectable — DynamoDB exposes no server clock in a `ConditionExpression` — and the shared crossing
+  test is explicitly skipped there rather than asserting a guarantee the table does not provide.
+
+### R6 inventory — item by item
+
+| # | Item | Where |
+| --- | --- | --- |
+| 1 | 25h → writes refused, cleanup authorized | `smoke-cleanup` write-expired run |
+| 2 | 8d+1h → cleanup refused, no reachable child | `repository-behavior` ownership-end + expired-run refusal |
+| 3 | day-six completion → full 7d from `completedAt` | `smoke-cleanup` day-six anchor |
+| 4 | replay → `expiresAt` unchanged | `smoke-cleanup` tombstone-not-slid + run-ttl replay |
+| 5 | failure during `closing` → `ttl` kept, retry converges | `repository-behavior` closing + `dynamodb` ttl-per-state |
+| 6 | claim absent at 25h with the row present; new claim succeeds | `repository-behavior` logical reclaim + exact-deadline handover |
+| 7 | claim with a mismatched deadline → refused | `dynamodb` deadline drift between read and transaction |
+| 8 | child anchor survives updates; supplied/removed/mutated/malformed never adopted | `repository-behavior` anchor suite |
+| 9 | expired child hidden, found by cleanup, verification cannot report zero | `repository-behavior` expired-child |
+| 10 | `runId` + missing/malformed anchor → hidden everywhere, cleanup still reaches | `repository-behavior` corrupted-anchor |
+| 11a–f | lease lifecycle | `repository-behavior` lease suite + `smoke-cleanup` bind refusals |
+| 12 | profile: pre-existing, reverse order, race, ordinary untouched | `smoke-cleanup` + `dynamodb` profile suites |
+| 13 | write/claim crossing the deadline mid-request | in-process: `repository-behavior` crossing; managed: snapshot-after-read + pin |
+
+**Residual: zero.** Every R6 item has a test, and every one was checked by mutation.
+
+### Discrimination proofs for this parcel
+
+`ttl` read from `expiresAt` unconditionally → **30** failures. `closing` not restating the `ttl` →
+**1**. Local revalidation removed → **4**. The managed snapshot taken before the run read → **1**.
