@@ -129,13 +129,20 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
           // meaning the opposite, and the fake would have gone on simulating the rule production
           // had stopped applying. The names are pinned too: rebinding `#d` to another attribute
           // would keep the text identical and change what is compared.
-          if (v[':deadline'] !== undefined) {
+          // Keyed on the TARGET, not on which values production happened to send. Demanding the
+          // canonical shape only when `:deadline` was present made the guard bypassable by the one
+          // change it existed to catch: omit the deadline pin entirely and the check fell away with
+          // it. Every SMOKERUN condition must carry the full fence.
+          if (item.ConditionCheck.Key?.pk?.startsWith('SMOKERUN#')) {
             if (expr !== RUN_PIN_CONDITION) {
               throw new Error(`fake client: the run condition must be exactly "${RUN_PIN_CONDITION}"`);
             }
             const names = item.ConditionCheck.ExpressionAttributeNames ?? {};
             if (names['#s'] !== 'status' || names['#d'] !== 'writeDeadlineAt') {
               throw new Error('fake client: the run condition must bind #s=status and #d=writeDeadlineAt');
+            }
+            if (v[':deadline'] === undefined || v[':now'] === undefined) {
+              throw new Error('fake client: the run condition must supply :deadline and :now');
             }
           }
           const record = existing?.record;
@@ -987,4 +994,78 @@ test('the claim snapshot is taken AFTER the run read, so a crossing there is cau
     'a crossing before the snapshot must be caught',
   );
   assert.equal(await repo.getActiveMock('l-crossclaim'), null, 'and nothing was written');
+});
+
+test('a smoke-scoped WRITE crossing the deadline during the run read creates nothing', async () => {
+  // R6 13, the write half — which the previous parcel left uncovered while the inventory claimed
+  // "write/claim". The child transaction only checked `status = active`, and the deadline can pass
+  // during the adapter's awaits while the run is still active, because nothing has closed it yet.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  const base = Date.parse('2026-07-29T00:00:00Z');
+  let clock = base;
+  repo.now = () => clock;
+  await repo.saveSmokeRun({
+    runId: 'run-crosswrite000000',
+    learnerId: 'l-crosswrite',
+    status: 'active',
+    writeDeadlineAt: new Date(base + 60_000).toISOString(),
+    ownershipExpiresAt: new Date(base + 8 * 864e5).toISOString(),
+  });
+
+  const realGet = repo.client.get;
+  repo.client.get = async (params) => {
+    const res = await realGet(params);
+    // The clock crosses the deadline DURING the run read that precedes the transaction.
+    if (params.Key?.pk === 'SMOKERUN#run-crosswrite000000') clock = base + 120_000;
+    return res;
+  };
+
+  const attempt = { attemptId: 'att_cross', learnerId: 'l-crosswrite', runId: 'run-crosswrite000000', answers: {} };
+  await assert.rejects(
+    () => repo.saveAttempt(attempt),
+    (err) => err.name === 'RepositoryConflictError',
+    'the write must be refused after the crossing',
+  );
+  assert.equal([...store.items.values()].some((i) => i.pk === 'ATTEMPT#att_cross'), false,
+    'and no row may have been created');
+
+  // The same holds for an UPDATE, not only a create: fencing creation alone closed instances.
+  clock = base;
+  repo.client.get = realGet;
+  await repo.saveAttempt(attempt);
+  const stored = await repo.getAttempt('att_cross');
+  stored.answers = { 1: { selectedOption: 'A' } };
+
+  repo.client.get = async (params) => {
+    const res = await realGet(params);
+    if (params.Key?.pk === 'SMOKERUN#run-crosswrite000000') clock = base + 120_000;
+    return res;
+  };
+  await assert.rejects(() => repo.saveAttempt(stored), (err) => err.name === 'RepositoryConflictError');
+  clock = base;
+  repo.client.get = realGet;
+  assert.deepEqual((await repo.getAttempt('att_cross')).answers, {}, 'the update must not have landed');
+});
+
+test('the fake refuses a SMOKERUN condition that drops the deadline fence entirely', async () => {
+  // Guards the guard, keyed on the TARGET rather than on which values production sent. The previous
+  // version demanded the canonical shape only when `:deadline` was present, so omitting the fence —
+  // the one change it existed to catch — took the check away with it.
+  const store = createFakeDynamoStore();
+  const repo = makeRepoWith(store);
+  await assert.rejects(
+    () => repo.client.transactWrite({
+      TransactItems: [{
+        ConditionCheck: {
+          TableName: 'fake-table',
+          Key: { pk: 'SMOKERUN#x', sk: 'REC' },
+          ConditionExpression: 'record.#s = :active',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: { ':active': 'active' },
+        },
+      }],
+    }),
+    /must be exactly/,
+  );
 });

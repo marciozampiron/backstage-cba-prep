@@ -178,15 +178,34 @@ export class DynamoDbSimulationRepository {
     const fenced = Boolean(record?.runId) && ['SESSION', 'MOCK', 'ATTEMPT'].includes(type);
     try {
       if (fenced) {
+        // The run is read STRONGLY here — after every other await in this method — and `:now` is
+        // snapshotted after that read. Checking only `status = active` was not the fence it looked
+        // like: the deadline can pass during those awaits while the run stays `active` (nothing
+        // has closed it yet), and the write landed after the window. The condition below is the
+        // same canonical shape the claim uses: active, the EXACT stored deadline, and that deadline
+        // still ahead of the snapshot.
+        const run = await this.#getRecordRaw('SMOKERUN', record.runId);
+        const nowMs = this.now();
+        const deadline = run?.writeDeadlineAt ?? null;
+        const parsed = parseInstant(deadline);
+        if (parsed === null || nowMs >= parsed) {
+          const err = new RepositoryConflictError('This smoke run stopped accepting records.');
+          err.reason = 'RUN_WINDOW_CLOSED';
+          throw err;
+        }
         await this.client.transactWrite({
           TransactItems: [
             {
               ConditionCheck: {
                 TableName: this.tableName,
                 Key: recordKey('SMOKERUN', record.runId),
-                ConditionExpression: 'record.#s = :active',
-                ExpressionAttributeNames: { '#s': 'status' },
-                ExpressionAttributeValues: { ':active': 'active' },
+                ConditionExpression: 'record.#s = :active AND record.#d = :deadline AND record.#d > :now',
+                ExpressionAttributeNames: { '#s': 'status', '#d': 'writeDeadlineAt' },
+                ExpressionAttributeValues: {
+                  ':active': 'active',
+                  ':deadline': deadline,
+                  ':now': new Date(nowMs).toISOString(),
+                },
               },
             },
             { Put: { ...params } },

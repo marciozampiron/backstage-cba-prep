@@ -641,9 +641,27 @@ one that has none.
 | 10 | `runId` + missing/malformed anchor → hidden everywhere, cleanup still reaches | `repository-behavior` corrupted-anchor |
 | 11a–f | lease lifecycle | `repository-behavior` lease suite + `smoke-cleanup` bind refusals |
 | 12 | profile: pre-existing, reverse order, race, ordinary untouched | `smoke-cleanup` + `dynamodb` profile suites |
-| 13 | write/claim crossing the deadline mid-request | in-process: `repository-behavior` crossing; managed: snapshot-after-read + pin |
+| 13 | write/claim crossing the deadline mid-request | in-process: `repository-behavior` crossing; managed: `dynamodb` crossing-write (create AND update) + crossing-claim, both via the run read |
 
-**Residual: zero.** Every R6 item has a test, and every one was checked by mutation.
+**Residual: zero.**
+
+### Correction to the previous inventory
+
+That row previously read "write/claim" and "residual zero" while only the CLAIM was fenced on the
+managed side. The child-write transaction checked `record.#s = :active` and nothing else — and the
+deadline can pass during the adapter's awaits while the run is still `active`, because nothing has
+closed it yet, so the write landed after the window. Both halves are fenced now, with the same
+canonical condition: active, the EXACT stored deadline, and that deadline still ahead of a `:now`
+snapshotted after a strong run read.
+
+The fake let this through for a reason worth naming: it demanded the canonical shape only when
+production had already sent `:deadline`. A guard conditioned on the presence of the thing it guards
+disappears with it — omitting the fence entirely kept the suite green. It is keyed on the TARGET
+now: every `SMOKERUN` condition must carry the full fence, and a regression proves the fake refuses
+one that drops it.
+
+Discrimination: removing the write fence fails the managed crossing regression and cascades through
+the adapter suite.
 
 ### Discrimination proofs for this parcel
 
