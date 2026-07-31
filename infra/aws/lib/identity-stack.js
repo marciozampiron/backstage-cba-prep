@@ -23,21 +23,19 @@
 // No account ids, ARNs, tokens, or secrets are committed or synthesized into tracked files.
 const { Stack, Duration, RemovalPolicy, CfnOutput } = require('aws-cdk-lib');
 const cognito = require('aws-cdk-lib/aws-cognito');
-const { getContext, parseExactUrlList, resolveEnvironment } = require('./context');
+const {
+  getContext,
+  parseExactUrlList,
+  resolveEnvironment,
+  DEFAULT_AUTH_URLS,
+  defaultAuthDomainPrefix,
+} = require('./context');
 const { applyFoundationTags } = require('./tags');
 
 // Deploy-time overrides (#70): -c 'authCallbackUrls=["https://<real-frontend>/auth/callback"]'.
-// `.invalid` is the RFC 2606 reserved TLD — the pilot default can never resolve by accident.
-const DEFAULT_URLS = {
-  dev: {
-    callback: ['http://localhost:3000/auth/callback'],
-    logout: ['http://localhost:3000/'],
-  },
-  pilot: {
-    callback: ['https://pilot.invalid/auth/callback'],
-    logout: ['https://pilot.invalid/'],
-  },
-};
+// The defaults and the domain-prefix fallback now live in `context.js`, so #70's deploy preflight
+// evaluates the SAME values this stack deploys instead of a second copy that can drift.
+const DEFAULT_URLS = DEFAULT_AUTH_URLS;
 
 class IdentityStack extends Stack {
   constructor(scope, id, props = {}) {
@@ -77,7 +75,7 @@ class IdentityStack extends Stack {
     // the newer managed login tier is a paid feature the pilot does not need.
     this.userPoolDomain = this.userPool.addDomain('LearnerAuthDomain', {
       cognitoDomain: {
-        domainPrefix: getContext(this.node, 'authDomainPrefix', `cba-study-coach-${environment}`),
+        domainPrefix: getContext(this.node, 'authDomainPrefix', defaultAuthDomainPrefix(environment)),
       },
       managedLoginVersion: cognito.ManagedLoginVersion.CLASSIC_HOSTED_UI,
     });

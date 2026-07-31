@@ -1,4 +1,4 @@
-# Inbox: Cloudflare/AWS deploy pipeline and post-deploy smoke gates (#70)
+# Active: Cloudflare/AWS deploy pipeline and post-deploy smoke gates (#70)
 
 Roles and messages are canonical in [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md); the
 publication mechanism is canonical in
@@ -7,18 +7,76 @@ This file does not restate either.
 
 ## Status
 
-NOT STARTED. Prepared 2026-07-30 during the #75 closeout audit, so that #70 has a handoff of its own
-instead of inheriting one that belonged to a delivered scope.
+**SLICE A IN REVIEW.** Taken into active ownership 2026-07-31 on Zamp's assignment, moved from
+`inbox/` with the policy references moved alongside.
 
 Issue #70 is OPEN. Issues #46 and #68 close behind it.
 
+Slice A delivers the ordering and the refusals — the preflight, the lane skeleton and the human
+gates. **Nothing is deployed and no later slice is started.** No AWS call, no Cloudflare call, no
+preview, no secret access and no paid call was made producing it.
+
 ## Ownership
 
-- Implementation executor: **unassigned**.
+- Implementation executor: **Claude Opus 5** (worktree `../cba-issue-70`, branch
+  `task/70-deploy-pipeline-slice-a`, cut from `origin/main`).
 - Architect / independent technical and security reviewer, read-only: **Codex**.
 - Assignment, approval, risk acceptance, gate and merge authority: **Zamp**.
-- No agent may take this into `active/` without that assignment — that is what stops two owners from
-  landing on the same files.
+- One owner at a time: while this is in `active/`, no other agent takes #70 files.
+
+## Slice A — what was delivered
+
+**One definition of the deployed values.** `DEFAULT_AUTH_URLS` and the `authDomainPrefix` fallback
+moved out of `identity-stack.js` into `context.js`, and the stack now reads them from there. This is
+load-bearing rather than tidy: a preflight with its own copy of the defaults can pass while the
+stack synthesizes something else, and the check would be measuring itself.
+
+**`infra/aws/lib/deploy-preflight.js`** — PURE evaluation of PREFLIGHT-1 and PREFLIGHT-2. No I/O, so
+every adversarial control is an offline unit test. Both conditions are always evaluated, so one run
+reports every reason it refused instead of making an operator discover them one deploy at a time.
+
+- PREFLIGHT-1 reads the EFFECTIVE URLs after context resolution, never the committed default. An
+  override that silently failed to apply — a misspelled key, a `-c` that never reached the CLI, a
+  workflow input that expanded to empty — is indistinguishable from one that was never attempted
+  unless the resolved value is what gets read. It decides on the parsed HOSTNAME: a path containing
+  `.invalid` is legitimate, and `https://pilot.invalid.attacker.example` is a real resolvable origin
+  that a substring rule would wave through as "obviously the placeholder".
+- PREFLIGHT-2 requires the context KEY, not a value — the stack's fallback means a value always
+  exists at synth time. It also requires confirmed regional uniqueness, refuses prefixes Cognito
+  itself would reject before a deploy discovers them mid-stack, and treats a redeploy onto our own
+  domain as a pass only when the expected pool id was supplied.
+
+**`infra/aws/bin/deploy-preflight.js`** — the collector. One read-only AWS call
+(`cognito-idp describe-user-pool-domain`), injectable so no test reaches a remote, time-bounded, and
+it echoes no other tenant's user pool id. Exit 1 on refusal is what stops the lane; exit 2 is a usage
+error, kept distinguishable. `--skip-probe` exists for offline dry runs and FAILS PREFLIGHT-2 by
+design: skipping the question is not answering it.
+
+**`.github/workflows/deploy-pilot.yml`** — the no-spend skeleton. `workflow_dispatch` only, so a
+merge to `main` can never spend money unattended. The preflight is a separate JOB rather than a step,
+because a step can be reordered, made `continue-on-error` or skipped by an `if:` without anything
+noticing, while a failed job in `needs:` stops the dependent job outright. Environment separation is
+by input, with the GitHub Environment named on both jobs — that is what turns "a human should
+approve" into "the job does not start until a human approves". Reviewers and branch policy are
+repository settings, deliberately not in this file: a workflow cannot grant itself an approver.
+
+**Fail-closed everywhere.** An observation that could not be taken is a FAILURE, never a pass. A
+denied probe, an absent region and an unparsed response are all refusals.
+
+## Slice A — what was NOT done
+
+- No `cdk deploy`, no Cloudflare deploy, no preview, no account mutation, no secret access, no paid
+  call. A test asserts the lane contains no deploying command at all, so a later slice adding one has
+  to update that assertion deliberately.
+- The deploy job is a placeholder. It exists now only so the ordering and the gate are established
+  and asserted BEFORE any deploying step is written.
+- The AWS stack deploys, the Cloudflare half, the F1/F2 gates, the live SNS/KMS notification proof
+  and the smoke lane all remain later slices.
+
+## Slice A — validation
+
+Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by
+mutation rather than merely to pass. Recorded in the review request for this slice.
 
 ## What #70 owns, and what it must not touch
 

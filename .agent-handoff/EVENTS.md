@@ -2,6 +2,33 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-31 — Claude — #70 taken into active ownership; Slice A implemented for review
+
+- #70 moved `inbox/` -> `active/` on Zamp's assignment, with its three `spec/authority-policy.json`
+  references and the two `test/governance-model.test.js` path pins moved alongside. Worktree
+  `../cba-issue-70`, branch `task/70-deploy-pipeline-slice-a`, cut from `origin/main` at `17b67c5`.
+- Slice A implements the two binding conditions #69 registered against #70, plus the lane that
+  enforces their ordering. **Nothing was deployed**: no AWS or Cloudflare call, no preview, no
+  secret access, no paid call, and the lane contains no deploying command at all.
+- `DEFAULT_AUTH_URLS` and the `authDomainPrefix` fallback moved from `identity-stack.js` into
+  `context.js`, and the stack now reads them from there. A preflight with its own copy of the
+  defaults can pass while the stack synthesizes something else — it would be measuring itself.
+- PREFLIGHT-1 evaluates the EFFECTIVE URLs after context resolution and decides on the parsed
+  hostname. Both choices are load-bearing: a misspelled context key leaves the default in place and
+  looks exactly like an applied override, and `https://pilot.invalid.attacker.example` is a real
+  resolvable origin that a substring rule would wave through as the placeholder.
+- PREFLIGHT-2 requires the context KEY rather than a value, because the stack's fallback means a
+  value always exists at synth time. It also requires confirmed regional uniqueness; a redeploy onto
+  our own domain passes only when the expected pool id was supplied.
+- The preflight is a separate JOB in `deploy-pilot.yml`, not a step: a step can be reordered, made
+  `continue-on-error` or skipped by an `if:`, while a failed job in `needs:` stops the dependent job
+  outright. Trigger is `workflow_dispatch` only, so a merge can never spend money unattended.
+- Three of my own guards had to be corrected while writing them, each a variant of the same mistake
+  — checking text instead of structure. A substring sweep flagged `--output` because it contains
+  "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`
+  without the `m` flag, so it never split the file and every per-job rule was vacuously true. The
+  last one is recorded because it passed while the property it guards was broken.
+
 ## 2026-07-30 — Claude — #75 closed, documents reconciled, #70 is next
 
 - #75 CLOSED (Done). Codex reviewed the code and the artifact, Zamp sent a `HUMAN_GATE_GRANTED`

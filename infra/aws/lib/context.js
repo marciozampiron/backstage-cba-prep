@@ -10,6 +10,32 @@ function getContext(node, key, fallback) {
 // non-durable dev posture (no PITR, no deletion protection, DeletionPolicy=Delete).
 const VALID_ENVIRONMENTS = ['dev', 'pilot'];
 
+// Committed Cognito callback/logout defaults (#69), and the domain-prefix default they travel with.
+//
+// These live HERE, not inside `identity-stack.js`, because #70's deploy preflight has to evaluate
+// the exact values the stack will deploy. A preflight with its own copy of the defaults can pass
+// while the stack synthesizes something else — the check would be measuring itself. One definition,
+// two readers.
+//
+// `.invalid` is the RFC 2606 reserved TLD: the pilot default can never resolve by accident, and
+// PREFLIGHT-1 refuses to deploy while it survives into the effective configuration.
+const DEFAULT_AUTH_URLS = {
+  dev: {
+    callback: ['http://localhost:3000/auth/callback'],
+    logout: ['http://localhost:3000/'],
+  },
+  pilot: {
+    callback: ['https://pilot.invalid/auth/callback'],
+    logout: ['https://pilot.invalid/'],
+  },
+};
+
+// The fallback the stack applies when `authDomainPrefix` is absent. PREFLIGHT-2 exists BECAUSE this
+// fallback is silent: an unsupplied prefix is indistinguishable from a deliberate one at synth time.
+function defaultAuthDomainPrefix(environment) {
+  return `cba-study-coach-${environment}`;
+}
+
 function resolveEnvironment(node, fallback = 'pilot') {
   const value = getContext(node, 'environment', fallback);
   if (!VALID_ENVIRONMENTS.includes(value)) {
@@ -100,4 +126,12 @@ function parseExactUrlList(value, contextKey) {
   return list;
 }
 
-module.exports = { getContext, parseArnList, parseExactUrlList, resolveEnvironment, VALID_ENVIRONMENTS };
+module.exports = {
+  getContext,
+  parseArnList,
+  parseExactUrlList,
+  resolveEnvironment,
+  VALID_ENVIRONMENTS,
+  DEFAULT_AUTH_URLS,
+  defaultAuthDomainPrefix,
+};
