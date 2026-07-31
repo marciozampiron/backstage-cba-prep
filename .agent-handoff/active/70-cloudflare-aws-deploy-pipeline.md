@@ -90,8 +90,10 @@ Required before any deploy slice or deployment gate may be approved, under a sep
 Zamp-authorized repository-settings change:
 
 - configure `dev` and `pilot`;
-- `pilot` must require the designated reviewer;
-- `pilot` must restrict deployment branches to reviewed `main` releases;
+- **BOTH must restrict deployment branches to `main` only** — dev too, not just pilot. An
+  Environment without a branch policy hands its variables and secrets to a workflow definition from
+  ANY branch, and `workflow_dispatch` runs the definition from the branch the operator selects;
+- `pilot` must additionally require the designated reviewer;
 - read-only evidence of both settings must be presented and reviewed.
 
 Until that evidence exists, **this lane is ungated** and must be described that way.
@@ -173,6 +175,32 @@ errors from the old invariants — Codex reproduced each. Now:
   green dev stage and the pilot preflight; every deploying job from its environment's preflight.
   Each of Codex's reproductions is a named regression, and the mutation harness asserts every
   mutation actually applied before asserting it is rejected.
+
+## Slice A — Codex review round 3, and what it changed
+
+Six reproductions, all confirmed mechanically before fixing (five in memory; the sixth is the
+branch-policy prerequisite above, tightened to cover dev as well). The common lesson: workflow
+choreography cannot bind. Verify-then-deploy as two commands admits a different context, different
+credentials or a different target between them, and no textual ordering rule can see any of it.
+
+**Deployment is now bound BY CONSTRUCTION.** `infra/aws/bin/deploy-release.js` is the one sanctioned
+deployment entrypoint: it verifies the manifest (closed schema), recomputes the digest from the
+effective context and the resolved account, re-resolves the account immediately before the effect,
+and then derives the deploy arguments FROM the very context object it verified — there is no
+interface through which the deploy can receive different values, and no code path in the file that
+invokes anything but `cdk`. The residual is the in-process window between the second account
+resolution and the spawn, disclosed in the file header. Raw `cdk deploy` / `wrangler deploy` /
+`opennextjs-cloudflare deploy` are forbidden EVERYWHERE in the lane by the invariants — the
+verify-order heuristic they replace was fooled by all three round-3 reproductions, each now a named
+regression. Slice A never calls the entrypoint: it exists so the binding is established and attacked
+before the first deploying slice, not retrofitted around one.
+
+**The nested manifest schema is closed.** `boundContextKeys: []` and a `preflight` block CLAIMING a
+failure both verified cleanly before — the old shape check stopped at `Array.isArray` and never read
+`preflight` at all. A manifest exists only because both conditions passed, so a nested claim saying
+otherwise is a forgery, not a variant: the bound keys must equal the canonical set exactly, every
+preflight claim must be `pass`, and the manifest names its `target.service` (`aws-cdk`), which the
+entrypoint enforces — an AWS manifest is not spendable against any other target.
 
 ## Slice A — validation
 

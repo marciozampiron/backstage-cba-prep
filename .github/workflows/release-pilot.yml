@@ -19,15 +19,22 @@
 # BINDING. A preflight that merely exits zero proves that SOME configuration was valid — not that
 # the deploy uses it. The preflight therefore emits a manifest whose digest covers the release OID,
 # the environment, the REGION, the TARGET ACCOUNT and every bound context value. Stage jobs verify
-# that manifest with a purpose-built command; a future deploying job must run
-# `verify-manifest --recompute` — which re-resolves the account and re-reads the effective values —
-# BEFORE its deploy command. The workflow invariants enforce that ordering on any job that deploys.
+# that manifest with a purpose-built command. Deployment itself happens ONLY through
+# `infra/aws/bin/deploy-release.js`, which verifies the manifest and executes the deploy in ONE
+# process, deriving the deploy arguments from the very context object it verified — raw
+# `cdk deploy` / `wrangler deploy` / `opennextjs-cloudflare deploy` invocations are forbidden
+# anywhere in this lane, because two separate commands can never prove they used the same values:
+# a job could verify a safe context and deploy a different one, swap credentials in between, or
+# verify an AWS manifest and deploy an unrelated Cloudflare target.
 #
 # THE HUMAN GATE IS NOT YET REAL. As of 2026-07-31 this repository has ZERO configured GitHub
 # Environments. Naming one here does not create protection rules — an unconfigured Environment
 # offers no required reviewer and no branch restriction. The `environment:` keys below are the
 # binding that will carry the gate ONCE Zamp configures `dev` and `pilot` under a separate
-# repository-settings change. Until read-only evidence of those settings exists, this lane must be
+# repository-settings change. BOTH Environments must restrict deployment branches to main only —
+# dev too, not just pilot: an Environment without a branch policy hands its variables and secrets
+# to a workflow definition from ANY branch. `pilot` additionally requires the designated reviewer.
+# Until read-only evidence of those settings exists, this lane must be
 # treated as ungated, and no deploy slice may be approved.
 #
 # ONE INHERENT LIMIT, stated rather than hidden: `workflow_dispatch` executes the workflow

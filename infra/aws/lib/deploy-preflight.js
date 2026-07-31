@@ -84,6 +84,8 @@ const CODES = {
   MANIFEST_REGION_MISMATCH: 'names a different region than the one this run targets',
   MANIFEST_DIGEST_MISMATCH: 'does not carry the digest the preflight reported',
   MANIFEST_RECOMPUTE_MISMATCH: 'digest does not match a recomputation from the values this run would actually use',
+  ACCOUNT_CHANGED: 'resolved to a different account immediately before the effect than the one the verification bound — the credentials changed between verification and deploy',
+  DEPLOY_TARGET_UNSUPPORTED: 'names a service this entrypoint does not deploy — each service gets its own bound entrypoint, and none exists for this one yet',
 };
 
 class PreflightError extends Error {

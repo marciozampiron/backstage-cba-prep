@@ -169,10 +169,11 @@ custom-domain decision on #67 is what makes those values knowable; it is still o
 **BLOCKED PREREQUISITE — there is no human deployment gate yet.** As of 2026-07-31 the repository has
 **zero configured GitHub Environments**; an Environment named in a workflow but never configured is
 created on first use with no required reviewer and no branch restriction. `release-pilot.yml` binds
-`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — pilot
-requiring the designated reviewer and restricting deployment branches to reviewed `main` releases —
-**the lane is ungated and no deploy slice may be approved.** Read-only evidence of those settings is
-required first.
+`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — **BOTH with a
+main-only deployment-branch policy** (dev too: an Environment without one hands its variables and
+secrets to a workflow definition from any branch), and pilot additionally requiring the designated
+reviewer — **the lane is ungated and no deploy slice may be approved.** Read-only evidence of those
+settings is required first.
 
 Moved to `done/` in this audit, each with the policy references moved alongside:
 

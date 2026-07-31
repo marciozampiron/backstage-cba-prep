@@ -30,7 +30,8 @@ const {
   resolveAuthUrls,
   evaluatePreflight,
 } = require('../lib/deploy-preflight');
-const { runDeployPreflight, runVerifyManifest, contextDigest, BOUND_CONTEXT_KEYS, MANIFEST_VERSION } = require('../bin/deploy-preflight');
+const { runDeployPreflight, runVerifyManifest, contextDigest, BOUND_CONTEXT_KEYS, MANIFEST_VERSION, MANIFEST_TARGET_SERVICE } = require('../bin/deploy-preflight');
+const { runDeployRelease } = require('../bin/deploy-release');
 const { DEFAULT_AUTH_URLS } = require('../lib/context');
 
 const CDK_JSON = path.join(__dirname, '..', 'cdk.json');
@@ -259,11 +260,12 @@ test('the manifest carries the closed schema, the region, and never a raw accoun
   assert.equal(r.exit, 0, r.output);
   assert.equal(written.length, 1);
   const manifest = JSON.parse(written[0]);
-  assert.deepEqual(Object.keys(manifest).sort(), ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'version']);
+  assert.deepEqual(Object.keys(manifest).sort(), ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version']);
   assert.equal(manifest.version, MANIFEST_VERSION);
   assert.equal(manifest.releaseSha, SHA);
   assert.equal(manifest.environment, 'pilot');
   assert.equal(manifest.region, 'us-east-1');
+  assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE });
   assert.match(manifest.contextDigest, /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.boundContextKeys, [...BOUND_CONTEXT_KEYS].sort());
   assert.equal(written[0].includes(ACCOUNT), false, 'the account id lives inside the digest, never in clear text');
@@ -348,6 +350,30 @@ test('verify-manifest accepts the exact manifest and refuses every identity mism
   const missing = runVerifyManifest(['--manifest', '/nonexistent/m.json', '--environment', 'pilot', '--release-sha', SHA], {});
   assert.equal(missing.exit, 1);
   assert.match(missing.output, /MANIFEST_UNREADABLE/);
+});
+
+test('the NESTED manifest schema is closed too — the exact round-3 forgeries are refused', () => {
+  // Both of these VERIFIED CLEANLY before this test existed: the old shape check stopped at
+  // `Array.isArray(boundContextKeys)` and never looked inside `preflight` at all. A manifest exists
+  // only because both conditions passed, so a nested claim that says otherwise is a forgery.
+  const manifest = capturedManifest();
+  const verify = (p) => runVerifyManifest(['--manifest', p, '--environment', 'pilot', '--release-sha', SHA], {});
+
+  for (const [label, tampered] of [
+    ['boundContextKeys emptied', { ...manifest, boundContextKeys: [] }],
+    ['boundContextKeys narrowed', { ...manifest, boundContextKeys: ['authDomainPrefix'] }],
+    ['a preflight claimed as failed', { ...manifest, preflight: { PREFLIGHT_1: 'fail', PREFLIGHT_2: 'pass' } }],
+    ['an additional preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass', PREFLIGHT_3: 'pass' } }],
+    ['a missing preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass' } }],
+    ['the target service rewritten', { ...manifest, target: { service: 'cloudflare' } }],
+    ['an extra target key', { ...manifest, target: { service: MANIFEST_TARGET_SERVICE, extra: true } }],
+  ]) {
+    withManifest(tampered, (p) => {
+      const r = verify(p);
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /MANIFEST_MALFORMED/, label);
+    });
+  }
 });
 
 test('verify-manifest --recompute recomputes from the effective values, and every drift refuses', () => {
@@ -598,4 +624,144 @@ test('a committed cdk.json value counts as explicitly supplied; the in-code fall
   const withoutCommitted = runDeployPreflight(base, { run: stubAws(), cdkJsonPath: CDK_JSON, env: {} });
   assert.equal(withoutCommitted.exit, 1);
   assert.match(withoutCommitted.output, /PREFIX_NOT_SUPPLIED/);
+});
+
+/* ================= deploy-release: the binding BY CONSTRUCTION ================================= */
+//
+// Round 3 proved workflow choreography cannot bind verification to deployment: verify-then-deploy
+// as two commands admits a different context, different credentials or a different target between
+// them. The entrypoint closes each hole structurally, and these tests attack every seam it has.
+
+const releaseArgs = (manifestPath, over = []) => [
+  '--manifest', manifestPath,
+  '--environment', 'pilot',
+  '--release-sha', SHA,
+  '--region', 'us-east-1',
+  '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
+  '-c', 'authLogoutUrls=["https://app.example.com/"]',
+  '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
+  ...over,
+];
+
+test('deploy-release deploys EXACTLY the verified context — the child args are derived, not supplied', () => {
+  const manifest = capturedManifest();
+  withManifest(manifest, (p) => {
+    const execs = [];
+    const r = runDeployRelease(releaseArgs(p), {
+      run: stubAws(),
+      cdkJsonPath: CDK_JSON,
+      exec: (args) => {
+        execs.push(args);
+        return { status: 0 };
+      },
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.executed, true);
+    assert.equal(execs.length, 1, 'exactly one deploy');
+    const args = execs[0];
+    assert.deepEqual(args.slice(0, 2), ['cdk', 'deploy'], 'the child is cdk, and can be nothing else');
+    // Every bound value the child receives is the value that fed the digest. This is the
+    // constructive core: there is no argument through which different values could arrive.
+    const flags = {};
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-c') {
+        const eq = args[i + 1].indexOf('=');
+        flags[args[i + 1].slice(0, eq)] = args[i + 1].slice(eq + 1);
+      }
+    }
+    assert.equal(flags.environment, 'pilot');
+    assert.equal(flags.authCallbackUrls, '["https://app.example.com/auth/callback"]');
+    assert.equal(flags.authLogoutUrls, '["https://app.example.com/"]');
+    assert.equal(flags.authDomainPrefix, 'cba-study-coach-pilot-7f3d');
+  });
+});
+
+test('REPRO 1: verify a safe context, deploy a different one — refused before any exec', () => {
+  const manifest = capturedManifest();
+  withManifest(manifest, (p) => {
+    const r = runDeployRelease(releaseArgs(p, ['-c', 'authDomainPrefix=cba-study-coach-pilot-evil']), {
+      run: stubAws(),
+      cdkJsonPath: CDK_JSON,
+      exec: () => assert.fail('a mismatched context must never reach the deploy'),
+    });
+    assert.equal(r.exit, 1);
+    assert.equal(r.executed, false);
+    assert.match(r.output, /MANIFEST_RECOMPUTE_MISMATCH/);
+  });
+});
+
+test('REPRO 2: credentials swapped between verification and deploy — refused before any exec', () => {
+  const manifest = capturedManifest();
+  withManifest(manifest, (p) => {
+    let stsCalls = 0;
+    const r = runDeployRelease(releaseArgs(p), {
+      run: (args, o) => {
+        if (args[0] === 'sts') {
+          stsCalls += 1;
+          // First resolution: the validated account. Second: the swapped one.
+          const account = stsCalls === 1 ? ACCOUNT : '2'.repeat(12);
+          return { status: 0, stdout: JSON.stringify({ Account: account }), stderr: '' };
+        }
+        return stubAws()(args, o);
+      },
+      cdkJsonPath: CDK_JSON,
+      exec: () => assert.fail('a swapped account must never reach the deploy'),
+    });
+    assert.equal(r.exit, 1);
+    assert.equal(stsCalls, 2, 'the account is resolved at verification AND immediately before the effect');
+    assert.match(r.output, /ACCOUNT_CHANGED/);
+  });
+});
+
+test('REPRO 3: an AWS manifest cannot drive any other target — structurally', () => {
+  const manifest = capturedManifest();
+  // A manifest rewritten to name another service is a forgery under the closed schema...
+  withManifest({ ...manifest, target: { service: 'cloudflare' } }, (p) => {
+    const r = runDeployRelease(releaseArgs(p), {
+      run: stubAws(),
+      cdkJsonPath: CDK_JSON,
+      exec: () => assert.fail('a foreign target must never reach a deploy'),
+    });
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /MANIFEST_MALFORMED/);
+  });
+  // ...and the honest manifest can only ever spawn cdk: the child command is a constant of the
+  // entrypoint, not an input. There is no code path to wrangler or opennextjs in this file at all.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'bin', 'deploy-release.js'), 'utf8');
+  assert.equal(/wrangler|opennextjs/.test(source.replace(/\/\/[^\n]*/g, '')), false, 'no foreign deploy path exists outside comments');
+});
+
+test('deploy-release refuses identity mismatches, an unresolved account and a failing child honestly', () => {
+  const manifest = capturedManifest();
+  withManifest(manifest, (p) => {
+    for (const [over, expected] of [
+      [['--environment', 'dev'], /MANIFEST_ENVIRONMENT_MISMATCH/],
+      [['--release-sha', 'b'.repeat(40)], /MANIFEST_RELEASE_MISMATCH/],
+      [['--region', 'us-west-2'], /MANIFEST_REGION_MISMATCH/],
+    ]) {
+      const args = releaseArgs(p);
+      for (let i = 0; i < over.length; i += 2) {
+        args[args.indexOf(over[i]) + 1] = over[i + 1];
+      }
+      const r = runDeployRelease(args, { run: stubAws(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+      assert.equal(r.exit, 1, JSON.stringify(over));
+      assert.match(r.output, expected, JSON.stringify(over));
+    }
+
+    const noAccount = runDeployRelease(releaseArgs(p), { run: stubAws({ stsStatus: 254 }), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+    assert.equal(noAccount.exit, 1);
+    assert.match(noAccount.output, /ACCOUNT_UNRESOLVED/);
+
+    const childFails = runDeployRelease(releaseArgs(p), { run: stubAws(), cdkJsonPath: CDK_JSON, exec: () => ({ status: 3 }) });
+    assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
+    assert.equal(childFails.executed, true);
+  });
+});
+
+test('deploy-release usage errors are distinguishable and never echo the offending token', () => {
+  assert.equal(runDeployRelease([`--${POISON.token}`], {}).exit, 2);
+  assertClean(runDeployRelease([`--${POISON.token}`], {}).output, 'deploy-release usage error');
+  for (const missing of [[], ['--manifest', 'x'], ['--manifest', 'x', '--environment', 'pilot'], ['--manifest', 'x', '--environment', 'pilot', '--release-sha', SHA]]) {
+    assert.equal(runDeployRelease(missing, {}).exit, 2, JSON.stringify(missing));
+  }
 });

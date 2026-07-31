@@ -41,7 +41,11 @@ const PROBE_TIMEOUT_MS = 30_000;
 const BOUND_CONTEXT_KEYS = ['authCallbackUrls', 'authLogoutUrls', 'authDomainPrefix'];
 
 const RELEASE_SHA = /^[0-9a-f]{40}$/;
-const MANIFEST_VERSION = 2;
+const MANIFEST_VERSION = 3;
+
+/** The one service this manifest authorizes. A Cloudflare deploy needs its own manifest shape and
+ * its own bound entrypoint — an AWS manifest must never be spendable against a different target. */
+const MANIFEST_TARGET_SERVICE = 'aws-cdk';
 
 /**
  * Canonical digest over everything a deploy must not silently change.
@@ -238,6 +242,7 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
       releaseSha: opts.releaseSha,
       environment: opts.environment,
       region: opts.region,
+      target: { service: MANIFEST_TARGET_SERVICE },
       boundContextKeys: [...BOUND_CONTEXT_KEYS].sort(),
       contextDigest: contextDigest({ releaseSha: opts.releaseSha, environment: opts.environment, region: opts.region, accountId, context }),
       preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass' },
@@ -281,21 +286,33 @@ function parseVerifyArgs(argv) {
   return out;
 }
 
-/** The manifest schema is CLOSED: exactly these keys, exactly these shapes. */
+/**
+ * The manifest schema is CLOSED, all the way down: exactly these keys, exactly these shapes,
+ * exactly these VALUES where a value is structural.
+ *
+ * The nested objects matter as much as the top level — round 3 of the review proved it. A manifest
+ * with `boundContextKeys: []` and one whose `preflight` CLAIMED a failure both verified cleanly,
+ * because the old check stopped at `Array.isArray` and never looked inside `preflight` at all. A
+ * manifest exists only because both conditions passed, so its claims are not data to interpret —
+ * they are invariants to enforce: the bound keys must be exactly the canonical set, and every
+ * preflight claim must be `pass`. Anything else is not a weaker manifest, it is a forged one.
+ */
 function validManifestShape(m) {
   if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
-  const want = ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'version'];
+  const want = ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version'];
   if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(want)) return false;
-  return (
-    m.version === MANIFEST_VERSION &&
-    m.issue === 70 &&
-    RELEASE_SHA.test(m.releaseSha) &&
-    VALID_ENVIRONMENTS.includes(m.environment) &&
-    typeof m.region === 'string' &&
-    m.region.length > 0 &&
-    /^[0-9a-f]{64}$/.test(m.contextDigest) &&
-    Array.isArray(m.boundContextKeys)
-  );
+  if (m.version !== MANIFEST_VERSION || m.issue !== 70) return false;
+  if (!RELEASE_SHA.test(m.releaseSha) || !VALID_ENVIRONMENTS.includes(m.environment)) return false;
+  if (typeof m.region !== 'string' || m.region.length === 0) return false;
+  if (!/^[0-9a-f]{64}$/.test(m.contextDigest)) return false;
+  if (JSON.stringify(m.boundContextKeys) !== JSON.stringify([...BOUND_CONTEXT_KEYS].sort())) return false;
+  if (!m.preflight || typeof m.preflight !== 'object' || Array.isArray(m.preflight)) return false;
+  if (JSON.stringify(Object.keys(m.preflight).sort()) !== JSON.stringify(['PREFLIGHT_1', 'PREFLIGHT_2'])) return false;
+  if (m.preflight.PREFLIGHT_1 !== 'pass' || m.preflight.PREFLIGHT_2 !== 'pass') return false;
+  if (!m.target || typeof m.target !== 'object' || Array.isArray(m.target)) return false;
+  if (JSON.stringify(Object.keys(m.target)) !== JSON.stringify(['service'])) return false;
+  if (m.target.service !== MANIFEST_TARGET_SERVICE) return false;
+  return true;
 }
 
 /**
@@ -382,11 +399,16 @@ module.exports = {
   probeDomain,
   loadContext,
   contextDigest,
+  resolveAccountId,
+  validManifestShape,
+  parseContextPair,
+  defaultRun,
   parseArgs,
   EXIT,
   PROBE_TIMEOUT_MS,
   BOUND_CONTEXT_KEYS,
   MANIFEST_VERSION,
+  MANIFEST_TARGET_SERVICE,
 };
 
 if (require.main === module) {

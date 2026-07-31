@@ -48,9 +48,20 @@ export function jobsOf(text) {
     .filter(Boolean);
 }
 
-/** Does this job body actually run something that deploys? */
-function isDeploying(jobBody) {
+/**
+ * Raw deploy commands are forbidden EVERYWHERE in this lane. Round 3 proved why an ordering
+ * heuristic cannot save them: verify-then-deploy as two commands admits a different context,
+ * different credentials or a different target between the two, and a textual rule sees none of it.
+ * Deployment happens only through `bin/deploy-release.js`, which binds verification and deployment
+ * in one process — so the invariant collapses to "no raw deploy exists, and every entrypoint
+ * invocation sits in a properly descended, Environment-bound job".
+ */
+function rawDeploy(jobBody) {
   return /\bcdk\s+deploy\b/.test(jobBody) || /\bopennextjs-cloudflare\s+deploy\b/.test(jobBody) || /\bwrangler\s+deploy\b/.test(jobBody);
+}
+
+function usesDeployEntrypoint(jobBody) {
+  return jobBody.includes('deploy-release.js');
 }
 
 /**
@@ -188,29 +199,14 @@ export function releaseLaneErrors(text) {
       errors.push(`dev-bound job "${name}" does not descend from the dev preflight`);
     }
 
-    if (isDeploying(m.body)) {
-      if (!m.environment) errors.push(`job "${name}" can deploy but binds no Environment`);
+    // Raw deploy commands are forbidden in every job — theirs is the binding no text can prove.
+    if (rawDeploy(m.body)) {
+      errors.push(`job "${name}" invokes a raw deploy command — deployment goes only through bin/deploy-release.js`);
+    }
+    if (usesDeployEntrypoint(m.body)) {
+      if (!m.environment) errors.push(`job "${name}" runs the deploy entrypoint but binds no Environment`);
       else if (!ancestors.has(`${m.environment}-preflight`)) {
-        errors.push(`job "${name}" can deploy without descending from the ${m.environment} preflight`);
-      }
-      // The purpose-built check, not textual digest presence — and BEFORE the deploy command.
-      //
-      // The recomputation must belong to the SAME invocation that precedes the deploy: a plain
-      // verify before the deploy plus `--recompute` somewhere else in the job satisfied an earlier
-      // draft of this rule, which is exactly the substring trap round 2 was about. Each
-      // `verify-manifest` occurrence is judged within its own step's window.
-      const deployIdx = m.body.search(/\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/);
-      let recomputedBeforeDeploy = false;
-      for (let idx = m.body.indexOf('verify-manifest'); idx >= 0; idx = m.body.indexOf('verify-manifest', idx + 1)) {
-        const windowEnd = m.body.indexOf('\n      - ', idx);
-        const invocation = m.body.slice(idx, windowEnd < 0 ? undefined : windowEnd);
-        // Only the part of the window BEFORE the deploy command belongs to this invocation.
-        const deployInWindow = invocation.search(/\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/);
-        const ownText = deployInWindow < 0 ? invocation : invocation.slice(0, deployInWindow);
-        if (idx < deployIdx && ownText.includes('--recompute')) recomputedBeforeDeploy = true;
-      }
-      if (!recomputedBeforeDeploy) {
-        errors.push(`job "${name}" deploys without a recomputed manifest verification before the effect`);
+        errors.push(`job "${name}" runs the deploy entrypoint without descending from the ${m.environment} preflight`);
       }
     }
   }
@@ -284,13 +280,19 @@ test('POSITIVE CONTROL: no operator input may reintroduce a target or a direct p
   rejects(raw.replace('\n    needs: [global-preflight, dev-preflight, dev-stage]', '\n    needs: [global-preflight]'), 'pilot-preflight detached from the dev stage');
 });
 
-test('POSITIVE CONTROL: every reproduction from the round-2 review is rejected by name', () => {
-  // (1) A deploy that merely echoes the digest — no verify-manifest, no recompute.
-  const echoDeploy = raw.replace(
+/** Replace the dev stage's terminal step with an arbitrary injected step, for bypass mutations. */
+const injectDevStep = (step) =>
+  raw.replace(
     /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
-    '      - name: Deploy\n        env:\n          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}\n        run: |\n          echo "$CONTEXT_DIGEST"\n          cdk deploy --all\n\n  # x\n  # PILOT PREFLIGHT',
+    `${step}\n\n  # x\n  # PILOT PREFLIGHT`,
   );
-  rejects(echoDeploy, 'echo "$CONTEXT_DIGEST"; cdk deploy --all');
+
+test('POSITIVE CONTROL: every reproduction from the round-2 review is rejected by name', () => {
+  // (1) A deploy that merely echoes the digest.
+  rejects(
+    injectDevStep('      - name: Deploy\n        env:\n          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}\n        run: |\n          echo "$CONTEXT_DIGEST"\n          cdk deploy --all'),
+    'echo "$CONTEXT_DIGEST"; cdk deploy --all',
+  );
 
   // (2) `|| true` appended to a pinned success expression.
   rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), "|| true");
@@ -316,19 +318,57 @@ test('POSITIVE CONTROL: every reproduction from the round-2 review is rejected b
           cdk deploy --all
 `;
   rejects(extraJob, 'an extra pilot deploy job descending only from global-preflight');
+});
 
-  // A verified deploy still refuses if verification is not recomputed, or comes after the effect.
-  const verifyNoRecompute = raw.replace(
-    /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
-    '      - name: Deploy\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --manifest m.json --environment dev --release-sha x\n          cdk deploy --all\n\n  # x\n  # PILOT PREFLIGHT',
+test('POSITIVE CONTROL: every reproduction from the round-3 review is rejected by name', () => {
+  // (1) Verify a safe context, then deploy a different one. The two-command shape itself is what
+  // gets refused: NO raw deploy may exist, whatever verification precedes it — the binding lives in
+  // bin/deploy-release.js, which derives the deploy from the very object it verified.
+  rejects(
+    injectDevStep('      - name: Deploy\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x -c authDomainPrefix=safe\n          cdk deploy --all -c authDomainPrefix=other'),
+    'verify context A, deploy context B',
   );
-  rejects(verifyNoRecompute, 'a deploy verified without --recompute');
 
-  const deployThenVerify = raw.replace(
-    /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
-    '      - name: Deploy\n        run: |\n          cdk deploy --all\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region x --manifest m.json --environment dev --release-sha x\n\n  # x\n  # PILOT PREFLIGHT',
+  // (2) Verify, swap credentials, deploy.
+  rejects(
+    injectDevStep('      - name: Verify\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x\n      - name: Swap credentials\n        uses: aws-actions/configure-aws-credentials@v6\n        with:\n          role-to-assume: ${{ secrets.OTHER_ROLE }}\n          aws-region: ${{ vars.AWS_REGION }}\n          mask-aws-account-id: true\n      - name: Deploy\n        run: |\n          cdk deploy --all'),
+    'verify, replace credentials, deploy',
   );
-  rejects(deployThenVerify, 'a deploy that verifies after the effect');
+
+  // (3) Verify an AWS manifest, then deploy an unrelated Cloudflare target.
+  rejects(
+    injectDevStep('      - name: Deploy\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x\n          wrangler deploy'),
+    'verify AWS, deploy Cloudflare',
+  );
+
+  // The sanctioned entrypoint is still held to the DAG: outside a properly descended,
+  // Environment-bound job it is refused too.
+  const rogueEntrypoint = `${raw}
+  pilot-deploy:
+    name: Rogue entrypoint use
+    needs: [global-preflight]
+    if: needs.global-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: pilot
+    steps:
+      - name: Deploy
+        run: |
+          node infra/aws/bin/deploy-release.js --manifest m.json --environment pilot --release-sha x --region x
+`;
+  rejects(rogueEntrypoint, 'the entrypoint outside the pilot DAG');
+
+  const noEnvEntrypoint = `${raw}
+  side-deploy:
+    name: Entrypoint without an Environment
+    needs: [global-preflight]
+    if: needs.global-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: |
+          node infra/aws/bin/deploy-release.js --manifest m.json --environment dev --release-sha x --region x
+`;
+  rejects(noEnvEntrypoint, 'the entrypoint with no Environment binding');
 });
 
 test('POSITIVE CONTROL: credentials, gating style and identifiers cannot be loosened', () => {
@@ -342,19 +382,24 @@ test('POSITIVE CONTROL: credentials, gating style and identifiers cannot be loos
   rejects(raw.replaceAll('verify-manifest', 'noop'), 'stage jobs no longer verify the manifest');
 });
 
-test('Slice A deploys nothing: no deploy command exists in the lane yet', () => {
+test('Slice A deploys nothing: no deploy command and no entrypoint invocation exist in the lane yet', () => {
   const code = stripComments(raw);
   assert.equal(/\bcdk\s+deploy\b/.test(code), false);
   assert.equal(/\bopennextjs-cloudflare\s+deploy\b/.test(code), false);
   assert.equal(/\bwrangler\s+deploy\b/.test(code), false);
+  assert.equal(code.includes('deploy-release.js'), false, 'the entrypoint exists for later slices; Slice A never calls it');
 });
 
 test('the human gate is DECLARED but not yet real, and the file says so', () => {
   assert.match(raw, /THE HUMAN GATE IS NOT YET REAL/);
   assert.match(raw, /ZERO configured GitHub/);
   assert.match(raw, /treated as ungated, and no deploy slice may be approved/);
+  // Round 3: BOTH Environments need a main-only deployment-branch policy — an Environment without
+  // one hands its variables and secrets to a workflow definition from any branch.
+  assert.match(raw, /BOTH Environments must restrict deployment branches to main only/);
+  assert.match(raw, /`pilot` additionally requires the designated reviewer/);
   // The inherent workflow_dispatch limit is disclosed too: the identity job constrains the RELEASE,
-  // not the workflow definition; the pilot branch restriction is what constrains the file.
+  // not the workflow definition; the branch restriction is what constrains the file.
   assert.match(raw, /executes the workflow\n# DEFINITION from the branch the operator selects/);
 });
 

@@ -61,6 +61,18 @@ Append meaningful coordination changes here. Newest entries should go at the top
     us-west-2 proven distinct, accounts too); a purpose-built `verify-manifest --recompute` replaces
     textual presence; and the invariants validate the DAG with pinned exact success expressions and
     a closed grammar. Every reproduction is a named regression.
+- Codex round 3 refused again with six reproductions, five confirmed in memory before fixing: with
+  verification and deployment as separate commands, a job could verify a safe context and deploy a
+  different one, swap credentials in between, or verify an AWS manifest and deploy a Cloudflare
+  target — all invisible to any textual ordering rule; and a manifest with `boundContextKeys: []` or
+  a `preflight` block claiming a FAILURE verified cleanly, because the nested schema was open. Fixed
+  by construction, not by another heuristic: `bin/deploy-release.js` is the one sanctioned
+  deployment entrypoint — verify and deploy in ONE process, deploy arguments derived from the very
+  context object verified, account re-resolved immediately before the effect (swap -> refusal), no
+  code path to any service but `cdk` — and raw deploy commands are forbidden everywhere in the lane.
+  The nested manifest schema is closed all the way down, with each forgery a named regression. The
+  branch-policy prerequisite now covers BOTH Environments: dev without a main-only policy hands its
+  secrets to a workflow definition from any branch.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`
