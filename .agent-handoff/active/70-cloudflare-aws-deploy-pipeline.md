@@ -136,6 +136,44 @@ id, supplied URLs and the prefix never reach the output. A poison-value suite as
 an account id, an IAM ARN, a pool id, an internal endpoint URL, an access-key-shaped string and a
 token-shaped string, across the human output, the JSON output, probe errors and usage errors.
 
+## Slice A — Codex review round 2, and what it changed
+
+Both remaining findings upheld. Both were, again, foundation: the code still deployed nothing, but
+what existed would not have constrained what comes next.
+
+**The release identity was still a name, not an object.** The shell check `[0-9a-f]*` validates one
+character — "a" followed by 39 uppercase Zs passed it, reproduced before fixing. Worse, the checkout
+ran BEFORE validation, so a 40-character branch name could be checked out, blessed as an ancestor,
+emitted as the release, and then MOVED before a later job resolved the same name again. Now: shape
+(`length == 40` and whole-string charset) is checked in pure shell before any git invocation; the
+identity job checks out `main`, never the candidate; the object must BE a commit (`cat-file -t`);
+it must resolve to itself; ancestry from live `main` is proven; and the job emits the RESOLVED OID,
+which is the only thing later checkouts may pin. The script is now EXECUTED in tests against a
+stubbed git — the exact "a"+39Z value, ref-shaped names, a tag OID, a foreign resolution and a
+non-ancestor are each observed refusing, before git where shape decides it.
+
+**The binding was nominal, and the guard checked substrings.** `test -n "$CONTEXT_DIGEST"` bound
+nothing; `echo "$CONTEXT_DIGEST"; cdk deploy --all`, `if: ... || true`, an OR branch accepting
+`failure`, and an extra pilot job that merely contained the words `context_digest` all returned zero
+errors from the old invariants — Codex reproduced each. Now:
+
+- The digest covers `{releaseOID, environment, REGION, TARGET ACCOUNT, boundContext}`. us-east-1
+  and us-west-2 no longer share a digest, nor do two accounts; both drifts are proven by test, and
+  removing either field from the payload is proven to fail.
+- The account is resolved by the collector (`sts get-caller-identity`, read-only, not
+  IAM-gated) and lives only inside the digest — never in clear text in output or manifest.
+- A purpose-built `verify-manifest` command replaces textual digest presence: closed manifest
+  schema, environment/release/digest identity, and `--recompute` — which re-resolves the account,
+  re-reads the effective context and recompares. Stage jobs verify the travelled manifest today;
+  the invariants require any DEPLOYING job to run the recomputed verification in the same
+  invocation, BEFORE its deploy command.
+- The invariants now validate the DAG, not substrings: pinned exact success expressions per job and
+  a closed grammar for any new one (no `||`, no `!`, no function call — `|| true`, `always()` and
+  `!cancelled()` are all structurally impossible); every pilot-bound job must descend from the
+  green dev stage and the pilot preflight; every deploying job from its environment's preflight.
+  Each of Codex's reproductions is a named regression, and the mutation harness asserts every
+  mutation actually applied before asserting it is rejected.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

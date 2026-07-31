@@ -48,6 +48,19 @@ Append meaningful coordination changes here. Newest entries should go at the top
   a gate that does not exist. The `environment:` keys are the binding, not the control. `dev` and
   `pilot` must be configured under a separate Zamp-authorized settings change, with read-only
   evidence, before any deploy slice or deployment gate is approved.
+- Codex round 2 refused the fix with two findings, both upheld and both reproduced before fixing:
+  - The release identity was still a name. `[0-9a-f]*` validates ONE character — "a"+39×"Z" passed
+    the committed check — and checkout ran before validation, so a 40-char branch name could be
+    blessed and then moved. Now shape is checked over all 40 characters before any git call, the
+    identity job checks out `main` and never the candidate, the object must be a commit that
+    resolves to itself and is an ancestor of live main, and only the RESOLVED OID is emitted. The
+    script is executed in tests against a stubbed git; the refusals are observed, not inferred.
+  - The binding was nominal and the guard checked substrings: `echo "$CONTEXT_DIGEST"; cdk deploy
+    --all`, `|| true`, an OR accepting `failure` and a rogue pilot job all passed the old
+    invariants. The digest now covers release, environment, REGION and TARGET ACCOUNT (us-east-1 vs
+    us-west-2 proven distinct, accounts too); a purpose-built `verify-manifest --recompute` replaces
+    textual presence; and the invariants validate the DAG with pinned exact success expressions and
+    a closed grammar. Every reproduction is a named regression.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`

@@ -74,6 +74,16 @@ const CODES = {
   PROBE_NO_REGION: 'cannot be confirmed "unique in the target region" because no region was supplied',
   PROBE_TAKEN: 'is already registered to a different user pool in the target region',
   PROBE_OWNERSHIP_UNVERIFIED: 'was reported as already ours, but no expected user pool id was supplied, so "ours" was never verified',
+  // Binding and manifest codes (#70 round 2). The digest covers release, environment, region,
+  // target account and every bound context value; these are the ways that binding can break.
+  ACCOUNT_UNRESOLVED: 'could not be resolved from the assumed credentials — without the target account identity, the manifest cannot bind a deploy to the account it was validated for',
+  MANIFEST_UNREADABLE: 'could not be read',
+  MANIFEST_MALFORMED: 'is not a well-formed preflight manifest (closed schema, current version)',
+  MANIFEST_ENVIRONMENT_MISMATCH: 'names a different environment than this job runs against',
+  MANIFEST_RELEASE_MISMATCH: 'names a different release than the one checked out',
+  MANIFEST_REGION_MISMATCH: 'names a different region than the one this run targets',
+  MANIFEST_DIGEST_MISMATCH: 'does not carry the digest the preflight reported',
+  MANIFEST_RECOMPUTE_MISMATCH: 'digest does not match a recomputation from the values this run would actually use',
 };
 
 class PreflightError extends Error {
