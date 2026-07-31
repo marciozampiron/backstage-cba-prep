@@ -1,0 +1,269 @@
+# Release orchestrator (#70 Slice A) — preflight, release identity and gates. NOTHING DEPLOYS YET.
+#
+# Shaped by `docs/architecture/deployed-environment-smoke-workflow-design.md` §1 and §4. Slice A
+# delivers the identity, the ordering and the refusals; the deploys, the F1/F2 gates and the smoke
+# lane are later slices that plug into this DAG without loosening it.
+#
+#   global-preflight  ->  dev-preflight  ->  [dev stage]  ->  pilot-preflight  ->  [pilot stage]
+#   (release identity)    (Environment dev)                   (Environment pilot, mode-gated)
+#
+# WHAT THE FIRST VERSION OF THIS FILE GOT WRONG, and why the shape below is not cosmetic:
+#
+#   * It took `environment` as an operator input, so a run could select `pilot` directly. There is
+#     no direct-to-pilot path here: the pilot stage `needs` the dev stage, and `mode` is the only
+#     way to ask for it.
+#   * It took callback/logout URLs as operator inputs. Deploy targets are not caller data — they
+#     resolve ONLY from Environment configuration, which GitHub withholds until that Environment's
+#     protection rules are satisfied.
+#   * It did not pin `checkout`. A manual run can choose any branch, and unpinned `checkout` uses
+#     the triggering ref, so the reviewed release and the deployed tree could differ. Every job
+#     checks out `release_sha` and nothing else.
+#   * It had no release identity at all. `release_sha` is required, must be a full 40-hex SHA, and
+#     must be an ancestor of live `main` — an unmerged or rewritten commit cannot be released.
+#
+# THE HUMAN GATE IS NOT YET REAL. As of 2026-07-31 this repository has ZERO configured GitHub
+# Environments. Naming one here does not create protection rules — an unconfigured Environment
+# offers no required reviewer and no branch restriction. The `environment:` keys below are the
+# binding that will carry the gate ONCE Zamp configures `dev` and `pilot` under a separate
+# repository-settings change. Until read-only evidence of those settings exists, this lane must be
+# treated as ungated, and no deploy slice may be approved. Recorded in the #70 handoff as a blocked
+# external prerequisite rather than as an established control.
+name: Release Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: 'Full 40-character commit SHA to release; must be an ancestor of main'
+        required: true
+        type: string
+      mode:
+        description: 'dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green'
+        required: true
+        type: choice
+        options:
+          - dev_only
+          - dev_then_pilot
+
+permissions:
+  contents: read
+
+# One release at a time. Keyed on the release, because the environment is no longer an input.
+concurrency:
+  group: release-pilot-${{ inputs.release_sha }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # GLOBAL PREFLIGHT — release identity only. Binds NO Environment, on purpose: it must not be able
+  # to read environment configuration, so a malformed release cannot reach any environment's
+  # variables or secrets even by accident.
+  # ---------------------------------------------------------------------------------------------
+  global-preflight:
+    name: Release identity (shape and ancestry)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release identity
+        id: identity
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          case "$RELEASE_SHA" in
+            [0-9a-f]*) ;;
+            *) echo "::error::release_sha must be lowercase hexadecimal"; exit 1 ;;
+          esac
+          if [ "${#RELEASE_SHA}" -ne 40 ]; then
+            echo "::error::release_sha must be a full 40-character SHA, not an abbreviation or a ref"
+            exit 1
+          fi
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+            echo "::error::release_sha is not an ancestor of main — only reviewed, merged commits are releasable"
+            exit 1
+          fi
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV PREFLIGHT — PREFLIGHT-1 and PREFLIGHT-2 against the dev Environment's own configuration.
+  #
+  # The context comes from Environment variables, never from the caller. The expected user pool id
+  # reaches the evaluator through the environment as well: whoever can name "our" pool can redefine
+  # which existing domain a deploy is willing to adopt.
+  #
+  # It emits a MANIFEST digest over the exact validated context. A deploying job must reproduce that
+  # digest from the context it is about to use; a pass alone would only prove that SOME configuration
+  # was valid, not that the deployed one is it.
+  # ---------------------------------------------------------------------------------------------
+  dev-preflight:
+    name: Deploy preflight (dev)
+    needs: global-preflight
+    if: needs.global-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      context_digest: ${{ steps.preflight.outputs.context_digest }}
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests (context helpers and preflight)
+        run: npm test
+      - name: Configure AWS credentials (read-only preflight role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Evaluate PREFLIGHT-1 and PREFLIGHT-2
+        id: preflight
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
+        run: |
+          set -euo pipefail
+          node bin/deploy-preflight.js \
+            --environment dev \
+            --release-sha "$RELEASE_SHA" \
+            --region "$TARGET_REGION" \
+            --manifest-out "$RUNNER_TEMP/preflight-dev.json" \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-dev.json")
+          echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  #
+  # It exists now so the ordering, the Environment binding and the manifest binding are established
+  # and asserted BEFORE any deploying step is written. A later slice replaces the placeholder step
+  # and inherits all three; the invariant tests refuse the file if a future edit detaches them.
+  # ---------------------------------------------------------------------------------------------
+  dev-stage:
+    name: Dev stage (not implemented in Slice A)
+    needs: [global-preflight, dev-preflight]
+    if: needs.dev-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Slice A stops here
+        env:
+          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}
+        run: |
+          set -euo pipefail
+          test -n "$CONTEXT_DIGEST"
+          echo "dev preflight passed and is bound to context digest ${CONTEXT_DIGEST:0:16}…"
+          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
+          echo "no account mutation and no paid call happened in this run."
+
+  # ---------------------------------------------------------------------------------------------
+  # PILOT PREFLIGHT — reachable ONLY through a green dev stage, and only when the operator asked for
+  # promotion. There is no dispatch path that selects pilot directly.
+  # ---------------------------------------------------------------------------------------------
+  pilot-preflight:
+    name: Deploy preflight (pilot)
+    needs: [global-preflight, dev-preflight, dev-stage]
+    if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'
+    runs-on: ubuntu-latest
+    environment: pilot
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      context_digest: ${{ steps.preflight.outputs.context_digest }}
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Configure AWS credentials (read-only preflight role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Evaluate PREFLIGHT-1 and PREFLIGHT-2
+        id: preflight
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
+        run: |
+          set -euo pipefail
+          node bin/deploy-preflight.js \
+            --environment pilot \
+            --release-sha "$RELEASE_SHA" \
+            --region "$TARGET_REGION" \
+            --manifest-out "$RUNNER_TEMP/preflight-pilot.json" \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-pilot.json")
+          echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # PILOT STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  # ---------------------------------------------------------------------------------------------
+  pilot-stage:
+    name: Pilot stage (not implemented in Slice A)
+    needs: [global-preflight, dev-stage, pilot-preflight]
+    if: needs.pilot-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: pilot
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Slice A stops here
+        env:
+          CONTEXT_DIGEST: ${{ needs.pilot-preflight.outputs.context_digest }}
+        run: |
+          set -euo pipefail
+          test -n "$CONTEXT_DIGEST"
+          echo "pilot preflight passed and is bound to context digest ${CONTEXT_DIGEST:0:16}…"
+          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
+          echo "no account mutation and no paid call happened in this run."

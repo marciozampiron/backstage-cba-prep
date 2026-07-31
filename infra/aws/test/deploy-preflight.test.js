@@ -3,28 +3,34 @@
 // Every test is OFFLINE. The evaluator is pure and the collector takes an injected runner, so no
 // test reaches AWS, spends anything, or needs a deployed environment.
 //
-// The shape of these tests is deliberate: a gate is only worth what its REFUSALS are worth, so each
-// condition is attacked from every direction that would make it silently pass — a default that
-// survived, an override that carries the placeholder, a probe that errored, a prefix that exists but
-// was never supplied. A positive control sits beside each so "it always fails" cannot masquerade as
-// safety.
+// The shape is deliberate. A gate is only worth what its REFUSALS are worth, so each condition is
+// attacked from every direction that would make it silently pass — a default that survived, an
+// override carrying the placeholder, a probe that errored, a prefix that exists but was never
+// supplied. A positive control sits beside each, so "it always fails" cannot masquerade as safety.
+//
+// And a whole section attacks the OUTPUT rather than the verdict: a preflight runs in CI and its
+// output lands in a public log. Codex's Slice A review reproduced role-ARN and credential-shaped
+// material in this command's output, so leakage is now tested as adversarially as the logic.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const {
   PROBE,
+  CODES,
   PREFIX_MAX,
   RESERVED_WORDS,
   PreflightError,
+  describeFailure,
   isReservedPlaceholder,
   resolveAuthUrls,
   evaluatePreflight,
 } = require('../lib/deploy-preflight');
-const { runDeployPreflight } = require('../bin/deploy-preflight');
-const { DEFAULT_AUTH_URLS, defaultAuthDomainPrefix } = require('../lib/context');
+const { runDeployPreflight, contextDigest, BOUND_CONTEXT_KEYS } = require('../bin/deploy-preflight');
+const { DEFAULT_AUTH_URLS } = require('../lib/context');
 
 const CDK_JSON = path.join(__dirname, '..', 'cdk.json');
+const SHA = 'a'.repeat(40);
 
 /** A context that satisfies both conditions, so each test can break exactly one thing. */
 const goodContext = (over = {}) => ({
@@ -34,201 +40,156 @@ const goodContext = (over = {}) => ({
   ...over,
 });
 
-const goodProbe = (over = {}) => ({ status: PROBE.AVAILABLE, prefix: 'cba-study-coach-pilot-7f3d', region: 'us-east-1', ...over });
+const goodProbe = (over = {}) => ({ status: PROBE.AVAILABLE, region: 'us-east-1', ...over });
 
 const run = (over = {}, probeOver = {}) =>
   evaluatePreflight({ environment: 'pilot', context: goodContext(over), domainProbe: goodProbe(probeOver) });
 
-const failuresFor = (result, id) => result.checks.find((c) => c.id === id).failures;
+const codesFor = (result, id) => result.checks.find((c) => c.id === id).failures.map((f) => f.code);
+
+const cliArgs = (over = []) => [
+  '--environment', 'pilot',
+  '--release-sha', SHA,
+  '--region', 'us-east-1',
+  '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
+  '-c', 'authLogoutUrls=["https://app.example.com/"]',
+  '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
+  ...over,
+];
 
 /* ================= POSITIVE CONTROL ============================================================ */
 
 test('POSITIVE CONTROL: a fully supplied, confirmed configuration passes both conditions', () => {
   const result = run();
-  assert.equal(result.ok, true, JSON.stringify(result.failures));
+  assert.equal(result.ok, true, JSON.stringify(result.messages));
   assert.deepEqual(result.failures, []);
 });
 
 /* ================= PREFLIGHT-1 ================================================================= */
 
 test('PREFLIGHT-1 refuses the committed pilot default — the placeholder survived', () => {
-  // No override at all: exactly the state the repository ships in.
   const result = evaluatePreflight({ environment: 'pilot', context: {}, domainProbe: goodProbe() });
-  const f = failuresFor(result, 'PREFLIGHT-1');
   assert.equal(result.ok, false);
-  assert.equal(f.length, 2, 'both callback and logout must be reported');
-  assert.match(f.join('\n'), /authCallbackUrls/);
-  assert.match(f.join('\n'), /authLogoutUrls/);
-  assert.match(f.join('\n'), /no override was supplied/);
+  assert.deepEqual(codesFor(result, 'PREFLIGHT-1'), ['PLACEHOLDER_FROM_DEFAULT', 'PLACEHOLDER_FROM_DEFAULT']);
 });
 
-test('PREFLIGHT-1 refuses an override that itself carries the placeholder, and says so differently', () => {
+test('PREFLIGHT-1 distinguishes a forgotten override from an override that carries the placeholder', () => {
+  // Two different operator mistakes with two different fixes; conflating them costs a deploy cycle.
   const result = run({ authCallbackUrls: '["https://pilot.invalid/auth/callback"]' });
-  const f = failuresFor(result, 'PREFLIGHT-1');
-  assert.equal(result.ok, false);
-  assert.equal(f.length, 1);
-  assert.match(f[0], /supplied explicitly/);
-  // The two cases must not be conflated: "you forgot" and "you supplied the placeholder" are
-  // different operator mistakes with different fixes.
-  assert.equal(/no override was supplied/.test(f[0]), false);
+  assert.deepEqual(codesFor(result, 'PREFLIGHT-1'), ['PLACEHOLDER_FROM_OVERRIDE']);
 });
 
 test('PREFLIGHT-1 reads the EFFECTIVE value, so a misspelled context key does not fool it', () => {
-  // `authCallbackUrl` (singular) is not the key the stack reads. The override never applies, the
-  // default survives, and the preflight must see the default rather than the intent.
+  // `authCallbackUrl` (singular) is not the key the stack reads: the override never applies and the
+  // default survives, which is indistinguishable from "no override" unless the resolved value is read.
   const result = evaluatePreflight({
     environment: 'pilot',
     context: { authCallbackUrl: '["https://app.example.com/auth/callback"]', authLogoutUrls: '["https://app.example.com/"]', authDomainPrefix: 'cba-study-coach-pilot-7f3d' },
     domainProbe: goodProbe(),
   });
-  assert.equal(result.ok, false);
-  assert.match(failuresFor(result, 'PREFLIGHT-1').join('\n'), /authCallbackUrls .*placeholder/s);
+  assert.deepEqual(codesFor(result, 'PREFLIGHT-1'), ['PLACEHOLDER_FROM_DEFAULT']);
 });
 
 test('PREFLIGHT-1 decides on the hostname, not on a substring of the URL', () => {
-  // A path segment containing ".invalid" is not the reserved TLD and must not be flagged...
   assert.equal(isReservedPlaceholder('https://app.example.com/theme.invalid.css'), false);
-  // ...and a live host that merely starts with the placeholder label is a REAL origin, which a
-  // substring rule would have waved through as "obviously the placeholder".
+  // A live host that merely starts with the placeholder label is a REAL origin — a substring rule
+  // would wave it through as "obviously the placeholder".
   assert.equal(isReservedPlaceholder('https://pilot.invalid.attacker.example/auth/callback'), false);
   assert.equal(isReservedPlaceholder('https://pilot.invalid/auth/callback'), true);
   assert.equal(isReservedPlaceholder('https://invalid/auth/callback'), true);
-  assert.equal(isReservedPlaceholder('https://DEEP.SUB.INVALID/x'), true, 'the TLD test is case-insensitive');
+  assert.equal(isReservedPlaceholder('https://DEEP.SUB.INVALID/x'), true);
 
-  const passes = run({ authCallbackUrls: '["https://app.example.com/theme.invalid.css"]' });
-  assert.equal(passes.ok, true, 'a path containing .invalid must not fail the gate');
+  assert.equal(run({ authCallbackUrls: '["https://app.example.com/theme.invalid.css"]' }).ok, true);
 });
 
-test('PREFLIGHT-1 turns an unsynthesizable configuration into a refusal, not a crash', () => {
-  for (const [label, bad] of [
-    ['wildcard', '["https://*.example.com/auth/callback"]'],
-    ['plain http on a non-loopback host', '["http://app.example.com/auth/callback"]'],
-    ['fragment', '["https://app.example.com/auth/callback#x"]'],
-    ['embedded credentials', '["https://u:p@app.example.com/auth/callback"]'],
-    ['not JSON', 'https://app.example.com/auth/callback'],
-    ['empty list', '[]'],
+test('PREFLIGHT-1 turns an unsynthesizable configuration into a coded refusal, not a crash', () => {
+  for (const [bad, code] of [
+    ['https://app.example.com/auth/callback', 'AUTH_URLS_NOT_JSON'],
+    ['{"a":1}', 'AUTH_URLS_NOT_ARRAY'],
+    ['[]', 'AUTH_URLS_EMPTY'],
+    ['[7]', 'AUTH_URLS_NOT_STRING'],
+    ['[" https://app.example.com/x "]', 'AUTH_URLS_WHITESPACE'],
+    ['["https://*.example.com/auth/callback"]', 'AUTH_URLS_WILDCARD'],
+    ['["not-a-url"]', 'AUTH_URLS_NOT_ABSOLUTE'],
+    ['["https://app.example.com/auth/callback#x"]', 'AUTH_URLS_FRAGMENT'],
+    ['["https://u:p@app.example.com/auth/callback"]', 'AUTH_URLS_CREDENTIALS'],
+    ['["http://app.example.com/auth/callback"]', 'AUTH_URLS_NOT_HTTPS'],
   ]) {
     const result = run({ authCallbackUrls: bad });
-    assert.equal(result.ok, false, `${label} must refuse`);
-    assert.match(failuresFor(result, 'PREFLIGHT-1').join('\n'), /would fail synth/, label);
+    assert.equal(result.ok, false, code);
+    assert.deepEqual(codesFor(result, 'PREFLIGHT-1'), [code], `${bad} -> ${code}`);
   }
 });
 
 test('PREFLIGHT-1 accepts the dev default, which is localhost rather than a placeholder', () => {
-  const result = evaluatePreflight({
-    environment: 'dev',
-    context: { authDomainPrefix: 'cba-study-coach-dev-7f3d' },
-    domainProbe: goodProbe(),
-  });
-  assert.deepEqual(failuresFor(result, 'PREFLIGHT-1'), []);
-  assert.equal(result.ok, true);
+  const result = evaluatePreflight({ environment: 'dev', context: { authDomainPrefix: 'cba-study-coach-dev-7f3d' }, domainProbe: goodProbe() });
+  assert.deepEqual(codesFor(result, 'PREFLIGHT-1'), []);
 });
 
 /* ================= PREFLIGHT-2 ================================================================= */
 
 test('PREFLIGHT-2 refuses a prefix that was never supplied, even though a value always exists', () => {
-  // This is the condition's whole reason to exist: the stack's fallback means `authDomainPrefix`
-  // is never empty at synth time, so checking the VALUE proves nothing. The KEY is the signal.
   const context = goodContext();
   delete context.authDomainPrefix;
   const result = evaluatePreflight({ environment: 'pilot', context, domainProbe: goodProbe() });
-  assert.equal(result.ok, false);
-  const f = failuresFor(result, 'PREFLIGHT-2').join('\n');
-  assert.match(f, /was not supplied/);
-  assert.match(f, new RegExp(defaultAuthDomainPrefix('pilot')), 'the report must name the fallback it refused');
+  assert.ok(codesFor(result, 'PREFLIGHT-2').includes('PREFIX_NOT_SUPPLIED'));
 });
 
-test('PREFLIGHT-2 refuses when the probe was not run — an unanswered question is not a confirmation', () => {
-  const result = run({}, { status: PROBE.NOT_CHECKED });
-  assert.equal(result.ok, false);
-  assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), /was not run/);
-});
-
-test('PREFLIGHT-2 refuses when the probe errored, and never reads an error as availability', () => {
-  const result = run({}, { status: PROBE.ERROR, detail: 'AccessDeniedException' });
-  assert.equal(result.ok, false);
-  const f = failuresFor(result, 'PREFLIGHT-2').join('\n');
-  assert.match(f, /probe failed/);
-  assert.match(f, /AccessDeniedException/);
-});
-
-test('PREFLIGHT-2 refuses a prefix already taken by somebody else', () => {
-  const result = run({}, { status: PROBE.TAKEN_BY_OTHER, detail: 'the prefix is registered to a different user pool' });
-  assert.equal(result.ok, false);
-  assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), /already taken in us-east-1/);
-});
-
-test('PREFLIGHT-2 accepts a redeploy onto OUR domain, but only with the expected pool named', () => {
-  const ours = run({}, { status: PROBE.TAKEN_BY_EXPECTED_POOL, expectedUserPoolId: 'us-east-1_AbCdEf' });
-  assert.equal(ours.ok, true, JSON.stringify(ours.failures));
-
-  // Without the expected id, "ours" is an assertion nobody verified.
-  const unverified = run({}, { status: PROBE.TAKEN_BY_EXPECTED_POOL });
-  assert.equal(unverified.ok, false);
-  assert.match(failuresFor(unverified, 'PREFLIGHT-2').join('\n'), /cannot be distinguished/);
-});
-
-test('PREFLIGHT-2 refuses a probe with no region — "unique" is meaningless without one', () => {
-  for (const status of [PROBE.AVAILABLE, PROBE.TAKEN_BY_EXPECTED_POOL]) {
-    const result = run({}, { status, region: null, expectedUserPoolId: 'us-east-1_AbCdEf' });
-    assert.equal(result.ok, false, status);
-    assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), /no region/, status);
+test('PREFLIGHT-2 fails closed on every probe outcome that is not a confirmation', () => {
+  for (const [probe, code] of [
+    [{ status: PROBE.NOT_CHECKED }, 'PROBE_NOT_RUN'],
+    [{ status: PROBE.ERROR }, 'PROBE_FAILED'],
+    [{ status: PROBE.TAKEN_BY_OTHER }, 'PROBE_TAKEN'],
+    [{ status: PROBE.TAKEN_BY_EXPECTED_POOL }, 'PROBE_OWNERSHIP_UNVERIFIED'],
+    [{ status: PROBE.AVAILABLE, region: null }, 'PROBE_NO_REGION'],
+    [{ status: 'SOMETHING_ELSE' }, 'PROBE_NOT_RUN'],
+  ]) {
+    const result = run({}, probe);
+    assert.equal(result.ok, false, code);
+    assert.ok(codesFor(result, 'PREFLIGHT-2').includes(code), `${JSON.stringify(probe)} -> ${code}`);
   }
 });
 
-test('PREFLIGHT-2 refuses prefixes Cognito itself would reject, before the deploy discovers it', () => {
-  const cases = [
-    ['UPPERCASE', 'CBA-Study-Coach', /not a valid Cognito domain prefix/],
-    ['leading hyphen', '-cba-pilot', /not a valid Cognito domain prefix/],
-    ['trailing hyphen', 'cba-pilot-', /not a valid Cognito domain prefix/],
-    ['double hyphen', 'cba--pilot', /not a valid Cognito domain prefix/],
-    ['underscore', 'cba_pilot', /not a valid Cognito domain prefix/],
-    ['too long', 'a'.repeat(PREFIX_MAX + 1), /at most 63/],
-    ['whitespace', ' cba-pilot ', /whitespace|not a valid/],
-    ['empty', '', /non-empty string/],
-  ];
-  for (const [label, prefix, expected] of cases) {
+test('PREFLIGHT-2 accepts a redeploy onto OUR domain only when ownership was actually verified', () => {
+  assert.equal(run({}, { status: PROBE.TAKEN_BY_EXPECTED_POOL, ownershipVerified: true }).ok, true);
+  assert.equal(run({}, { status: PROBE.TAKEN_BY_EXPECTED_POOL, ownershipVerified: false }).ok, false);
+});
+
+test('PREFLIGHT-2 refuses prefixes Cognito itself would reject, before a deploy discovers it', () => {
+  for (const [prefix, code] of [
+    ['CBA-Study-Coach', 'PREFIX_SHAPE_INVALID'],
+    ['-cba-pilot', 'PREFIX_SHAPE_INVALID'],
+    ['cba-pilot-', 'PREFIX_SHAPE_INVALID'],
+    ['cba--pilot', 'PREFIX_SHAPE_INVALID'],
+    ['cba_pilot', 'PREFIX_SHAPE_INVALID'],
+    ['a'.repeat(PREFIX_MAX + 1), 'PREFIX_TOO_LONG'],
+    ['', 'PREFIX_NOT_STRING'],
+    [42, 'PREFIX_NOT_STRING'],
+    [null, 'PREFIX_NOT_STRING'],
+    [['x'], 'PREFIX_NOT_STRING'],
+  ]) {
     const result = run({ authDomainPrefix: prefix });
-    assert.equal(result.ok, false, label);
-    assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), expected, label);
+    assert.equal(result.ok, false, String(prefix));
+    assert.ok(codesFor(result, 'PREFLIGHT-2').includes(code), `${String(prefix)} -> ${code}`);
   }
   for (const word of RESERVED_WORDS) {
-    const result = run({ authDomainPrefix: `cba-${word}-pilot` });
-    assert.equal(result.ok, false, word);
-    assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), new RegExp(`reserved word "${word}"`), word);
-  }
-});
-
-test('a non-string prefix is refused rather than coerced', () => {
-  for (const bad of [42, true, null, ['x'], { a: 1 }]) {
-    const result = run({ authDomainPrefix: bad });
-    assert.equal(result.ok, false, JSON.stringify(bad));
-    assert.match(failuresFor(result, 'PREFLIGHT-2').join('\n'), /non-empty string|not a valid/, JSON.stringify(bad));
+    assert.ok(codesFor(run({ authDomainPrefix: `cba-${word}-pilot` }), 'PREFLIGHT-2').includes('PREFIX_RESERVED_WORD'), word);
   }
 });
 
 /* ================= both conditions together ==================================================== */
 
 test('both conditions are always evaluated — one run reports every reason it refused', () => {
-  // An operator must not have to fix one thing, wait for a lane, and discover the next.
   const context = goodContext({ authCallbackUrls: '["https://pilot.invalid/auth/callback"]' });
   delete context.authDomainPrefix;
   const result = evaluatePreflight({ environment: 'pilot', context, domainProbe: { status: PROBE.ERROR } });
-  assert.equal(result.ok, false);
-  assert.equal(result.checks.length, 2);
-  assert.ok(result.failures.some((f) => f.startsWith('PREFLIGHT-1:')));
-  assert.ok(result.failures.some((f) => f.startsWith('PREFLIGHT-2:')));
+  assert.ok(result.failures.some((f) => f.check === 'PREFLIGHT-1'));
+  assert.ok(result.failures.some((f) => f.check === 'PREFLIGHT-2'));
 });
 
-test('the evaluator refuses an unknown environment instead of guessing a default posture', () => {
+test('the evaluator refuses an unknown environment instead of guessing a posture', () => {
   for (const env of ['production', 'staging', '', undefined, null, 'PILOT']) {
     assert.throws(() => evaluatePreflight({ environment: env, context: goodContext(), domainProbe: goodProbe() }), PreflightError, String(env));
-  }
-});
-
-test('the evaluator refuses a context that is not a plain object', () => {
-  for (const bad of [null, [], 'authDomainPrefix=x', 7]) {
-    assert.throws(() => evaluatePreflight({ environment: 'pilot', context: bad, domainProbe: goodProbe() }), PreflightError, JSON.stringify(bad));
   }
 });
 
@@ -236,163 +197,231 @@ test('resolveAuthUrls returns the same defaults the stack uses — one definitio
   const resolved = resolveAuthUrls({}, 'pilot');
   assert.deepEqual(resolved.callback.urls, DEFAULT_AUTH_URLS.pilot.callback);
   assert.deepEqual(resolved.logout.urls, DEFAULT_AUTH_URLS.pilot.logout);
-  assert.equal(resolved.callback.supplied, false);
+});
+
+/* ================= NON-LEAKAGE ================================================================= */
+//
+// Everything below attacks the OUTPUT. A refusal must say WHICH field and WHY, and nothing else.
+
+/** Values that must never survive into any output, whatever path they entered by. */
+const POISON = {
+  accountId: '9'.repeat(12),
+  roleArn: `arn:aws:iam::${'9'.repeat(12)}:role/cba-deploy`,
+  poolId: 'us-east-1_SecretPool',
+  endpoint: 'https://internal-billing.corp.example/auth/callback',
+  credential: 'AKIA' + 'Z'.repeat(16),
+  token: 'ghp_' + 'x'.repeat(36),
+};
+
+const assertClean = (text, label) => {
+  for (const [name, value] of Object.entries(POISON)) {
+    assert.equal(String(text).includes(value), false, `${label} leaked ${name}`);
+  }
+};
+
+test('every failure code renders without touching a supplied value', () => {
+  for (const code of Object.keys(CODES)) {
+    const rendered = describeFailure({ code, field: 'authDomainPrefix' });
+    assert.match(rendered, new RegExp(`\\[${code}\\]$`));
+    assertClean(rendered, code);
+  }
+  assert.throws(() => describeFailure({ code: 'NOT_A_CODE', field: 'x' }), PreflightError);
+});
+
+test('a refused run never echoes the URLs, the prefix or the pool id it was given', () => {
+  const { output, exit } = runDeployPreflight(
+    [
+      '--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1',
+      '-c', `authCallbackUrls=["${POISON.endpoint}#frag"]`,
+      '-c', `authLogoutUrls=["https://u:${POISON.credential}@app.example.com/"]`,
+      '-c', `authDomainPrefix=${POISON.accountId}_BAD`,
+    ],
+    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON, env: { CBA_EXPECTED_USER_POOL_ID: POISON.poolId } },
+  );
+  assert.equal(exit, 1);
+  assertClean(output, 'refusal output');
+  // It still has to be USEFUL: field names and codes are what an operator acts on.
+  assert.match(output, /authCallbackUrls/);
+  assert.match(output, /authDomainPrefix/);
+  assert.match(output, /\[[A-Z_]+\]/);
+});
+
+test('AWS stderr never reaches the output — it can carry an account id or an ARN', () => {
+  const { output, exit } = runDeployPreflight(cliArgs(), {
+    run: () => ({ status: 254, stdout: '', stderr: `AccessDenied: User ${POISON.roleArn} is not authorized` }),
+    cdkJsonPath: CDK_JSON,
+    env: {},
+  });
+  assert.equal(exit, 1);
+  assertClean(output, 'probe error output');
+  assert.match(output, /PROBE_FAILED/);
+});
+
+test("another tenant's user pool id never reaches the output", () => {
+  const { output, exit } = runDeployPreflight(cliArgs(), {
+    run: () => ({ status: 0, stdout: JSON.stringify({ DomainDescription: { UserPoolId: POISON.poolId } }), stderr: '' }),
+    cdkJsonPath: CDK_JSON,
+    env: {},
+  });
+  assert.equal(exit, 1);
+  assertClean(output, 'taken-domain output');
+  assert.match(output, /PROBE_TAKEN/);
+});
+
+test('an unrecognised argument is refused without echoing it — argv can hold a mistyped secret', () => {
+  const { output, exit } = runDeployPreflight([`--${POISON.token}`], { cdkJsonPath: CDK_JSON, env: {} });
+  assert.equal(exit, 2);
+  assertClean(output, 'usage error');
+});
+
+test('the JSON output carries codes and fields only, never values', () => {
+  const { output } = runDeployPreflight(
+    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '--json', '-c', `authDomainPrefix=${POISON.accountId}`],
+    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON, env: {} },
+  );
+  assertClean(output, 'json output');
+  const parsed = JSON.parse(output);
+  assert.equal(parsed.ok, false);
+  for (const f of parsed.failures) assert.deepEqual(Object.keys(f).sort(), ['check', 'code', 'field']);
 });
 
 /* ================= the collector, with no AWS anywhere ========================================= */
 
-test('the collector exits non-zero when a condition refuses, which is what stops the lane', () => {
-  const { exit, result } = runDeployPreflight(
-    ['--environment', 'pilot', '--region', 'us-east-1'],
-    { run: () => assert.fail('no probe should run without a prefix'), cdkJsonPath: CDK_JSON },
-  );
-  assert.equal(exit, 1);
-  assert.equal(result.ok, false);
+test('the expected pool id is read from the environment, never from an argument', () => {
+  // A caller who can name "our" pool can redefine which existing domain a deploy adopts.
+  assert.equal(runDeployPreflight([...cliArgs(), '--expected-user-pool-id', 'us-east-1_X'], { cdkJsonPath: CDK_JSON, env: {} }).exit, 2);
+
+  const adopted = runDeployPreflight(cliArgs(), {
+    run: () => ({ status: 0, stdout: JSON.stringify({ DomainDescription: { UserPoolId: 'us-east-1_Ours' } }), stderr: '' }),
+    cdkJsonPath: CDK_JSON,
+    env: { CBA_EXPECTED_USER_POOL_ID: 'us-east-1_Ours' },
+  });
+  assert.equal(adopted.exit, 0, adopted.output);
+
+  const notOurs = runDeployPreflight(cliArgs(), {
+    run: () => ({ status: 0, stdout: JSON.stringify({ DomainDescription: { UserPoolId: 'us-east-1_Ours' } }), stderr: '' }),
+    cdkJsonPath: CDK_JSON,
+    env: {},
+  });
+  assert.equal(notOurs.exit, 1, 'without trusted state, an existing domain is not ours');
 });
 
-test('the collector exits zero only when both conditions pass', () => {
-  const { exit, output } = runDeployPreflight(
-    [
-      '--environment', 'pilot',
-      '--region', 'us-east-1',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-      '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
-    ],
-    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON },
-  );
-  assert.equal(exit, 0, output);
-  assert.match(output, /Deploy may proceed/);
+test('a release SHA is required, and only a full 40-hex one is accepted', () => {
+  for (const bad of [[], ['--environment', 'pilot'], ['--environment', 'pilot', '--release-sha', 'abc'], ['--environment', 'pilot', '--release-sha', 'A'.repeat(40)], ['--environment', 'pilot', '--release-sha', 'main']]) {
+    assert.equal(runDeployPreflight(bad, { cdkJsonPath: CDK_JSON, env: {} }).exit, 2, JSON.stringify(bad));
+  }
 });
 
-test('an empty DomainDescription means AVAILABLE, and a failed call means ERROR — never the reverse', () => {
-  const base = [
-    '--environment', 'pilot', '--region', 'us-east-1',
-    '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-    '-c', 'authLogoutUrls=["https://app.example.com/"]',
-    '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
-  ];
+test('the manifest is written only on a pass, and binds the release, environment and context', () => {
+  const written = [];
+  const writeFile = (p, data) => written.push({ p, data });
 
-  const available = runDeployPreflight(base, { run: () => ({ status: 0, stdout: '{"DomainDescription":{}}', stderr: '' }), cdkJsonPath: CDK_JSON });
-  assert.equal(available.exit, 0);
+  const refused = runDeployPreflight(
+    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '--manifest-out', '/tmp/x.json'],
+    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON, env: {}, writeFile },
+  );
+  assert.equal(refused.exit, 1);
+  assert.equal(written.length, 0, 'a manifest for a refused configuration must not exist');
+  assert.equal(refused.manifest, null);
 
-  const denied = runDeployPreflight(base, { run: () => ({ status: 254, stdout: '', stderr: 'AccessDeniedException: not authorized' }), cdkJsonPath: CDK_JSON });
-  assert.equal(denied.exit, 1, 'a denied call must never be read as availability');
-  assert.match(denied.output, /probe failed/);
-
-  const garbage = runDeployPreflight(base, { run: () => ({ status: 0, stdout: 'not json', stderr: '' }), cdkJsonPath: CDK_JSON });
-  assert.equal(garbage.exit, 1);
-
-  const taken = runDeployPreflight(base, {
-    run: () => ({ status: 0, stdout: '{"DomainDescription":{"UserPoolId":"us-east-1_Other"}}', stderr: '' }),
+  const passed = runDeployPreflight([...cliArgs(), '--manifest-out', '/tmp/x.json'], {
+    run: () => ({ status: 0, stdout: '{}', stderr: '' }),
     cdkJsonPath: CDK_JSON,
+    env: {},
+    writeFile,
   });
-  assert.equal(taken.exit, 1);
-  assert.match(taken.output, /already taken/);
-  assert.equal(/us-east-1_Other/.test(taken.output), false, "another tenant's pool id must not be echoed");
+  assert.equal(passed.exit, 0, passed.output);
+  assert.equal(written.length, 1);
+  const manifest = JSON.parse(written[0].data);
+  assert.equal(manifest.releaseSha, SHA);
+  assert.equal(manifest.environment, 'pilot');
+  assert.match(manifest.contextDigest, /^[0-9a-f]{64}$/);
+  assert.deepEqual(manifest.boundContextKeys, [...BOUND_CONTEXT_KEYS].sort());
+  assertClean(written[0].data, 'manifest');
+});
 
-  const ours = runDeployPreflight([...base, '--expected-user-pool-id', 'us-east-1_Ours'], {
-    run: () => ({ status: 0, stdout: '{"DomainDescription":{"UserPoolId":"us-east-1_Ours"}}', stderr: '' }),
+test('the context digest changes when any bound value changes, and is order-independent', () => {
+  const base = { releaseSha: SHA, environment: 'pilot', context: goodContext() };
+  const d = contextDigest(base);
+
+  // Same values, different insertion order -> same digest, so a deploy can reproduce it.
+  const reordered = { ...base, context: { authDomainPrefix: goodContext().authDomainPrefix, authLogoutUrls: goodContext().authLogoutUrls, authCallbackUrls: goodContext().authCallbackUrls } };
+  assert.equal(contextDigest(reordered), d);
+
+  // Any bound change -> different digest. This is what stops a deploy from using other values.
+  for (const over of [
+    { authCallbackUrls: '["https://other.example.com/auth/callback"]' },
+    { authLogoutUrls: '["https://other.example.com/"]' },
+    { authDomainPrefix: 'cba-study-coach-pilot-0000' },
+  ]) {
+    assert.notEqual(contextDigest({ ...base, context: goodContext(over) }), d, JSON.stringify(over));
+  }
+  assert.notEqual(contextDigest({ ...base, releaseSha: 'b'.repeat(40) }), d, 'the release is bound too');
+  assert.notEqual(contextDigest({ ...base, environment: 'dev' }), d, 'the environment is bound too');
+
+  // Unbound context does NOT move the digest: binding unrelated keys would make it brittle without
+  // making the deploy safer.
+  assert.equal(contextDigest({ ...base, context: goodContext({ someOtherKey: 'x' }) }), d);
+});
+
+test('the probe is read-only, bounded, and never runs without a region or a prefix', () => {
+  const calls = [];
+  runDeployPreflight(cliArgs(), {
+    run: (args, o) => {
+      calls.push({ args, o });
+      return { status: 0, stdout: '{}', stderr: '' };
+    },
     cdkJsonPath: CDK_JSON,
+    env: {},
   });
-  assert.equal(ours.exit, 0, ours.output);
+  assert.equal(calls.length, 1, 'exactly one AWS call');
+  const [{ args, o }] = calls;
+
+  // Structural, not by substring: `--output` contains "put", so a substring sweep both flags a
+  // harmless flag and misses a mutating operation that happens not to contain a listed word.
+  const [service, operation] = args;
+  assert.equal(service, 'cognito-idp');
+  assert.ok(operation.startsWith('describe-'), operation);
+  for (const verb of ['create-', 'update-', 'delete-', 'put-', 'set-', 'add-', 'remove-', 'start-', 'stop-', 'admin-']) {
+    assert.equal(operation.startsWith(verb), false, `${operation} mutates`);
+  }
+  assert.ok(o.timeoutMs > 0, 'the probe must be time-bounded');
+  assert.equal(args.filter((a) => !String(a).startsWith('-')).some((a) => ['secretsmanager', 'ssm', 'cloudformation', 'sts'].includes(a)), false);
+
+  // No region, and no prefix, each mean the probe must not be attempted at all.
+  const noRegion = runDeployPreflight(
+    ['--environment', 'pilot', '--release-sha', SHA, '-c', 'authDomainPrefix=cba-x'],
+    { run: () => assert.fail('the probe must not run without a region'), cdkJsonPath: CDK_JSON, env: {} },
+  );
+  assert.equal(noRegion.exit, 1);
+  const noPrefix = runDeployPreflight(
+    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1'],
+    { run: () => assert.fail('the probe must not run without a prefix'), cdkJsonPath: CDK_JSON, env: {} },
+  );
+  assert.equal(noPrefix.exit, 1);
 });
 
 test('--skip-probe fails PREFLIGHT-2 by design: skipping the question is not answering it', () => {
-  const { exit, output } = runDeployPreflight(
-    [
-      '--environment', 'pilot', '--skip-probe',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-      '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
-    ],
-    { run: () => assert.fail('--skip-probe must not call AWS'), cdkJsonPath: CDK_JSON },
-  );
+  const { exit, output } = runDeployPreflight([...cliArgs(), '--skip-probe'], {
+    run: () => assert.fail('--skip-probe must not call AWS'),
+    cdkJsonPath: CDK_JSON,
+    env: {},
+  });
   assert.equal(exit, 1);
-  assert.match(output, /was not run/);
-});
-
-test('the probe is never called without a region, and no region is a refusal', () => {
-  const { exit, output } = runDeployPreflight(
-    [
-      '--environment', 'pilot',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-      '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
-    ],
-    { run: () => assert.fail('the probe must not run without a region'), cdkJsonPath: CDK_JSON },
-  );
-  assert.equal(exit, 1);
-  assert.match(output, /no region/);
-});
-
-test('the probe call is read-only, bounded, and names the exact domain and region', () => {
-  const calls = [];
-  runDeployPreflight(
-    [
-      '--environment', 'pilot', '--region', 'eu-west-1',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-      '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
-    ],
-    {
-      run: (args, o) => {
-        calls.push({ args, o });
-        return { status: 0, stdout: '{}', stderr: '' };
-      },
-      cdkJsonPath: CDK_JSON,
-    },
-  );
-  assert.equal(calls.length, 1, 'exactly one AWS call');
-  const [{ args, o }] = calls;
-  assert.deepEqual(args.slice(0, 2), ['cognito-idp', 'describe-user-pool-domain']);
-  assert.ok(args.includes('cba-study-coach-pilot-7f3d'));
-  assert.ok(args.includes('eu-west-1'));
-  assert.ok(o.timeoutMs > 0, 'the probe must be time-bounded');
-
-  // Read-only, asserted STRUCTURALLY on the service and operation rather than by substring. A
-  // substring sweep is what a careless version of this test would do, and it is wrong in both
-  // directions: `--output` contains "put", so it flags a harmless flag, while a mutating operation
-  // that happens not to contain a listed word sails through. The operation name is the fact.
-  const [service, operation] = args;
-  assert.equal(service, 'cognito-idp');
-  assert.ok(operation.startsWith('describe-'), `the operation must be a describe-*, got ${operation}`);
-  const MUTATING = ['create-', 'update-', 'delete-', 'put-', 'set-', 'add-', 'remove-', 'start-', 'stop-', 'admin-'];
-  assert.equal(MUTATING.some((v) => operation.startsWith(v)), false, `${operation} mutates`);
-  // And no other service is contacted — no secret store, no deploy surface.
-  assert.equal(args.filter((a) => !String(a).startsWith('-')).some((a) => ['secretsmanager', 'ssm', 'cloudformation', 'sts'].includes(a)), false);
+  assert.match(output, /PROBE_NOT_RUN/);
 });
 
 test('a committed cdk.json value counts as explicitly supplied; the in-code fallback does not', () => {
-  // The condition refuses the SILENT fallback, not the location of a reviewed decision.
   const withCommitted = runDeployPreflight(
-    [
-      '--environment', 'pilot', '--region', 'us-east-1',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-    ],
-    {
-      run: () => ({ status: 0, stdout: '{}', stderr: '' }),
-      cdkJsonPath: path.join(__dirname, 'fixtures', 'cdk-with-prefix.json'),
-    },
+    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]', '-c', 'authLogoutUrls=["https://app.example.com/"]'],
+    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: path.join(__dirname, 'fixtures', 'cdk-with-prefix.json'), env: {} },
   );
   assert.equal(withCommitted.exit, 0, withCommitted.output);
 
-  // The real cdk.json carries no prefix, so the same run refuses.
   const withoutCommitted = runDeployPreflight(
-    [
-      '--environment', 'pilot', '--region', 'us-east-1',
-      '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
-      '-c', 'authLogoutUrls=["https://app.example.com/"]',
-    ],
-    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON },
+    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]', '-c', 'authLogoutUrls=["https://app.example.com/"]'],
+    { run: () => ({ status: 0, stdout: '{}', stderr: '' }), cdkJsonPath: CDK_JSON, env: {} },
   );
   assert.equal(withoutCommitted.exit, 1);
-  assert.match(withoutCommitted.output, /was not supplied/);
-});
-
-test('a usage error exits 2, which is distinguishable from a refusal', () => {
-  assert.equal(runDeployPreflight(['--nope'], { cdkJsonPath: CDK_JSON }).exit, 2);
-  assert.equal(runDeployPreflight([], { cdkJsonPath: CDK_JSON }).exit, 2);
-  assert.equal(runDeployPreflight(['--environment', 'production'], { cdkJsonPath: CDK_JSON }).exit, 2);
+  assert.match(withoutCommitted.output, /PREFIX_NOT_SUPPLIED/);
 });

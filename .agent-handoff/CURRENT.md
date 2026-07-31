@@ -166,6 +166,14 @@ before `cdk deploy` while `.invalid` survives into the effective Cognito callbac
 unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. The
 custom-domain decision on #67 is what makes those values knowable; it is still open and is Zamp's.
 
+**BLOCKED PREREQUISITE — there is no human deployment gate yet.** As of 2026-07-31 the repository has
+**zero configured GitHub Environments**; an Environment named in a workflow but never configured is
+created on first use with no required reviewer and no branch restriction. `release-pilot.yml` binds
+`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — pilot
+requiring the designated reviewer and restricting deployment branches to reviewed `main` releases —
+**the lane is ungated and no deploy slice may be approved.** Read-only evidence of those settings is
+required first.
+
 Moved to `done/` in this audit, each with the policy references moved alongside:
 
 - `67-cloudflare-opennext-stage-b.md` — the in-repo delivery is merged (PR #100). **Issue #67 stays

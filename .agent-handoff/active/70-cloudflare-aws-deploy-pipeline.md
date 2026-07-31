@@ -73,6 +73,69 @@ denied probe, an absent region and an unparsed response are all refusals.
 - The AWS stack deploys, the Cloudflare half, the F1/F2 gates, the live SNS/KMS notification proof
   and the smoke lane all remain later slices.
 
+## BLOCKED EXTERNAL PREREQUISITE — the human gate does not exist yet
+
+**As of 2026-07-31 this repository has ZERO configured GitHub Environments.** Read-only inspection
+of `/repos/:owner/:repo/environments` returned `total_count: 0`.
+
+Naming `environment: dev` or `environment: pilot` in a workflow does not create protection. An
+Environment referenced but never configured is created on first use WITHOUT required reviewers and
+WITHOUT a deployment-branch restriction. Slice A's first draft described those keys as the human
+gate; that was wrong, and Codex refused the slice for it.
+
+What the `environment:` keys are today: the BINDING that will carry the gate once the Environments
+exist. They are necessary and not sufficient.
+
+Required before any deploy slice or deployment gate may be approved, under a separate
+Zamp-authorized repository-settings change:
+
+- configure `dev` and `pilot`;
+- `pilot` must require the designated reviewer;
+- `pilot` must restrict deployment branches to reviewed `main` releases;
+- read-only evidence of both settings must be presented and reviewed.
+
+Until that evidence exists, **this lane is ungated** and must be described that way.
+
+## Slice A — Codex review round 1, and what it changed
+
+Four findings, all upheld. The code deployed nothing then and deploys nothing now; what was wrong
+was the FOUNDATION — it left room for a future deploy to bypass release identity, the preflight and
+the approval.
+
+**Release identity (HIGH).** The lane took `environment` and the callback/logout URLs as operator
+inputs and never pinned `checkout`, so a manual run could select any branch and deploy a tree that
+was never the reviewed one. Replaced per `deployed-environment-smoke-workflow-design.md` §1/§4:
+`release_sha` is required, must be 40 lowercase hex AND an ancestor of live `main`; every checkout
+pins it; `mode` (`dev_only` | `dev_then_pilot`) replaces the environment input; `target_environment`
+is internal; there are no URL inputs at all — targets resolve only from Environment configuration.
+There is no dispatch path that reaches pilot without a green dev stage in the same run.
+
+**Binding the deploy to what was validated (HIGH).** A passing preflight proved that SOME
+configuration was valid, not that the deployed one is it: a later `cdk deploy --all` could omit the
+`-c` values and still satisfy the gate. The preflight now emits a manifest with a canonical digest
+over `{releaseSha, environment, boundContext}`, written only on a pass — a manifest for a refused
+configuration is a token that should not exist. A deploying job must carry that digest, and the
+invariant test refuses the workflow if one does not.
+
+The same finding caught the gating itself: `needs:` plus a permissive `if:` gates nothing. GitHub's
+default "skip when a dependency failed" is REPLACED by any `if:`, so `always()` and the quieter
+`!cancelled()` both let a failed preflight through. Every job now requires
+`needs.<job>.result == 'success'`, and the invariant rejects both holes.
+
+`expected_user_pool_id` was a caller input — whoever can name "our" pool can redefine which existing
+domain a deploy is willing to adopt, turning PREFLIGHT-2's redeploy allowance into a bypass. It now
+comes only from `CBA_EXPECTED_USER_POOL_ID` in the environment.
+
+**The absent Environments (HIGH).** Recorded above as a blocked prerequisite rather than as a
+control, and the workflow header says so in the file a future reader will actually open.
+
+**Leakage (MEDIUM).** Codex reproduced role-ARN and credential-shaped material in this command's
+output. The role ARN moved from a variable to a secret and `mask-aws-account-id: true` is set. Every
+failure is now a CODE plus a FIELD NAME from a closed vocabulary; AWS stderr, the owning user pool
+id, supplied URLs and the prefix never reach the output. A poison-value suite asserts non-leakage for
+an account id, an IAM ARN, a pool id, an internal endpoint URL, an access-key-shaped string and a
+token-shaped string, across the human output, the JSON output, probe errors and usage errors.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

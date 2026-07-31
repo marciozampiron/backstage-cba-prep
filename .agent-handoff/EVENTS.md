@@ -23,6 +23,31 @@ Append meaningful coordination changes here. Newest entries should go at the top
 - The preflight is a separate JOB in `deploy-pilot.yml`, not a step: a step can be reordered, made
   `continue-on-error` or skipped by an `if:`, while a failed job in `needs:` stops the dependent job
   outright. Trigger is `workflow_dispatch` only, so a merge can never spend money unattended.
+- Codex round 1 refused Slice A with four findings, all upheld. The code deployed nothing then and
+  deploys nothing now; the FOUNDATION was what left room for a future deploy to bypass release
+  identity, the preflight and the approval. Fixed in the second Slice A commit:
+  - Release identity — the lane took `environment` and the auth URLs as operator inputs and never
+    pinned `checkout`, so a manual run could deploy a tree that was never reviewed. Rebuilt to
+    `deployed-environment-smoke-workflow-design.md` §1/§4: `release_sha` (40 hex, ancestor of live
+    `main`), pinned checkouts, `mode` instead of an environment input, no URL inputs, and no dispatch
+    path reaching pilot without a green dev stage.
+  - Binding — a passing preflight proved SOME configuration was valid, not the deployed one. The
+    preflight now emits a manifest digest over `{releaseSha, environment, boundContext}`, written
+    only on a pass, and a deploying job must carry it. The same finding caught that `needs:` plus a
+    permissive `if:` is not a gate: any `if:` replaces GitHub's default skip-on-failure, so
+    `always()` AND `!cancelled()` let a failed preflight through. Every job now requires
+    `result == 'success'`.
+  - `expected_user_pool_id` was caller-supplied — whoever can name "our" pool redefines which
+    existing domain a deploy adopts. It now comes only from environment state.
+  - Leakage — role ARN moved to a secret, `mask-aws-account-id: true` set, and every failure is now
+    a code plus a field name. AWS stderr, the owning pool id, supplied URLs and the prefix never
+    reach the output; a poison-value suite proves it.
+- BLOCKED PREREQUISITE recorded: the repository has **zero configured GitHub Environments**
+  (`total_count: 0`, read-only check). An Environment named in a workflow but never configured is
+  created on first use with no reviewer and no branch restriction, so Slice A's first draft described
+  a gate that does not exist. The `environment:` keys are the binding, not the control. `dev` and
+  `pilot` must be configured under a separate Zamp-authorized settings change, with read-only
+  evidence, before any deploy slice or deployment gate is approved.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`
