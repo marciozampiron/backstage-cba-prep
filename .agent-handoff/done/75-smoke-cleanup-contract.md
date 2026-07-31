@@ -2,12 +2,23 @@
 
 ## Status
 
-IMPLEMENTED locally; awaiting independent review and the human publication gate. #70 is blocked on
-this contract and has not been started.
+DONE. Codex reviewed both the code and the publication artifact. Zamp then sent a
+`HUMAN_GATE_GRANTED` naming the artifact digest, the work was published as PR #101, and Zamp merged
+it at `dcb868d2b9def97598c35500896d6abe50d3d0a1`. CI was green on the pull request and after the
+merge across Quality, Web Quality, Infra Synth and CodeQL. Issue #75 is CLOSED, the board item is
+Done, and the remote branch `task/75-smoke-cleanup-contract` was preserved.
+
+The delivery is code only. Nothing was deployed — no AWS, no Cloudflare, no secret operation, no
+paid call — and no stack beyond SecurityStack exists. The `cba-smoke` Cognito group is declared in
+`IdentityStack` but has no members: membership is assigned by a human operator per environment,
+never by CI. Until that assignment happens in a deployed environment, the cleanup endpoint answers
+403 there.
+
+The contract is now available to #70, which it unblocks and which has not been started.
 
 ## Owner
 
-- Executor: Claude Opus 5. Architect/reviewer: Codex. Human gate required before any push.
+- Executor: Claude Opus 5. Architect/reviewer: Codex. Human gate and merge: Zamp.
 - No deploy, no AWS live call, no Cloudflare, no secret operation, no paid call was performed.
 
 ## The shape of the problem

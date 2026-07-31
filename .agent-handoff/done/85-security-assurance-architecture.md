@@ -1,4 +1,15 @@
-# Active: Security assurance architecture and agent rules (#85)
+# Done: Security assurance architecture and agent rules (#85)
+
+## Status
+
+DONE. Issue #85 is CLOSED. The three canonical documents it defines are on `main`:
+`spec/security-rules.md`, `docs/architecture/security-assurance-baseline.md` and
+`docs/architecture/ai-agent-security-model.md`. Moved out of `active/` on 2026-07-30 during the #75
+closeout audit: the issue is closed and no agent or worktree held ownership.
+
+The individual controls this architecture catalogs are implemented by their own issues, and the
+"implementation executor for later controls: unassigned" line below refers to those, not to
+unfinished work in #85 itself.
 
 ## Ownership
 

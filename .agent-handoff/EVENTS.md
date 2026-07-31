@@ -2,6 +2,45 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-30 — Claude — #75 closed, documents reconciled, #70 is next
+
+- #75 CLOSED (Done). Codex reviewed the code and the artifact, Zamp sent a `HUMAN_GATE_GRANTED`
+  naming artifact digest `c17b32bb…`, the work was published as PR #101, and Zamp merged it at
+  `dcb868d2b9def97598c35500896d6abe50d3d0a1`. CI green on the pull request and after the merge
+  across Quality, Web Quality, Infra Synth and CodeQL.
+- Handoff moved `active/75-smoke-cleanup-contract.md` -> `done/75-smoke-cleanup-contract.md`, and
+  its Status section rewritten from "awaiting review and publication" to the delivered outcome.
+- `spec/authority-policy.json` moved with it. The policy is closed on exact paths, so the rename
+  alone left the governance suite at 344/360 — 16 failures, all traceable to the three stale
+  references in `governedSurfaces`, `surfaceClassification` and `allowedAuthorityStatements`. Same
+  lesson as the #82 close on 2026-07-28: a handoff rename is never a rename of one file.
+- PROCESS: the initial local attempt was made by Gemini, which holds no collaboration, publication
+  or governance role in this repository. That attempt was NOT accepted: it was never committed, and
+  it left the governance suite red. Opus performed the valid reconciliation on the isolated branch
+  `task/75-governance-closeout`, and Codex reviews the result read-only. Worth recording because the
+  closed policy is what caught it, not a human reading the diff.
+- Local cleanup after the merge, authorized by Zamp: #75 worktree removed, local branch deleted with
+  `git branch -d`, and the #75 scope, gate and both publication artifacts removed from `/tmp`. The
+  remote branch `task/75-smoke-cleanup-contract` was preserved. The #91 worktree was not touched.
+- ACTIVE-HANDOFF AUDIT against GitHub issues and the board, to stop an ownership collision before
+  #70 opens. `active/` now holds exactly one owner, #91:
+  - #91 OPEN, Stage B not built, own worktree — preserved untouched.
+  - #67 -> `done/`. The in-repo delivery is merged (PR #100) and issue #67 stays OPEN, but nothing
+    implementable remains in the repository. An active handoff that owns the same files would have
+    blocked #70 from opening; the remaining scope moved to `inbox/70-*` instead.
+  - #75 -> `done/`, CLOSED, delivered in PR #101.
+  - #85 -> `done/`, CLOSED, its three canonical documents on `main`, no agent or worktree holding it.
+  - #93 -> `done/`, CLOSED. Held back for one commit because `src/lib/authority-policy.js`,
+    `test/governance-model.test.js` and `spec/authority-policy.json` hard-code its path. Codex named
+    that inversion correctly — real state must drive the guard, not the reverse — so all three moved
+    with the file, and a new control asserts the `done/` path and refuses the `active/` one.
+- `inbox/70-cloudflare-aws-deploy-pipeline.md` created for the next work, owned by nobody until Zamp
+  assigns an executor. It inherits #67's account-level half, the AWS deploys of the synth-only
+  stacks, the live SNS/KMS notification proof and the deployed smoke lane — and states explicitly
+  that it must not re-open PR #100's or PR #101's merged scope.
+- Dependabot reported 8 alerts on the default branch (6 high, 2 moderate) during the #75 push. Not
+  triaged, no upgrade attempted; the 6 high are a pilot-GO prerequisite.
+
 ## 2026-07-28 — Claude — #82 closed, #67 Stage B opened
 
 - #82 CLOSED (completed) with all three slices on `main`; Roadmap board item confirmed Done.

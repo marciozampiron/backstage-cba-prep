@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-28 (#82 closed; #67 Stage B taken into active ownership)
+Last updated: 2026-07-30 (#75 closed; #67 in-repo delivery merged, issue still OPEN; #70 is next)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -107,9 +107,12 @@ Project board remain the source of truth; this file summarizes local coordinatio
   User Pool + PKCE-ready public client, API Gateway JWT authorizer on every route except public
   readiness, access-token-only neutral principal (ID tokens and `x-cba-learner` refused, missing
   bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
-  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. #82 is now
-  CLOSED. Current work: **#67 Stage B** (Cloudflare Workers/OpenNext frontend), then #79, the #75
-  cleanup contract, then #70 -> close #46/#68. Everything is
+  with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. **#82 and
+  #75 are CLOSED (Done)**; #75 delivered the smoke-cleanup contract in PR #101. **#67's in-repo
+  delivery is merged** (PR #100), but #67 stays OPEN: it still needs the
+  custom-domain-vs-`workers.dev` decision and an actual deploy, neither of which is repository work.
+  Current work: **#70** (Cloudflare/AWS deploy pipeline and post-deploy smoke gates), then #79 ->
+  close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
   hardening (own task, outside #66 acceptance); Claude Sonnet 5 via AWS Sales (non-blocking);
@@ -132,19 +135,43 @@ Project board remain the source of truth; this file summarizes local coordinatio
 - Local MCP inventory for agents: Stitch, Cloudflare Docs, Cloudflare API, AWS, GitHub, and Next.js
   DevTools. GitHub/Cloudflare use IDE OAuth, AWS exposes only the read-only diagnostics role, and
   Next.js DevTools is pinned locally to `0.4.0`. MCP configs remain local, mode `0600`, and ignored.
-- Housekeeping open: the moderate Dependabot `postcss` advisory in `/web` awaits a dependency PR.
-  (Duplicate issue #45 is closed as a duplicate of #42.)
+- Housekeeping open: GitHub reported **8 Dependabot alerts on the default branch (6 high, 2
+  moderate)** during the #75 push on 2026-07-30 — this supersedes the older single-`postcss` note.
+  The 6 high must be fixed or formally risk-accepted before the pilot GO. Triage is not started and
+  no upgrade has been attempted. (Duplicate issue #45 is closed as a duplicate of #42.)
 - Tooling lesson (2026-07-08): verify CI-matrix (Node 20+22) compatibility for tooling changes —
   `node --test` glob-pattern paths need Node >=21; root test uses a shell-expanded `test/*.test.js`.
 
 ## Active handoff
 
-- `active/67-cloudflare-opennext-stage-b.md` — #67 Stage B, taken into active ownership 2026-07-28.
-  Stage A is published and done. Stage B's account-level items (Cloudflare project, Environment
-  API token, Worker names/routes, deploy lane) are human-gated and land WITH #70; only the
-  reviewable in-repo scope is implementable now. `web/package.json` must never gain a `deploy` or
-  `preview` script, and no Cloudflare token, account id, zone id or endpoint belongs in a tracked
-  file.
+Audited 2026-07-30 against GitHub issues and the board. **`active/` now holds exactly one owner.**
+
+- `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
+  own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and
+  authoritative remote enforcement; until it ships, every publication guardrail is process rather
+  than enforcement.
+
+Queued, owned by nobody until Zamp assigns an executor:
+
+- `inbox/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, the next work. It owns the
+  account-level half of #67 (custom-domain decision, Cloudflare project and Environment token,
+  Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks,
+  the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
+  in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
+
+Moved to `done/` in this audit, each with the policy references moved alongside:
+
+- `67-cloudflare-opennext-stage-b.md` — the in-repo delivery is merged (PR #100). **Issue #67 stays
+  OPEN**, but nothing implementable remains in the repository, so the handoff no longer holds
+  ownership; the rest was transferred to `inbox/70-*`. Leaving it active would have blocked #70 on
+  the same files — that is the collision this audit existed to prevent.
+- `75-smoke-cleanup-contract.md` — **#75 CLOSED**, delivered in PR #101.
+- `85-security-assurance-architecture.md` — **#85 CLOSED**; its three canonical documents are on
+  `main` and no agent or worktree held ownership.
+- `93-human-publication-script.md` — **#93 CLOSED**. Held back one commit because
+  `src/lib/authority-policy.js`, `test/governance-model.test.js` and `spec/authority-policy.json`
+  hard-code its path; that inverted the responsibility, so all three moved with the file and a
+  control now asserts the `done/` path and refuses the `active/` one.
 
 ## Do not touch without explicit assignment
 
