@@ -20,8 +20,16 @@
 //     userland check can close; it is disclosed here rather than papered over.
 //   * The manifest names its service (`aws-cdk`), and this entrypoint deploys nothing else — there
 //     is no code path that invokes wrangler or opennextjs. A Cloudflare deploy requires its own
-//     manifest shape and its own bound entrypoint, in a later slice. The workflow invariants forbid
-//     RAW deploy commands everywhere, so this file is the only way anything deploys at all.
+//     manifest shape and its own bound entrypoint, in a later slice. The workflow invariants allow
+//     ONLY a closed set of step shapes, so this file is the only way anything deploys at all.
+//   * The RELEASE is bound to the working tree and to the deployable content, not just to an
+//     argument. Round 4 reproduced a deploy that verified a manifest naming one SHA while HEAD was
+//     another: the entrypoint now requires `git rev-parse HEAD` to equal the manifest's release,
+//     the worktree to be clean, and the synthesized assembly's digest to equal the manifest's —
+//     and it deploys THAT assembly via `--app`, never re-synthesizing from mutable source.
+//   * The REGION the manifest binds is imposed on the child: AWS_REGION, AWS_DEFAULT_REGION and
+//     CDK_DEFAULT_REGION are all overridden with the verified value, so an ambient region pointing
+//     somewhere else cannot redirect the deploy inside the same account.
 //
 // In Slice A the release lane never calls this file: nothing deploys yet. It exists now so the
 // binding is established and adversarially tested BEFORE the first deploying slice, instead of
@@ -34,12 +42,12 @@ const path = require('node:path');
 const { describeFailure, PreflightError } = require('../lib/deploy-preflight');
 const {
   contextDigest,
+  assemblyDigest,
   loadContext,
   resolveAccountId,
   validManifestShape,
   parseContextPair,
   defaultRun,
-  BOUND_CONTEXT_KEYS,
   MANIFEST_TARGET_SERVICE,
 } = require('./deploy-preflight');
 
@@ -54,6 +62,7 @@ function parseArgs(argv) {
     else if (a === '--environment') out.environment = argv[++i];
     else if (a === '--release-sha') out.releaseSha = argv[++i];
     else if (a === '--region') out.region = argv[++i];
+    else if (a === '--assembly') out.assembly = argv[++i];
     else if (a === '--help' || a === '-h') out.help = true;
     // The offending token is not echoed: argv can hold a mistyped secret.
     else throw new PreflightError('unrecognised argument');
@@ -69,8 +78,9 @@ function usage() {
     '  --environment <env>     required; must equal the manifest',
     '  --release-sha <40-hex>  required; must equal the manifest',
     '  --region <aws-region>   required; must equal the manifest',
+    '  --assembly <dir>        required; the synthesized cdk.out whose digest the manifest binds',
     '  -c key=value            the effective context (repeatable) — the SAME values the',
-    '                          preflight validated; the deploy is constructed from them',
+    '                          preflight validated; the digest is recomputed from them',
     '',
     'It verifies the manifest digest against the effective values and the resolved account,',
     're-resolves the account immediately before the effect, and then deploys EXACTLY the',
@@ -79,10 +89,17 @@ function usage() {
   ].join('\n');
 }
 
-/** Default executor: the CDK child, stdio inherited so the deploy is observable. Injectable. */
-function defaultExec(args) {
-  const res = spawnSync('npx', args, { stdio: 'inherit' });
+/** Default executor: the CDK child, stdio inherited so the deploy is observable. Injectable.
+ * The env is supplied by the caller with the verified region imposed — never ambient as-is. */
+function defaultExec(args, env) {
+  const res = spawnSync('npx', args, { stdio: 'inherit', env });
   return { status: res.status === null ? 1 : res.status };
+}
+
+/** Default git reader: injectable, so the HEAD/worktree binding is testable offline. */
+function defaultGit(args) {
+  const res = spawnSync('git', args, { encoding: 'utf8' });
+  return { status: res.status === null ? 1 : res.status, stdout: res.stdout || '' };
 }
 
 /**
@@ -90,7 +107,7 @@ function defaultExec(args) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -98,7 +115,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, cdkJsonP
     return { exit: EXIT.USAGE, output: `${err.message}\n\n${usage()}`, executed: false };
   }
   if (opts.help) return { exit: EXIT.OK, output: usage(), executed: false };
-  for (const [key, label] of [['manifest', '--manifest'], ['environment', '--environment'], ['releaseSha', '--release-sha'], ['region', '--region']]) {
+  for (const [key, label] of [['manifest', '--manifest'], ['environment', '--environment'], ['releaseSha', '--release-sha'], ['region', '--region'], ['assembly', '--assembly']]) {
     if (!opts[key]) return { exit: EXIT.USAGE, output: `${label} is required\n\n${usage()}`, executed: false };
   }
 
@@ -135,6 +152,27 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, cdkJsonP
   if (manifest.target.service !== MANIFEST_TARGET_SERVICE) failures.push({ check: 'VERIFY', code: 'DEPLOY_TARGET_UNSUPPORTED', field: 'target' });
   if (failures.length > 0) return refuse();
 
+  // 2b. The RELEASE, bound to reality. The manifest naming a SHA proves nothing about the files on
+  //     disk: round 4 reproduced a verified deploy whose HEAD was a different commit entirely. The
+  //     working tree must BE the release, exactly, with nothing on top.
+  const head = git(['rev-parse', 'HEAD']);
+  if (head.status !== 0 || head.stdout.trim() !== manifest.releaseSha) {
+    failures.push({ check: 'VERIFY', code: 'RELEASE_HEAD_MISMATCH', field: 'releaseSha' });
+  }
+  const status = git(['status', '--porcelain']);
+  if (status.status !== 0 || status.stdout.trim() !== '') {
+    failures.push({ check: 'VERIFY', code: 'WORKTREE_DIRTY', field: 'worktree' });
+  }
+
+  // 2c. The ASSEMBLY, bound by digest. What deploys is the synthesized assembly the preflight
+  //     digested — via `--app`, never a re-synth from source that could have drifted since.
+  const assembly = assemblyDigest(opts.assembly);
+  if (!assembly) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
+  else if (assembly !== manifest.assemblyDigest) {
+    failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
+  }
+  if (failures.length > 0) return refuse();
+
   // 3. The effective context and the account, digested and compared. THIS context object — not a
   //    copy, not a re-read — is what the deploy arguments are built from below.
   const context = loadContext(opts.context, cdkJsonPath);
@@ -164,14 +202,19 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, cdkJsonP
     return refuse();
   }
 
-  // 5. The deploy, CONSTRUCTED from the verified object. Every bound key present in the verified
-  //    context becomes a `-c` flag with that exact value; there is no argument through which a
-  //    caller can hand the child anything else.
-  const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '-c', `environment=${manifest.environment}`];
-  for (const key of [...BOUND_CONTEXT_KEYS].sort()) {
-    if (Object.hasOwn(context, key)) childArgs.push('-c', `${key}=${context[key]}`);
-  }
-  const child = exec(childArgs);
+  // 5. The deploy, CONSTRUCTED from the verified objects. The child deploys the VERIFIED ASSEMBLY
+  //    (`--app`) — context flags would be meaningless against a pre-synthesized assembly, and
+  //    passing mutable source would discard the digest that was just checked. The verified region
+  //    is IMPOSED on the child's environment: every region variable the CDK or the SDK reads is
+  //    overridden, so an ambient region pointing elsewhere cannot redirect the deploy.
+  const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', opts.assembly];
+  const childEnv = {
+    ...env,
+    AWS_REGION: manifest.region,
+    AWS_DEFAULT_REGION: manifest.region,
+    CDK_DEFAULT_REGION: manifest.region,
+  };
+  const child = exec(childArgs, childEnv);
   const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
   return {
     exit,

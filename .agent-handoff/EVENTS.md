@@ -73,6 +73,18 @@ Append meaningful coordination changes here. Newest entries should go at the top
   The nested manifest schema is closed all the way down, with each forgery a named regression. The
   branch-policy prerequisite now covers BOTH Environments: dev without a main-only policy hands its
   secrets to a workflow definition from any branch.
+- Codex round 4 refused with four findings, all upheld: the manifest SHA was compared to an
+  ARGUMENT while the deploy shipped whatever was on disk (reproduced with HEAD at a different
+  commit); the verified region was never applied to the child, so ambient AWS_REGION could redirect
+  the deploy within the account; `verb=deploy; npx cdk "$verb"` walked past the raw-deploy verb
+  regex; and only three of nine deploy-sensitive context keys were bound — changing githubTrustSub
+  or corsAllowedOrigins left the digest identical. Fixed: the entrypoint requires HEAD == release
+  with a clean worktree and deploys the preflight-synthesized assembly by digest via `--app`; the
+  region is imposed on the child env (all three variables); the workflow invariants became a closed
+  WHITELIST of step shapes (exact actions + byte-identical run templates), replacing the blacklist;
+  and `DEPLOY_CONTEXT_KEYS` is the closed nine-key contract with a discovery test that refuses any
+  context read not on it. Every reproduction is a named regression, and each new binding was proven
+  to bite by mutation.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`

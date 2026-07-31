@@ -30,18 +30,25 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { evaluatePreflight, describeFailure, PROBE, PreflightError } = require('../lib/deploy-preflight');
-const { VALID_ENVIRONMENTS } = require('../lib/context');
+const { VALID_ENVIRONMENTS, DEPLOY_CONTEXT_KEYS } = require('../lib/context');
 
 const EXIT = { OK: 0, REFUSED: 1, USAGE: 2 };
 
 /** Hard ceiling on any single AWS call, so one hung socket cannot stall a deploy lane. */
 const PROBE_TIMEOUT_MS = 30_000;
 
-/** Context keys the manifest covers. A deploy must reproduce this digest from what it will use. */
-const BOUND_CONTEXT_KEYS = ['authCallbackUrls', 'authLogoutUrls', 'authDomainPrefix'];
+/**
+ * Context keys the manifest covers: the ENTIRE closed deploy contract, not a subset.
+ *
+ * Round 4 proved why a subset is a hole: with only the three auth keys bound, changing
+ * `githubTrustSub` or `corsAllowedOrigins` produced the exact same digest — IAM trust and CORS
+ * could drift under a manifest that still verified. The list lives in `lib/context.js` beside the
+ * discovery test that keeps it complete.
+ */
+const BOUND_CONTEXT_KEYS = DEPLOY_CONTEXT_KEYS;
 
 const RELEASE_SHA = /^[0-9a-f]{40}$/;
-const MANIFEST_VERSION = 3;
+const MANIFEST_VERSION = 4;
 
 /** The one service this manifest authorizes. A Cloudflare deploy needs its own manifest shape and
  * its own bound entrypoint — an AWS manifest must never be spendable against a different target. */
@@ -69,6 +76,38 @@ function defaultRun(args, { timeoutMs } = {}) {
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
   });
+}
+
+/**
+ * Digest of a synthesized cloud assembly: every `*.template.json`, sorted, name and bytes.
+ *
+ * The templates ARE the deployable content — hashing them is what lets the manifest bind the
+ * assembly and lets `deploy-release` prove it is deploying exactly what the preflight synthesized,
+ * per the immutable SHA/artifact contract in the smoke-workflow design. `null` means unreadable or
+ * empty, and both are refusals: an assembly that cannot be read is not evidence of anything.
+ */
+function assemblyDigest(dir, { readdir = fs.readdirSync, readFile = fs.readFileSync } = {}) {
+  let names;
+  try {
+    names = readdir(dir).filter((n) => n.endsWith('.template.json')).sort();
+  } catch {
+    return null;
+  }
+  if (names.length === 0) return null;
+  const h = createHash('sha256');
+  for (const name of names) {
+    let body;
+    try {
+      body = readFile(path.join(dir, name));
+    } catch {
+      return null;
+    }
+    h.update(name);
+    h.update('\u0000');
+    h.update(body);
+    h.update('\u0000');
+  }
+  return h.digest('hex');
 }
 
 /**
@@ -135,6 +174,7 @@ function parseArgs(argv) {
     else if (a === '--region') out.region = argv[++i];
     else if (a === '--release-sha') out.releaseSha = argv[++i];
     else if (a === '--manifest-out') out.manifestOut = argv[++i];
+    else if (a === '--assembly') out.assembly = argv[++i];
     else if (a === '--json') out.json = true;
     else if (a === '--skip-probe') out.skipProbe = true;
     else if (a === '--help' || a === '-h') out.help = true;
@@ -201,6 +241,9 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
   if (!opts.releaseSha || !RELEASE_SHA.test(opts.releaseSha)) {
     return { exit: EXIT.USAGE, output: `--release-sha must be a full 40-character lowercase SHA\n\n${usage()}`, result: null, manifest: null };
   }
+  if (opts.manifestOut && !opts.assembly) {
+    return { exit: EXIT.USAGE, output: `--manifest-out requires --assembly: a manifest without an assembly digest binds no deployable content\n\n${usage()}`, result: null, manifest: null };
+  }
 
   const context = loadContext(opts.context, cdkJsonPath);
   const prefix = context.authDomainPrefix;
@@ -230,12 +273,20 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
 
   const failures = [...result.failures];
   if (!accountId) failures.push({ check: 'BINDING', code: 'ACCOUNT_UNRESOLVED', field: 'targetAccount' });
-  const ok = result.ok && accountId !== null;
+  let assembly = null;
+  if (opts.assembly) {
+    assembly = assemblyDigest(opts.assembly);
+    if (!assembly) failures.push({ check: 'BINDING', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
+  }
+  const ok = result.ok && accountId !== null && (!opts.assembly || assembly !== null);
 
-  // The manifest is written ONLY on a pass. A manifest for a refused configuration is a token that
-  // should not exist: anything downstream that finds one would be entitled to trust it.
+  // The manifest is written ONLY on a pass WITH a digested assembly. A manifest for a refused
+  // configuration — or one that binds no deployable content — is a token that should not exist.
+  const digest = ok
+    ? contextDigest({ releaseSha: opts.releaseSha, environment: opts.environment, region: opts.region, accountId, context })
+    : null;
   let manifest = null;
-  if (ok) {
+  if (ok && assembly) {
     manifest = {
       version: MANIFEST_VERSION,
       issue: 70,
@@ -244,7 +295,8 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
       region: opts.region,
       target: { service: MANIFEST_TARGET_SERVICE },
       boundContextKeys: [...BOUND_CONTEXT_KEYS].sort(),
-      contextDigest: contextDigest({ releaseSha: opts.releaseSha, environment: opts.environment, region: opts.region, accountId, context }),
+      contextDigest: digest,
+      assemblyDigest: assembly,
       preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass' },
     };
     if (opts.manifestOut) writeFile(opts.manifestOut, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -262,7 +314,7 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
   lines.push('');
   lines.push(
     ok
-      ? `All conditions pass. Context digest ${manifest.contextDigest.slice(0, 16)}… binds release, environment, region and account.`
+      ? `All conditions pass. Context digest ${digest.slice(0, 16)}… binds release, environment, region and account.`
       : 'REFUSED before cdk deploy. Nothing was deployed.',
   );
   return { exit: ok ? EXIT.OK : EXIT.REFUSED, output: lines.join('\n'), result, manifest };
@@ -279,6 +331,7 @@ function parseVerifyArgs(argv) {
     else if (a === '--expect-digest') out.expectDigest = argv[++i];
     else if (a === '--recompute') out.recompute = true;
     else if (a === '--region') out.region = argv[++i];
+    else if (a === '--assembly') out.assembly = argv[++i];
     else if (a === '--json') out.json = true;
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new PreflightError('unrecognised argument');
@@ -299,12 +352,13 @@ function parseVerifyArgs(argv) {
  */
 function validManifestShape(m) {
   if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
-  const want = ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version'];
+  const want = ['assemblyDigest', 'boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version'];
   if (JSON.stringify(Object.keys(m).sort()) !== JSON.stringify(want)) return false;
   if (m.version !== MANIFEST_VERSION || m.issue !== 70) return false;
   if (!RELEASE_SHA.test(m.releaseSha) || !VALID_ENVIRONMENTS.includes(m.environment)) return false;
   if (typeof m.region !== 'string' || m.region.length === 0) return false;
   if (!/^[0-9a-f]{64}$/.test(m.contextDigest)) return false;
+  if (!/^[0-9a-f]{64}$/.test(m.assemblyDigest)) return false;
   if (JSON.stringify(m.boundContextKeys) !== JSON.stringify([...BOUND_CONTEXT_KEYS].sort())) return false;
   if (!m.preflight || typeof m.preflight !== 'object' || Array.isArray(m.preflight)) return false;
   if (JSON.stringify(Object.keys(m.preflight).sort()) !== JSON.stringify(['PREFLIGHT_1', 'PREFLIGHT_2'])) return false;
@@ -367,6 +421,11 @@ function runVerifyManifest(argv, { run = defaultRun, cdkJsonPath = path.join(__d
     if (opts.expectDigest && manifest.contextDigest !== opts.expectDigest) {
       failures.push({ check: 'VERIFY', code: 'MANIFEST_DIGEST_MISMATCH', field: 'contextDigest' });
     }
+    if (opts.assembly) {
+      const a = assemblyDigest(opts.assembly);
+      if (!a) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
+      else if (a !== manifest.assemblyDigest) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
+    }
     if (opts.recompute) {
       if (opts.region !== manifest.region) {
         failures.push({ check: 'VERIFY', code: 'MANIFEST_REGION_MISMATCH', field: 'region' });
@@ -399,6 +458,7 @@ module.exports = {
   probeDomain,
   loadContext,
   contextDigest,
+  assemblyDigest,
   resolveAccountId,
   validManifestShape,
   parseContextPair,

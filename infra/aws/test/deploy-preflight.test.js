@@ -32,7 +32,7 @@ const {
 } = require('../lib/deploy-preflight');
 const { runDeployPreflight, runVerifyManifest, contextDigest, BOUND_CONTEXT_KEYS, MANIFEST_VERSION, MANIFEST_TARGET_SERVICE } = require('../bin/deploy-preflight');
 const { runDeployRelease } = require('../bin/deploy-release');
-const { DEFAULT_AUTH_URLS } = require('../lib/context');
+const { DEFAULT_AUTH_URLS, DEPLOY_CONTEXT_KEYS } = require('../lib/context');
 
 const CDK_JSON = path.join(__dirname, '..', 'cdk.json');
 const SHA = 'a'.repeat(40);
@@ -63,6 +63,22 @@ const stubAws = ({ account = ACCOUNT, stsStatus = 0, stsStderr = '', domainBody 
     args[0] === 'sts'
       ? { status: stsStatus, stdout: JSON.stringify({ Account: account }), stderr: stsStderr }
       : { status: domainStatus, stdout: JSON.stringify(domainBody), stderr: domainStderr };
+
+/** A deterministic fake cloud assembly, shared by producer and consumer tests so digests match. */
+const ASSEMBLY_FILES = {
+  'DataStack.template.json': '{"Resources":{"Table":{"Type":"AWS::DynamoDB::Table"}}}',
+  'IdentityStack.template.json': '{"Resources":{"Pool":{"Type":"AWS::Cognito::UserPool"}}}',
+};
+
+function withDir(files, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-asm-'));
+  try {
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
+    return fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const cliArgs = (over = []) => [
   '--environment', 'pilot',
@@ -249,37 +265,85 @@ test('the context digest binds region and account identity, not just the context
   assert.equal(contextDigest({ ...base, context: goodContext({ someOtherKey: 'x' }) }), d);
 });
 
-test('the manifest carries the closed schema, the region, and never a raw account id', () => {
-  const written = [];
-  const r = runDeployPreflight([...cliArgs(), '--manifest-out', '/tmp/never-used.json'], {
-    run: stubAws(),
-    cdkJsonPath: CDK_JSON,
-    env: {},
-    writeFile: (p, data) => written.push(data),
-  });
-  assert.equal(r.exit, 0, r.output);
-  assert.equal(written.length, 1);
-  const manifest = JSON.parse(written[0]);
-  assert.deepEqual(Object.keys(manifest).sort(), ['boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version']);
+test('the digest binds EVERY deploy-sensitive context key — the round-4 pair included', () => {
+  // With only the three auth keys bound, changing githubTrustSub or corsAllowedOrigins produced
+  // the exact same digest: IAM trust and CORS could drift under a manifest that still verified.
+  const base = { releaseSha: SHA, environment: 'pilot', region: 'us-east-1', accountId: ACCOUNT, context: goodContext() };
+  const d = contextDigest(base);
+  for (const over of [
+    { githubTrustSub: 'repo:attacker/fork:ref:refs/heads/main' },
+    { corsAllowedOrigins: '["https://attacker.example"]' },
+    { githubOidcProviderArn: `arn:aws:iam::${'1'.repeat(12)}:oidc-provider/other` },
+    { githubRepo: 'attacker/fork' },
+    { bedrockStandardInferenceProfileId: 'us.other-model-v9:0' },
+    { bedrockRoutedModelArns: '["arn:aws:bedrock:us-east-1::foundation-model/other"]' },
+  ]) {
+    assert.notEqual(contextDigest({ ...base, context: goodContext(over) }), d, JSON.stringify(over));
+  }
+});
+
+test('every context key the stacks consume is in the closed deploy contract', () => {
+  // Discovery, not enumeration: scan the stack sources for context reads, so a NEW key cannot be
+  // consumed without joining the contract the manifest binds.
+  const libDir = path.join(__dirname, '..', 'lib');
+  const found = new Set();
+  for (const f of fs.readdirSync(libDir).filter((n) => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(libDir, f), 'utf8');
+    for (const m of src.matchAll(/(?:\bctx|getContext)\((?:this\.node, )?'([^']+)'/g)) found.add(m[1]);
+  }
+  found.delete('environment'); // bound separately in the digest
+  assert.ok(found.size >= 9, 'the discovery scan must actually find the known keys');
+  for (const key of found) {
+    assert.ok(DEPLOY_CONTEXT_KEYS.includes(key), `context key "${key}" must join the closed deploy contract`);
+  }
+});
+
+test('the manifest carries the closed schema, the region, the assembly digest, and never a raw account id', () => {
+  const manifest = capturedManifest();
+  assert.deepEqual(Object.keys(manifest).sort(), ['assemblyDigest', 'boundContextKeys', 'contextDigest', 'environment', 'issue', 'preflight', 'region', 'releaseSha', 'target', 'version']);
   assert.equal(manifest.version, MANIFEST_VERSION);
   assert.equal(manifest.releaseSha, SHA);
   assert.equal(manifest.environment, 'pilot');
   assert.equal(manifest.region, 'us-east-1');
   assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE });
   assert.match(manifest.contextDigest, /^[0-9a-f]{64}$/);
+  assert.match(manifest.assemblyDigest, /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.boundContextKeys, [...BOUND_CONTEXT_KEYS].sort());
-  assert.equal(written[0].includes(ACCOUNT), false, 'the account id lives inside the digest, never in clear text');
+  assert.equal(JSON.stringify(manifest).includes(ACCOUNT), false, 'the account id lives inside the digest, never in clear text');
+});
+
+test('a manifest cannot be requested without an assembly, and the assembly digest tracks content', () => {
+  // --manifest-out without --assembly is a usage error: a manifest binding no deployable content is
+  // exactly the round-4 hole — a verified deploy of whatever files happened to be on disk.
+  assert.equal(runDeployPreflight([...cliArgs(), '--manifest-out', '/tmp/x.json'], { run: stubAws(), cdkJsonPath: CDK_JSON, env: {} }).exit, 2);
+
+  const a = capturedManifest();
+  const b = withDir({ ...ASSEMBLY_FILES, 'IdentityStack.template.json': '{"Resources":{"Pool":{"Type":"AWS::Cognito::UserPool","Props":1}}}' }, (asm) => {
+    const written = [];
+    runDeployPreflight([...cliArgs(), '--assembly', asm, '--manifest-out', '/x'], { run: stubAws(), cdkJsonPath: CDK_JSON, env: {}, writeFile: (p, d) => written.push(d) });
+    return JSON.parse(written[0]);
+  });
+  assert.notEqual(a.assemblyDigest, b.assemblyDigest, 'a changed template must change the assembly digest');
+
+  // An unreadable or empty assembly is a refusal, not a manifest without the field.
+  const empty = withDir({}, (asm) =>
+    runDeployPreflight([...cliArgs(), '--assembly', asm, '--manifest-out', '/x'], { run: stubAws(), cdkJsonPath: CDK_JSON, env: {}, writeFile: () => assert.fail('no manifest may be written') }),
+  );
+  assert.equal(empty.exit, 1);
+  assert.match(empty.output, /ASSEMBLY_UNREADABLE/);
 });
 
 test('the manifest is written only on a pass — a refused configuration leaves no token behind', () => {
-  const written = [];
-  const refused = runDeployPreflight(
-    ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '--manifest-out', '/tmp/x.json'],
-    { run: stubAws(), cdkJsonPath: CDK_JSON, env: {}, writeFile: (p, d) => written.push(d) },
-  );
-  assert.equal(refused.exit, 1);
-  assert.equal(written.length, 0);
-  assert.equal(refused.manifest, null);
+  withDir(ASSEMBLY_FILES, (asm) => {
+    const written = [];
+    const refused = runDeployPreflight(
+      ['--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1', '--assembly', asm, '--manifest-out', '/tmp/x.json'],
+      { run: stubAws(), cdkJsonPath: CDK_JSON, env: {}, writeFile: (p, d) => written.push(d) },
+    );
+    assert.equal(refused.exit, 1);
+    assert.equal(written.length, 0);
+    assert.equal(refused.manifest, null);
+  });
 });
 
 test('an unresolved target account is a refusal, not a pass with a hole in the digest', () => {
@@ -291,17 +355,19 @@ test('an unresolved target account is a refusal, not a pass with a hole in the d
 
 /* ================= verify-manifest ============================================================= */
 
-/** Run a real passing preflight and capture the manifest it emits. */
+/** Run a real passing preflight against the shared fake assembly and capture the manifest. */
 function capturedManifest() {
-  const written = [];
-  const r = runDeployPreflight([...cliArgs(), '--manifest-out', '/tmp/never-used.json'], {
-    run: stubAws(),
-    cdkJsonPath: CDK_JSON,
-    env: {},
-    writeFile: (p, data) => written.push(data),
+  return withDir(ASSEMBLY_FILES, (asm) => {
+    const written = [];
+    const r = runDeployPreflight([...cliArgs(), '--assembly', asm, '--manifest-out', '/tmp/never-used.json'], {
+      run: stubAws(),
+      cdkJsonPath: CDK_JSON,
+      env: {},
+      writeFile: (p, data) => written.push(data),
+    });
+    assert.equal(r.exit, 0, r.output);
+    return JSON.parse(written[0]);
   });
-  assert.equal(r.exit, 0, r.output);
-  return JSON.parse(written[0]);
 }
 
 function withManifest(manifestOrText, fn) {
@@ -367,6 +433,8 @@ test('the NESTED manifest schema is closed too — the exact round-3 forgeries a
     ['a missing preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass' } }],
     ['the target service rewritten', { ...manifest, target: { service: 'cloudflare' } }],
     ['an extra target key', { ...manifest, target: { service: MANIFEST_TARGET_SERVICE, extra: true } }],
+    ['the assembly digest removed', (() => { const { assemblyDigest: _, ...rest } = manifest; return rest; })()],
+    ['a malformed assembly digest', { ...manifest, assemblyDigest: 'zz' }],
   ]) {
     withManifest(tampered, (p) => {
       const r = verify(p);
@@ -493,16 +561,18 @@ test("another tenant's user pool id never reaches the output", () => {
 });
 
 test('a poisoned account id stays inside the digest — output and manifest are both clean', () => {
-  const written = [];
-  const r = runDeployPreflight([...cliArgs(), '--manifest-out', '/tmp/x.json'], {
-    run: stubAws({ account: POISON.accountId }),
-    cdkJsonPath: CDK_JSON,
-    env: {},
-    writeFile: (p, d) => written.push(d),
+  withDir(ASSEMBLY_FILES, (asm) => {
+    const written = [];
+    const r = runDeployPreflight([...cliArgs(), '--assembly', asm, '--manifest-out', '/tmp/x.json'], {
+      run: stubAws({ account: POISON.accountId }),
+      cdkJsonPath: CDK_JSON,
+      env: {},
+      writeFile: (p, d) => written.push(d),
+    });
+    assert.equal(r.exit, 0, r.output);
+    assertClean(r.output, 'pass output');
+    assertClean(written[0], 'manifest');
   });
-  assert.equal(r.exit, 0, r.output);
-  assertClean(r.output, 'pass output');
-  assertClean(written[0], 'manifest');
 });
 
 test('an unrecognised argument is refused without echoing it — argv can hold a mistyped secret', () => {
@@ -628,82 +698,137 @@ test('a committed cdk.json value counts as explicitly supplied; the in-code fall
 
 /* ================= deploy-release: the binding BY CONSTRUCTION ================================= */
 //
-// Round 3 proved workflow choreography cannot bind verification to deployment: verify-then-deploy
-// as two commands admits a different context, different credentials or a different target between
-// them. The entrypoint closes each hole structurally, and these tests attack every seam it has.
+// Rounds 3 and 4 proved workflow choreography cannot bind: separate verify and deploy commands
+// admit a different context, different credentials, a different target, a different WORKING TREE
+// and a different REGION between them. The entrypoint closes each hole structurally, and these
+// tests attack every seam it has.
 
-const releaseArgs = (manifestPath, over = []) => [
+const happyGit = (sha = SHA) => (args) =>
+  args[0] === 'rev-parse' ? { status: 0, stdout: `${sha}\n` } : { status: 0, stdout: '' };
+
+const releaseArgs = (manifestPath, asm, over = []) => [
   '--manifest', manifestPath,
   '--environment', 'pilot',
   '--release-sha', SHA,
   '--region', 'us-east-1',
+  '--assembly', asm,
   '-c', 'authCallbackUrls=["https://app.example.com/auth/callback"]',
   '-c', 'authLogoutUrls=["https://app.example.com/"]',
   '-c', 'authDomainPrefix=cba-study-coach-pilot-7f3d',
   ...over,
 ];
 
-test('deploy-release deploys EXACTLY the verified context — the child args are derived, not supplied', () => {
+/** Manifest + matching assembly on disk, handed to `fn(manifestPath, asmDir, manifest)`. */
+function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
   const manifest = capturedManifest();
-  withManifest(manifest, (p) => {
+  return withDir(assemblyFiles, (asm) => withManifest(manifest, (p) => fn(p, asm, manifest)));
+}
+
+test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — both by construction', () => {
+  withRelease((p, asm) => {
     const execs = [];
-    const r = runDeployRelease(releaseArgs(p), {
+    const r = runDeployRelease(releaseArgs(p, asm), {
       run: stubAws(),
+      git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      exec: (args) => {
-        execs.push(args);
+      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2' },
+      exec: (args, childEnv) => {
+        execs.push({ args, childEnv });
         return { status: 0 };
       },
     });
     assert.equal(r.exit, 0, r.output);
-    assert.equal(r.executed, true);
     assert.equal(execs.length, 1, 'exactly one deploy');
-    const args = execs[0];
-    assert.deepEqual(args.slice(0, 2), ['cdk', 'deploy'], 'the child is cdk, and can be nothing else');
-    // Every bound value the child receives is the value that fed the digest. This is the
-    // constructive core: there is no argument through which different values could arrive.
-    const flags = {};
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === '-c') {
-        const eq = args[i + 1].indexOf('=');
-        flags[args[i + 1].slice(0, eq)] = args[i + 1].slice(eq + 1);
-      }
-    }
-    assert.equal(flags.environment, 'pilot');
-    assert.equal(flags.authCallbackUrls, '["https://app.example.com/auth/callback"]');
-    assert.equal(flags.authLogoutUrls, '["https://app.example.com/"]');
-    assert.equal(flags.authDomainPrefix, 'cba-study-coach-pilot-7f3d');
+    const { args, childEnv } = execs[0];
+    // The child deploys the digested assembly via --app — never mutable source, never a -c flag.
+    assert.deepEqual(args, ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', asm]);
+    // ROUND-4 REPRO 2 (region): the ambient environment said us-west-2 everywhere; the verified
+    // region is imposed on every variable the CDK or the SDK reads.
+    assert.equal(childEnv.AWS_REGION, 'us-east-1');
+    assert.equal(childEnv.AWS_DEFAULT_REGION, 'us-east-1');
+    assert.equal(childEnv.CDK_DEFAULT_REGION, 'us-east-1');
+    assert.equal(childEnv.PATH, '/usr/bin', 'the rest of the environment passes through');
   });
 });
 
-test('REPRO 1: verify a safe context, deploy a different one — refused before any exec', () => {
-  const manifest = capturedManifest();
-  withManifest(manifest, (p) => {
-    const r = runDeployRelease(releaseArgs(p, ['-c', 'authDomainPrefix=cba-study-coach-pilot-evil']), {
+test('ROUND-4 REPRO 1: a manifest naming a release the worktree is NOT at is refused before exec', () => {
+  withRelease((p, asm) => {
+    const r = runDeployRelease(releaseArgs(p, asm), {
       run: stubAws(),
+      git: happyGit('b'.repeat(40)), // HEAD is a different commit than the manifest's release
+      cdkJsonPath: CDK_JSON,
+      exec: () => assert.fail('a mismatched HEAD must never reach a deploy'),
+    });
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /RELEASE_HEAD_MISMATCH/);
+  });
+});
+
+test('a dirty worktree is refused — the deploy must run from exactly the release commit', () => {
+  withRelease((p, asm) => {
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: (args) => (args[0] === 'rev-parse' ? { status: 0, stdout: `${SHA}\n` } : { status: 0, stdout: ' M infra/aws/lib/api-stack.js\n' }),
+      cdkJsonPath: CDK_JSON,
+      exec: () => assert.fail('a dirty worktree must never reach a deploy'),
+    });
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /WORKTREE_DIRTY/);
+  });
+});
+
+test('an assembly that drifted from the digested one is refused — templates are the deployable content', () => {
+  withRelease(
+    (p, asm) => {
+      const r = runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        exec: () => assert.fail('a drifted assembly must never reach a deploy'),
+      });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ASSEMBLY_DIGEST_MISMATCH/);
+    },
+    { assemblyFiles: { ...ASSEMBLY_FILES, 'IdentityStack.template.json': '{"Resources":{"Pool":{"Type":"AWS::Cognito::UserPool","Evil":1}}}' } },
+  );
+
+  // And an unreadable or empty assembly is a refusal of its own.
+  withRelease(
+    (p, asm) => {
+      const r = runDeployRelease(releaseArgs(p, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ASSEMBLY_UNREADABLE/);
+    },
+    { assemblyFiles: {} },
+  );
+});
+
+test('ROUND-3 REPRO 1: verify a safe context, deploy a different one — refused before any exec', () => {
+  withRelease((p, asm) => {
+    const r = runDeployRelease(releaseArgs(p, asm, ['-c', 'authDomainPrefix=cba-study-coach-pilot-evil']), {
+      run: stubAws(),
+      git: happyGit(),
       cdkJsonPath: CDK_JSON,
       exec: () => assert.fail('a mismatched context must never reach the deploy'),
     });
     assert.equal(r.exit, 1);
-    assert.equal(r.executed, false);
     assert.match(r.output, /MANIFEST_RECOMPUTE_MISMATCH/);
   });
 });
 
-test('REPRO 2: credentials swapped between verification and deploy — refused before any exec', () => {
-  const manifest = capturedManifest();
-  withManifest(manifest, (p) => {
+test('ROUND-3 REPRO 2: credentials swapped between verification and deploy — refused before any exec', () => {
+  withRelease((p, asm) => {
     let stsCalls = 0;
-    const r = runDeployRelease(releaseArgs(p), {
+    const r = runDeployRelease(releaseArgs(p, asm), {
       run: (args, o) => {
         if (args[0] === 'sts') {
           stsCalls += 1;
-          // First resolution: the validated account. Second: the swapped one.
           const account = stsCalls === 1 ? ACCOUNT : '2'.repeat(12);
           return { status: 0, stdout: JSON.stringify({ Account: account }), stderr: '' };
         }
         return stubAws()(args, o);
       },
+      git: happyGit(),
       cdkJsonPath: CDK_JSON,
       exec: () => assert.fail('a swapped account must never reach the deploy'),
     });
@@ -713,46 +838,44 @@ test('REPRO 2: credentials swapped between verification and deploy — refused b
   });
 });
 
-test('REPRO 3: an AWS manifest cannot drive any other target — structurally', () => {
+test('ROUND-3 REPRO 3: an AWS manifest cannot drive any other target — structurally', () => {
   const manifest = capturedManifest();
-  // A manifest rewritten to name another service is a forgery under the closed schema...
-  withManifest({ ...manifest, target: { service: 'cloudflare' } }, (p) => {
-    const r = runDeployRelease(releaseArgs(p), {
-      run: stubAws(),
-      cdkJsonPath: CDK_JSON,
-      exec: () => assert.fail('a foreign target must never reach a deploy'),
+  withDir(ASSEMBLY_FILES, (asm) => {
+    withManifest({ ...manifest, target: { service: 'cloudflare' } }, (p) => {
+      const r = runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        exec: () => assert.fail('a foreign target must never reach a deploy'),
+      });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /MANIFEST_MALFORMED/);
     });
-    assert.equal(r.exit, 1);
-    assert.match(r.output, /MANIFEST_MALFORMED/);
   });
-  // ...and the honest manifest can only ever spawn cdk: the child command is a constant of the
-  // entrypoint, not an input. There is no code path to wrangler or opennextjs in this file at all.
   const source = fs.readFileSync(path.join(__dirname, '..', 'bin', 'deploy-release.js'), 'utf8');
   assert.equal(/wrangler|opennextjs/.test(source.replace(/\/\/[^\n]*/g, '')), false, 'no foreign deploy path exists outside comments');
 });
 
-test('deploy-release refuses identity mismatches, an unresolved account and a failing child honestly', () => {
-  const manifest = capturedManifest();
-  withManifest(manifest, (p) => {
-    for (const [over, expected] of [
-      [['--environment', 'dev'], /MANIFEST_ENVIRONMENT_MISMATCH/],
-      [['--release-sha', 'b'.repeat(40)], /MANIFEST_RELEASE_MISMATCH/],
-      [['--region', 'us-west-2'], /MANIFEST_REGION_MISMATCH/],
+test('deploy-release refuses identity mismatches and a failing child honestly', () => {
+  withRelease((p, asm) => {
+    for (const [flag, value, expected] of [
+      ['--environment', 'dev', /MANIFEST_ENVIRONMENT_MISMATCH/],
+      ['--release-sha', 'b'.repeat(40), /MANIFEST_RELEASE_MISMATCH/],
+      ['--region', 'us-west-2', /MANIFEST_REGION_MISMATCH/],
     ]) {
-      const args = releaseArgs(p);
-      for (let i = 0; i < over.length; i += 2) {
-        args[args.indexOf(over[i]) + 1] = over[i + 1];
-      }
-      const r = runDeployRelease(args, { run: stubAws(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
-      assert.equal(r.exit, 1, JSON.stringify(over));
-      assert.match(r.output, expected, JSON.stringify(over));
+      const args = releaseArgs(p, asm);
+      args[args.indexOf(flag) + 1] = value;
+      // The release-sha mismatch also trips the HEAD binding; both are refusals, either suffices.
+      const r = runDeployRelease(args, { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+      assert.equal(r.exit, 1, flag);
+      assert.match(r.output, expected, flag);
     }
 
-    const noAccount = runDeployRelease(releaseArgs(p), { run: stubAws({ stsStatus: 254 }), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+    const noAccount = runDeployRelease(releaseArgs(p, asm), { run: stubAws({ stsStatus: 254 }), git: happyGit(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
     assert.equal(noAccount.exit, 1);
     assert.match(noAccount.output, /ACCOUNT_UNRESOLVED/);
 
-    const childFails = runDeployRelease(releaseArgs(p), { run: stubAws(), cdkJsonPath: CDK_JSON, exec: () => ({ status: 3 }) });
+    const childFails = runDeployRelease(releaseArgs(p, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 3 }) });
     assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
     assert.equal(childFails.executed, true);
   });
@@ -761,7 +884,28 @@ test('deploy-release refuses identity mismatches, an unresolved account and a fa
 test('deploy-release usage errors are distinguishable and never echo the offending token', () => {
   assert.equal(runDeployRelease([`--${POISON.token}`], {}).exit, 2);
   assertClean(runDeployRelease([`--${POISON.token}`], {}).output, 'deploy-release usage error');
-  for (const missing of [[], ['--manifest', 'x'], ['--manifest', 'x', '--environment', 'pilot'], ['--manifest', 'x', '--environment', 'pilot', '--release-sha', SHA]]) {
+  for (const missing of [
+    [],
+    ['--manifest', 'x'],
+    ['--manifest', 'x', '--environment', 'pilot'],
+    ['--manifest', 'x', '--environment', 'pilot', '--release-sha', SHA],
+    ['--manifest', 'x', '--environment', 'pilot', '--release-sha', SHA, '--region', 'us-east-1'],
+  ]) {
     assert.equal(runDeployRelease(missing, {}).exit, 2, JSON.stringify(missing));
   }
+});
+
+test('verify-manifest can check the assembly too, and refuses drift', () => {
+  withRelease((p, asm, manifest) => {
+    const ok = runVerifyManifest(['--manifest', p, '--environment', 'pilot', '--release-sha', SHA, '--assembly', asm], {});
+    assert.equal(ok.exit, 0, ok.output);
+  });
+  withRelease(
+    (p, asm) => {
+      const r = runVerifyManifest(['--manifest', p, '--environment', 'pilot', '--release-sha', SHA, '--assembly', asm], {});
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ASSEMBLY_DIGEST_MISMATCH/);
+    },
+    { assemblyFiles: { ...ASSEMBLY_FILES, 'DataStack.template.json': '{"Resources":{"Other":1}}' } },
+  );
 });

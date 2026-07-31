@@ -17,15 +17,16 @@
 # job pins its checkout to that output; the raw input is never used as a checkout ref anywhere.
 #
 # BINDING. A preflight that merely exits zero proves that SOME configuration was valid — not that
-# the deploy uses it. The preflight therefore emits a manifest whose digest covers the release OID,
-# the environment, the REGION, the TARGET ACCOUNT and every bound context value. Stage jobs verify
-# that manifest with a purpose-built command. Deployment itself happens ONLY through
-# `infra/aws/bin/deploy-release.js`, which verifies the manifest and executes the deploy in ONE
-# process, deriving the deploy arguments from the very context object it verified — raw
-# `cdk deploy` / `wrangler deploy` / `opennextjs-cloudflare deploy` invocations are forbidden
-# anywhere in this lane, because two separate commands can never prove they used the same values:
-# a job could verify a safe context and deploy a different one, swap credentials in between, or
-# verify an AWS manifest and deploy an unrelated Cloudflare target.
+# the deploy uses it. The preflight therefore synthesizes the cloud assembly from the bound context
+# and emits a manifest whose digests cover the release OID, the environment, the REGION, the TARGET
+# ACCOUNT, EVERY deploy-sensitive context value (the closed contract in infra/aws/lib/context.js)
+# and the synthesized assembly itself. Stage jobs verify that manifest with a purpose-built command.
+# Deployment happens ONLY through `infra/aws/bin/deploy-release.js`, which — in ONE process —
+# verifies the manifest, requires HEAD to BE the release with a clean worktree, recomputes both
+# digests, imposes the verified region on the child's environment, and deploys the verified
+# assembly via `--app`, never mutable source. The workflow invariants allow only a CLOSED set of
+# step shapes (exact actions, exact run blocks), because round 3 and 4 proved both orderings and
+# blacklists can be talked around: `verb=deploy; npx cdk "$verb"` sailed past a verb regex.
 #
 # THE HUMAN GATE IS NOT YET REAL. As of 2026-07-31 this repository has ZERO configured GitHub
 # Environments. Naming one here does not create protection rules — an unconfigured Environment
@@ -171,10 +172,16 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment dev \
             --release-sha "$RELEASE_SHA" \
             --region "$TARGET_REGION" \
+            --assembly cdk.out \
             --manifest-out "$RUNNER_TEMP/preflight-dev.json" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
@@ -274,10 +281,16 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=pilot \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment pilot \
             --release-sha "$RELEASE_SHA" \
             --region "$TARGET_REGION" \
+            --assembly cdk.out \
             --manifest-out "$RUNNER_TEMP/preflight-pilot.json" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \

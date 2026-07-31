@@ -36,6 +36,26 @@ function defaultAuthDomainPrefix(environment) {
   return `cba-study-coach-${environment}`;
 }
 
+// THE CLOSED DEPLOY-CONTEXT CONTRACT (#70 round 4).
+//
+// Every context key any stack consumes, except `environment` (bound separately in the manifest
+// digest). The #70 preflight manifest binds ALL of these: the first version bound only the three
+// auth keys, and changing `githubTrustSub` or `corsAllowedOrigins` produced the exact same digest —
+// which means a deploy could alter IAM trust or CORS without invalidating the manifest that
+// authorized it. A discovery test scans the stack sources for context reads and refuses any key
+// that is not on this list, so a new key cannot be consumed without joining the contract.
+const DEPLOY_CONTEXT_KEYS = [
+  'authCallbackUrls',
+  'authDomainPrefix',
+  'authLogoutUrls',
+  'bedrockRoutedModelArns',
+  'bedrockStandardInferenceProfileId',
+  'corsAllowedOrigins',
+  'githubOidcProviderArn',
+  'githubRepo',
+  'githubTrustSub',
+];
+
 function resolveEnvironment(node, fallback = 'pilot') {
   const value = getContext(node, 'environment', fallback);
   if (!VALID_ENVIRONMENTS.includes(value)) {
@@ -134,4 +154,5 @@ module.exports = {
   VALID_ENVIRONMENTS,
   DEFAULT_AUTH_URLS,
   defaultAuthDomainPrefix,
+  DEPLOY_CONTEXT_KEYS,
 };

@@ -202,6 +202,38 @@ otherwise is a forgery, not a variant: the bound keys must equal the canonical s
 preflight claim must be `pass`, and the manifest names its `target.service` (`aws-cdk`), which the
 entrypoint enforces — an AWS manifest is not spendable against any other target.
 
+## Slice A — Codex review round 4, and what it changed
+
+Four findings, all upheld. The pattern across rounds 3 and 4 finally named in full: NOTHING that
+matters may rest on workflow text — not ordering, not verb detection, not a SHA compared to an
+argument.
+
+**The release now binds reality, not an argument (HIGH).** `deploy-release` compared the manifest's
+SHA with a CLI flag and deployed whatever files were on disk — Codex reproduced a verified deploy
+whose HEAD was a different commit entirely. The entrypoint now requires `git rev-parse HEAD` to
+EQUAL the manifest's release, the worktree to be clean, and the ASSEMBLY digest to match: the
+preflight synthesizes the cloud assembly from the bound context and digests its templates into the
+manifest, and the entrypoint deploys THAT assembly via `--app` — never a re-synth from mutable
+source.
+
+**The region is imposed, not inherited (HIGH).** The manifest's region was compared and then never
+applied; a child with ambient `AWS_REGION=us-west-2` deployed to the wrong region in the same
+account, invisible to the account check. The entrypoint now overrides `AWS_REGION`,
+`AWS_DEFAULT_REGION` and `CDK_DEFAULT_REGION` with the verified value on the child's environment.
+
+**The step surface is a whitelist (HIGH).** `verb=deploy; npx cdk "$verb"` sailed past the raw-deploy
+verb regex — a blacklist cannot establish exclusive use of the entrypoint. The invariants now allow
+ONLY a closed set of step shapes: three exact actions (with their required properties) and six
+byte-identical run templates. Any new command, however spelled, and any template with one line
+added, fails until it is added under review. The verb-indirection bypass, an action-based deploy and
+a single-line smuggle are each named regressions.
+
+**The context contract is complete (MEDIUM).** Only the three auth keys were bound; changing
+`githubTrustSub` or `corsAllowedOrigins` produced the same digest — IAM trust and CORS could drift
+under a manifest that still verified. `DEPLOY_CONTEXT_KEYS` in `lib/context.js` is now the closed
+inventory (nine keys), the digest binds all of them, and a discovery test scans the stack sources so
+a NEW context key cannot be consumed without joining the contract.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

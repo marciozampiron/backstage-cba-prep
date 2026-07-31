@@ -86,6 +86,12 @@ const CODES = {
   MANIFEST_RECOMPUTE_MISMATCH: 'digest does not match a recomputation from the values this run would actually use',
   ACCOUNT_CHANGED: 'resolved to a different account immediately before the effect than the one the verification bound — the credentials changed between verification and deploy',
   DEPLOY_TARGET_UNSUPPORTED: 'names a service this entrypoint does not deploy — each service gets its own bound entrypoint, and none exists for this one yet',
+  // The release/assembly binding (#70 round 4): a manifest that names a release the working tree is
+  // not actually at, or an assembly other than the one that would deploy, authorizes nothing.
+  RELEASE_HEAD_MISMATCH: 'does not match the checked-out HEAD — the working tree is not the release this manifest binds',
+  WORKTREE_DIRTY: 'is not clean — a deploy must run from exactly the release commit, with nothing added on top',
+  ASSEMBLY_UNREADABLE: 'could not be read or contains no synthesized templates',
+  ASSEMBLY_DIGEST_MISMATCH: 'does not match the synthesized assembly this run would deploy',
 };
 
 class PreflightError extends Error {

