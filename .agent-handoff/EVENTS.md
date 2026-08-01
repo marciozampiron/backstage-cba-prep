@@ -85,6 +85,17 @@ Append meaningful coordination changes here. Newest entries should go at the top
   and `DEPLOY_CONTEXT_KEYS` is the closed nine-key contract with a discovery test that refuses any
   context read not on it. Every reproduction is a named regression, and each new binding was proven
   to bite by mutation.
+- Codex round 5 refused with three findings, all upheld (two reproduced before fixing): the
+  assembly digest covered only root templates — mutated Lambda bytes and asset manifests kept the
+  digest identical — and the entrypoint reopened the original mutable path after verification; the
+  action allowlist accepted a swapped secret, a deleted aws-region and arbitrary extra inputs; and
+  `this.node.tryGetContext('x')` walked past the discovery scanner. Fixed: recursive digest over
+  every regular file with symlinks refused, deploy from a private snapshot digested AFTER copying
+  (`--app` never points at the original), exact per-action `with:` schemas with no extra step
+  properties, `tryGetContext` confined to the central helper, literal-key enforcement, bidirectional
+  discovery and runtime refusal of unlisted keys. The tightened scanner immediately caught a key the
+  manual inventory missed — `bedrockRefreshBoundaryArn`, an IAM boundary ARN — which joined the
+  contract (now ten keys). Every reproduction is a named regression; each binding proven by mutation.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`

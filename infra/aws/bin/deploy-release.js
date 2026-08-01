@@ -24,9 +24,14 @@
 //     ONLY a closed set of step shapes, so this file is the only way anything deploys at all.
 //   * The RELEASE is bound to the working tree and to the deployable content, not just to an
 //     argument. Round 4 reproduced a deploy that verified a manifest naming one SHA while HEAD was
-//     another: the entrypoint now requires `git rev-parse HEAD` to equal the manifest's release,
-//     the worktree to be clean, and the synthesized assembly's digest to equal the manifest's —
-//     and it deploys THAT assembly via `--app`, never re-synthesizing from mutable source.
+//     another: the entrypoint requires `git rev-parse HEAD` to equal the manifest's release, the
+//     worktree to be clean, and the assembly's digest to equal the manifest's.
+//   * The assembly is deployed from a PRIVATE SNAPSHOT, not the original path. Round 5 proved two
+//     holes at once: the old digest covered only the root templates (mutating a Lambda bundle under
+//     `asset.<hash>/` left it unchanged), and the original directory stayed mutable between the
+//     check and CDK reading it. Now the assembly is copied — recursively, every regular file,
+//     symlinks refused — into a fresh private directory; the digest is computed FROM THE SNAPSHOT;
+//     and `--app` points at the snapshot. The original path is never reopened after verification.
 //   * The REGION the manifest binds is imposed on the child: AWS_REGION, AWS_DEFAULT_REGION and
 //     CDK_DEFAULT_REGION are all overridden with the verified value, so an ambient region pointing
 //     somewhere else cannot redirect the deploy inside the same account.
@@ -38,11 +43,13 @@
 // EXIT CODES  0 = deployed (child exit propagated) · 1 = refused · 2 = usage error.
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { describeFailure, PreflightError } = require('../lib/deploy-preflight');
 const {
   contextDigest,
   assemblyDigest,
+  walkAssembly,
   loadContext,
   resolveAccountId,
   validManifestShape,
@@ -100,6 +107,35 @@ function defaultExec(args, env) {
 function defaultGit(args) {
   const res = spawnSync('git', args, { encoding: 'utf8' });
   return { status: res.status === null ? 1 : res.status, stdout: res.stdout || '' };
+}
+
+/**
+ * Copy the assembly into a fresh PRIVATE directory and digest the COPY.
+ *
+ * The digest-then-deploy gap on the original path was a real window: the preflight digested it, the
+ * child read it later, and anything running in between could swap a Lambda bundle. Digesting the
+ * snapshot closes the gap by construction — whatever was copied is exactly what is digested and
+ * exactly what `--app` deploys, and the original is never reopened after this function returns.
+ *
+ * @returns {{dir: string, digest: string} | {error: string}}
+ */
+function snapshotAssembly(srcDir) {
+  const walked = walkAssembly(srcDir);
+  if (walked.error) return walked;
+  let dir;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-assembly-'));
+    for (const f of walked.files) {
+      const dest = path.join(dir, f.rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(f.abs, dest);
+    }
+  } catch {
+    return { error: 'ASSEMBLY_UNREADABLE' };
+  }
+  const d = assemblyDigest(dir);
+  if (d.error) return d;
+  return { dir, digest: d.digest };
 }
 
 /**
@@ -164,14 +200,18 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     failures.push({ check: 'VERIFY', code: 'WORKTREE_DIRTY', field: 'worktree' });
   }
 
-  // 2c. The ASSEMBLY, bound by digest. What deploys is the synthesized assembly the preflight
-  //     digested — via `--app`, never a re-synth from source that could have drifted since.
-  const assembly = assemblyDigest(opts.assembly);
-  if (!assembly) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
-  else if (assembly !== manifest.assemblyDigest) {
+  // 2c. The ASSEMBLY, snapshotted and bound by digest. The copy happens FIRST and the digest is
+  //     computed from the copy, so the value that is compared is the value that deploys — mutating
+  //     the original after this point changes nothing the child will read.
+  const snapshot = snapshotAssembly(opts.assembly);
+  if (snapshot.error) failures.push({ check: 'VERIFY', code: snapshot.error, field: 'assembly' });
+  else if (snapshot.digest !== manifest.assemblyDigest) {
     failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
   }
-  if (failures.length > 0) return refuse();
+  if (failures.length > 0) {
+    if (snapshot && snapshot.dir) fs.rmSync(snapshot.dir, { recursive: true, force: true });
+    return refuse();
+  }
 
   // 3. The effective context and the account, digested and compared. THIS context object — not a
   //    copy, not a re-read — is what the deploy arguments are built from below.
@@ -207,14 +247,19 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   //    passing mutable source would discard the digest that was just checked. The verified region
   //    is IMPOSED on the child's environment: every region variable the CDK or the SDK reads is
   //    overridden, so an ambient region pointing elsewhere cannot redirect the deploy.
-  const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', opts.assembly];
+  const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', snapshot.dir];
   const childEnv = {
     ...env,
     AWS_REGION: manifest.region,
     AWS_DEFAULT_REGION: manifest.region,
     CDK_DEFAULT_REGION: manifest.region,
   };
-  const child = exec(childArgs, childEnv);
+  let child;
+  try {
+    child = exec(childArgs, childEnv);
+  } finally {
+    fs.rmSync(snapshot.dir, { recursive: true, force: true });
+  }
   const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
   return {
     exit,

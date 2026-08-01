@@ -90,7 +90,8 @@ const CODES = {
   // not actually at, or an assembly other than the one that would deploy, authorizes nothing.
   RELEASE_HEAD_MISMATCH: 'does not match the checked-out HEAD — the working tree is not the release this manifest binds',
   WORKTREE_DIRTY: 'is not clean — a deploy must run from exactly the release commit, with nothing added on top',
-  ASSEMBLY_UNREADABLE: 'could not be read or contains no synthesized templates',
+  ASSEMBLY_UNREADABLE: 'could not be read or contains no files',
+  ASSEMBLY_UNSAFE_ENTRY: 'contains a symlink or non-regular entry — an assembly is regular files only, and anything else is a path for content to escape the digest',
   ASSEMBLY_DIGEST_MISMATCH: 'does not match the synthesized assembly this run would deploy',
 };
 

@@ -79,35 +79,62 @@ function defaultRun(args, { timeoutMs } = {}) {
 }
 
 /**
- * Digest of a synthesized cloud assembly: every `*.template.json`, sorted, name and bytes.
+ * Walk a cloud assembly RECURSIVELY, refusing anything that is not a regular file.
  *
- * The templates ARE the deployable content — hashing them is what lets the manifest bind the
- * assembly and lets `deploy-release` prove it is deploying exactly what the preflight synthesized,
- * per the immutable SHA/artifact contract in the smoke-workflow design. `null` means unreadable or
- * empty, and both are refusals: an assembly that cannot be read is not evidence of anything.
+ * Round 5 proved that hashing only the root `*.template.json` files binds almost nothing: the
+ * assembly CDK actually consumes includes `manifest.json`, the `*.assets.json` manifests and the
+ * `asset.<hash>/` directories holding the Lambda bundles — and mutating any of those left the old
+ * digest unchanged, so arbitrary code could reach the BFF Lambda under a reviewed assembly
+ * identity. Everything deploy-relevant is a regular file; a symlink or device node inside an
+ * assembly is a path for content to escape the digest, and is refused rather than followed.
+ *
+ * @returns {{files: {abs: string, rel: string}[]} | {error: string}}
  */
-function assemblyDigest(dir, { readdir = fs.readdirSync, readFile = fs.readFileSync } = {}) {
-  let names;
+function walkAssembly(dir) {
+  const files = [];
+  const UNSAFE = Symbol('unsafe');
+  const walk = (abs, rel) => {
+    for (const entry of fs.readdirSync(abs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
+      const eAbs = path.join(abs, entry.name);
+      const eRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isSymbolicLink()) throw UNSAFE;
+      if (entry.isDirectory()) walk(eAbs, eRel);
+      else if (entry.isFile()) files.push({ abs: eAbs, rel: eRel });
+      else throw UNSAFE;
+    }
+  };
   try {
-    names = readdir(dir).filter((n) => n.endsWith('.template.json')).sort();
-  } catch {
-    return null;
+    walk(dir, '');
+  } catch (err) {
+    return { error: err === UNSAFE ? 'ASSEMBLY_UNSAFE_ENTRY' : 'ASSEMBLY_UNREADABLE' };
   }
-  if (names.length === 0) return null;
+  if (files.length === 0) return { error: 'ASSEMBLY_UNREADABLE' };
+  return { files };
+}
+
+/**
+ * Digest of a cloud assembly: every regular file, recursively — relative path, type marker and
+ * bytes. `{error}` is a refusal, never a pass.
+ *
+ * @returns {{digest: string} | {error: string}}
+ */
+function assemblyDigest(dir) {
+  const walked = walkAssembly(dir);
+  if (walked.error) return walked;
   const h = createHash('sha256');
-  for (const name of names) {
+  for (const f of walked.files) {
     let body;
     try {
-      body = readFile(path.join(dir, name));
+      body = fs.readFileSync(f.abs);
     } catch {
-      return null;
+      return { error: 'ASSEMBLY_UNREADABLE' };
     }
-    h.update(name);
-    h.update('\u0000');
+    h.update(f.rel);
+    h.update('\u0000F\u0000');
     h.update(body);
     h.update('\u0000');
   }
-  return h.digest('hex');
+  return { digest: h.digest('hex') };
 }
 
 /**
@@ -275,8 +302,9 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
   if (!accountId) failures.push({ check: 'BINDING', code: 'ACCOUNT_UNRESOLVED', field: 'targetAccount' });
   let assembly = null;
   if (opts.assembly) {
-    assembly = assemblyDigest(opts.assembly);
-    if (!assembly) failures.push({ check: 'BINDING', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
+    const a = assemblyDigest(opts.assembly);
+    if (a.error) failures.push({ check: 'BINDING', code: a.error, field: 'assembly' });
+    else assembly = a.digest;
   }
   const ok = result.ok && accountId !== null && (!opts.assembly || assembly !== null);
 
@@ -423,8 +451,8 @@ function runVerifyManifest(argv, { run = defaultRun, cdkJsonPath = path.join(__d
     }
     if (opts.assembly) {
       const a = assemblyDigest(opts.assembly);
-      if (!a) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_UNREADABLE', field: 'assembly' });
-      else if (a !== manifest.assemblyDigest) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
+      if (a.error) failures.push({ check: 'VERIFY', code: a.error, field: 'assembly' });
+      else if (a.digest !== manifest.assemblyDigest) failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
     }
     if (opts.recompute) {
       if (opts.region !== manifest.region) {
@@ -459,6 +487,7 @@ module.exports = {
   loadContext,
   contextDigest,
   assemblyDigest,
+  walkAssembly,
   resolveAccountId,
   validManifestShape,
   parseContextPair,

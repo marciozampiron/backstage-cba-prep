@@ -234,6 +234,38 @@ under a manifest that still verified. `DEPLOY_CONTEXT_KEYS` in `lib/context.js` 
 inventory (nine keys), the digest binds all of them, and a discovery test scans the stack sources so
 a NEW context key cannot be consumed without joining the contract.
 
+## Slice A — Codex review round 5, and what it changed
+
+Three findings, all upheld; the two mechanical ones reproduced before fixing.
+
+**The assembly digest now binds everything CDK consumes, from a private snapshot (HIGH).** The old
+digest hashed only the root `*.template.json` — mutating a Lambda bundle under `asset.<hash>/` or
+the `*.assets.json` manifest left it unchanged, so arbitrary code could reach the privileged BFF
+Lambda under a reviewed assembly identity. And the entrypoint handed the ORIGINAL path to CDK after
+verification, leaving a check/use window. Now: the walk is recursive over every regular file
+(relative path, type marker, bytes), symlinks and non-regular entries are refused outright
+(`ASSEMBLY_UNSAFE_ENTRY`), and `deploy-release` COPIES the assembly into a fresh private directory,
+digests THE COPY, compares, and points `--app` at the snapshot — the original path is never reopened
+after verification. The regressions cover asset bytes, the asset manifest, the cloud manifest, an
+added file, a removed file, a planted symlink, and mutation of the original DURING the child run
+(the snapshot provably still carries the verified digest).
+
+**Action authority is schema-closed, not name-closed (MEDIUM).** The allowlist checked names plus
+presence-regexes — a swapped secret (`ADMIN_ROLE`), a deleted `aws-region` and arbitrary extra
+inputs all passed, because presence-of-required is not absence-of-everything-else. Each action's
+`with:` block must now EQUAL one of the reviewed variants — exact keys, exact values — and a
+uses-step may carry nothing beyond name/uses/with, so an `env:` smuggled onto an action dies too.
+All three reproductions plus the env-block variant are named regressions.
+
+**The context contract cannot be read around (LOW).** Three fences replace the single scanner:
+direct `tryGetContext` is forbidden outside `lib/context.js`; the scanner also sees the native-API
+shape and refuses non-literal keys (proven on planted sources, with the forwarding wrapper as the
+one sanctioned non-literal form); and `getContext` itself now REFUSES unlisted keys at runtime, so
+an unbound read fails synth loudly. The discovery is bidirectional — declared-but-dead keys fail
+too. Tightening the scanner immediately caught a key my manual inventory had missed:
+`bedrockRefreshBoundaryArn`, an IAM boundary ARN — exactly the class round 4 was about. It joined
+the contract, which now holds ten keys.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

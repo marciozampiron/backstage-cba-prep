@@ -1,6 +1,16 @@
 // Pure context helpers for the CDK app — no CDK imports, so they unit-test offline.
 
 function getContext(node, key, fallback) {
+  // Runtime refusal, as defense in depth behind the discovery test (#70 round 5): a stack that
+  // reads a key outside the closed contract fails SYNTH loudly, instead of quietly consuming
+  // configuration the deploy manifest never bound. `tryGetContext` is called nowhere else — a
+  // test forbids it outside this file — so this is the one door a context value can enter by.
+  if (!READABLE_CONTEXT_KEYS.has(key)) {
+    throw new Error(
+      `context key "${key}" is outside the closed deploy contract (DEPLOY_CONTEXT_KEYS in lib/context.js). ` +
+        'Add it to the contract so the #70 manifest binds it — an unbound key is configuration a deploy can drift on.',
+    );
+  }
   const value = node.tryGetContext(key);
   return value === undefined ? fallback : value;
 }
@@ -48,6 +58,7 @@ const DEPLOY_CONTEXT_KEYS = [
   'authCallbackUrls',
   'authDomainPrefix',
   'authLogoutUrls',
+  'bedrockRefreshBoundaryArn',
   'bedrockRoutedModelArns',
   'bedrockStandardInferenceProfileId',
   'corsAllowedOrigins',
@@ -55,6 +66,9 @@ const DEPLOY_CONTEXT_KEYS = [
   'githubRepo',
   'githubTrustSub',
 ];
+
+// What `getContext` will read at all: the deploy contract plus the tier selector, nothing else.
+const READABLE_CONTEXT_KEYS = new Set([...DEPLOY_CONTEXT_KEYS, 'environment']);
 
 function resolveEnvironment(node, fallback = 'pilot') {
   const value = getContext(node, 'environment', fallback);

@@ -57,11 +57,63 @@ export function jobsOf(text) {
  * review. Deployment happens only through `bin/deploy-release.js`, whose binding is proven by its
  * own suite; no template invokes it yet, because Slice A deploys nothing.
  */
-const ACTION_ALLOWLIST = {
-  'actions/checkout@v7': [/persist-credentials: false/],
-  'actions/setup-node@v6': [],
-  'aws-actions/configure-aws-credentials@v6': [/mask-aws-account-id: true/, /role-to-assume: \$\{\{ secrets\./],
+/**
+ * EXACT ACTION SCHEMAS (#70 round 5). The previous allowlist checked action NAMES plus a few
+ * regexes for required properties — and accepted a swapped secret name, a deleted `aws-region` and
+ * arbitrary extra inputs, because presence-of-required is not absence-of-everything-else. Each
+ * action is now validated structurally: the `with:` block must EQUAL one of the reviewed variants —
+ * exact keys, exact values — and a uses-step may carry no other configuration at all (no `env:`,
+ * no `id:`, nothing). Authority drift becomes a schema mismatch, not a silent pass.
+ */
+const ACTION_SCHEMAS = {
+  'actions/checkout@v7': [
+    { ref: 'main', 'fetch-depth': '0', 'persist-credentials': 'false' },
+    { ref: '${{ needs.global-preflight.outputs.release_sha }}', 'persist-credentials': 'false' },
+  ],
+  'actions/setup-node@v6': [
+    { 'node-version': '22' },
+    { 'node-version': '22', cache: 'npm', 'cache-dependency-path': 'infra/aws/package-lock.json' },
+  ],
+  'aws-actions/configure-aws-credentials@v6': [
+    {
+      'role-to-assume': '${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}',
+      'aws-region': '${{ vars.AWS_REGION }}',
+      'mask-aws-account-id': 'true',
+    },
+  ],
 };
+
+const USES_STEP_KEYS = new Set(['name', 'uses', 'with']);
+
+/** Parse one step chunk into its top-level keys and its `with:` mapping. */
+function parseStep(chunk) {
+  const lines = chunk.split('\n');
+  const keys = {};
+  let withBlock = null;
+  const first = /^ {6}- ([\w-]+):(?: (.*))?$/.exec(lines[0]);
+  if (first) keys[first[1]] = (first[2] ?? '').trim();
+  for (let i = 1; i < lines.length; i++) {
+    const km = /^ {8}([\w-]+):(?: (.*))?$/.exec(lines[i]);
+    if (!km) continue;
+    keys[km[1]] = (km[2] ?? '').trim();
+    if (km[1] === 'with') {
+      withBlock = {};
+      for (let j = i + 1; j < lines.length; j++) {
+        const wm = /^ {10}([\w-]+): (.*)$/.exec(lines[j]);
+        if (!wm) break;
+        withBlock[wm[1]] = wm[2].trim();
+      }
+    }
+  }
+  return { keys, withBlock };
+}
+
+function sameMapping(a, b) {
+  const ka = Object.keys(a).sort();
+  const kb = Object.keys(b).sort();
+  if (JSON.stringify(ka) !== JSON.stringify(kb)) return false;
+  return ka.every((k) => a[k] === b[k]);
+}
 
 const SINGLE_LINE_RUNS = new Set(['npm ci', 'npm test']);
 
@@ -237,12 +289,20 @@ export function releaseLaneErrors(text) {
       const usesMatch = /(?:^|\n)\s{6,8}(?:- )?uses: (\S+)/.exec(chunk);
       if (usesMatch) {
         const action = usesMatch[1];
-        if (!Object.hasOwn(ACTION_ALLOWLIST, action)) {
+        const { keys, withBlock } = parseStep(chunk);
+        // A uses-step may carry NOTHING beyond name/uses/with: an `env:` or `id:` on an action is
+        // configuration nobody reviewed.
+        for (const k of Object.keys(keys)) {
+          if (!USES_STEP_KEYS.has(k)) errors.push(`job "${name}" step ${i + 1} carries an unreviewed step property`);
+        }
+        if (!Object.hasOwn(ACTION_SCHEMAS, action)) {
           errors.push(`job "${name}" step ${i + 1} uses an action outside the closed allowlist`);
-        } else {
-          for (const must of ACTION_ALLOWLIST[action]) {
-            if (!must.test(chunk)) errors.push(`job "${name}" step ${i + 1} drops a required property of ${action}`);
-          }
+          return;
+        }
+        const variants = ACTION_SCHEMAS[action];
+        const supplied = withBlock ?? {};
+        if (!variants.some((v) => sameMapping(v, supplied))) {
+          errors.push(`job "${name}" step ${i + 1} configures ${action} outside its reviewed schema`);
         }
         return;
       }
@@ -464,6 +524,30 @@ test('POSITIVE CONTROL: every reproduction from the round-4 review is rejected b
 
   // Dropping a required property from an allowlisted action.
   rejects(raw.replace('          fetch-depth: 0\n          persist-credentials: false', '          fetch-depth: 0'), 'checkout without persist-credentials: false');
+});
+
+test('POSITIVE CONTROL: every reproduction from the round-5 review is rejected by name', () => {
+  // (2) Action authority drift — each of these returned ZERO errors under the name-plus-regex
+  // allowlist, because presence-of-required is not absence-of-everything-else.
+  rejects(
+    raw.replaceAll('secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN', 'secrets.AWS_DEPLOY_ADMIN_ROLE_ARN'),
+    'the deploy role swapped for an admin role',
+  );
+  rejects(raw.replaceAll('          aws-region: ${{ vars.AWS_REGION }}\n', ''), 'every aws-region removed');
+  rejects(
+    raw.replace(
+      '          mask-aws-account-id: true',
+      '          mask-aws-account-id: true\n          role-duration-seconds: 43200',
+    ),
+    'an arbitrary extra action input',
+  );
+  rejects(
+    raw.replace(
+      '      - uses: actions/setup-node@v6\n        with:\n          node-version: 22\n          cache: npm',
+      '      - uses: actions/setup-node@v6\n        env:\n          NODE_OPTIONS: --experimental-loader=evil\n        with:\n          node-version: 22\n          cache: npm',
+    ),
+    'an env block smuggled onto an action step',
+  );
 });
 
 test('Slice A deploys nothing: no deploy command and no entrypoint invocation exist in the lane yet', () => {

