@@ -66,15 +66,15 @@ export function jobsOf(text) {
  * no `id:`, nothing). Authority drift becomes a schema mismatch, not a silent pass.
  */
 const ACTION_SCHEMAS = {
-  'actions/checkout@v7': [
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1': [
     { ref: 'main', 'fetch-depth': '0', 'persist-credentials': 'false' },
     { ref: '${{ needs.global-preflight.outputs.release_sha }}', 'persist-credentials': 'false' },
   ],
-  'actions/setup-node@v6': [
+  'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38': [
     { 'node-version': '22' },
     { 'node-version': '22', cache: 'npm', 'cache-dependency-path': 'infra/aws/package-lock.json' },
   ],
-  'aws-actions/configure-aws-credentials@v6': [
+  'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c': [
     {
       'role-to-assume': '${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}',
       'aws-region': '${{ vars.AWS_REGION }}',
@@ -90,22 +90,25 @@ function parseStep(chunk) {
   const lines = chunk.split('\n');
   const keys = {};
   let withBlock = null;
+  let envBlock = null;
   const first = /^ {6}- ([\w-]+):(?: (.*))?$/.exec(lines[0]);
   if (first) keys[first[1]] = (first[2] ?? '').trim();
   for (let i = 1; i < lines.length; i++) {
     const km = /^ {8}([\w-]+):(?: (.*))?$/.exec(lines[i]);
     if (!km) continue;
     keys[km[1]] = (km[2] ?? '').trim();
-    if (km[1] === 'with') {
-      withBlock = {};
+    if (km[1] === 'with' || km[1] === 'env') {
+      const mapping = {};
       for (let j = i + 1; j < lines.length; j++) {
         const wm = /^ {10}([\w-]+): (.*)$/.exec(lines[j]);
         if (!wm) break;
-        withBlock[wm[1]] = wm[2].trim();
+        mapping[wm[1]] = wm[2].trim();
       }
+      if (km[1] === 'with') withBlock = mapping;
+      else envBlock = mapping;
     }
   }
-  return { keys, withBlock };
+  return { keys, withBlock, envBlock };
 }
 
 function sameMapping(a, b) {
@@ -117,14 +120,20 @@ function sameMapping(a, b) {
 
 const SINGLE_LINE_RUNS = new Set(['npm ci', 'npm test']);
 
-const RUN_TEMPLATES = new Set([
-  "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters \u2014 a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main \u2014 only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"",
-  "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"",
-  "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"",
-  "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"",
-  "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"",
-  "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"",
-]);
+/**
+ * Each reviewed run block, as a CLOSED STEP OBJECT (#70 round 6): the block text, the exact set of
+ * step-level keys, and the exact env mapping. The command body alone was not enough — adding
+ * `NODE_OPTIONS: --require ./evil.js` to a step's env kept the approved command text and executed
+ * arbitrary Node anyway. A step is its whole object, and every part of it is pinned.
+ */
+const RUN_STEP_SCHEMAS = [
+  { block: "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters \u2014 a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main \u2014 only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ inputs.release_sha }}"} },
+  { block: "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "TARGET_REGION": "${{ vars.AWS_REGION }}", "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}", "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}", "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}", "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"} },
+  { block: "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "TARGET_REGION": "${{ vars.AWS_REGION }}", "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}", "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}", "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}", "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"} },
+  { block: "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"", stepKeys: ["env", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "CONTEXT_DIGEST": "${{ needs.dev-preflight.outputs.context_digest }}", "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}"} },
+  { block: "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"", stepKeys: ["env", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "CONTEXT_DIGEST": "${{ needs.pilot-preflight.outputs.context_digest }}", "MANIFEST_JSON": "${{ needs.pilot-preflight.outputs.manifest }}"} },
+  { block: "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"", stepKeys: ["name", "run"], env: null }
+];
 
 function stepsOf(jobText) {
   return jobText.split(/\n(?= {6}- )/).slice(1);
@@ -282,13 +291,25 @@ export function releaseLaneErrors(text) {
       errors.push(`dev-bound job "${name}" does not descend from the dev preflight`);
     }
 
-    // THE CLOSED SHAPE: every step is an allowlisted action or a reviewed run template. This is
-    // where a smuggled deploy dies — whatever it is spelled like — because it is not on the list.
-    const jobRaw = jobs.find((j) => j.name === name).text;
-    stepsOf(jobRaw).forEach((chunk, i) => {
+  }
+
+  // THE CLOSED SHAPE: every step in EVERY job — global-preflight included — is an allowlisted
+  // action or a reviewed run template. This loop deliberately lives OUTSIDE the per-job gating loop:
+  // that loop skips global-preflight (it has no needs/if to validate), and a first draft of this
+  // rule sat inside it, which left the identity job's steps entirely unvalidated — a mutable
+  // checkout tag there returned zero errors. A skip for one rule must never become a skip for all.
+  for (const job of jobs) {
+    const name = job.name;
+    stepsOf(job.text).forEach((chunk, i) => {
+
       const usesMatch = /(?:^|\n)\s{6,8}(?:- )?uses: (\S+)/.exec(chunk);
       if (usesMatch) {
         const action = usesMatch[1];
+        // Round 6: a MUTABLE ref can move after review, including in a job with id-token: write.
+        // Only full commit SHAs are immutable.
+        if (!/@[0-9a-f]{40}$/.test(action)) {
+          errors.push(`job "${name}" step ${i + 1} pins an action to a mutable ref — a full commit SHA is required`);
+        }
         const { keys, withBlock } = parseStep(chunk);
         // A uses-step may carry NOTHING beyond name/uses/with: an `env:` or `id:` on an action is
         // configuration nobody reviewed.
@@ -308,13 +329,30 @@ export function releaseLaneErrors(text) {
       }
       const block = runBlockOf(chunk);
       if (block !== null) {
-        if (!RUN_TEMPLATES.has(block)) errors.push(`job "${name}" step ${i + 1} runs a block outside the reviewed templates`);
+        const schema = RUN_STEP_SCHEMAS.find((t) => t.block === block);
+        if (!schema) {
+          errors.push(`job "${name}" step ${i + 1} runs a block outside the reviewed templates`);
+          return;
+        }
+        // The WHOLE step object is pinned: keys and env, not just the command body. `shell:`,
+        // `working-directory:`, `continue-on-error:` and a smuggled env variable all die here.
+        const { keys, envBlock } = parseStep(chunk);
+        if (JSON.stringify(Object.keys(keys).sort()) !== JSON.stringify(schema.stepKeys)) {
+          errors.push(`job "${name}" step ${i + 1} carries unreviewed run-step properties`);
+        }
+        if (!sameMapping(envBlock ?? {}, schema.env ?? {})) {
+          errors.push(`job "${name}" step ${i + 1} carries an unreviewed env block`);
+        }
         return;
       }
       const single = /(?:^|\n)\s{8}run: (?!\|)([^\n]+)/.exec(chunk);
       if (single) {
         if (!SINGLE_LINE_RUNS.has(single[1].trim())) {
           errors.push(`job "${name}" step ${i + 1} runs a command outside the reviewed set`);
+        }
+        const { keys } = parseStep(chunk);
+        if (JSON.stringify(Object.keys(keys).sort()) !== JSON.stringify(['name', 'run'])) {
+          errors.push(`job "${name}" step ${i + 1} carries unreviewed properties on a command step`);
         }
         return;
       }
@@ -543,10 +581,42 @@ test('POSITIVE CONTROL: every reproduction from the round-5 review is rejected b
   );
   rejects(
     raw.replace(
-      '      - uses: actions/setup-node@v6\n        with:\n          node-version: 22\n          cache: npm',
-      '      - uses: actions/setup-node@v6\n        env:\n          NODE_OPTIONS: --experimental-loader=evil\n        with:\n          node-version: 22\n          cache: npm',
+      '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        with:\n          node-version: 22\n          cache: npm',
+      '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        env:\n          NODE_OPTIONS: --experimental-loader=evil\n        with:\n          node-version: 22\n          cache: npm',
     ),
     'an env block smuggled onto an action step',
+  );
+});
+
+test('POSITIVE CONTROL: every reproduction from the round-6 review is rejected by name', () => {
+  // (2) The exact NODE_OPTIONS bypass: the approved command text is retained, arbitrary Node
+  // executes anyway. The step's env is part of the reviewed object now.
+  rejects(
+    raw.replace(
+      '          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}',
+      '          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}\n          NODE_OPTIONS: --require ./evil.js',
+    ),
+    'NODE_OPTIONS smuggled into a reviewed run step',
+  );
+
+  // Another unauthorized run-step property: a shell override on a reviewed block.
+  rejects(
+    raw.replace(
+      '      - name: Slice A stops here\n        run: |',
+      '      - name: Slice A stops here\n        shell: python\n        run: |',
+    ),
+    'a shell override on a reviewed run step',
+  );
+
+  // (3) A mutable tag where a full commit SHA is required. The schema-key closure would refuse the
+  // unknown name anyway, so the assertion demands the PIN rule's own error — otherwise removing the
+  // rule stays green behind the redundancy, which is exactly what a discrimination check exists to
+  // catch.
+  const tagged = raw.replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'actions/checkout@v7');
+  assert.notEqual(tagged, raw, 'mutation did not apply: mutable tag');
+  assert.ok(
+    releaseLaneErrors(tagged).some((e) => e.includes('mutable ref')),
+    'a tag reference must be refused BY THE PIN RULE, not merely by schema-key mismatch',
   );
 });
 

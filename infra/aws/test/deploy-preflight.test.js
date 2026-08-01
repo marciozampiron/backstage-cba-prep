@@ -1016,6 +1016,95 @@ test('deploy-release usage errors are distinguishable and never echo the offendi
   }
 });
 
+test('ROUND-6 REPRO: the digest is injective — the delimiter-collision trees digest differently', () => {
+  // Codex built two different trees with the same digest under the old concatenation framing:
+  // tree A's single file CONTAINED the delimiter sequence that tree B's two files induced. The
+  // canonical form is now a JSON array (every field length-framed by the encoding, content replaced
+  // by its fixed-length sha256 plus explicit size), so the pair must differ.
+  const NUL = String.fromCharCode(0);
+  const { assemblyDigest } = require('../bin/deploy-preflight');
+  const dA = withDir({ a: Buffer.from(`A${NUL}b${NUL}F${NUL}B`) }, (d) => assemblyDigest(d).digest);
+  const dB = withDir({ a: 'A', b: 'B' }, (d) => assemblyDigest(d).digest);
+  assert.notEqual(dA, dB, 'the exact reproduced collision must no longer collide');
+});
+
+test('ROUND-6 REPRO: the digest binds the executable bit, normalized git-style', () => {
+  const { assemblyDigest } = require('../bin/deploy-preflight');
+  withDir({ 'asset.x/run.sh': '#!/bin/sh\necho hi' }, (d) => {
+    const plain = assemblyDigest(d).digest;
+    fs.chmodSync(path.join(d, 'asset.x/run.sh'), 0o755);
+    const exec755 = assemblyDigest(d).digest;
+    assert.notEqual(plain, exec755, '0644 -> 0755 must change the digest');
+    // Git-style normalization: any owner-executable mode is 0755, so umask noise cannot refuse an
+    // honest assembly.
+    fs.chmodSync(path.join(d, 'asset.x/run.sh'), 0o700);
+    assert.equal(assemblyDigest(d).digest, exec755, '0700 and 0755 normalize identically');
+  });
+});
+
+test('the snapshot preserves the executable bit, so an honest executable asset deploys', () => {
+  withDir({ ...ASSEMBLY_FILES }, (asm) => {
+    fs.chmodSync(path.join(asm, 'asset.abc123/index.mjs'), 0o755);
+    const written = [];
+    const r = runDeployPreflight([...cliArgs(), '--assembly', asm, '--manifest-out', '/x'], {
+      run: stubAws(), cdkJsonPath: CDK_JSON, env: {}, writeFile: (p2, d) => written.push(d),
+    });
+    assert.equal(r.exit, 0, r.output);
+    const manifest = JSON.parse(written[0]);
+    withManifest(manifest, (mp) => {
+      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 0 }) });
+      assert.equal(rel.exit, 0, rel.output);
+    });
+  });
+});
+
+test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path cleans up', () => {
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-snap-base-'));
+  const assertEmpty = (label) => assert.deepEqual(fs.readdirSync(tmpBase), [], `${label} must leave no snapshot behind`);
+  try {
+    // Success.
+    withRelease((p2, asm) => {
+      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 0 }) });
+      assert.equal(r.exit, 0, r.output);
+      assertEmpty('success');
+    });
+    // Digest mismatch.
+    withRelease(
+      (p2, asm) => {
+        runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec') });
+        assertEmpty('an assembly-digest refusal');
+      },
+      { assemblyFiles: { ...ASSEMBLY_FILES, 'manifest.json': '{"version":"36.0.0","artifacts":{"X":1}}' } },
+    );
+    // Account unresolved, context drift, account swap, failing child.
+    withRelease((p2, asm) => {
+      runDeployRelease(releaseArgs(p2, asm), { run: stubAws({ stsStatus: 254 }), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec') });
+      assertEmpty('an account-resolution refusal');
+
+      runDeployRelease(releaseArgs(p2, asm, ['-c', 'authDomainPrefix=cba-study-coach-pilot-evil']), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec') });
+      assertEmpty('a context-recompute refusal');
+
+      let stsCalls = 0;
+      runDeployRelease(releaseArgs(p2, asm), {
+        run: (args, o) => {
+          if (args[0] === 'sts') {
+            stsCalls += 1;
+            return { status: 0, stdout: JSON.stringify({ Account: stsCalls === 1 ? ACCOUNT : '2'.repeat(12) }), stderr: '' };
+          }
+          return stubAws()(args, o);
+        },
+        git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec'),
+      });
+      assertEmpty('an account-swap refusal');
+
+      runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 3 }) });
+      assertEmpty('a failing child');
+    });
+  } finally {
+    fs.rmSync(tmpBase, { recursive: true, force: true });
+  }
+});
+
 test('verify-manifest can check the assembly too, and refuses drift', () => {
   withRelease((p, asm, manifest) => {
     const ok = runVerifyManifest(['--manifest', p, '--environment', 'pilot', '--release-sha', SHA, '--assembly', asm], {});

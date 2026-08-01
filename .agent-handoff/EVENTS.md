@@ -96,6 +96,19 @@ Append meaningful coordination changes here. Newest entries should go at the top
   discovery and runtime refusal of unlisted keys. The tightened scanner immediately caught a key the
   manual inventory missed — `bedrockRefreshBoundaryArn`, an IAM boundary ARN — which joined the
   contract (now ten keys). Every reproduction is a named regression; each binding proven by mutation.
+- Codex round 6 refused with five findings, all upheld (the two digest ones reproduced first): the
+  assembly digest framing was NOT injective — two different trees, one with the delimiter sequence
+  inside a file's content, digested identically; run steps had no closed schema, so NODE_OPTIONS
+  smuggled into a reviewed step's env executed arbitrary Node under the approved command text;
+  third-party actions were pinned to mutable major tags; the digest ignored file modes; and
+  snapshots leaked on refusal paths. Fixed: JSON-canonical injective digest (per-file record with
+  path, type, git-normalized mode, size and content sha256), run steps validated as whole closed
+  objects (step keys + exact env), all eleven uses: pinned to full commit SHAs (peeled where the tag
+  is annotated) with the pin rule's error demanded specifically by its regression, and one
+  try/finally owning the snapshot on every path. Fixing round 6 exposed a hole of my own: the
+  step-shape loop sat inside the per-job loop that SKIPS global-preflight, so the identity job's
+  steps were never shape-checked — a mutable checkout tag there returned zero errors. The loop is
+  standalone now, over every job.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`

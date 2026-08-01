@@ -266,6 +266,38 @@ too. Tightening the scanner immediately caught a key my manual inventory had mis
 `bedrockRefreshBoundaryArn`, an IAM boundary ARN — exactly the class round 4 was about. It joined
 the contract, which now holds ten keys.
 
+## Slice A — Codex review round 6, and what it changed
+
+Five findings, all upheld; the two digest ones reproduced before fixing.
+
+**The digest is injective now (HIGH).** Concatenating path, delimiters and raw bytes without length
+framing is not injective — Codex built two different trees with the same digest, because a file's
+CONTENT can contain the delimiter sequence. The canonical form is a JSON array of per-file records:
+every field length-framed by the encoding itself, the content replaced by its fixed-length sha256
+plus an explicit size. The exact reproduced collision pair is a named regression. **And the mode is
+bound (MEDIUM)**: 0644→0755 changes the digest, normalized git-style on the owner-executable bit so
+umask noise cannot refuse an honest assembly; the snapshot copy preserves the bit explicitly.
+
+**Run steps are closed OBJECTS, not approved command text (HIGH).** `NODE_OPTIONS: --require
+./evil.js` added to a reviewed step's `env:` kept the approved command and executed arbitrary Node.
+Each reviewed block now carries the exact set of step-level keys and the exact env mapping —
+`shell:`, `working-directory:`, `continue-on-error:` and any smuggled env variable die as unreviewed
+step properties. Fixing this exposed a hole of my own: the step-shape loop lived inside the per-job
+gating loop, which SKIPS `global-preflight` — the identity job's steps were never shape-checked at
+all. The loop is standalone now, over every job, with the lesson recorded in the invariant comment.
+
+**Actions are pinned to immutable commit SHAs (HIGH).** `@v7`/`@v6` tags can move after review,
+including in jobs with `id-token: write`. All eleven `uses:` are pinned to full SHAs (the
+`configure-aws-credentials` tag is annotated, so the PEELED commit is used, not the tag object).
+The invariant refuses any non-SHA ref by its own rule, and the regression demands THAT rule's error
+specifically — the schema-key closure would refuse the unknown name anyway, and a control satisfied
+by the redundancy would go green when the pin rule was deleted.
+
+**Snapshots never outlive the run (LOW).** One owner: everything after the snapshot creation runs
+inside a single try/finally; partial copies clean themselves up. Regressions assert an empty
+snapshot base after success, digest mismatch, account-resolution failure, context drift, account
+swap and a failing child.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

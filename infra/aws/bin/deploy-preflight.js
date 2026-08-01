@@ -113,28 +113,44 @@ function walkAssembly(dir) {
 }
 
 /**
- * Digest of a cloud assembly: every regular file, recursively — relative path, type marker and
- * bytes. `{error}` is a refusal, never a pass.
+ * Digest of a cloud assembly, over an INJECTIVE canonical form.
+ *
+ * Round 6 broke the previous framing: concatenating path, delimiters and raw bytes without length
+ * framing is not injective — a file `a` whose CONTENT contains the delimiter sequence digests
+ * identically to two files `a` and `b`, so an asset could be split or coalesced without moving the
+ * manifest digest. The canonical form is now a JSON array of per-file records: JSON's own string
+ * escaping length-frames every field, and the only unbounded field — the content — is replaced by
+ * its fixed-length sha256 plus an explicit size. Two different trees cannot serialize to the same
+ * array.
+ *
+ * The MODE is bound too (round 6, finding 4): an asset flipped from 0644 to 0755 is a different
+ * deployable. It is normalized git-style to exactly `0644`/`0755` on the owner-executable bit, so
+ * the digest is immune to umask noise while still refusing an executability change.
  *
  * @returns {{digest: string} | {error: string}}
  */
 function assemblyDigest(dir) {
   const walked = walkAssembly(dir);
   if (walked.error) return walked;
-  const h = createHash('sha256');
+  const entries = [];
   for (const f of walked.files) {
     let body;
+    let mode;
     try {
       body = fs.readFileSync(f.abs);
+      mode = fs.statSync(f.abs).mode;
     } catch {
       return { error: 'ASSEMBLY_UNREADABLE' };
     }
-    h.update(f.rel);
-    h.update('\u0000F\u0000');
-    h.update(body);
-    h.update('\u0000');
+    entries.push({
+      path: f.rel,
+      type: 'file',
+      mode: (mode & 0o111) !== 0 ? '0755' : '0644',
+      size: body.length,
+      sha256: createHash('sha256').update(body).digest('hex'),
+    });
   }
-  return { digest: h.digest('hex') };
+  return { digest: createHash('sha256').update(JSON.stringify(entries)).digest('hex') };
 }
 
 /**

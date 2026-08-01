@@ -119,22 +119,30 @@ function defaultGit(args) {
  *
  * @returns {{dir: string, digest: string} | {error: string}}
  */
-function snapshotAssembly(srcDir) {
+function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
   const walked = walkAssembly(srcDir);
   if (walked.error) return walked;
-  let dir;
+  let dir = null;
   try {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-assembly-'));
+    dir = fs.mkdtempSync(path.join(tmpBase, 'cba-assembly-'));
     for (const f of walked.files) {
       const dest = path.join(dir, f.rel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.copyFileSync(f.abs, dest);
+      // Preserve the executable bit: the digest binds it (round 6), and a copy that dropped it
+      // would refuse a perfectly honest assembly.
+      fs.chmodSync(dest, fs.statSync(f.abs).mode & 0o777);
     }
   } catch {
+    // A partial snapshot is not evidence of anything — and it must not outlive the failure.
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
     return { error: 'ASSEMBLY_UNREADABLE' };
   }
   const d = assemblyDigest(dir);
-  if (d.error) return d;
+  if (d.error) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return d;
+  }
   return { dir, digest: d.digest };
 }
 
@@ -143,7 +151,7 @@ function snapshotAssembly(srcDir) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir() } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -199,77 +207,81 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   if (status.status !== 0 || status.stdout.trim() !== '') {
     failures.push({ check: 'VERIFY', code: 'WORKTREE_DIRTY', field: 'worktree' });
   }
+  if (failures.length > 0) return refuse();
 
   // 2c. The ASSEMBLY, snapshotted and bound by digest. The copy happens FIRST and the digest is
   //     computed from the copy, so the value that is compared is the value that deploys — mutating
   //     the original after this point changes nothing the child will read.
-  const snapshot = snapshotAssembly(opts.assembly);
-  if (snapshot.error) failures.push({ check: 'VERIFY', code: snapshot.error, field: 'assembly' });
-  else if (snapshot.digest !== manifest.assemblyDigest) {
-    failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
-  }
-  if (failures.length > 0) {
-    if (snapshot && snapshot.dir) fs.rmSync(snapshot.dir, { recursive: true, force: true });
+  //
+  //     From here on, ONE owner: everything below runs inside the try, and the finally removes the
+  //     snapshot on every path out — refusals included. Round 6 found snapshots surviving the
+  //     account and context refusals, which retains source assets on persistent runners.
+  const snapshot = snapshotAssembly(opts.assembly, tmpBase);
+  if (snapshot.error) {
+    failures.push({ check: 'VERIFY', code: snapshot.error, field: 'assembly' });
     return refuse();
   }
+  try {
+    if (snapshot.digest !== manifest.assemblyDigest) {
+      failures.push({ check: 'VERIFY', code: 'ASSEMBLY_DIGEST_MISMATCH', field: 'assemblyDigest' });
+      return refuse();
+    }
 
-  // 3. The effective context and the account, digested and compared. THIS context object — not a
-  //    copy, not a re-read — is what the deploy arguments are built from below.
-  const context = loadContext(opts.context, cdkJsonPath);
-  const accountAtVerify = resolveAccountId(run);
-  if (!accountAtVerify) {
-    failures.push({ check: 'VERIFY', code: 'ACCOUNT_UNRESOLVED', field: 'targetAccount' });
-    return refuse();
-  }
-  const recomputed = contextDigest({
-    releaseSha: manifest.releaseSha,
-    environment: manifest.environment,
-    region: manifest.region,
-    accountId: accountAtVerify,
-    context,
-  });
-  if (recomputed !== manifest.contextDigest) {
-    failures.push({ check: 'VERIFY', code: 'MANIFEST_RECOMPUTE_MISMATCH', field: 'contextDigest' });
-    return refuse();
-  }
+    // 3. The effective context and the account, digested and compared. THIS context object — not a
+    //    copy, not a re-read — is what the deploy arguments are built from below.
+    const context = loadContext(opts.context, cdkJsonPath);
+    const accountAtVerify = resolveAccountId(run);
+    if (!accountAtVerify) {
+      failures.push({ check: 'VERIFY', code: 'ACCOUNT_UNRESOLVED', field: 'targetAccount' });
+      return refuse();
+    }
+    const recomputed = contextDigest({
+      releaseSha: manifest.releaseSha,
+      environment: manifest.environment,
+      region: manifest.region,
+      accountId: accountAtVerify,
+      context,
+    });
+    if (recomputed !== manifest.contextDigest) {
+      failures.push({ check: 'VERIFY', code: 'MANIFEST_RECOMPUTE_MISMATCH', field: 'contextDigest' });
+      return refuse();
+    }
 
-  // 4. The account again, immediately before the effect. A swap between verification and deploy is
-  //    the round-3 reproduction; re-resolving here shrinks the window to this process's own gap
-  //    between the check and the spawn, which is disclosed at the top of this file.
-  const accountAtDeploy = resolveAccountId(run);
-  if (accountAtDeploy !== accountAtVerify) {
-    failures.push({ check: 'DEPLOY', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
-    return refuse();
-  }
+    // 4. The account again, immediately before the effect. A swap between verification and deploy
+    //    is the round-3 reproduction; re-resolving here shrinks the window to this process's own
+    //    gap between the check and the spawn, which is disclosed at the top of this file.
+    const accountAtDeploy = resolveAccountId(run);
+    if (accountAtDeploy !== accountAtVerify) {
+      failures.push({ check: 'DEPLOY', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
+      return refuse();
+    }
 
   // 5. The deploy, CONSTRUCTED from the verified objects. The child deploys the VERIFIED ASSEMBLY
   //    (`--app`) — context flags would be meaningless against a pre-synthesized assembly, and
   //    passing mutable source would discard the digest that was just checked. The verified region
   //    is IMPOSED on the child's environment: every region variable the CDK or the SDK reads is
   //    overridden, so an ambient region pointing elsewhere cannot redirect the deploy.
-  const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', snapshot.dir];
-  const childEnv = {
-    ...env,
-    AWS_REGION: manifest.region,
-    AWS_DEFAULT_REGION: manifest.region,
-    CDK_DEFAULT_REGION: manifest.region,
-  };
-  let child;
-  try {
-    child = exec(childArgs, childEnv);
+    const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', snapshot.dir];
+    const childEnv = {
+      ...env,
+      AWS_REGION: manifest.region,
+      AWS_DEFAULT_REGION: manifest.region,
+      CDK_DEFAULT_REGION: manifest.region,
+    };
+    const child = exec(childArgs, childEnv);
+    const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
+    return {
+      exit,
+      output: [
+        `deploy-release — environment ${manifest.environment}, release ${manifest.releaseSha.slice(0, 12)}`,
+        `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned)`,
+        child.status === 0 ? 'Deployed the verified context.' : 'The deploy child failed; the binding held.',
+      ].join('\n'),
+      executed: true,
+    };
   } finally {
     fs.rmSync(snapshot.dir, { recursive: true, force: true });
   }
-  const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
-  return {
-    exit,
-    output: [
-      `deploy-release — environment ${manifest.environment}, release ${manifest.releaseSha.slice(0, 12)}`,
-      `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned)`,
-      child.status === 0 ? 'Deployed the verified context.' : 'The deploy child failed; the binding held.',
-    ].join('\n'),
-    executed: true,
-  };
 }
 
 module.exports = { runDeployRelease, EXIT };
