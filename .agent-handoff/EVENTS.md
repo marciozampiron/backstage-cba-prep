@@ -109,6 +109,15 @@ Append meaningful coordination changes here. Newest entries should go at the top
   step-shape loop sat inside the per-job loop that SKIPS global-preflight, so the identity job's
   steps were never shape-checked — a mutable checkout tag there returned zero errors. The loop is
   standalone now, over every job.
+- Codex round 7 refused with one finding that names the pattern behind rounds 2-6: the workflow
+  validator parsed a different language than the consumer. A quoted sixth job carrying id-token:
+  write and a remote reusable workflow was real to YAML and invisible to the regex parser (five
+  jobs, zero errors — reproduced); quoted env keys, quoted action inputs and job-level
+  env/container were equally invisible. The regex parser was deleted, not extended: yaml@2.9.0 is
+  now a direct exact-pinned devDependency, the workflow is parsed once with duplicate-key rejection,
+  and the authoritative check is deep equality against a frozen reviewed object, with semantic
+  guards running on the same parsed object. Every payload is a named regression that first proves
+  the payload ACTIVE under YAML and then proves the refusal.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`

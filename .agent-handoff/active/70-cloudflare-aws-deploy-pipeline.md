@@ -298,6 +298,31 @@ inside a single try/finally; partial copies clean themselves up. Regressions ass
 snapshot base after success, digest mismatch, account-resolution failure, context drift, account
 swap and a failing child.
 
+## Slice A — Codex review round 7, and what it changed
+
+One finding, upheld, and it names the pattern behind rounds 2–6: the workflow validator PARSED A
+DIFFERENT LANGUAGE than the consumer. Four payloads were semantically active under a real YAML
+parser while the regex validator returned zero errors — a quoted env key, a quoted action input, a
+job-level `env`/`container`, and a QUOTED SIXTH JOB carrying `id-token: write` and a remote
+reusable workflow, which the regex `jobsOf()` did not even count. I reproduced the sixth-job case
+before fixing: five jobs to the old parser, zero errors.
+
+The regex parser is GONE, not extended. `yaml@2.9.0` — already in the lockfile transitively — is
+now a direct, exact-pinned devDependency. The validator parses the workflow ONCE with duplicate-key
+and warning rejection, and the authoritative check is deep equality against the REVIEWED OBJECT: a
+frozen literal of the entire parsed workflow, so any semantic change — a key, a value, a step, a
+job — fails until the literal is updated deliberately under review. Semantic guards (trigger,
+forbidden job-level keys incl. `uses`/`container`/`services`/`env`, SHA pins, closed if-grammar,
+DAG descent) run on the same parsed object, both for named diagnostics and to police future edits
+of the reviewed object itself. The identity-script EXECUTED tests now take the script from the
+parsed object — the same string GitHub would execute.
+
+Each round-7 payload is a named regression that FIRST proves the payload is active under YAML
+(`wf.jobs.rogue.uses` really is the attacker's reusable workflow) and THEN proves the validator
+refuses it — plus a duplicate-key document refused at parse time. Discrimination: disabling the
+reviewed-object equality fails 4 tests; disabling duplicate-key rejection fails; dropping
+`uses` from the forbidden job keys fails.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

