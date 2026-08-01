@@ -323,6 +323,23 @@ refuses it — plus a duplicate-key document refused at parse time. Discriminati
 reviewed-object equality fails 4 tests; disabling duplicate-key rejection fails; dropping
 `uses` from the forbidden job keys fails.
 
+## Slice A — Codex review round 8, and what it changed
+
+One finding (MEDIUM), upheld: the placeholder stage jobs held `id-token: write` while doing nothing
+that needs a token — checkout, Node setup, manifest verification. With the permission present,
+every action, command and dependency lifecycle script in those jobs could mint an Environment-bound
+OIDC token, against the smoke-workflow design (which assigns `id-token: write` only to deploy and
+observability-gate jobs) and `SEC-IAM-01`.
+
+The permission is removed from both stages — reviewed object included — and OIDC authority is now a
+SEMANTIC rule, not just a snapshot fact: a job may hold `id-token: write` only when it contains the
+exact pinned `configure-aws-credentials` action. The regression grants the permission back to a
+placeholder and demands THE RULE'S OWN error — the reviewed-object diff also fires today, but the
+day the reviewed object is edited to include the permission, the diff goes silent, and the named
+rule is what keeps the regression discriminating across that edit. The preflight jobs, which carry
+the pinned consumer, are asserted NOT to trip the rule. A later deploying slice restores the
+permission together with its reviewed credentials action and the sanctioned entrypoint.
+
 ## Slice A — validation
 
 Root and infra suites, `cdk synth` for both tiers, and adversarial controls proven to bite by

@@ -168,8 +168,7 @@ const EXPECTED_WORKFLOW = {
       "runs-on": "ubuntu-latest",
       "environment": "dev",
       "permissions": {
-        "contents": "read",
-        "id-token": "write"
+        "contents": "read"
       },
       "steps": [
         {
@@ -278,8 +277,7 @@ const EXPECTED_WORKFLOW = {
       "runs-on": "ubuntu-latest",
       "environment": "pilot",
       "permissions": {
-        "contents": "read",
-        "id-token": "write"
+        "contents": "read"
       },
       "steps": [
         {
@@ -312,7 +310,6 @@ const EXPECTED_WORKFLOW = {
     }
   }
 };
-
 /** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
 export function parseWorkflow(text) {
   const doc = parseDocument(text, { uniqueKeys: true });
@@ -394,6 +391,19 @@ export function releaseLaneErrors(text) {
       }
       if (typeof step.run === 'string' && DEPLOY_COMMAND.test(step.run)) {
         errors.push(`job "${name}" invokes a deploy command; Slice A deploys nothing and later slices go through deploy-release.js`);
+      }
+    }
+    // OIDC authority is a capability, not a default (#70 round 8). When id-token: write exists,
+    // EVERY action, command and dependency lifecycle script in the job can mint an
+    // Environment-bound token — so the permission is allowed only where a reviewed OIDC consumer
+    // is present: today, exactly the pinned configure-aws-credentials action. A placeholder that
+    // verifies a manifest needs none of that.
+    if (job?.permissions?.['id-token'] === 'write') {
+      const consumesOidc = (job.steps ?? []).some(
+        (s2) => s2.uses === 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c',
+      );
+      if (!consumesOidc) {
+        errors.push(`job "${name}" holds id-token: write with no reviewed OIDC consumer`);
       }
     }
     if (name === 'global-preflight') {
@@ -523,6 +533,30 @@ test('POSITIVE CONTROL: every reproduction from the round-7 review is rejected b
   const dup = raw.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: read\npermissions:\n  contents: read\n');
   assert.notEqual(dup, raw);
   assert.ok(releaseLaneErrors(dup).some((e) => e.includes('not clean YAML')), 'duplicate keys must refuse at parse time');
+});
+
+test('POSITIVE CONTROL: round-8 — OIDC authority requires a reviewed consumer, by its own rule', () => {
+  // Grant id-token: write back to the placeholder stage. YAML must parse it as active...
+  const withOidc = raw.replace(
+    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\'\n    runs-on: ubuntu-latest\n    environment: dev\n    permissions:\n      contents: read\n',
+    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\'\n    runs-on: ubuntu-latest\n    environment: dev\n    permissions:\n      contents: read\n      id-token: write\n',
+  );
+  assert.notEqual(withOidc, raw, 'mutation did not apply: id-token on a placeholder');
+  assert.equal(activeAt(withOidc, (wf) => wf.jobs['dev-stage'].permissions['id-token']).value, 'write');
+  // ...and the refusal must come from the OIDC RULE SPECIFICALLY. The reviewed-object diff also
+  // fires today, but the day the reviewed object is edited to include the permission, the diff goes
+  // silent — the named rule is what keeps the regression discriminating across that edit.
+  assert.ok(
+    releaseLaneErrors(withOidc).some((e) => e.includes('id-token: write with no reviewed OIDC consumer')),
+    'the OIDC rule must refuse a placeholder holding token authority',
+  );
+
+  // And the preflight jobs — which DO carry the pinned consumer — are not flagged by the rule.
+  assert.equal(
+    releaseLaneErrors(raw).some((e) => e.includes('no reviewed OIDC consumer')),
+    false,
+    'the rule must not fire where the consumer is present',
+  );
 });
 
 test('POSITIVE CONTROL: release identity cannot be weakened', () => {

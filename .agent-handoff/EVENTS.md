@@ -118,6 +118,13 @@ Append meaningful coordination changes here. Newest entries should go at the top
   and the authoritative check is deep equality against a frozen reviewed object, with semantic
   guards running on the same parsed object. Every payload is a named regression that first proves
   the payload ACTIVE under YAML and then proves the refusal.
+- Codex round 8 refused with one MEDIUM, upheld: the placeholder stages held id-token: write with
+  no OIDC consumer — checkout, Node and manifest verification need no token, and the permission
+  lets every action and lifecycle script in the job mint an Environment-bound one. Removed from
+  both stages (reviewed object included); OIDC authority is now a semantic rule — id-token: write
+  only where the exact pinned configure-aws-credentials action is present — with a regression that
+  demands the rule's own error so it stays discriminating even after a deliberate reviewed-object
+  edit. Round 7 was confirmed closed in the same review.
 - Three of my own guards had to be corrected while writing them, each a variant of the same mistake
   — checking text instead of structure. A substring sweep flagged `--output` because it contains
   "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`
