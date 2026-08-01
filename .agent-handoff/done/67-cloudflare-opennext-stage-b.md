@@ -12,7 +12,7 @@
   no longer owns anything implementable, and leaving it in `active/` would have blocked #70 from
   opening on the same files.
 - **Issue #67 itself stays OPEN.** What remains is not repository work, and it is now owned by
-  `inbox/70-cloudflare-aws-deploy-pipeline.md`: the custom-domain-vs-`workers.dev` decision, the
+  `active/70-cloudflare-aws-deploy-pipeline.md`: the custom-domain-vs-`workers.dev` decision, the
   Cloudflare account/project and Environment API token, the Worker routes and runtime variable
   VALUES, the deploy invocation, and the F1/F2 frontend gates.
 - **#70 must not re-open the in-repo scope merged in PR #100.** That code is on `main` and reviewed;

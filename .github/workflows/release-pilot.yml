@@ -1,0 +1,336 @@
+# Release orchestrator (#70 Slice A) — release identity, preflight, binding and gates.
+# NOTHING DEPLOYS YET.
+#
+# Shaped by `docs/architecture/deployed-environment-smoke-workflow-design.md` §1 and §4. Slice A
+# delivers the identity, the ordering, the binding and the refusals; the deploys, the F1/F2 gates
+# and the smoke lane are later slices that plug into this DAG without loosening it.
+#
+#   global-preflight  ->  dev-preflight  ->  dev-stage  ->  pilot-preflight  ->  pilot-stage
+#   (release identity)    (env: dev)         (env: dev)     (env: pilot,        (env: pilot)
+#                                                            mode-gated)
+#
+# RELEASE IDENTITY. `release_sha` must be exactly 40 lowercase hex characters — validated in pure
+# shell BEFORE any git invocation, because a 40-character BRANCH NAME that starts with a hex digit
+# would otherwise reach git as a revision, get blessed as an ancestor, and then be MOVED before a
+# later job resolved the same name again. The identity job proves the object is a commit, requires
+# it to resolve to itself, checks ancestry from live main, and emits the RESOLVED OID. Every later
+# job pins its checkout to that output; the raw input is never used as a checkout ref anywhere.
+#
+# BINDING. A preflight that merely exits zero proves that SOME configuration was valid — not that
+# the deploy uses it. The preflight therefore synthesizes the cloud assembly from the bound context
+# and emits a manifest whose digests cover the release OID, the environment, the REGION, the TARGET
+# ACCOUNT, EVERY deploy-sensitive context value (the closed contract in infra/aws/lib/context.js)
+# and the synthesized assembly itself. Stage jobs verify that manifest with a purpose-built command.
+# Deployment happens ONLY through `infra/aws/bin/deploy-release.js`, which — in ONE process —
+# verifies the manifest, requires HEAD to BE the release with a clean worktree, recomputes both
+# digests, imposes the verified region on the child's environment, and deploys the verified
+# assembly via `--app`, never mutable source. The workflow invariants allow only a CLOSED set of
+# step shapes (exact actions, exact run blocks), because round 3 and 4 proved both orderings and
+# blacklists can be talked around: `verb=deploy; npx cdk "$verb"` sailed past a verb regex.
+#
+# THE HUMAN GATE IS NOT YET REAL. As of 2026-07-31 this repository has ZERO configured GitHub
+# Environments. Naming one here does not create protection rules — an unconfigured Environment
+# offers no required reviewer and no branch restriction. The `environment:` keys below are the
+# binding that will carry the gate ONCE Zamp configures `dev` and `pilot` under a separate
+# repository-settings change. BOTH Environments must restrict deployment branches to main only —
+# dev too, not just pilot: an Environment without a branch policy hands its variables and secrets
+# to a workflow definition from ANY branch. `pilot` additionally requires the designated reviewer.
+# Until read-only evidence of those settings exists, this lane must be
+# treated as ungated, and no deploy slice may be approved.
+#
+# ONE INHERENT LIMIT, stated rather than hidden: `workflow_dispatch` executes the workflow
+# DEFINITION from the branch the operator selects. The identity job constrains the RELEASE, not the
+# file; what stops a modified workflow from reaching pilot secrets is the pilot Environment's
+# deployment-branch restriction — part of the blocked prerequisite above.
+name: Release Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: 'Full 40-character commit SHA to release; must be an ancestor of main'
+        required: true
+        type: string
+      mode:
+        description: 'dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green'
+        required: true
+        type: choice
+        options:
+          - dev_only
+          - dev_then_pilot
+
+permissions:
+  contents: read
+
+# One release at a time. Keyed on the release, because the environment is not an input.
+concurrency:
+  group: release-pilot-${{ inputs.release_sha }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # GLOBAL PREFLIGHT — release identity only. Binds NO Environment, on purpose: it must not be able
+  # to read environment configuration, so a malformed release cannot reach any environment's
+  # variables or secrets even by accident. Checkout is pinned to `main` (full history) because the
+  # job needs main's object database to prove ancestry — it never checks out the candidate itself.
+  # ---------------------------------------------------------------------------------------------
+  global-preflight:
+    name: Release identity (shape, object type and ancestry)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_sha: ${{ steps.identity.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release identity
+        id: identity
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          # Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`
+          # pattern validates only the first one, so "a" followed by 39 "Z"s passed it.
+          if [ "${#RELEASE_SHA}" -ne 40 ] || [ -n "${RELEASE_SHA//[0-9a-f]/}" ]; then
+            echo "::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name"
+            exit 1
+          fi
+          git fetch --quiet origin main
+          # The object must BE a commit: a 40-hex tag or blob OID is not a release.
+          type=$(git cat-file -t "$RELEASE_SHA" 2>/dev/null || true)
+          if [ "$type" != "commit" ]; then
+            echo "::error::release_sha does not name a commit object in main's history"
+            exit 1
+          fi
+          resolved=$(git rev-parse --verify "$RELEASE_SHA^{commit}")
+          if [ "$resolved" != "$RELEASE_SHA" ]; then
+            echo "::error::release_sha did not resolve to itself; refusing an ambiguous name"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$resolved" origin/main; then
+            echo "::error::release_sha is not an ancestor of main — only reviewed, merged commits are releasable"
+            exit 1
+          fi
+          # Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,
+          # so a ref moved between validation and a later checkout has nothing left to move.
+          echo "release_sha=$resolved" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV PREFLIGHT — PREFLIGHT-1 and PREFLIGHT-2 against the dev Environment's own configuration.
+  # Context comes from Environment variables, never from the caller; the expected user pool id
+  # reaches the evaluator through the environment for the same reason. The step emits the manifest
+  # and its digest — the digest covers release, environment, region, target account and every bound
+  # context value, so validating one configuration says nothing about any other.
+  # ---------------------------------------------------------------------------------------------
+  dev-preflight:
+    name: Deploy preflight (dev)
+    needs: [global-preflight]
+    if: needs.global-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      context_digest: ${{ steps.preflight.outputs.context_digest }}
+      manifest: ${{ steps.preflight.outputs.manifest }}
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests (context helpers and preflight)
+        run: npm test
+      - name: Configure AWS credentials (read-only preflight role)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Evaluate PREFLIGHT-1 and PREFLIGHT-2
+        id: preflight
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          node bin/deploy-preflight.js \
+            --environment dev \
+            --release-sha "$RELEASE_SHA" \
+            --region "$TARGET_REGION" \
+            --assembly cdk.out \
+            --manifest-out "$RUNNER_TEMP/preflight-dev.json" \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-dev.json")
+          echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-dev.json")" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  #
+  # It DOES verify the manifest: closed schema, this exact environment, this exact release, this
+  # exact digest. That is what makes the binding travel instead of being a printed string. A later
+  # slice that replaces the placeholder with a deploy MUST run `verify-manifest --recompute` before
+  # the deploy command — the invariants refuse any deploying job that does not.
+  # ---------------------------------------------------------------------------------------------
+  dev-stage:
+    name: Dev stage (not implemented in Slice A)
+    needs: [global-preflight, dev-preflight]
+    if: needs.dev-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - name: Verify the preflight manifest
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}
+          MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
+          node infra/aws/bin/deploy-preflight.js verify-manifest \
+            --manifest "$RUNNER_TEMP/manifest.json" \
+            --environment dev \
+            --release-sha "$RELEASE_SHA" \
+            --expect-digest "$CONTEXT_DIGEST"
+      - name: Slice A stops here
+        run: |
+          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
+          echo "no account mutation and no paid call happened in this run."
+
+  # ---------------------------------------------------------------------------------------------
+  # PILOT PREFLIGHT — reachable ONLY through a green dev stage, and only when the operator asked
+  # for promotion. There is no dispatch path that selects pilot directly.
+  # ---------------------------------------------------------------------------------------------
+  pilot-preflight:
+    name: Deploy preflight (pilot)
+    needs: [global-preflight, dev-preflight, dev-stage]
+    if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'
+    runs-on: ubuntu-latest
+    environment: pilot
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      context_digest: ${{ steps.preflight.outputs.context_digest }}
+      manifest: ${{ steps.preflight.outputs.manifest }}
+    defaults:
+      run:
+        working-directory: infra/aws
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Configure AWS credentials (read-only preflight role)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Evaluate PREFLIGHT-1 and PREFLIGHT-2
+        id: preflight
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+          CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=pilot \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          node bin/deploy-preflight.js \
+            --environment pilot \
+            --release-sha "$RELEASE_SHA" \
+            --region "$TARGET_REGION" \
+            --assembly cdk.out \
+            --manifest-out "$RUNNER_TEMP/preflight-pilot.json" \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-pilot.json")
+          echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-pilot.json")" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # PILOT STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  # ---------------------------------------------------------------------------------------------
+  pilot-stage:
+    name: Pilot stage (not implemented in Slice A)
+    needs: [global-preflight, dev-stage, pilot-preflight]
+    if: needs.pilot-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    environment: pilot
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.global-preflight.outputs.release_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - name: Verify the preflight manifest
+        env:
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          CONTEXT_DIGEST: ${{ needs.pilot-preflight.outputs.context_digest }}
+          MANIFEST_JSON: ${{ needs.pilot-preflight.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
+          node infra/aws/bin/deploy-preflight.js verify-manifest \
+            --manifest "$RUNNER_TEMP/manifest.json" \
+            --environment pilot \
+            --release-sha "$RELEASE_SHA" \
+            --expect-digest "$CONTEXT_DIGEST"
+      - name: Slice A stops here
+        run: |
+          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
+          echo "no account mutation and no paid call happened in this run."

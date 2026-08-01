@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-07-30 (#75 closed; #67 in-repo delivery merged, issue still OPEN; #70 is next)
+Last updated: 2026-07-31 (#70 taken into active ownership; Slice A in review)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -144,20 +144,36 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Active handoff
 
-Audited 2026-07-30 against GitHub issues and the board. **`active/` now holds exactly one owner.**
+Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ownership 2026-07-31.
 
+- `active/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, owner Claude Opus 5 (worktree
+  `../cba-issue-70`). **Slice A is in review**: the deploy preflight (PREFLIGHT-1 / PREFLIGHT-2), the
+  no-spend lane skeleton and the human gates. Nothing is deployed and no later slice is started.
+  #70 owns the account-level half of #67 (custom-domain decision, Cloudflare project and Environment
+  token, Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only
+  stacks, the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
+  in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
 - `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
   own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and
   authoritative remote enforcement; until it ships, every publication guardrail is process rather
   than enforcement.
 
-Queued, owned by nobody until Zamp assigns an executor:
+The two active owners touch disjoint files: #70 lives in `infra/aws/`, `.github/workflows/` and its
+own handoff; #91 is the publication toolchain. Neither may edit the other's surface.
 
-- `inbox/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, the next work. It owns the
-  account-level half of #67 (custom-domain decision, Cloudflare project and Environment token,
-  Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks,
-  the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
-  in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
+**The deploy preflight is binding on every lane** (`infra/aws/bin/deploy-preflight.js`). It refuses
+before `cdk deploy` while `.invalid` survives into the effective Cognito callback/logout URLs, and
+unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. The
+custom-domain decision on #67 is what makes those values knowable; it is still open and is Zamp's.
+
+**BLOCKED PREREQUISITE — there is no human deployment gate yet.** As of 2026-07-31 the repository has
+**zero configured GitHub Environments**; an Environment named in a workflow but never configured is
+created on first use with no required reviewer and no branch restriction. `release-pilot.yml` binds
+`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — **BOTH with a
+main-only deployment-branch policy** (dev too: an Environment without one hands its variables and
+secrets to a workflow definition from any branch), and pilot additionally requiring the designated
+reviewer — **the lane is ungated and no deploy slice may be approved.** Read-only evidence of those
+settings is required first.
 
 Moved to `done/` in this audit, each with the policy references moved alongside:
 

@@ -1,6 +1,16 @@
 // Pure context helpers for the CDK app — no CDK imports, so they unit-test offline.
 
 function getContext(node, key, fallback) {
+  // Runtime refusal, as defense in depth behind the discovery test (#70 round 5): a stack that
+  // reads a key outside the closed contract fails SYNTH loudly, instead of quietly consuming
+  // configuration the deploy manifest never bound. `tryGetContext` is called nowhere else — a
+  // test forbids it outside this file — so this is the one door a context value can enter by.
+  if (!READABLE_CONTEXT_KEYS.has(key)) {
+    throw new Error(
+      `context key "${key}" is outside the closed deploy contract (DEPLOY_CONTEXT_KEYS in lib/context.js). ` +
+        'Add it to the contract so the #70 manifest binds it — an unbound key is configuration a deploy can drift on.',
+    );
+  }
   const value = node.tryGetContext(key);
   return value === undefined ? fallback : value;
 }
@@ -9,6 +19,56 @@ function getContext(node, key, fallback) {
 // empty value) must FAIL SYNTH instead of silently minting a new stack family with the
 // non-durable dev posture (no PITR, no deletion protection, DeletionPolicy=Delete).
 const VALID_ENVIRONMENTS = ['dev', 'pilot'];
+
+// Committed Cognito callback/logout defaults (#69), and the domain-prefix default they travel with.
+//
+// These live HERE, not inside `identity-stack.js`, because #70's deploy preflight has to evaluate
+// the exact values the stack will deploy. A preflight with its own copy of the defaults can pass
+// while the stack synthesizes something else — the check would be measuring itself. One definition,
+// two readers.
+//
+// `.invalid` is the RFC 2606 reserved TLD: the pilot default can never resolve by accident, and
+// PREFLIGHT-1 refuses to deploy while it survives into the effective configuration.
+const DEFAULT_AUTH_URLS = {
+  dev: {
+    callback: ['http://localhost:3000/auth/callback'],
+    logout: ['http://localhost:3000/'],
+  },
+  pilot: {
+    callback: ['https://pilot.invalid/auth/callback'],
+    logout: ['https://pilot.invalid/'],
+  },
+};
+
+// The fallback the stack applies when `authDomainPrefix` is absent. PREFLIGHT-2 exists BECAUSE this
+// fallback is silent: an unsupplied prefix is indistinguishable from a deliberate one at synth time.
+function defaultAuthDomainPrefix(environment) {
+  return `cba-study-coach-${environment}`;
+}
+
+// THE CLOSED DEPLOY-CONTEXT CONTRACT (#70 round 4).
+//
+// Every context key any stack consumes, except `environment` (bound separately in the manifest
+// digest). The #70 preflight manifest binds ALL of these: the first version bound only the three
+// auth keys, and changing `githubTrustSub` or `corsAllowedOrigins` produced the exact same digest —
+// which means a deploy could alter IAM trust or CORS without invalidating the manifest that
+// authorized it. A discovery test scans the stack sources for context reads and refuses any key
+// that is not on this list, so a new key cannot be consumed without joining the contract.
+const DEPLOY_CONTEXT_KEYS = [
+  'authCallbackUrls',
+  'authDomainPrefix',
+  'authLogoutUrls',
+  'bedrockRefreshBoundaryArn',
+  'bedrockRoutedModelArns',
+  'bedrockStandardInferenceProfileId',
+  'corsAllowedOrigins',
+  'githubOidcProviderArn',
+  'githubRepo',
+  'githubTrustSub',
+];
+
+// What `getContext` will read at all: the deploy contract plus the tier selector, nothing else.
+const READABLE_CONTEXT_KEYS = new Set([...DEPLOY_CONTEXT_KEYS, 'environment']);
 
 function resolveEnvironment(node, fallback = 'pilot') {
   const value = getContext(node, 'environment', fallback);
@@ -100,4 +160,13 @@ function parseExactUrlList(value, contextKey) {
   return list;
 }
 
-module.exports = { getContext, parseArnList, parseExactUrlList, resolveEnvironment, VALID_ENVIRONMENTS };
+module.exports = {
+  getContext,
+  parseArnList,
+  parseExactUrlList,
+  resolveEnvironment,
+  VALID_ENVIRONMENTS,
+  DEFAULT_AUTH_URLS,
+  defaultAuthDomainPrefix,
+  DEPLOY_CONTEXT_KEYS,
+};

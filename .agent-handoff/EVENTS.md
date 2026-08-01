@@ -2,6 +2,135 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-07-31 — Claude — #70 taken into active ownership; Slice A implemented for review
+
+- #70 moved `inbox/` -> `active/` on Zamp's assignment, with its three `spec/authority-policy.json`
+  references and the two `test/governance-model.test.js` path pins moved alongside. Worktree
+  `../cba-issue-70`, branch `task/70-deploy-pipeline-slice-a`, cut from `origin/main` at `17b67c5`.
+- Slice A implements the two binding conditions #69 registered against #70, plus the lane that
+  enforces their ordering. **Nothing was deployed**: no AWS or Cloudflare call, no preview, no
+  secret access, no paid call, and the lane contains no deploying command at all.
+- `DEFAULT_AUTH_URLS` and the `authDomainPrefix` fallback moved from `identity-stack.js` into
+  `context.js`, and the stack now reads them from there. A preflight with its own copy of the
+  defaults can pass while the stack synthesizes something else — it would be measuring itself.
+- PREFLIGHT-1 evaluates the EFFECTIVE URLs after context resolution and decides on the parsed
+  hostname. Both choices are load-bearing: a misspelled context key leaves the default in place and
+  looks exactly like an applied override, and `https://pilot.invalid.attacker.example` is a real
+  resolvable origin that a substring rule would wave through as the placeholder.
+- PREFLIGHT-2 requires the context KEY rather than a value, because the stack's fallback means a
+  value always exists at synth time. It also requires confirmed regional uniqueness; a redeploy onto
+  our own domain passes only when the expected pool id was supplied.
+- The preflight is a separate JOB in `deploy-pilot.yml`, not a step: a step can be reordered, made
+  `continue-on-error` or skipped by an `if:`, while a failed job in `needs:` stops the dependent job
+  outright. Trigger is `workflow_dispatch` only, so a merge can never spend money unattended.
+- Codex round 1 refused Slice A with four findings, all upheld. The code deployed nothing then and
+  deploys nothing now; the FOUNDATION was what left room for a future deploy to bypass release
+  identity, the preflight and the approval. Fixed in the second Slice A commit:
+  - Release identity — the lane took `environment` and the auth URLs as operator inputs and never
+    pinned `checkout`, so a manual run could deploy a tree that was never reviewed. Rebuilt to
+    `deployed-environment-smoke-workflow-design.md` §1/§4: `release_sha` (40 hex, ancestor of live
+    `main`), pinned checkouts, `mode` instead of an environment input, no URL inputs, and no dispatch
+    path reaching pilot without a green dev stage.
+  - Binding — a passing preflight proved SOME configuration was valid, not the deployed one. The
+    preflight now emits a manifest digest over `{releaseSha, environment, boundContext}`, written
+    only on a pass, and a deploying job must carry it. The same finding caught that `needs:` plus a
+    permissive `if:` is not a gate: any `if:` replaces GitHub's default skip-on-failure, so
+    `always()` AND `!cancelled()` let a failed preflight through. Every job now requires
+    `result == 'success'`.
+  - `expected_user_pool_id` was caller-supplied — whoever can name "our" pool redefines which
+    existing domain a deploy adopts. It now comes only from environment state.
+  - Leakage — role ARN moved to a secret, `mask-aws-account-id: true` set, and every failure is now
+    a code plus a field name. AWS stderr, the owning pool id, supplied URLs and the prefix never
+    reach the output; a poison-value suite proves it.
+- BLOCKED PREREQUISITE recorded: the repository has **zero configured GitHub Environments**
+  (`total_count: 0`, read-only check). An Environment named in a workflow but never configured is
+  created on first use with no reviewer and no branch restriction, so Slice A's first draft described
+  a gate that does not exist. The `environment:` keys are the binding, not the control. `dev` and
+  `pilot` must be configured under a separate Zamp-authorized settings change, with read-only
+  evidence, before any deploy slice or deployment gate is approved.
+- Codex round 2 refused the fix with two findings, both upheld and both reproduced before fixing:
+  - The release identity was still a name. `[0-9a-f]*` validates ONE character — "a"+39×"Z" passed
+    the committed check — and checkout ran before validation, so a 40-char branch name could be
+    blessed and then moved. Now shape is checked over all 40 characters before any git call, the
+    identity job checks out `main` and never the candidate, the object must be a commit that
+    resolves to itself and is an ancestor of live main, and only the RESOLVED OID is emitted. The
+    script is executed in tests against a stubbed git; the refusals are observed, not inferred.
+  - The binding was nominal and the guard checked substrings: `echo "$CONTEXT_DIGEST"; cdk deploy
+    --all`, `|| true`, an OR accepting `failure` and a rogue pilot job all passed the old
+    invariants. The digest now covers release, environment, REGION and TARGET ACCOUNT (us-east-1 vs
+    us-west-2 proven distinct, accounts too); a purpose-built `verify-manifest --recompute` replaces
+    textual presence; and the invariants validate the DAG with pinned exact success expressions and
+    a closed grammar. Every reproduction is a named regression.
+- Codex round 3 refused again with six reproductions, five confirmed in memory before fixing: with
+  verification and deployment as separate commands, a job could verify a safe context and deploy a
+  different one, swap credentials in between, or verify an AWS manifest and deploy a Cloudflare
+  target — all invisible to any textual ordering rule; and a manifest with `boundContextKeys: []` or
+  a `preflight` block claiming a FAILURE verified cleanly, because the nested schema was open. Fixed
+  by construction, not by another heuristic: `bin/deploy-release.js` is the one sanctioned
+  deployment entrypoint — verify and deploy in ONE process, deploy arguments derived from the very
+  context object verified, account re-resolved immediately before the effect (swap -> refusal), no
+  code path to any service but `cdk` — and raw deploy commands are forbidden everywhere in the lane.
+  The nested manifest schema is closed all the way down, with each forgery a named regression. The
+  branch-policy prerequisite now covers BOTH Environments: dev without a main-only policy hands its
+  secrets to a workflow definition from any branch.
+- Codex round 4 refused with four findings, all upheld: the manifest SHA was compared to an
+  ARGUMENT while the deploy shipped whatever was on disk (reproduced with HEAD at a different
+  commit); the verified region was never applied to the child, so ambient AWS_REGION could redirect
+  the deploy within the account; `verb=deploy; npx cdk "$verb"` walked past the raw-deploy verb
+  regex; and only three of nine deploy-sensitive context keys were bound — changing githubTrustSub
+  or corsAllowedOrigins left the digest identical. Fixed: the entrypoint requires HEAD == release
+  with a clean worktree and deploys the preflight-synthesized assembly by digest via `--app`; the
+  region is imposed on the child env (all three variables); the workflow invariants became a closed
+  WHITELIST of step shapes (exact actions + byte-identical run templates), replacing the blacklist;
+  and `DEPLOY_CONTEXT_KEYS` is the closed nine-key contract with a discovery test that refuses any
+  context read not on it. Every reproduction is a named regression, and each new binding was proven
+  to bite by mutation.
+- Codex round 5 refused with three findings, all upheld (two reproduced before fixing): the
+  assembly digest covered only root templates — mutated Lambda bytes and asset manifests kept the
+  digest identical — and the entrypoint reopened the original mutable path after verification; the
+  action allowlist accepted a swapped secret, a deleted aws-region and arbitrary extra inputs; and
+  `this.node.tryGetContext('x')` walked past the discovery scanner. Fixed: recursive digest over
+  every regular file with symlinks refused, deploy from a private snapshot digested AFTER copying
+  (`--app` never points at the original), exact per-action `with:` schemas with no extra step
+  properties, `tryGetContext` confined to the central helper, literal-key enforcement, bidirectional
+  discovery and runtime refusal of unlisted keys. The tightened scanner immediately caught a key the
+  manual inventory missed — `bedrockRefreshBoundaryArn`, an IAM boundary ARN — which joined the
+  contract (now ten keys). Every reproduction is a named regression; each binding proven by mutation.
+- Codex round 6 refused with five findings, all upheld (the two digest ones reproduced first): the
+  assembly digest framing was NOT injective — two different trees, one with the delimiter sequence
+  inside a file's content, digested identically; run steps had no closed schema, so NODE_OPTIONS
+  smuggled into a reviewed step's env executed arbitrary Node under the approved command text;
+  third-party actions were pinned to mutable major tags; the digest ignored file modes; and
+  snapshots leaked on refusal paths. Fixed: JSON-canonical injective digest (per-file record with
+  path, type, git-normalized mode, size and content sha256), run steps validated as whole closed
+  objects (step keys + exact env), all eleven uses: pinned to full commit SHAs (peeled where the tag
+  is annotated) with the pin rule's error demanded specifically by its regression, and one
+  try/finally owning the snapshot on every path. Fixing round 6 exposed a hole of my own: the
+  step-shape loop sat inside the per-job loop that SKIPS global-preflight, so the identity job's
+  steps were never shape-checked — a mutable checkout tag there returned zero errors. The loop is
+  standalone now, over every job.
+- Codex round 7 refused with one finding that names the pattern behind rounds 2-6: the workflow
+  validator parsed a different language than the consumer. A quoted sixth job carrying id-token:
+  write and a remote reusable workflow was real to YAML and invisible to the regex parser (five
+  jobs, zero errors — reproduced); quoted env keys, quoted action inputs and job-level
+  env/container were equally invisible. The regex parser was deleted, not extended: yaml@2.9.0 is
+  now a direct exact-pinned devDependency, the workflow is parsed once with duplicate-key rejection,
+  and the authoritative check is deep equality against a frozen reviewed object, with semantic
+  guards running on the same parsed object. Every payload is a named regression that first proves
+  the payload ACTIVE under YAML and then proves the refusal.
+- Codex round 8 refused with one MEDIUM, upheld: the placeholder stages held id-token: write with
+  no OIDC consumer — checkout, Node and manifest verification need no token, and the permission
+  lets every action and lifecycle script in the job mint an Environment-bound one. Removed from
+  both stages (reviewed object included); OIDC authority is now a semantic rule — id-token: write
+  only where the exact pinned configure-aws-credentials action is present — with a regression that
+  demands the rule's own error so it stays discriminating even after a deliberate reviewed-object
+  edit. Round 7 was confirmed closed in the same review.
+- Three of my own guards had to be corrected while writing them, each a variant of the same mistake
+  — checking text instead of structure. A substring sweep flagged `--output` because it contains
+  "put"; a comment describing `cdk deploy` read as a deploy; and the workflow job parser used `$`
+  without the `m` flag, so it never split the file and every per-job rule was vacuously true. The
+  last one is recorded because it passed while the property it guards was broken.
+
 ## 2026-07-30 — Claude — #75 closed, documents reconciled, #70 is next
 
 - #75 CLOSED (Done). Codex reviewed the code and the artifact, Zamp sent a `HUMAN_GATE_GRANTED`
