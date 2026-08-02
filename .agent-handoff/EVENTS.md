@@ -2,6 +2,23 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice A merged; local cleanup; Slice B blocked on external prerequisites
+
+- Slice A approved by Codex across eight review rounds (findings summarized in the entries below),
+  published as PR #104 under Zamp's execution authorization naming artifact digest `1cbe2f20…`, and
+  merged by Zamp at `da0ed88ea01957401fe81ed8caf6d35dcb568311` with 6/6 CI checks green, `synth`
+  included. Root gained its first declared direct dependency in this era: `yaml@2.9.0`, exact-pinned
+  for the workflow validator.
+- Local cleanup under Zamp's authorization: #70 worktree removed, local branch deleted with
+  `git branch -d`, slice `/tmp` artifacts removed. The remote branch is PRESERVED at the reviewed
+  head — a `gh` prompt claimed to delete it, but the live remote still carries it, verified by
+  `ls-remote`. The #91 worktree was untouched. Local `main` fast-forwarded to the merge.
+- Issue #70 stays OPEN; the handoff stays in `active/` because the later slices belong to it.
+  **Slice B must not open** until: GitHub Environments `dev`/`pilot` exist with main-only
+  deployment-branch policies (pilot with the designated reviewer) and read-only evidence reviewed;
+  the #67 custom-domain decision; and the 6 high Dependabot alerts fixed or formally risk-accepted.
+- No deploy, cloud mutation, secret operation or paid call.
+
 ## 2026-07-31 — Claude — #70 taken into active ownership; Slice A implemented for review
 
 - #70 moved `inbox/` -> `active/` on Zamp's assignment, with its three `spec/authority-policy.json`

@@ -7,14 +7,28 @@ This file does not restate either.
 
 ## Status
 
-**SLICE A IN REVIEW.** Taken into active ownership 2026-07-31 on Zamp's assignment, moved from
-`inbox/` with the policy references moved alongside.
+**SLICE A DELIVERED AND MERGED.** The code cleared eight Codex review rounds, read-only, with zero
+remaining findings. Opus operated the reviewed publication artifact, producing PR #104. Zamp merged
+it at `da0ed88ea01957401fe81ed8caf6d35dcb568311` on 2026-08-01, with 6/6 CI checks green including
+`synth`. The remote branch
+`task/70-deploy-pipeline-slice-a` is preserved at the reviewed head; the local worktree, branch and
+`/tmp` artifacts were cleaned up under Zamp's authorization.
 
-Issue #70 is OPEN. Issues #46 and #68 close behind it.
+Issue #70 stays OPEN — the later slices belong to it. Issues #46 and #68 close behind it.
 
-Slice A delivers the ordering and the refusals — the preflight, the lane skeleton and the human
-gates. **Nothing is deployed and no later slice is started.** No AWS call, no Cloudflare call, no
-preview, no secret access and no paid call was made producing it.
+Slice A delivered the ordering, the binding and the refusals — the #69 preflight conditions, the
+release identity, the manifest and assembly digests, the `deploy-release` entrypoint and the
+YAML-semantic lane invariants. **Nothing is deployed and no later slice is started.** No AWS
+mutation, no Cloudflare call, no preview, no secret access and no paid call was made producing or
+publishing it.
+
+**SLICE B MUST NOT OPEN until the three external prerequisites clear**, all Zamp's:
+
+1. GitHub Environments `dev` and `pilot` configured — BOTH with a main-only deployment-branch
+   policy, `pilot` additionally with the designated reviewer — and read-only evidence of those
+   settings presented and reviewed.
+2. The custom-domain-vs-`workers.dev` decision on #67.
+3. The 6 high Dependabot alerts fixed or formally risk-accepted.
 
 ## Ownership
 
