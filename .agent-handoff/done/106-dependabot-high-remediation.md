@@ -1,13 +1,19 @@
-# Active: Remediate the 6 high Dependabot alerts before pilot GO (#106)
+# Done: Remediate the 6 high Dependabot alerts before pilot GO (#106)
 
 Roles and messages are canonical in [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md). This file
 does not restate them.
 
 ## Status
 
-IMPLEMENTED locally; awaiting independent review. All six high alerts are remediated by version
-upgrades — **no risk acceptance was used** — plus one extra dev-only fix of the same advisory that
-surfaced during the work. Nothing is published, deployed or merged.
+DONE. The code cleared Codex review with zero findings; the reviewed publication artifact was
+operated by Opus as PR #107; Zamp merged it at `3583aedabcce88050137b27c0778631bd8752189` with all
+six CI lanes green — including `quality (20)`, the Node 20 leg the local runner could not cover.
+GitHub then closed all six high alerts automatically (**0 high open**), the Dependabot PR #83
+auto-closed as superseded when fast-uri ≥3.1.4 reached `main`, and issue #106 is CLOSED with the
+board item Done. All six were remediated by version upgrades — **no risk acceptance was used** —
+plus one extra dev-only fix of the same advisory that surfaced during the work. The remote branch
+`task/106-dependabot-high-remediation` is preserved at the reviewed head; local worktree, branch
+and `/tmp` artifacts were cleaned up under Zamp's authorization. Nothing was deployed.
 
 ## Ownership
 

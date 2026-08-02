@@ -22,22 +22,22 @@ YAML-semantic lane invariants. **Nothing is deployed and no later slice is start
 mutation, no Cloudflare call, no preview, no secret access and no paid call was made producing or
 publishing it.
 
-**The external prerequisites, each bound to the stage it actually blocks** (the stage-specific
-boundaries this handoff already carried; nothing here supersedes them):
+**The external prerequisites are ALL RESOLVED as of 2026-08-02**, each at the stage boundary it
+guarded:
 
-1. GitHub Environments `dev` and `pilot` — BOTH with a main-only deployment-branch policy, `pilot`
-   additionally with the designated reviewer, with read-only evidence presented and reviewed —
-   are required **before any deploy slice or deployment gate may be approved**. They do not block
-   non-deploy implementation. Configuring them is Zamp's settings change.
-2. The custom-domain-vs-`workers.dev` decision on #67 — Zamp's decision — is what makes the real
-   callback/logout URLs and domain prefix knowable, so **a pilot deploy preflight cannot pass
-   without it**. It does not block implementation either.
-3. The 6 high Dependabot alerts must be **fixed or formally risk-accepted before the pilot GO**.
-   The decision and any risk acceptance are Zamp's; the remediation implementation is Opus work
-   once assigned, like any other change.
+1. GitHub Environments `dev` and `pilot` — **CONFIGURED by Zamp**, read-only evidence collected via
+   `/repos/:owner/:repo/environments` on 2026-08-02: both environments exist; BOTH carry a custom
+   deployment-branch policy whose only entry is `main`; `pilot` additionally carries
+   `required_reviewers: [marciozampiron]`. This evidence enters review with the commit that records
+   it. Deploy slices and deployment gates may now be approved through the normal protocol.
+2. The #67 domain decision — **DECIDED by Zamp: the pilot uses the `workers.dev` origin.** The
+   exact callback/logout URLs and domain prefix become knowable, so a pilot deploy preflight can be
+   satisfied once the Environment variables carry the real values at deploy time.
+3. The 6 high Dependabot alerts — **REMEDIATED by upgrade in #106** (PR #107, merged `3583aeda`),
+   zero risk acceptance, 0 high open. See `done/106-dependabot-high-remediation.md`.
 
-Non-deploy implementation on later slices — smoke-gate wiring, F1/F2 harness code, the cleanup
-lane — may proceed under normal assignment and review while those clear.
+The next #70 slice may be assigned. Two moderate root alerts remain documented in the #106 handoff
+for a future SDK bump, outside any GO criterion.
 
 ## Ownership
 
@@ -97,30 +97,26 @@ denied probe, an absent region and an unparsed response are all refusals.
 - The AWS stack deploys, the Cloudflare half, the F1/F2 gates, the live SNS/KMS notification proof
   and the smoke lane all remain later slices.
 
-## BLOCKED EXTERNAL PREREQUISITE — the human gate does not exist yet
+## EXTERNAL PREREQUISITE RESOLVED — the human deployment binding now exists (2026-08-02)
 
-**As of 2026-07-31 this repository has ZERO configured GitHub Environments.** Read-only inspection
-of `/repos/:owner/:repo/environments` returned `total_count: 0`.
+This section recorded, from 2026-07-31, that the repository had ZERO configured GitHub Environments
+and that the `environment:` keys in the lane were a binding with nothing to bind to. **That is no
+longer the state.** Zamp configured both Environments, and read-only inspection of
+`/repos/:owner/:repo/environments` on 2026-08-02 returned:
 
-Naming `environment: dev` or `environment: pilot` in a workflow does not create protection. An
-Environment referenced but never configured is created on first use WITHOUT required reviewers and
-WITHOUT a deployment-branch restriction. Slice A's first draft described those keys as the human
-gate; that was wrong, and Codex refused the slice for it.
+- `total_count: 2` — `dev` and `pilot` both exist;
+- `dev`: `deployment_branch_policy.custom_branch_policies: true`, branch-policy list exactly
+  `["main"]`, no required reviewer (as designed for the dev tier);
+- `pilot`: the same main-only branch policy, PLUS `required_reviewers: [marciozampiron]`.
 
-What the `environment:` keys are today: the BINDING that will carry the gate once the Environments
-exist. They are necessary and not sufficient.
+Every condition this section demanded is met: both tiers restrict deployment branches to `main`
+only — so a workflow definition from any other branch cannot receive their variables or secrets —
+and `pilot` requires the designated reviewer. The evidence enters independent review with the
+commit that records it, which was the final demanded step.
 
-Required before any deploy slice or deployment gate may be approved, under a separate
-Zamp-authorized repository-settings change:
-
-- configure `dev` and `pilot`;
-- **BOTH must restrict deployment branches to `main` only** — dev too, not just pilot. An
-  Environment without a branch policy hands its variables and secrets to a workflow definition from
-  ANY branch, and `workflow_dispatch` runs the definition from the branch the operator selects;
-- `pilot` must additionally require the designated reviewer;
-- read-only evidence of both settings must be presented and reviewed.
-
-Until that evidence exists, **this lane is ungated** and must be described that way.
+What remains true and load-bearing: the `environment:` keys in `release-pilot.yml` are the BINDING;
+the protection lives in repository settings, which no workflow can grant itself. Any future change
+to those settings invalidates this record and must be re-evidenced.
 
 ## Slice A — Codex review round 1, and what it changed
 

@@ -454,13 +454,15 @@ test('Slice A deploys nothing: no run string contains a deploy command or the en
   }
 });
 
-test('the human gate is DECLARED but not yet real, and the file says so', () => {
+test('the deployment-binding disclosure matches the evidenced state, and the limit stays stated', () => {
   // Comments are the one thing YAML cannot see; the disclosures live there, so this reads raw text.
-  assert.match(raw, /THE HUMAN GATE IS NOT YET REAL/);
-  assert.match(raw, /ZERO configured GitHub/);
-  assert.match(raw, /treated as ungated, and no deploy slice may be approved/);
-  assert.match(raw, /BOTH Environments must restrict deployment branches to main only/);
-  assert.match(raw, /`pilot` additionally requires the designated reviewer/);
+  // From 2026-07-31 to 2026-08-02 this test pinned the UNGATED disclosure; the Environments now
+  // exist with reviewed evidence, and the header must say the current truth — including that a
+  // settings change invalidates the evidence.
+  assert.match(raw, /THE HUMAN DEPLOYMENT BINDING IS REAL AS OF 2026-08-02/);
+  assert.match(raw, /deployment-branch policy whose only entry is `main`/);
+  assert.match(raw, /`pilot` additionally requires the\n# designated reviewer/);
+  assert.match(raw, /invalidates the evidence and must be re-evidenced/);
   assert.match(raw, /executes the workflow\n# DEFINITION from the branch the operator selects/);
 });
 

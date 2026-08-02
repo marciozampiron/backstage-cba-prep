@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-08-02 (#70 Slice A merged in PR #104; deploy stages gated on external prerequisites)
+Last updated: 2026-08-02 (#106 delivered; all three #70 external prerequisites resolved with evidence)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -135,10 +135,12 @@ Project board remain the source of truth; this file summarizes local coordinatio
 - Local MCP inventory for agents: Stitch, Cloudflare Docs, Cloudflare API, AWS, GitHub, and Next.js
   DevTools. GitHub/Cloudflare use IDE OAuth, AWS exposes only the read-only diagnostics role, and
   Next.js DevTools is pinned locally to `0.4.0`. MCP configs remain local, mode `0600`, and ignored.
-- Housekeeping open: GitHub reported **8 Dependabot alerts on the default branch (6 high, 2
-  moderate)** during the #75 push on 2026-07-30 — this supersedes the older single-`postcss` note.
-  The 6 high must be fixed or formally risk-accepted before the pilot GO. Triage is not started and
-  no upgrade has been attempted. (Duplicate issue #45 is closed as a duplicate of #42.)
+- Housekeeping: the 6 HIGH Dependabot alerts are **RESOLVED** — #106 delivered upgrades for all six
+  (PR #107, merged `3583aeda`), zero risk acceptance, GitHub closed the alerts automatically. Two
+  MODERATE root alerts remain (`@hono/node-server`, `@modelcontextprotocol/sdk`), both only in the
+  optional AI-orchestration path, documented in `done/106-dependabot-high-remediation.md` for a
+  future SDK bump; they are not a GO criterion. (Duplicate issue #45 is closed as a duplicate of
+  #42.)
 - Tooling lesson (2026-07-08): verify CI-matrix (Node 20+22) compatibility for tooling changes —
   `node --test` glob-pattern paths need Node >=21; root test uses a shell-expanded `test/*.test.js`.
 
@@ -150,11 +152,11 @@ Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ow
   implementation worktree exists until the next slice is assigned. **Slice A is MERGED** (PR #104,
   `da0ed88e`, 6/6 checks green): the #69 deploy preflight, the release identity, the
   manifest/assembly binding, the `deploy-release` entrypoint and the YAML-semantic lane invariants.
-  Nothing is deployed. The external prerequisites keep their stage-specific boundaries: the
-  Environments (main-only policy, pilot reviewer, reviewed evidence) block any DEPLOY slice or
-  deployment gate approval; the #67 domain decision is what lets a pilot deploy preflight pass; the
-  6 high Dependabot alerts block the pilot GO. Non-deploy implementation may proceed under normal
-  assignment.
+  Nothing is deployed. **All three external prerequisites are RESOLVED (2026-08-02)**: the
+  Environments `dev`/`pilot` exist with main-only deployment-branch policies and the pilot
+  reviewer, evidenced read-only via the API; Zamp decided the pilot uses the **`workers.dev`**
+  origin (#67's open decision); and the 6 high Dependabot alerts were remediated in #106. The next
+  #70 slice may be assigned; deploy approvals follow the normal protocol.
   #70 owns the account-level half of #67 (custom-domain decision, Cloudflare project and Environment
   token, Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only
   stacks, the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
