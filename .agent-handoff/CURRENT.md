@@ -109,8 +109,8 @@ Project board remain the source of truth; this file summarizes local coordinatio
   bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
   with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. **#82 and
   #75 are CLOSED (Done)**; #75 delivered the smoke-cleanup contract in PR #101. **#67's in-repo
-  delivery is merged** (PR #100), but #67 stays OPEN: it still needs the
-  custom-domain-vs-`workers.dev` decision and an actual deploy, neither of which is repository work.
+  delivery is merged** (PR #100), but #67 stays OPEN pending an actual deploy; its architecture
+  decision is CLOSED — **the pilot uses the `workers.dev` origin** (Zamp, 2026-08-02).
   Current work: **#70** (Cloudflare/AWS deploy pipeline and post-deploy smoke gates), then #79 ->
   close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
@@ -171,17 +171,19 @@ own handoff; #91 is the publication toolchain. Neither may edit the other's surf
 
 **The deploy preflight is binding on every lane** (`infra/aws/bin/deploy-preflight.js`). It refuses
 before `cdk deploy` while `.invalid` survives into the effective Cognito callback/logout URLs, and
-unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. The
-custom-domain decision on #67 is what makes those values knowable; it is still open and is Zamp's.
+unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. With
+`workers.dev` decided, those values are knowable — they still enter ONLY as Environment
+configuration at deploy time, never as tracked files.
 
-**BLOCKED PREREQUISITE — there is no human deployment gate yet.** As of 2026-07-31 the repository has
-**zero configured GitHub Environments**; an Environment named in a workflow but never configured is
-created on first use with no required reviewer and no branch restriction. `release-pilot.yml` binds
-`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — **BOTH with a
-main-only deployment-branch policy** (dev too: an Environment without one hands its variables and
-secrets to a workflow definition from any branch), and pilot additionally requiring the designated
-reviewer — **the lane is ungated and no deploy slice may be approved.** Read-only evidence of those
-settings is required first.
+**DEPLOYMENT BINDING EVIDENCED (2026-08-02).** The GitHub Environments `dev` and `pilot` are
+configured: both carry a custom deployment-branch policy whose only entry is `main`, and `pilot`
+requires `marciozampiron` as reviewer (read-only API evidence, recorded in the #70 handoff and
+EVENTS). The next #70 slice may be assigned; deploy approvals follow the normal protocol. **No AWS
+or Cloudflare deployment has happened yet** — everything beyond SecurityStack remains synth-only.
+Observed residual limitations, stated so the mechanism is not read as stronger than it is:
+`can_admins_bypass: true` on BOTH Environments, and `prevent_self_review: false` on pilot — the
+protection satisfies the approved requirements but is not non-bypassable independent-human
+enforcement, the same honest framing used for `enforce_admins=false` on publication.
 
 Moved to `done/` in this audit, each with the policy references moved alongside:
 

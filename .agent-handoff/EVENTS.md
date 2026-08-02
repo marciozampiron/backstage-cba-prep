@@ -16,7 +16,11 @@ Append meaningful coordination changes here. Newest entries should go at the top
 - ENVIRONMENTS EVIDENCED: `/repos/:owner/:repo/environments` returns `dev` and `pilot`, BOTH with a
   custom deployment-branch policy whose only entry is `main`, and `pilot` with
   `required_reviewers: [marciozampiron]`. Every condition the #70 blocked-prerequisite section
-  demanded is met; the evidence enters review with this reconciliation commit. The
+  demanded is met; the evidence enters review with this reconciliation commit. The same API calls
+  also returned the residual limitations, recorded rather than smoothed over:
+  `can_admins_bypass: true` on both Environments and `prevent_self_review: false` on pilot — the
+  binding satisfies the approved requirements but is not non-bypassable independent-human
+  enforcement. The
   `release-pilot.yml` header disclosure was updated from "ungated" to the evidenced state — the
   invariant test pinning that disclosure was updated in the same commit, as designed.
 - DOMAIN DECIDED: Zamp approved the pilot on the **`workers.dev`** origin, closing #67's open

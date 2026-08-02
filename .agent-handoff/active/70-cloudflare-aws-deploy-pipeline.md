@@ -30,6 +30,12 @@ guarded:
    deployment-branch policy whose only entry is `main`; `pilot` additionally carries
    `required_reviewers: [marciozampiron]`. This evidence enters review with the commit that records
    it. Deploy slices and deployment gates may now be approved through the normal protocol.
+   **Observed residual limitations, part of the same evidence:** `can_admins_bypass: true` on BOTH
+   Environments, and `prevent_self_review: false` on the pilot's required-reviewers rule. The
+   configuration satisfies every approved requirement, but it is NOT non-bypassable
+   independent-human enforcement: a repository admin can bypass the protection, and the designated
+   reviewer may approve a run they initiated. Same honest framing as `enforce_admins=false` on the
+   publication side; hardening either is a separate Zamp settings decision, not assumed here.
 2. The #67 domain decision — **DECIDED by Zamp: the pilot uses the `workers.dev` origin.** The
    exact callback/logout URLs and domain prefix become knowable, so a pilot deploy preflight can be
    satisfied once the Environment variables carry the real values at deploy time.
@@ -383,10 +389,11 @@ Reopening any of those is a scope error, not an improvement.
 
 ### Inherited from #67 (transferred here on 2026-07-30)
 
-- **The open decision: custom domain or the `workers.dev` origin.** This is not cosmetic. It fixes
-  the exact origin in the #69 CORS list and the Cognito callback/logout URLs, which still default to
-  the reserved `.invalid` placeholder. Decide it before writing any route, and see the binding
-  preflight below — deciding is not the same as having supplied the value.
+- **The origin decision is CLOSED: the pilot uses `workers.dev`** (Zamp, 2026-08-02). What the
+  decision fixes — the exact origin in the #69 CORS list and the Cognito callback/logout URLs — is
+  now knowable. Deciding is still not the same as having supplied the value: the committed defaults
+  remain the reserved `.invalid` placeholder, and the REAL values enter only as Environment
+  configuration at deploy time, where PREFLIGHT-1/2 verify them.
 - Cloudflare account/project setup and the Environment-scoped API token — never committed.
 - Per-environment Worker routes and the runtime variable VALUES the Worker serves:
   `CBA_BFF_BASE_URL` first, plus the `COGNITO_*` values `/auth/config` reads.
@@ -444,11 +451,14 @@ values knowable; supplying and verifying them is what clears the preflight.
 
 ## Prerequisites before GO
 
-- The 6 high Dependabot alerts on the default branch must be fixed or formally risk-accepted.
-- The live SNS/KMS notification-path proof above.
-- The custom-domain decision, since the CORS list and Cognito URLs depend on it.
-- PREFLIGHT-1 and PREFLIGHT-2 above, implemented and failing closed on every deploy lane. GO is not
-  a judgement call about them: the lane must refuse on its own.
+- ~~The 6 high Dependabot alerts~~ — **COMPLETED** (#106, PR #107, zero risk acceptance; 0 high
+  open). Two moderate root alerts remain documented in `done/106-dependabot-high-remediation.md`,
+  outside any GO criterion.
+- ~~The custom-domain decision~~ — **COMPLETED**: `workers.dev` (Zamp, 2026-08-02).
+- The live SNS/KMS notification-path proof above — **still required**.
+- PREFLIGHT-1 and PREFLIGHT-2, implemented in Slice A, must hold failing closed on every deploy
+  lane at deploy time — **still enforced at every deploy**. GO is not a judgement call about them:
+  the lane must refuse on its own.
 
 ## Explicit exclusions
 

@@ -49,9 +49,10 @@ one of the six listed alerts; recorded here so the count difference is explained
 
 ## PR #83 disposition
 
-Inspected, not reused. It bumps fast-uri 3.1.3 → 3.1.4 in the root lock only. This branch reaches
-3.1.5 (≥ the 3.1.4 patch floor) against current `main`, so #83 is superseded; recommend Zamp close
-it without merge after this lands.
+Inspected, not reused. It bumped fast-uri 3.1.3 → 3.1.4 in the root lock only; this branch reached
+3.1.5 against current `main`, superseding it. Final state: **CLOSED automatically by Dependabot**
+(2026-08-02T05:41:08Z) when fast-uri ≥3.1.4 reached `main` via PR #107 — **not merged, and no
+action remains**.
 
 ## Out of scope, deliberately
 
