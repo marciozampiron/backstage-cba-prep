@@ -2,6 +2,28 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice B1 assigned: the dev stage becomes the sanctioned AWS deploy
+
+- Zamp assigned Slice B1 (code only): worktree `../cba-issue-70b`, branch
+  `task/70-aws-dev-deploy-slice-b`, cut from `origin/main` at `95583e94`.
+- The dev-stage placeholder is replaced by the sanctioned deploy: checkout pinned to the resolved
+  release OID, npm ci, the pinned OIDC consumer with a NEW Environment-scoped secret
+  (`AWS_DEV_DEPLOY_ROLE_ARN` — the deploy role never shares a name with the read-only preflight
+  role), re-synth with the bound context, and `deploy-release.js` — which refuses unless HEAD is
+  the release, the worktree is clean, the re-synthesized assembly reproduces the manifest digest,
+  and the account matches at verify and immediately before the effect. `id-token: write` exists
+  exactly where the consumer exists: the two preflights and dev-stage; the pilot placeholder stays
+  token-free.
+- Pilot promotion is MECHANICALLY blocked: `mode` offers only `dev_only`, so the pilot jobs (whose
+  success expressions require `dev_then_pilot`) are unreachable. A named invariant refuses the
+  option's return until O1/O2, the deployed smokes and the live SNS/KMS proof land — the
+  reviewed-object diff alone would go silent on the promotion slice's legitimate edit.
+- New named invariants: a job invoking the entrypoint must be Environment-bound, descend from its
+  environment's preflight, and hold id-token plus the pinned consumer; raw deploy commands remain
+  forbidden everywhere. Proven by mutation: deleting the promotion rule fails 1 test, deleting the
+  entrypoint-obligations rule fails 2.
+- No Cloudflare, no pilot deploy, no smoke in this parcel. Nothing was deployed producing it.
+
 ## 2026-08-02 — Claude — #106 delivered; all three #70 external prerequisites resolved
 
 - #106 CLOSED (Done). All six high Dependabot alerts remediated by upgrade, zero risk acceptance:

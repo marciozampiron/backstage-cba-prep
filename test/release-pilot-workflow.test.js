@@ -42,12 +42,11 @@ const EXPECTED_WORKFLOW = {
           "type": "string"
         },
         "mode": {
-          "description": "dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green",
+          "description": "dev_only is the only selectable path in Slice B1 — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented",
           "required": true,
           "type": "choice",
           "options": [
-            "dev_only",
-            "dev_then_pilot"
+            "dev_only"
           ]
         }
       }
@@ -159,7 +158,7 @@ const EXPECTED_WORKFLOW = {
       ]
     },
     "dev-stage": {
-      "name": "Dev stage (not implemented in Slice A)",
+      "name": "Dev stage — deploy AWS (dev)",
       "needs": [
         "global-preflight",
         "dev-preflight"
@@ -168,7 +167,13 @@ const EXPECTED_WORKFLOW = {
       "runs-on": "ubuntu-latest",
       "environment": "dev",
       "permissions": {
-        "contents": "read"
+        "contents": "read",
+        "id-token": "write"
+      },
+      "defaults": {
+        "run": {
+          "working-directory": "infra/aws"
+        }
       },
       "steps": [
         {
@@ -181,21 +186,35 @@ const EXPECTED_WORKFLOW = {
         {
           "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
           "with": {
-            "node-version": 22
+            "node-version": 22,
+            "cache": "npm",
+            "cache-dependency-path": "infra/aws/package-lock.json"
           }
         },
         {
-          "name": "Verify the preflight manifest",
-          "env": {
-            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
-            "CONTEXT_DIGEST": "${{ needs.dev-preflight.outputs.context_digest }}",
-            "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}"
-          },
-          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode infra/aws/bin/deploy-preflight.js verify-manifest \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --expect-digest \"$CONTEXT_DIGEST\"\n"
+          "name": "Install dependencies",
+          "run": "npm ci"
         },
         {
-          "name": "Slice A stops here",
-          "run": "echo \"Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,\"\necho \"no account mutation and no paid call happened in this run.\"\n"
+          "name": "Configure AWS credentials (dev deploy role)",
+          "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
+          "with": {
+            "role-to-assume": "${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}",
+            "aws-region": "${{ vars.AWS_REGION }}",
+            "mask-aws-account-id": true
+          }
+        },
+        {
+          "name": "Deploy the verified release through the sanctioned entrypoint",
+          "env": {
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "TARGET_REGION": "${{ vars.AWS_REGION }}",
+            "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}",
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
+          },
+          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         }
       ]
     },
@@ -309,8 +328,7 @@ const EXPECTED_WORKFLOW = {
       ]
     }
   }
-};
-/** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
+};/** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
 export function parseWorkflow(text) {
   const doc = parseDocument(text, { uniqueKeys: true });
   if (doc.errors.length > 0 || doc.warnings.length > 0) {
@@ -367,6 +385,15 @@ export function releaseLaneErrors(text) {
   if (!on.workflow_dispatch || Object.keys(on).length !== 1) {
     errors.push('the lane must be triggered by workflow_dispatch and nothing else');
   }
+  // SLICE B1: promotion is MECHANICALLY blocked. `mode` may offer ONLY dev_only — the pilot jobs'
+  // success expressions require dev_then_pilot, so with the option absent they are unreachable.
+  // Restoring the option is the promotion slice's deliberate act, together with O1/O2, the smokes
+  // and the live SNS/KMS proof; until then it is refused HERE BY NAME, so the reviewed-object diff
+  // cannot be the only thing standing when that edit arrives.
+  const modeOptions = on.workflow_dispatch?.inputs?.mode?.options ?? [];
+  if (JSON.stringify(modeOptions) !== JSON.stringify(['dev_only'])) {
+    errors.push('promotion is mechanically blocked: mode must offer only dev_only until O1/O2, the smokes and the SNS/KMS proof land');
+  }
   const jobs = wf.jobs ?? {};
   const ancestorsOf = (name, seen = new Set()) => {
     const needs = [].concat(jobs[name]?.needs ?? []);
@@ -390,8 +417,28 @@ export function releaseLaneErrors(text) {
         errors.push(`job "${name}" pins an action to a mutable ref — a full commit SHA is required`);
       }
       if (typeof step.run === 'string' && DEPLOY_COMMAND.test(step.run)) {
-        errors.push(`job "${name}" invokes a deploy command; Slice A deploys nothing and later slices go through deploy-release.js`);
+        errors.push(`job "${name}" invokes a raw deploy command; deployment goes only through deploy-release.js`);
       }
+    }
+    // The sanctioned entrypoint carries its own obligations (Slice B1): the job that invokes
+    // deploy-release.js must be Environment-bound, must descend from ITS environment's preflight,
+    // and must hold the OIDC pair — id-token: write plus the pinned credentials consumer. Each
+    // absence is named, so the reviewed-object diff is never the only thing standing.
+    const invokesEntrypoint = (job?.steps ?? []).some(
+      (st) => typeof st.run === 'string' && st.run.includes('deploy-release.js'),
+    );
+    if (invokesEntrypoint) {
+      if (!job.environment) errors.push(`job "${name}" runs the deploy entrypoint but binds no Environment`);
+      else if (name !== 'global-preflight' && !ancestorsOf(name).has(`${job.environment}-preflight`)) {
+        errors.push(`job "${name}" runs the deploy entrypoint without descending from the ${job.environment} preflight`);
+      }
+      if (job?.permissions?.['id-token'] !== 'write') {
+        errors.push(`job "${name}" runs the deploy entrypoint without id-token: write`);
+      }
+      const hasConsumer = (job.steps ?? []).some(
+        (s3) => s3.uses === 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c',
+      );
+      if (!hasConsumer) errors.push(`job "${name}" runs the deploy entrypoint without the pinned credentials consumer`);
     }
     // OIDC authority is a capability, not a default (#70 round 8). When id-token: write exists,
     // EVERY action, command and dependency lifecycle script in the job can mint an
@@ -443,15 +490,66 @@ test('YAML sees exactly the five reviewed jobs — the round-7 lesson, asserted 
   assert.deepEqual(Object.keys(wf), ['name', 'on', 'permissions', 'concurrency', 'jobs']);
 });
 
-test('Slice A deploys nothing: no run string contains a deploy command or the entrypoint', () => {
+test('Slice B1 deploys dev and ONLY dev: the entrypoint lives in dev-stage alone, raw deploys nowhere', () => {
   const { wf } = parseWorkflow(raw);
+  const invokers = [];
   for (const [name, job] of Object.entries(wf.jobs)) {
     for (const step of job.steps ?? []) {
       if (typeof step.run !== 'string') continue;
-      assert.equal(DEPLOY_COMMAND.test(step.run), false, `${name} must not deploy in Slice A`);
-      assert.equal(step.run.includes('deploy-release.js'), false, `${name} must not invoke the entrypoint in Slice A`);
+      assert.equal(DEPLOY_COMMAND.test(step.run), false, `${name} must never run a raw deploy command`);
+      if (step.run.includes('deploy-release.js')) invokers.push(name);
     }
   }
+  assert.deepEqual(invokers, ['dev-stage'], 'exactly one job may deploy, and it is the dev stage');
+  // And the pilot side still deploys nothing at all — the placeholder survives until promotion.
+  for (const step of wf.jobs['pilot-stage'].steps ?? []) {
+    assert.equal(typeof step.run === 'string' && step.run.includes('deploy-release.js'), false);
+  }
+});
+
+test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoint obligations bite', () => {
+  // Restoring dev_then_pilot must be refused BY THE PROMOTION RULE, not merely by the object diff —
+  // the promotion slice will legitimately edit the reviewed object, and this named rule is what
+  // forces that edit to also bring O1/O2, the smokes and the SNS/KMS proof through review.
+  const unblocked = raw.replace(
+    '        options:\n          - dev_only',
+    '        options:\n          - dev_only\n          - dev_then_pilot',
+  );
+  assert.notEqual(unblocked, raw);
+  assert.ok(
+    releaseLaneErrors(unblocked).some((e) => e.includes('promotion is mechanically blocked')),
+    'restoring the promotion option must trip the named rule',
+  );
+
+  // The entrypoint job stripped of its credentials consumer: both named rules must fire — OIDC
+  // authority without a consumer, and the entrypoint without its consumer.
+  const noConsumer = raw.replace(
+    `      - name: Configure AWS credentials (dev deploy role)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: \${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          aws-region: \${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+`,
+    '',
+  );
+  assert.notEqual(noConsumer, raw, 'mutation did not apply: consumer removal');
+  const errs = releaseLaneErrors(noConsumer);
+  assert.ok(errs.some((e) => e.includes('id-token: write with no reviewed OIDC consumer')));
+  assert.ok(errs.some((e) => e.includes('without the pinned credentials consumer')));
+
+  // The entrypoint without id-token: write.
+  const noToken = raw.replace(
+    '    environment: dev\n    permissions:\n      contents: read\n      id-token: write\n    defaults:',
+    '    environment: dev\n    permissions:\n      contents: read\n    defaults:',
+  );
+  assert.notEqual(noToken, raw, 'mutation did not apply: id-token removal');
+  assert.ok(releaseLaneErrors(noToken).some((e) => e.includes('runs the deploy entrypoint without id-token: write')));
+
+  // The deploy role swapped for an admin-shaped secret dies as an object diff (exact values).
+  const adminRole = raw.replace('secrets.AWS_DEV_DEPLOY_ROLE_ARN', 'secrets.AWS_ADMIN_ROLE_ARN');
+  assert.notEqual(adminRole, raw);
+  assert.notDeepEqual(releaseLaneErrors(adminRole), []);
 });
 
 test('the deployment-binding disclosure matches the evidenced state, and the limit stays stated', () => {
@@ -506,15 +604,15 @@ test('POSITIVE CONTROL: every reproduction from the round-7 review is rejected b
 
   // (c) Job-level env, and a job-level container.
   const jobEnv = raw.replace(
-    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)',
-    '  dev-stage:\n    env:\n      NODE_OPTIONS: --require ./evil.js\n    name: Dev stage (not implemented in Slice A)',
+    '  dev-stage:\n    name: Dev stage — deploy AWS (dev)',
+    '  dev-stage:\n    env:\n      NODE_OPTIONS: --require ./evil.js\n    name: Dev stage — deploy AWS (dev)',
   );
   assert.equal(activeAt(jobEnv, (wf) => wf.jobs['dev-stage'].env.NODE_OPTIONS).value, '--require ./evil.js');
   rejects(jobEnv, 'a job-level env block');
 
   const container = raw.replace(
-    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)',
-    '  dev-stage:\n    container: attacker/example:latest\n    name: Dev stage (not implemented in Slice A)',
+    '  dev-stage:\n    name: Dev stage — deploy AWS (dev)',
+    '  dev-stage:\n    container: attacker/example:latest\n    name: Dev stage — deploy AWS (dev)',
   );
   assert.equal(activeAt(container, (wf) => wf.jobs['dev-stage'].container).value, 'attacker/example:latest');
   rejects(container, 'a job-level container');
@@ -540,11 +638,11 @@ test('POSITIVE CONTROL: every reproduction from the round-7 review is rejected b
 test('POSITIVE CONTROL: round-8 — OIDC authority requires a reviewed consumer, by its own rule', () => {
   // Grant id-token: write back to the placeholder stage. YAML must parse it as active...
   const withOidc = raw.replace(
-    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\'\n    runs-on: ubuntu-latest\n    environment: dev\n    permissions:\n      contents: read\n',
-    '  dev-stage:\n    name: Dev stage (not implemented in Slice A)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\'\n    runs-on: ubuntu-latest\n    environment: dev\n    permissions:\n      contents: read\n      id-token: write\n',
+    '    environment: pilot\n    permissions:\n      contents: read\n    steps:',
+    '    environment: pilot\n    permissions:\n      contents: read\n      id-token: write\n    steps:',
   );
   assert.notEqual(withOidc, raw, 'mutation did not apply: id-token on a placeholder');
-  assert.equal(activeAt(withOidc, (wf) => wf.jobs['dev-stage'].permissions['id-token']).value, 'write');
+  assert.equal(activeAt(withOidc, (wf) => wf.jobs['pilot-stage'].permissions['id-token']).value, 'write');
   // ...and the refusal must come from the OIDC RULE SPECIFICALLY. The reviewed-object diff also
   // fires today, but the day the reviewed object is edited to include the permission, the diff goes
   // silent — the named rule is what keeps the regression discriminating across that edit.
@@ -631,9 +729,11 @@ test('POSITIVE CONTROL: reviewed step objects cannot grow properties, env entrie
 
 /** Replace the dev stage's terminal step with an arbitrary injected step, for bypass mutations. */
 function injectDevStep(step) {
+  // Since Slice B1 the placeholder echo survives only in pilot-stage, as the file's final step —
+  // the injection target moves with it, and the single-occurrence guard in rejects() still holds.
   return raw.replace(
-    /      - name: Slice A stops here\n        run: \|\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."\n\n  # -+\n  # PILOT PREFLIGHT/,
-    `${step}\n\n  # x\n  # PILOT PREFLIGHT`,
+    '      - name: Slice A stops here\n        run: |\n          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"\n          echo "no account mutation and no paid call happened in this run."',
+    step,
   );
 }
 

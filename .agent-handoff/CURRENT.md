@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-08-02 (#106 delivered; all three #70 external prerequisites resolved with evidence)
+Last updated: 2026-08-02 (#70 Slice B1 — dev AWS deploy — assigned and in implementation)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -156,7 +156,9 @@ Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ow
   Environments `dev`/`pilot` exist with main-only deployment-branch policies and the pilot
   reviewer, evidenced read-only via the API; Zamp decided the pilot uses the **`workers.dev`**
   origin, closing the decision #67 carried; and the 6 high Dependabot alerts were remediated in
-  #106. The next #70 slice may be assigned; deploy approvals follow the normal protocol.
+  #106. **Slice B1 (dev AWS deploy through the sanctioned entrypoint) is in implementation** on
+  `task/70-aws-dev-deploy-slice-b`; deploy approvals follow the normal protocol, and pilot
+  promotion stays mechanically blocked (`mode` offers only `dev_only`).
   #70 owns the account-level half of #67 (Cloudflare project and Environment token, Worker routes
   and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks, the live
   SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
@@ -178,7 +180,8 @@ configuration at deploy time, never as tracked files.
 **DEPLOYMENT BINDING EVIDENCED (2026-08-02).** The GitHub Environments `dev` and `pilot` are
 configured: both carry a custom deployment-branch policy whose only entry is `main`, and `pilot`
 requires `marciozampiron` as reviewer (read-only API evidence, recorded in the #70 handoff and
-EVENTS). The next #70 slice may be assigned; deploy approvals follow the normal protocol. **No AWS
+EVENTS). Slice B1 (dev AWS deploy) is in implementation; deploy approvals follow the normal
+protocol. **No AWS
 or Cloudflare deployment has happened yet** — everything beyond SecurityStack remains synth-only.
 Observed residual limitations, stated so the mechanism is not read as stronger than it is:
 `can_admins_bypass: true` on BOTH Environments, and `prevent_self_review: false` on pilot — the

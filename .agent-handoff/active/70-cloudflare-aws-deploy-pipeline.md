@@ -42,14 +42,18 @@ guarded:
 3. The 6 high Dependabot alerts — **REMEDIATED by upgrade in #106** (PR #107, merged `3583aeda`),
    zero risk acceptance, 0 high open. See `done/106-dependabot-high-remediation.md`.
 
-The next #70 slice may be assigned. Two moderate root alerts remain documented in the #106 handoff
-for a future SDK bump, outside any GO criterion.
+**Slice B1 is IN IMPLEMENTATION** (assigned 2026-08-02): the dev-stage placeholder becomes the
+sanctioned AWS deploy of the dev tier, exclusively through `infra/aws/bin/deploy-release.js`, with
+OIDC granted only to the consuming job and pilot promotion MECHANICALLY blocked — `mode` offers
+only `dev_only` until O1/O2, the deployed smokes and the live SNS/KMS proof land. No Cloudflare, no
+pilot deploy, no smoke in this parcel. Two moderate root alerts remain documented in the #106
+handoff for a future SDK bump, outside any GO criterion.
 
 ## Ownership
 
-- Issue owner / implementation executor: **Claude Opus 5**. **No implementation worktree currently
-  exists** — the Slice A worktree and local branch were cleaned up after the merge, and the next
-  slice gets its own, cut from `origin/main` on assignment.
+- Issue owner / implementation executor: **Claude Opus 5** — Slice B1 in implementation on worktree
+  `../cba-issue-70b`, branch `task/70-aws-dev-deploy-slice-b`, cut from `origin/main` at
+  `95583e94` on Zamp's assignment (2026-08-02).
 - Architect / independent technical and security reviewer, read-only: **Codex**.
 - Assignment, approval, risk acceptance, gate and merge authority: **Zamp**.
 - One owner at a time: while this is in `active/`, no other agent takes #70 files.

@@ -1,5 +1,8 @@
-# Release orchestrator (#70 Slice A) — release identity, preflight, binding and gates.
-# NOTHING DEPLOYS YET.
+# Release orchestrator (#70) — release identity, preflight, binding, gates and the DEV deploy.
+# SLICE B1: the dev stage deploys AWS through the sanctioned entrypoint. PILOT DEPLOYS NOTHING —
+# promotion is MECHANICALLY BLOCKED: `mode` offers only `dev_only`, so the pilot jobs (whose
+# success expressions require `dev_then_pilot`) are unreachable until O1/O2, the deployed smokes
+# and the live SNS/KMS notification proof are implemented in later slices.
 #
 # Shaped by `docs/architecture/deployed-environment-smoke-workflow-design.md` §1 and §4. Slice A
 # delivers the identity, the ordering, the binding and the refusals; the deploys, the F1/F2 gates
@@ -51,12 +54,11 @@ on:
         required: true
         type: string
       mode:
-        description: 'dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green'
+        description: 'dev_only is the only selectable path in Slice B1 — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
         required: true
         type: choice
         options:
           - dev_only
-          - dev_then_pilot
 
 permissions:
   contents: read
@@ -190,21 +192,31 @@ jobs:
           echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-dev.json")" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------------------------
-  # DEV STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  # DEV STAGE — SLICE B1: the sanctioned AWS deploy of the dev tier.
   #
-  # It DOES verify the manifest: closed schema, this exact environment, this exact release, this
-  # exact digest. That is what makes the binding travel instead of being a printed string. A later
-  # slice that replaces the placeholder with a deploy MUST run `verify-manifest --recompute` before
-  # the deploy command — the invariants refuse any deploying job that does not.
+  # Deployment happens ONLY through infra/aws/bin/deploy-release.js. In one process it validates
+  # the manifest's closed schema, requires HEAD to BE the release with a clean worktree, snapshots
+  # the freshly synthesized assembly, recomputes BOTH digests (context: release+environment+region+
+  # account+bound values; assembly: every regular file), re-resolves the account immediately before
+  # the effect, imposes the verified region on the child, and deploys the private snapshot via
+  # --app. A re-synth that differs from what the preflight digested REFUSES — determinism is
+  # verified, never assumed. This is the only job besides the preflights holding id-token: write,
+  # because it is the only stage job with the pinned OIDC consumer; the deploy role is a SEPARATE
+  # Environment-scoped secret from the read-only preflight role. Raw deploy commands remain
+  # forbidden everywhere by the closed step shapes.
   # ---------------------------------------------------------------------------------------------
   dev-stage:
-    name: Dev stage (not implemented in Slice A)
+    name: Dev stage — deploy AWS (dev)
     needs: [global-preflight, dev-preflight]
     if: needs.dev-preflight.result == 'success'
     runs-on: ubuntu-latest
     environment: dev
     permissions:
       contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: infra/aws
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -213,23 +225,41 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-      - name: Verify the preflight manifest
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Configure AWS credentials (dev deploy role)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Deploy the verified release through the sanctioned entrypoint
         env:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
-          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
           MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
           set -euo pipefail
           printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
-          node infra/aws/bin/deploy-preflight.js verify-manifest \
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+          node bin/deploy-release.js \
             --manifest "$RUNNER_TEMP/manifest.json" \
             --environment dev \
             --release-sha "$RELEASE_SHA" \
-            --expect-digest "$CONTEXT_DIGEST"
-      - name: Slice A stops here
-        run: |
-          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
-          echo "no account mutation and no paid call happened in this run."
+            --region "$TARGET_REGION" \
+            --assembly cdk.out \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
 
   # ---------------------------------------------------------------------------------------------
   # PILOT PREFLIGHT — reachable ONLY through a green dev stage, and only when the operator asked
