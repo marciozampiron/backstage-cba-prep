@@ -35,10 +35,20 @@
 //   * The REGION the manifest binds is imposed on the child: AWS_REGION, AWS_DEFAULT_REGION and
 //     CDK_DEFAULT_REGION are all overridden with the verified value, so an ambient region pointing
 //     somewhere else cannot redirect the deploy inside the same account.
+//   * The EFFECT is a closed stack set, never `--all` (Slice B1 review). The manifest names
+//     exactly the DEPLOYABLE stacks from lib/context.js and the child gets them with
+//     `--exclusively` — so the account-global SecurityStack, the deferred AiOrchestrationStack,
+//     and any stack anyone adds tomorrow are structurally outside a release's blast radius.
+//   * The HUMAN CLOUD GATE binds the run to a reviewed plan (Slice B1 review). CBA_CLOUD_GATE
+//     must name this exact release and assembly digest, unexpired; `diff_only` puts the plan on
+//     the record and refuses the effect, `deploy` executes it. `cdk diff` runs before every
+//     deploy, so what was reviewed and what executes are plans over the same digested bytes.
+//   * Everything the CDK children print is CAPTURED and sanitized by shape — ARNs, URLs, Cognito
+//     pool ids, 12-digit account runs — because `Outputs:` and `Stack ARN:` would otherwise hand
+//     the BFF endpoint, the identity pool and the account structure to any log reader.
 //
-// In Slice A the release lane never calls this file: nothing deploys yet. It exists now so the
-// binding is established and adversarially tested BEFORE the first deploying slice, instead of
-// being retrofitted around one.
+// Slice A established and adversarially tested this binding before anything deployed; Slice B1 is
+// the first lane that calls it, for the dev tier only.
 //
 // EXIT CODES  0 = deployed (child exit propagated) · 1 = refused · 2 = usage error.
 const { spawnSync } = require('node:child_process');
@@ -90,17 +100,84 @@ function usage() {
     '                          preflight validated; the digest is recomputed from them',
     '',
     'It verifies the manifest digest against the effective values and the resolved account,',
-    're-resolves the account immediately before the effect, and then deploys EXACTLY the',
-    'verified context. Raw `cdk deploy` invocations are forbidden by the workflow invariants;',
+    'requires CBA_CLOUD_GATE (the human cloud-execution gate) to name this exact release and',
+    'assembly, re-resolves the account immediately before the effect, puts the `cdk diff` plan',
+    'on the record, and then — deploy-mode gate only — deploys EXACTLY the verified stack set',
+    'with --exclusively. Raw `cdk deploy` invocations are forbidden by the workflow invariants;',
     'this entrypoint is the only path to a deployment.',
   ].join('\n');
 }
 
-/** Default executor: the CDK child, stdio inherited so the deploy is observable. Injectable.
+/** Default executor: the CDK child, output CAPTURED — never inherited — so everything the child
+ * prints passes through `sanitizeChildOutput` before a human or a CI log sees it. Injectable.
  * The env is supplied by the caller with the verified region imposed — never ambient as-is. */
 function defaultExec(args, env) {
-  const res = spawnSync('npx', args, { stdio: 'inherit', env });
-  return { status: res.status === null ? 1 : res.status };
+  const res = spawnSync('npx', args, { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
+  return { status: res.status === null ? 1 : res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
+}
+
+/**
+ * Redact deployment-identifying material from child output (#70 Slice B1 review).
+ *
+ * CDK prints `Outputs:` and `Stack ARN:` on success — for this app that is the BFF endpoint, the
+ * Cognito pool/client identifiers and the SecurityStack ARNs, and `mask-aws-account-id` masks NONE
+ * of it because the account id also travels inside ARN and URL structure. Redaction is by SHAPE,
+ * not by known value: every ARN, every URL, every Cognito pool id and every 12-digit run is
+ * removed, so an output added tomorrow leaks nothing today. Order matters — ARNs and URLs embed
+ * account ids, so they are redacted before the bare-digit pass.
+ */
+function sanitizeChildOutput(text) {
+  if (!text) return '';
+  return text
+    .replace(/arn:[a-zA-Z0-9-]*:[^\s"'`]+/g, '[arn-redacted]')
+    .replace(/https?:\/\/[^\s"'`]+/g, '[url-redacted]')
+    .replace(/\b[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{5,}\b/g, '[user-pool-redacted]')
+    .replace(/(?<!\d)\d{12}(?!\d)/g, '[account-redacted]');
+}
+
+/** The closed shape of Zamp's cloud-execution gate. Exactly these keys, nothing else. */
+const CLOUD_GATE_KEYS = ['assemblyDigest', 'environment', 'expiresAt', 'issue', 'mode', 'releaseSha'];
+const CLOUD_GATE_MODES = ['diff_only', 'deploy'];
+
+/**
+ * Validate the human cloud-execution gate against the VERIFIED manifest.
+ *
+ * The GitHub Environment answers WHO may run the lane; it cannot bind the run to a reviewed plan.
+ * This gate does: the human sets CBA_CLOUD_GATE (an Environment variable, writable only through
+ * repository settings) naming the exact release, the exact assembly digest, a mode and an expiry.
+ * `diff_only` puts the plan on the record and refuses the effect; `deploy` authorizes the effect
+ * for THAT assembly only. A missing, malformed, mismatched or expired gate refuses before any
+ * child process runs — absence of authorization is a refusal, never a default.
+ *
+ * @returns {{gate: object} | {failures: Array<{check:string, code:string, field:string}>}}
+ */
+function checkCloudGate(raw, manifest, now) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MISSING', field: 'cloudGate' }] };
+  }
+  let gate = null;
+  try {
+    gate = JSON.parse(raw);
+  } catch {
+    return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
+  }
+  const malformed =
+    !gate || typeof gate !== 'object' || Array.isArray(gate)
+    || JSON.stringify(Object.keys(gate).sort()) !== JSON.stringify(CLOUD_GATE_KEYS)
+    || gate.issue !== 70
+    || !CLOUD_GATE_MODES.includes(gate.mode)
+    || typeof gate.expiresAt !== 'string' || Number.isNaN(Date.parse(gate.expiresAt));
+  if (malformed) {
+    return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
+  }
+  const failures = [];
+  for (const key of ['environment', 'releaseSha', 'assemblyDigest']) {
+    if (gate[key] !== manifest[key]) failures.push({ check: 'GATE', code: 'CLOUD_GATE_MISMATCH', field: key });
+  }
+  if (Date.parse(gate.expiresAt) <= now) {
+    failures.push({ check: 'GATE', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
+  }
+  return failures.length > 0 ? { failures } : { gate };
 }
 
 /** Default git reader: injectable, so the HEAD/worktree binding is testable offline. */
@@ -151,7 +228,7 @@ function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir() } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now() } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -256,26 +333,79 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       return refuse();
     }
 
-  // 5. The deploy, CONSTRUCTED from the verified objects. The child deploys the VERIFIED ASSEMBLY
-  //    (`--app`) — context flags would be meaningless against a pre-synthesized assembly, and
-  //    passing mutable source would discard the digest that was just checked. The verified region
-  //    is IMPOSED on the child's environment: every region variable the CDK or the SDK reads is
-  //    overridden, so an ambient region pointing elsewhere cannot redirect the deploy.
-    const childArgs = ['cdk', 'deploy', '--all', '--require-approval', 'never', '--app', snapshot.dir];
+    // 4b. THE HUMAN AUTHORIZATION, now that every binding held and before any child process
+    //     exists. The Environment protection answers WHO may run this lane; the cloud gate binds
+    //     the RUN to a reviewed plan: Zamp names the exact release, the exact assembly digest, a
+    //     mode and an expiry. No gate, no children — absence is a refusal, never a default.
+    const gateCheck = checkCloudGate(env.CBA_CLOUD_GATE, manifest, now());
+    if (gateCheck.failures) {
+      failures.push(...gateCheck.failures);
+      return refuse();
+    }
+    const gate = gateCheck.gate;
+
+  // 5. The plan, then — only in deploy mode — the effect, both CONSTRUCTED from the verified
+  //    objects. The stack set comes from the manifest, whose closed shape pinned it to the
+  //    DEPLOYABLE list; `--exclusively` makes the CDK touch exactly those stacks — never `--all`,
+  //    which would deploy whatever the app grew (the account-global SecurityStack included), and
+  //    never dependency expansion, which would drag SecurityStack behind ObservabilityStack. The
+  //    child deploys the VERIFIED ASSEMBLY (`--app`) — passing mutable source would discard the
+  //    digest that was just checked. The verified region is IMPOSED on the child's environment,
+  //    and everything either child prints is sanitized before it reaches a log.
+    const stacks = [...manifest.target.stacks];
     const childEnv = {
       ...env,
       AWS_REGION: manifest.region,
       AWS_DEFAULT_REGION: manifest.region,
       CDK_DEFAULT_REGION: manifest.region,
     };
-    const child = exec(childArgs, childEnv);
+    const header = [
+      `deploy-release — environment ${manifest.environment}, release ${manifest.releaseSha.slice(0, 12)}`,
+      `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned, stacks: ${stacks.join(' ')})`,
+    ];
+
+    // 5a. `cdk diff` FIRST, every time: the plan for exactly this assembly goes on the record
+    //     before any effect, so what the human reviewed (diff_only) and what executes (deploy)
+    //     are diffs of the same digested bytes. A diff child that errors refuses the run.
+    const diffChild = exec(['cdk', 'diff', '--exclusively', ...stacks, '--app', snapshot.dir], childEnv);
+    const diffOutput = sanitizeChildOutput(`${diffChild.stdout || ''}\n${diffChild.stderr || ''}`).trimEnd();
+    if (diffChild.status !== 0) {
+      failures.push({ check: 'DEPLOY', code: 'DIFF_FAILED', field: 'plan' });
+      const refused = refuse();
+      return { ...refused, output: `${refused.output}\n\n--- plan output (sanitized) ---\n${diffOutput}` };
+    }
+
+    // 5b. diff_only: the gate authorized the PLAN, not the effect. Stop here, successfully —
+    //     this is how the reviewed-diff GO prerequisite is produced without ever deploying.
+    if (gate.mode === 'diff_only') {
+      return {
+        exit: EXIT.OK,
+        output: [
+          ...header,
+          '  DIFF ONLY — the cloud gate authorizes the plan, not the effect. Nothing was deployed.',
+          '',
+          '--- plan (sanitized) ---',
+          diffOutput,
+        ].join('\n'),
+        executed: false,
+      };
+    }
+
+    // 5c. The effect, for a `deploy`-mode gate only.
+    const child = exec(['cdk', 'deploy', '--exclusively', ...stacks, '--require-approval', 'never', '--app', snapshot.dir], childEnv);
+    const deployOutput = sanitizeChildOutput(`${child.stdout || ''}\n${child.stderr || ''}`).trimEnd();
     const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
     return {
       exit,
       output: [
-        `deploy-release — environment ${manifest.environment}, release ${manifest.releaseSha.slice(0, 12)}`,
-        `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned)`,
+        ...header,
         child.status === 0 ? 'Deployed the verified context.' : 'The deploy child failed; the binding held.',
+        '',
+        '--- plan (sanitized) ---',
+        diffOutput,
+        '',
+        '--- deploy output (sanitized) ---',
+        deployOutput,
       ].join('\n'),
       executed: true,
     };
@@ -284,7 +414,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, EXIT };
+module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

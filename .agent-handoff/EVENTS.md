@@ -2,6 +2,32 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice B1 round 2: the effect closed, the authority delivered, the gate bound
+
+- Codex's round-2 review found six issues in the first Slice B1 commit (74e3d889): `--all` scoped
+  the effect to whatever the app contains; concurrency keyed on the SHA instead of the
+  environment; the deploy authority neither designed nor canonical; raw CDK output leaking
+  outputs/ARNs; no job time bounds; no binding between reviewed plan, release, assembly and Zamp's
+  cloud authorization. Fix-forward, the reviewed commit preserved.
+- The correction, architecture first: manifest v5 NAMES the effect (closed `target.stacks` =
+  Api/Data/Identity/Observability, exact content and order; the entrypoint deploys it with
+  `--exclusively`, `--all` is gone; SecurityStack and AiOrchestrationStack are classified excluded
+  and a discovery test refuses any unclassified stack). The workflow lock is the literal
+  `release-dev` group. The deploy authority exists in reviewed code: SecurityStack
+  `GithubDeployRole`, trust pinned to `repo:...:environment:<env>`, boundary-pinned through the
+  extended #66 exec policy, able ONLY to assume the three CDK bootstrap roles; published under the
+  canonical `AWS_DEPLOY_ROLE_ARN`. Every job is time-bounded (5/15). Child output is captured and
+  sanitized by shape (ARNs, URLs, pool ids, account digits). The entrypoint refuses without Zamp's
+  per-release cloud gate — `CBA_CLOUD_GATE` naming the exact release and assembly digest with a
+  `diff_only`/`deploy` mode and expiry — and puts the `cdk diff` plan on the record before any
+  effect.
+- Every new rule is proven to bite by deletion: the serialization, time-bound, canonical-secret
+  and cloud-gate lane rules each fail their control when removed; the stack-set equality, the gate
+  validation and the `--exclusively` construction each fail infra tests when reverted.
+- The lane is NOT yet operable, on purpose: activation needs the human-gated SecurityStack
+  redeploy, the dev Environment configuration (zero secrets/vars exist today, evidenced), and the
+  per-release gate. Recorded in the workflow header and the #70 handoff. Nothing was deployed.
+
 ## 2026-08-02 — Claude — #70 Slice B1 assigned: the dev stage becomes the sanctioned AWS deploy
 
 - Zamp assigned Slice B1 (code only): worktree `../cba-issue-70b`, branch

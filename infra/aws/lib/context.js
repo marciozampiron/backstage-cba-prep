@@ -62,10 +62,25 @@ const DEPLOY_CONTEXT_KEYS = [
   'bedrockRoutedModelArns',
   'bedrockStandardInferenceProfileId',
   'corsAllowedOrigins',
+  'ghaDeployBoundaryArn',
   'githubOidcProviderArn',
   'githubRepo',
   'githubTrustSub',
 ];
+
+// THE CLOSED DEPLOY EFFECT (#70 Slice B1 review). `cdk deploy --all` deploys whatever the app
+// happens to contain — which today includes the account-global SecurityStack (OIDC provider,
+// GitHub roles) and the deferred AiOrchestrationStack, and tomorrow includes whatever stack
+// anyone adds. The manifest therefore names the EXACT stack set a release deploys, and the
+// entrypoint passes exactly that set with `--exclusively`. Every stack the app constructs must be
+// classified here — a discovery test refuses an unclassified stack, so a new stack can neither
+// ride into the deploy effect nor silently fall out of it without joining a list through review.
+const DEPLOYABLE_STACK_IDS = Object.freeze(['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack']);
+// Excluded each for a stated reason — not "not yet": SecurityStack is the account-global
+// foundation (OIDC provider + GitHub roles), deployed only by the human operator under the #66
+// scoped bootstrap; AiOrchestrationStack is a deferred placeholder with no reviewed deployment
+// decision behind it.
+const EXCLUDED_STACK_IDS = Object.freeze(['AiOrchestrationStack', 'SecurityStack']);
 
 // What `getContext` will read at all: the deploy contract plus the tier selector, nothing else.
 const READABLE_CONTEXT_KEYS = new Set([...DEPLOY_CONTEXT_KEYS, 'environment']);
@@ -169,4 +184,6 @@ module.exports = {
   DEFAULT_AUTH_URLS,
   defaultAuthDomainPrefix,
   DEPLOY_CONTEXT_KEYS,
+  DEPLOYABLE_STACK_IDS,
+  EXCLUDED_STACK_IDS,
 };

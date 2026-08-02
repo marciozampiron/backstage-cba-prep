@@ -318,7 +318,7 @@ test('the manifest carries the closed schema, the region, the assembly digest, a
   assert.equal(manifest.releaseSha, SHA);
   assert.equal(manifest.environment, 'pilot');
   assert.equal(manifest.region, 'us-east-1');
-  assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE });
+  assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE, stacks: ['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack'] });
   assert.match(manifest.contextDigest, /^[0-9a-f]{64}$/);
   assert.match(manifest.assemblyDigest, /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.boundContextKeys, [...BOUND_CONTEXT_KEYS].sort());
@@ -444,8 +444,16 @@ test('the NESTED manifest schema is closed too — the exact round-3 forgeries a
     ['a preflight claimed as failed', { ...manifest, preflight: { PREFLIGHT_1: 'fail', PREFLIGHT_2: 'pass' } }],
     ['an additional preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass', PREFLIGHT_3: 'pass' } }],
     ['a missing preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass' } }],
-    ['the target service rewritten', { ...manifest, target: { service: 'cloudflare' } }],
-    ['an extra target key', { ...manifest, target: { service: MANIFEST_TARGET_SERVICE, extra: true } }],
+    ['the target service rewritten', { ...manifest, target: { ...manifest.target, service: 'cloudflare' } }],
+    ['an extra target key', { ...manifest, target: { ...manifest.target, extra: true } }],
+    // The stack SET is part of the closed shape (Slice B1 review): a widened, narrowed, reordered
+    // or absent set is a forgery — `--all` semantics cannot be smuggled back in through the data.
+    ['the stack set widened with SecurityStack', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks, 'SecurityStack'] } }],
+    ['the stack set widened with a future stack', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks, 'AiOrchestrationStack'] } }],
+    ['the stack set narrowed', { ...manifest, target: { ...manifest.target, stacks: manifest.target.stacks.slice(1) } }],
+    ['the stack set reordered', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks].reverse() } }],
+    ['the stack set emptied', { ...manifest, target: { ...manifest.target, stacks: [] } }],
+    ['the stack set removed', { ...manifest, target: { service: manifest.target.service } }],
     ['the assembly digest removed', (() => { const { assemblyDigest: _, ...rest } = manifest; return rest; })()],
     ['a malformed assembly digest', { ...manifest, assemblyDigest: 'zz' }],
   ]) {
@@ -737,14 +745,29 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
   return withDir(assemblyFiles, (asm) => withManifest(manifest, (p) => fn(p, asm, manifest)));
 }
 
+/** A valid deploy-mode cloud gate for THIS manifest — the authorization every effect now requires. */
+const gateFor = (manifest, over = {}) =>
+  JSON.stringify({
+    issue: 70,
+    environment: manifest.environment,
+    releaseSha: manifest.releaseSha,
+    assemblyDigest: manifest.assemblyDigest,
+    mode: 'deploy',
+    expiresAt: '2099-01-01T00:00:00Z',
+    ...over,
+  });
+
+/** Child executor that succeeds for both the diff and the deploy child. */
+const happyExec = () => ({ status: 0, stdout: '', stderr: '' });
+
 test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — both by construction', () => {
-  withRelease((p, asm) => {
+  withRelease((p, asm, manifest) => {
     const execs = [];
     const r = runDeployRelease(releaseArgs(p, asm), {
       run: stubAws(),
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2' },
+      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2', CBA_CLOUD_GATE: gateFor(manifest) },
       exec: (args, childEnv) => {
         execs.push({ args, childEnv });
         // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child would run. The
@@ -752,25 +775,40 @@ test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — bo
         fs.writeFileSync(path.join(asm, 'asset.abc123', 'index.mjs'), 'export const handler = () => "evil";');
         const snapDigest = require('../bin/deploy-preflight').assemblyDigest(args[args.indexOf('--app') + 1]);
         execs[execs.length - 1].snapDigest = snapDigest.digest;
-        return { status: 0 };
+        return { status: 0, stdout: '', stderr: '' };
       },
     });
     assert.equal(r.exit, 0, r.output);
-    assert.equal(execs.length, 1, 'exactly one deploy');
-    const { args, childEnv } = execs[0];
+    // Slice B1: the PLAN child runs first, then the effect — same snapshot, same closed stack set.
+    assert.equal(execs.length, 2, 'exactly one diff and one deploy');
+    const [diff, deploy] = execs;
+    const STACKS = ['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack'];
+    assert.deepEqual(diff.args.slice(0, 2), ['cdk', 'diff']);
+    assert.deepEqual(diff.args.slice(2, 7), ['--exclusively', ...STACKS]);
+    const { args, childEnv } = deploy;
+    // The effect is the CLOSED stack set with --exclusively — never `--all`, which would deploy
+    // whatever the app grew (the account-global SecurityStack included), and never dependency
+    // expansion, which would drag SecurityStack behind ObservabilityStack.
+    assert.deepEqual(args.slice(0, 7), ['cdk', 'deploy', '--exclusively', ...STACKS]);
+    assert.deepEqual(args.slice(7, 9), ['--require-approval', 'never']);
+    assert.equal(args.includes('--all'), false, '--all must never reach a child');
+    for (const child of execs) {
+      assert.equal(child.args.includes('SecurityStack'), false, 'the account-global foundation is outside the release blast radius');
+      assert.equal(child.args.includes('AiOrchestrationStack'), false, 'the deferred placeholder is outside the release blast radius');
+    }
     // The child deploys a PRIVATE SNAPSHOT via --app — never the original mutable path, never
     // source. The check-to-use window on the original directory is what round 5 closed.
-    assert.deepEqual(args.slice(0, 5), ['cdk', 'deploy', '--all', '--require-approval', 'never']);
-    assert.equal(args[5], '--app');
-    const appPath = args[6];
+    assert.equal(args[9], '--app');
+    const appPath = args[10];
     assert.notEqual(appPath, asm, 'the original assembly path must never be reopened by the child');
+    assert.equal(diff.args[diff.args.indexOf('--app') + 1], appPath, 'the plan and the effect read the SAME snapshot');
     // ROUND-4 REPRO 2 (region): the ambient environment said us-west-2 everywhere; the verified
     // region is imposed on every variable the CDK or the SDK reads.
     assert.equal(childEnv.AWS_REGION, 'us-east-1');
     assert.equal(childEnv.AWS_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.CDK_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.PATH, '/usr/bin', 'the rest of the environment passes through');
-    assert.equal(execs[0].snapDigest, capturedManifest().assemblyDigest, 'the deployed snapshot carries the verified digest even after the original was mutated');
+    assert.equal(deploy.snapDigest, manifest.assemblyDigest, 'the deployed snapshot carries the verified digest even after the original was mutated');
   });
 });
 
@@ -996,9 +1034,147 @@ test('deploy-release refuses identity mismatches and a failing child honestly', 
     assert.equal(noAccount.exit, 1);
     assert.match(noAccount.output, /ACCOUNT_UNRESOLVED/);
 
-    const childFails = runDeployRelease(releaseArgs(p, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 3 }) });
+    const childFails = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) },
+      exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
+    });
     assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
     assert.equal(childFails.executed, true);
+  });
+});
+
+test('the cloud gate is required, closed, bound and expiring — every broken form refuses before any child', () => {
+  withRelease((p, asm, manifest) => {
+    const attempt = (gateValue, opts = {}) =>
+      runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: gateValue === undefined ? {} : { CBA_CLOUD_GATE: gateValue },
+        exec: () => assert.fail('a run without a valid gate must never spawn a child'),
+        ...opts,
+      });
+
+    // Absence, in every trivial disguise, is MISSING — never a default.
+    for (const [label, value] of [['unset', undefined], ['empty', ''], ['whitespace', '   ']]) {
+      const r = attempt(value);
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MISSING/, label);
+    }
+
+    // The shape is CLOSED: exactly the six keys, issue 70, a known mode, a parseable expiry.
+    const good = JSON.parse(gateFor(manifest));
+    for (const [label, mangled] of [
+      ['not JSON', 'not json'],
+      ['an array', '[]'],
+      ['an extra key', JSON.stringify({ ...good, extra: 1 })],
+      ['a missing key', JSON.stringify((() => { const { mode: _, ...rest } = good; return rest; })())],
+      ['a foreign issue', JSON.stringify({ ...good, issue: 71 })],
+      ['an unknown mode', JSON.stringify({ ...good, mode: 'deploy_all' })],
+      ['a non-string expiry', JSON.stringify({ ...good, expiresAt: 9999999999 })],
+      ['an unparseable expiry', JSON.stringify({ ...good, expiresAt: 'sometime soon' })],
+    ]) {
+      const r = attempt(mangled);
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/, label);
+    }
+
+    // The gate binds by VALUE: another release, another environment or another assembly is a
+    // re-aim, and a re-aimed authorization authorizes nothing.
+    for (const [label, over] of [
+      ['another release', { releaseSha: 'b'.repeat(40) }],
+      ['another environment', { environment: 'dev' }],
+      ['another assembly', { assemblyDigest: '0'.repeat(64) }],
+    ]) {
+      const r = attempt(gateFor(manifest, over));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MISMATCH/, label);
+    }
+
+    // Expiry against the INJECTED clock — a gate is a window, not a standing authorization.
+    const expired = attempt(gateFor(manifest, { expiresAt: '2026-08-02T00:00:00Z' }), { now: () => Date.parse('2026-08-02T00:00:01Z') });
+    assert.equal(expired.exit, 1);
+    assert.match(expired.output, /CLOUD_GATE_EXPIRED/);
+    const stillOpen = attempt(gateFor(manifest, { expiresAt: '2026-08-02T00:00:00Z' }), { now: () => Date.parse('2026-08-01T23:59:59Z'), exec: happyExec });
+    assert.equal(stillOpen.exit, 0, stillOpen.output);
+  });
+});
+
+test('diff_only puts the plan on the record and deploys NOTHING', () => {
+  withRelease((p, asm, manifest) => {
+    const execs = [];
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only' }) },
+      exec: (args) => {
+        execs.push(args);
+        return { status: 0, stdout: 'Stack ApiStack\nResources\n[~] AWS::Lambda::Function BffFunction\n', stderr: '' };
+      },
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.executed, false, 'a diff_only run performs no effect');
+    assert.equal(execs.length, 1, 'exactly one child: the plan');
+    assert.equal(execs[0][1], 'diff');
+    assert.match(r.output, /DIFF ONLY/);
+    assert.match(r.output, /BffFunction/, 'the plan is on the record for review');
+  });
+});
+
+test('a failing plan child refuses the run — no plan, no effect', () => {
+  withRelease((p, asm, manifest) => {
+    const execs = [];
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      exec: (args) => {
+        execs.push(args);
+        assert.equal(args[1], 'diff', 'the deploy child must never spawn after a failed plan');
+        return { status: 1, stdout: '', stderr: 'diff exploded' };
+      },
+    });
+    assert.equal(r.exit, 1);
+    assert.equal(execs.length, 1);
+    assert.match(r.output, /DIFF_FAILED/);
+  });
+});
+
+test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
+  const { sanitizeChildOutput } = require('../bin/deploy-release');
+  const POISONS = [
+    'arn:aws:cloudformation:us-east-1:111122223333:stack/cba-study-coach-dev-api/deadbeef',
+    'arn:aws:iam::111122223333:role/cba-study-coach-gha-deploy-dev',
+    'https://abc123xyz.execute-api.us-east-1.amazonaws.com/',
+    'us-east-1_AbCdEf123',
+    '111122223333',
+  ];
+  const clean = sanitizeChildOutput(
+    `Outputs:\nApiStack.BffEndpoint = ${POISONS[2]}\nIdentityStack.UserPoolId = ${POISONS[3]}\nStack ARN:\n${POISONS[0]}\nrole ${POISONS[1]}\naccount ${POISONS[4]} done\nprogress-line-stays`,
+  );
+  for (const poison of POISONS) assert.equal(clean.includes(poison), false, poison);
+  assert.match(clean, /\[arn-redacted\]/);
+  assert.match(clean, /\[url-redacted\]/);
+  assert.match(clean, /\[user-pool-redacted\]/);
+  assert.match(clean, /\[account-redacted\]/);
+  assert.match(clean, /progress-line-stays/, 'sanitization redacts identifiers, not the record of what happened');
+
+  // And end to end: whatever BOTH children print reaches the caller sanitized.
+  withRelease((p, asm, manifest) => {
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      exec: (args) => ({ status: 0, stdout: `child ${args[1]} says ${POISONS.join(' ')}`, stderr: `err ${POISONS[0]}` }),
+    });
+    assert.equal(r.exit, 0, r.output);
+    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, poison);
   });
 });
 
@@ -1052,7 +1228,7 @@ test('the snapshot preserves the executable bit, so an honest executable asset d
     assert.equal(r.exit, 0, r.output);
     const manifest = JSON.parse(written[0]);
     withManifest(manifest, (mp) => {
-      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 0 }) });
+      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, exec: happyExec });
       assert.equal(rel.exit, 0, rel.output);
     });
   });
@@ -1063,10 +1239,15 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
   const assertEmpty = (label) => assert.deepEqual(fs.readdirSync(tmpBase), [], `${label} must leave no snapshot behind`);
   try {
     // Success.
-    withRelease((p2, asm) => {
-      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 0 }) });
+    withRelease((p2, asm, manifest) => {
+      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, tmpBase, exec: happyExec });
       assert.equal(r.exit, 0, r.output);
       assertEmpty('success');
+    });
+    // A cloud-gate refusal happens AFTER the snapshot exists — it must clean up too.
+    withRelease((p2, asm) => {
+      runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec') });
+      assertEmpty('a missing-gate refusal');
     });
     // Digest mismatch.
     withRelease(
@@ -1097,7 +1278,11 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
       });
       assertEmpty('an account-swap refusal');
 
-      runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 3 }) });
+      runDeployRelease(releaseArgs(p2, asm), {
+        run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON,
+        env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) }, tmpBase,
+        exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
+      });
       assertEmpty('a failing child');
     });
   } finally {

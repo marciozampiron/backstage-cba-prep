@@ -44,6 +44,19 @@
 # DEFINITION from the branch the operator selects. The identity job constrains the RELEASE, not the
 # file; what stops a modified workflow from reaching pilot secrets is the pilot Environment's
 # deployment-branch restriction — which now exists and is main-only.
+#
+# THIS LANE IS NOT YET OPERABLE, by design — activation has prerequisites, each human-gated and
+# each refusing loudly while absent (read-only inspection on 2026-08-02 found ZERO secrets and
+# ZERO variables in the dev Environment):
+#   1. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
+#      operator-managed boundary and the extended #66 exec policy — a human-gated SecurityStack
+#      redeploy — then its ARN published as the dev Environment secret AWS_DEPLOY_ROLE_ARN.
+#   2. The dev Environment configuration: AWS_DEPLOY_PREFLIGHT_ROLE_ARN, AWS_REGION,
+#      CBA_AUTH_CALLBACK_URLS, CBA_AUTH_LOGOUT_URLS, CBA_AUTH_DOMAIN_PREFIX,
+#      CBA_EXPECTED_USER_POOL_ID.
+#   3. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
+#      release and assembly digest — first with mode diff_only to put the reviewed plan on the
+#      record, then with mode deploy for the same digests. No gate, no children.
 name: Release Pilot
 
 on:
@@ -63,9 +76,12 @@ on:
 permissions:
   contents: read
 
-# One release at a time. Keyed on the release, because the environment is not an input.
+# Releases serialize PER ENVIRONMENT (design §1): a LITERAL lock, never derived from inputs — a
+# group keyed on release_sha would give two different SHAs two different groups and let them
+# mutate dev concurrently. Slice B1 deploys only dev, so the one literal group is release-dev;
+# the promotion slice introduces release-pilot alongside it, through review.
 concurrency:
-  group: release-pilot-${{ inputs.release_sha }}
+  group: release-dev
   cancel-in-progress: false
 
 jobs:
@@ -78,6 +94,7 @@ jobs:
   global-preflight:
     name: Release identity (shape, object type and ancestry)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -132,6 +149,7 @@ jobs:
     needs: [global-preflight]
     if: needs.global-preflight.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: dev
     permissions:
       contents: read
@@ -198,18 +216,25 @@ jobs:
   # the manifest's closed schema, requires HEAD to BE the release with a clean worktree, snapshots
   # the freshly synthesized assembly, recomputes BOTH digests (context: release+environment+region+
   # account+bound values; assembly: every regular file), re-resolves the account immediately before
-  # the effect, imposes the verified region on the child, and deploys the private snapshot via
-  # --app. A re-synth that differs from what the preflight digested REFUSES — determinism is
-  # verified, never assumed. This is the only job besides the preflights holding id-token: write,
-  # because it is the only stage job with the pinned OIDC consumer; the deploy role is a SEPARATE
-  # Environment-scoped secret from the read-only preflight role. Raw deploy commands remain
-  # forbidden everywhere by the closed step shapes.
+  # the effect, validates Zamp's CLOUD GATE (CBA_CLOUD_GATE — an Environment variable naming the
+  # exact release, the exact assembly digest, a diff_only|deploy mode and an expiry), puts the
+  # `cdk diff` plan on the record, imposes the verified region on the child, and deploys the
+  # private snapshot via --app — EXACTLY the closed stack set the manifest names, with
+  # --exclusively, never --all: the account-global SecurityStack and the deferred
+  # AiOrchestrationStack are structurally outside the release blast radius. Everything the CDK
+  # children print is sanitized by shape (ARNs, URLs, pool ids, account digits) before it reaches
+  # this log. A re-synth that differs from what the preflight digested REFUSES — determinism is
+  # verified, never assumed. This is the only stage job holding id-token: write, because it is the
+  # only stage job with the pinned OIDC consumer; AWS_DEPLOY_ROLE_ARN is the canonical
+  # Environment-scoped deploy-role secret (design §3), distinct from the read-only preflight
+  # role's secret. Raw deploy commands remain forbidden everywhere by the closed step shapes.
   # ---------------------------------------------------------------------------------------------
   dev-stage:
     name: Dev stage — deploy AWS (dev)
     needs: [global-preflight, dev-preflight]
     if: needs.dev-preflight.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: dev
     permissions:
       contents: read
@@ -232,7 +257,7 @@ jobs:
       - name: Configure AWS credentials (dev deploy role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
-          role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           mask-aws-account-id: true
       - name: Deploy the verified release through the sanctioned entrypoint
@@ -240,6 +265,7 @@ jobs:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
           TARGET_REGION: ${{ vars.AWS_REGION }}
           MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
+          CBA_CLOUD_GATE: ${{ vars.CBA_CLOUD_GATE }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
@@ -270,6 +296,7 @@ jobs:
     needs: [global-preflight, dev-preflight, dev-stage]
     if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: pilot
     permissions:
       contents: read
@@ -335,6 +362,7 @@ jobs:
     needs: [global-preflight, dev-stage, pilot-preflight]
     if: needs.pilot-preflight.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: pilot
     permissions:
       contents: read

@@ -30,7 +30,7 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { evaluatePreflight, describeFailure, PROBE, PreflightError } = require('../lib/deploy-preflight');
-const { VALID_ENVIRONMENTS, DEPLOY_CONTEXT_KEYS } = require('../lib/context');
+const { VALID_ENVIRONMENTS, DEPLOY_CONTEXT_KEYS, DEPLOYABLE_STACK_IDS } = require('../lib/context');
 
 const EXIT = { OK: 0, REFUSED: 1, USAGE: 2 };
 
@@ -48,11 +48,18 @@ const PROBE_TIMEOUT_MS = 30_000;
 const BOUND_CONTEXT_KEYS = DEPLOY_CONTEXT_KEYS;
 
 const RELEASE_SHA = /^[0-9a-f]{40}$/;
-const MANIFEST_VERSION = 4;
+const MANIFEST_VERSION = 5;
 
 /** The one service this manifest authorizes. A Cloudflare deploy needs its own manifest shape and
  * its own bound entrypoint — an AWS manifest must never be spendable against a different target. */
 const MANIFEST_TARGET_SERVICE = 'aws-cdk';
+
+/** The one stack set this manifest authorizes (v5, #70 Slice B1 review). `--all` deploys whatever
+ * the app grew — today that would drag the account-global SecurityStack and the deferred
+ * AiOrchestrationStack into a dev release. The manifest instead NAMES the effect: exactly the
+ * closed DEPLOYABLE set from lib/context.js, in canonical order. The shape check refuses any
+ * other set, so an extra stack is a forgery, not a bigger deploy. */
+const MANIFEST_TARGET_STACKS = DEPLOYABLE_STACK_IDS;
 
 /**
  * Canonical digest over everything a deploy must not silently change.
@@ -337,7 +344,7 @@ function runDeployPreflight(argv, { run = defaultRun, cdkJsonPath = path.join(__
       releaseSha: opts.releaseSha,
       environment: opts.environment,
       region: opts.region,
-      target: { service: MANIFEST_TARGET_SERVICE },
+      target: { service: MANIFEST_TARGET_SERVICE, stacks: [...MANIFEST_TARGET_STACKS] },
       boundContextKeys: [...BOUND_CONTEXT_KEYS].sort(),
       contextDigest: digest,
       assemblyDigest: assembly,
@@ -408,8 +415,11 @@ function validManifestShape(m) {
   if (JSON.stringify(Object.keys(m.preflight).sort()) !== JSON.stringify(['PREFLIGHT_1', 'PREFLIGHT_2'])) return false;
   if (m.preflight.PREFLIGHT_1 !== 'pass' || m.preflight.PREFLIGHT_2 !== 'pass') return false;
   if (!m.target || typeof m.target !== 'object' || Array.isArray(m.target)) return false;
-  if (JSON.stringify(Object.keys(m.target)) !== JSON.stringify(['service'])) return false;
+  if (JSON.stringify([...Object.keys(m.target)].sort()) !== JSON.stringify(['service', 'stacks'])) return false;
   if (m.target.service !== MANIFEST_TARGET_SERVICE) return false;
+  // The stack set is EXACT — content and order. SecurityStack appended, a stack dropped, or the
+  // list reordered is each a malformed manifest, and the entrypoint never sees one.
+  if (JSON.stringify(m.target.stacks) !== JSON.stringify([...MANIFEST_TARGET_STACKS])) return false;
   return true;
 }
 
@@ -514,6 +524,7 @@ module.exports = {
   BOUND_CONTEXT_KEYS,
   MANIFEST_VERSION,
   MANIFEST_TARGET_SERVICE,
+  MANIFEST_TARGET_STACKS,
 };
 
 if (require.main === module) {

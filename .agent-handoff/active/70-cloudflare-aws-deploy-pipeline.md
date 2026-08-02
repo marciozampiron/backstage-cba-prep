@@ -49,6 +49,25 @@ only `dev_only` until O1/O2, the deployed smokes and the live SNS/KMS proof land
 pilot deploy, no smoke in this parcel. Two moderate root alerts remain documented in the #106
 handoff for a future SDK bump, outside any GO criterion.
 
+The Codex round-2 review of Slice B1 required, and the correction delivered: the deploy effect is a
+CLOSED stack set the manifest names (v5 `target.stacks` — Api/Data/Identity/Observability, with
+`--exclusively`, never `--all`; SecurityStack and AiOrchestrationStack classified excluded and a
+discovery test refusing unclassified stacks); releases serialize on the literal `release-dev`
+concurrency group; the deployment authority is delivered in code (SecurityStack `GithubDeployRole`,
+Environment-subject trust, boundary-pinned via the extended #66 exec policy, only the three CDK
+bootstrap roles assumable) under the canonical secret name `AWS_DEPLOY_ROLE_ARN`; every job carries
+`timeout-minutes` (preflights 5, deploy 15); CDK child output is captured and sanitized by shape;
+and the entrypoint requires Zamp's per-release cloud gate (`CBA_CLOUD_GATE`: exact release +
+assembly digest + `diff_only`/`deploy` mode + expiry) and puts the `cdk diff` plan on the record
+before any effect.
+
+**THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
+workflow header:** (1) provision `cba-study-coach-gha-deploy-dev` + its operator-managed boundary
+via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as
+the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (2) populate the dev Environment secrets and
+variables (read-only inspection on 2026-08-02 found ZERO of each); (3) per release, set
+`CBA_CLOUD_GATE` — first `diff_only` to review the plan, then `deploy` for the same digests.
+
 ## Ownership
 
 - Issue owner / implementation executor: **Claude Opus 5** — Slice B1 in implementation on worktree

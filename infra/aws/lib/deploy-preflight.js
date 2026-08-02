@@ -93,6 +93,16 @@ const CODES = {
   ASSEMBLY_UNREADABLE: 'could not be read or contains no files',
   ASSEMBLY_UNSAFE_ENTRY: 'contains a symlink or non-regular entry — an assembly is regular files only, and anything else is a path for content to escape the digest',
   ASSEMBLY_DIGEST_MISMATCH: 'does not match the synthesized assembly this run would deploy',
+  // Zamp's cloud-execution gate (#70 Slice B1 review). GitHub Environment protection binds WHO may
+  // run the lane; it does not bind the run to a reviewed plan. The gate is a closed JSON value the
+  // human sets per release: it names the exact release, the exact assembly digest, a mode
+  // (diff_only or deploy) and an expiry — so the effect that executes is the one whose plan was
+  // reviewed, and nothing executes on an absent, stale or re-aimed authorization.
+  CLOUD_GATE_MISSING: 'is not present — a cloud effect requires the human execution gate (CBA_CLOUD_GATE), and its absence is a refusal, never a default',
+  CLOUD_GATE_MALFORMED: 'is not a well-formed cloud-execution gate (closed schema: issue, environment, releaseSha, assemblyDigest, mode, expiresAt)',
+  CLOUD_GATE_MISMATCH: 'does not match the verified manifest — the gate authorizes exactly one release, one environment and one assembly, and this is not it',
+  CLOUD_GATE_EXPIRED: 'has expired — the gate authorizes a bounded window, and this run is outside it',
+  DIFF_FAILED: 'could not be produced — the plan child failed, and without the plan on the record there is no reviewed change to execute',
 };
 
 class PreflightError extends Error {

@@ -33,6 +33,28 @@ test('the dev data table itself is dev-named and disposable through the real app
   assert.equal(table.DeletionPolicy, 'Delete');
 });
 
+test('every stack the app constructs is CLASSIFIED — deployable or excluded, never unclassified', () => {
+  // Discovery, not enumeration (#70 Slice B1 review): `--all` was replaced by the closed
+  // DEPLOYABLE set the manifest names, so a stack that joins the app WITHOUT joining the
+  // classification would either silently ride into the deploy effect (under --all) or silently
+  // never deploy (under the closed set). Both are review bypasses; this test refuses them.
+  const { Stack } = require('aws-cdk-lib');
+  const { DEPLOYABLE_STACK_IDS, EXCLUDED_STACK_IDS } = require('../lib/context');
+  const app = new App({ context: { environment: 'dev' } });
+  buildStacks(app);
+  const constructed = app.node.children.filter((c) => c instanceof Stack).map((c) => c.node.id).sort();
+  const classified = [...DEPLOYABLE_STACK_IDS, ...EXCLUDED_STACK_IDS].sort();
+  assert.deepEqual(constructed, classified, 'the app and the classification must agree exactly — add new stacks to ONE list, through review');
+  // The two lists are disjoint, and the exclusions are exactly the stated ones: the account-global
+  // foundation and the deferred placeholder. A deployable SecurityStack would put the OIDC
+  // provider and the GitHub roles inside every release's blast radius.
+  assert.equal(DEPLOYABLE_STACK_IDS.filter((id) => EXCLUDED_STACK_IDS.includes(id)).length, 0);
+  assert.deepEqual([...EXCLUDED_STACK_IDS], ['AiOrchestrationStack', 'SecurityStack']);
+  assert.equal(DEPLOYABLE_STACK_IDS.includes('SecurityStack'), false);
+  // The classification is FROZEN — a test-time mutation cannot widen the deploy effect.
+  assert.throws(() => { DEPLOYABLE_STACK_IDS.push('SecurityStack'); }, TypeError);
+});
+
 test('invalid environments FAIL SYNTH: production, typo, empty — app path', () => {
   for (const bad of ['production', 'pilto', '']) {
     assert.throws(

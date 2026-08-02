@@ -56,13 +56,14 @@ const EXPECTED_WORKFLOW = {
     "contents": "read"
   },
   "concurrency": {
-    "group": "release-pilot-${{ inputs.release_sha }}",
+    "group": "release-dev",
     "cancel-in-progress": false
   },
   "jobs": {
     "global-preflight": {
       "name": "Release identity (shape, object type and ancestry)",
       "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
       "permissions": {
         "contents": "read"
       },
@@ -95,6 +96,7 @@ const EXPECTED_WORKFLOW = {
       ],
       "if": "needs.global-preflight.result == 'success'",
       "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
       "environment": "dev",
       "permissions": {
         "contents": "read",
@@ -165,6 +167,7 @@ const EXPECTED_WORKFLOW = {
       ],
       "if": "needs.dev-preflight.result == 'success'",
       "runs-on": "ubuntu-latest",
+      "timeout-minutes": 15,
       "environment": "dev",
       "permissions": {
         "contents": "read",
@@ -199,7 +202,7 @@ const EXPECTED_WORKFLOW = {
           "name": "Configure AWS credentials (dev deploy role)",
           "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
           "with": {
-            "role-to-assume": "${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}",
+            "role-to-assume": "${{ secrets.AWS_DEPLOY_ROLE_ARN }}",
             "aws-region": "${{ vars.AWS_REGION }}",
             "mask-aws-account-id": true
           }
@@ -210,6 +213,7 @@ const EXPECTED_WORKFLOW = {
             "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
             "TARGET_REGION": "${{ vars.AWS_REGION }}",
             "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}",
+            "CBA_CLOUD_GATE": "${{ vars.CBA_CLOUD_GATE }}",
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
@@ -227,6 +231,7 @@ const EXPECTED_WORKFLOW = {
       ],
       "if": "needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'",
       "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
       "environment": "pilot",
       "permissions": {
         "contents": "read",
@@ -294,6 +299,7 @@ const EXPECTED_WORKFLOW = {
       ],
       "if": "needs.pilot-preflight.result == 'success'",
       "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
       "environment": "pilot",
       "permissions": {
         "contents": "read"
@@ -328,7 +334,9 @@ const EXPECTED_WORKFLOW = {
       ]
     }
   }
-};/** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
+};
+
+/** Parse as the consumer does: real YAML, duplicate keys refused, warnings refused. */
 export function parseWorkflow(text) {
   const doc = parseDocument(text, { uniqueKeys: true });
   if (doc.errors.length > 0 || doc.warnings.length > 0) {
@@ -360,6 +368,11 @@ const IF_GRAMMAR =
 
 /** Job-level keys that hand execution or environment to something nobody reviewed. */
 const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 'secrets', 'continue-on-error'];
+
+/** Every job is time-bounded (design §1: preflights 5, deploys 15; the pilot placeholder runs no
+ * deploy and is bounded like a preflight). An unbounded job that hangs keeps its OIDC authority
+ * alive until GitHub's default limit — hours, not minutes. */
+const EXPECTED_TIMEOUTS = { 'global-preflight': 5, 'dev-preflight': 5, 'dev-stage': 15, 'pilot-preflight': 5, 'pilot-stage': 5 };
 
 const DEPLOY_COMMAND = /\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/;
 
@@ -394,6 +407,13 @@ export function releaseLaneErrors(text) {
   if (JSON.stringify(modeOptions) !== JSON.stringify(['dev_only'])) {
     errors.push('promotion is mechanically blocked: mode must offer only dev_only until O1/O2, the smokes and the SNS/KMS proof land');
   }
+  // Releases serialize PER ENVIRONMENT (Slice B1 review). The lock must be the LITERAL group —
+  // a group derived from inputs (the old release-pilot-${{ inputs.release_sha }}) gives two
+  // different SHAs two different groups, and two releases mutate dev concurrently. The promotion
+  // slice adds release-pilot alongside, through review of this rule.
+  if (JSON.stringify(wf.concurrency) !== JSON.stringify({ group: 'release-dev', 'cancel-in-progress': false })) {
+    errors.push('releases must serialize per environment: concurrency is the literal release-dev lock with cancel-in-progress false, never derived from inputs');
+  }
   const jobs = wf.jobs ?? {};
   const ancestorsOf = (name, seen = new Set()) => {
     const needs = [].concat(jobs[name]?.needs ?? []);
@@ -407,6 +427,12 @@ export function releaseLaneErrors(text) {
   };
 
   for (const [name, job] of Object.entries(jobs)) {
+    const boundedTo = EXPECTED_TIMEOUTS[name];
+    if (boundedTo === undefined) {
+      errors.push(`job "${name}" is not in the reviewed job set and has no reviewed time bound`);
+    } else if (job?.['timeout-minutes'] !== boundedTo) {
+      errors.push(`job "${name}" must be bounded to exactly ${boundedTo} minutes — an unbounded job retains its OIDC authority until GitHub's default limit`);
+    }
     for (const key of FORBIDDEN_JOB_KEYS) {
       if (job && Object.hasOwn(job, key)) {
         errors.push(`job "${name}" carries job-level ${key}, which hands execution to something unreviewed`);
@@ -435,10 +461,22 @@ export function releaseLaneErrors(text) {
       if (job?.permissions?.['id-token'] !== 'write') {
         errors.push(`job "${name}" runs the deploy entrypoint without id-token: write`);
       }
-      const hasConsumer = (job.steps ?? []).some(
+      const consumer = (job.steps ?? []).find(
         (s3) => s3.uses === 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c',
       );
-      if (!hasConsumer) errors.push(`job "${name}" runs the deploy entrypoint without the pinned credentials consumer`);
+      if (!consumer) errors.push(`job "${name}" runs the deploy entrypoint without the pinned credentials consumer`);
+      // The deploy authority is the CANONICAL Environment-scoped secret (design §3) — a differently
+      // named secret is an unreviewed authority, whatever role it happens to hold.
+      else if (consumer.with?.['role-to-assume'] !== '${{ secrets.AWS_DEPLOY_ROLE_ARN }}') {
+        errors.push(`job "${name}" must assume the canonical Environment-scoped deploy role secret AWS_DEPLOY_ROLE_ARN`);
+      }
+      // Zamp's cloud gate must REACH the entrypoint: without CBA_CLOUD_GATE in the step
+      // environment, the entrypoint refuses every run and the lane cannot deploy at all — but the
+      // absence would read as an environment problem, not as the missing authorization it is.
+      const entryStep = (job.steps ?? []).find((st) => typeof st.run === 'string' && st.run.includes('deploy-release.js'));
+      if (entryStep?.env?.CBA_CLOUD_GATE !== '${{ vars.CBA_CLOUD_GATE }}') {
+        errors.push(`job "${name}" runs the deploy entrypoint without Zamp's cloud gate (CBA_CLOUD_GATE) in the step environment`);
+      }
     }
     // OIDC authority is a capability, not a default (#70 round 8). When id-token: write exists,
     // EVERY action, command and dependency lifecycle script in the job can mint an
@@ -527,7 +565,7 @@ test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoin
     `      - name: Configure AWS credentials (dev deploy role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
-          role-to-assume: \${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN }}
+          role-to-assume: \${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: \${{ vars.AWS_REGION }}
           mask-aws-account-id: true
 `,
@@ -546,10 +584,54 @@ test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoin
   assert.notEqual(noToken, raw, 'mutation did not apply: id-token removal');
   assert.ok(releaseLaneErrors(noToken).some((e) => e.includes('runs the deploy entrypoint without id-token: write')));
 
-  // The deploy role swapped for an admin-shaped secret dies as an object diff (exact values).
-  const adminRole = raw.replace('secrets.AWS_DEV_DEPLOY_ROLE_ARN', 'secrets.AWS_ADMIN_ROLE_ARN');
+  // The deploy role swapped for an admin-shaped secret dies BY NAME: the canonical-secret rule
+  // (Slice B1 review) refuses any authority that is not AWS_DEPLOY_ROLE_ARN — whatever the
+  // swapped-in secret happens to hold.
+  const adminRole = raw.replace('secrets.AWS_DEPLOY_ROLE_ARN', 'secrets.AWS_ADMIN_ROLE_ARN');
   assert.notEqual(adminRole, raw);
-  assert.notDeepEqual(releaseLaneErrors(adminRole), []);
+  assert.ok(releaseLaneErrors(adminRole).some((e) => e.includes('canonical Environment-scoped deploy role secret AWS_DEPLOY_ROLE_ARN')));
+});
+
+test('POSITIVE CONTROL: serialization, time bounds and the cloud gate cannot be loosened', () => {
+  // The exact finding: a concurrency group derived from the release SHA gives two different SHAs
+  // two different groups — refused by the named serialization rule, not merely the object diff.
+  const shaKeyed = raw.replace(
+    'concurrency:\n  group: release-dev\n  cancel-in-progress: false',
+    'concurrency:\n  group: release-dev-${{ inputs.release_sha }}\n  cancel-in-progress: false',
+  );
+  assert.notEqual(shaKeyed, raw, 'mutation did not apply: concurrency rekey');
+  assert.ok(
+    releaseLaneErrors(shaKeyed).some((e) => e.includes('releases must serialize per environment')),
+    'a SHA-keyed group must trip the serialization rule by name',
+  );
+  // Cancelling a live release is the same rule: the lock is the whole literal, both keys.
+  const cancelling = raw.replace(
+    'concurrency:\n  group: release-dev\n  cancel-in-progress: false',
+    'concurrency:\n  group: release-dev\n  cancel-in-progress: true',
+  );
+  assert.notEqual(cancelling, raw);
+  assert.ok(releaseLaneErrors(cancelling).some((e) => e.includes('releases must serialize per environment')));
+
+  // A job with its time bound removed retains OIDC authority until GitHub's default limit — every
+  // job must trip the named rule when its timeout-minutes disappears.
+  for (const minutes of ['    timeout-minutes: 15\n', '    timeout-minutes: 5\n']) {
+    assert.ok(raw.includes(minutes), 'anchor must exist');
+    const unbounded = raw.replace(minutes, '');
+    assert.notEqual(unbounded, raw, 'mutation did not apply: timeout removal');
+    assert.ok(
+      releaseLaneErrors(unbounded).some((e) => e.includes('must be bounded to exactly')),
+      'an unbounded job must trip the time-bound rule by name',
+    );
+  }
+
+  // The entrypoint with Zamp's cloud gate stripped from the step environment: the entrypoint
+  // would refuse every run, but the LANE must refuse first, by name, as a missing authorization.
+  const noGate = raw.replace('          CBA_CLOUD_GATE: ${{ vars.CBA_CLOUD_GATE }}\n', '');
+  assert.notEqual(noGate, raw, 'mutation did not apply: gate removal');
+  assert.ok(
+    releaseLaneErrors(noGate).some((e) => e.includes("without Zamp's cloud gate")),
+    'a gate-less entrypoint step must trip the cloud-gate rule by name',
+  );
 });
 
 test('the deployment-binding disclosure matches the evidenced state, and the limit stays stated', () => {
