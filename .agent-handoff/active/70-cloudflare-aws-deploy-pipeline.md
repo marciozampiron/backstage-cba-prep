@@ -22,18 +22,28 @@ YAML-semantic lane invariants. **Nothing is deployed and no later slice is start
 mutation, no Cloudflare call, no preview, no secret access and no paid call was made producing or
 publishing it.
 
-**SLICE B MUST NOT OPEN until the three external prerequisites clear**, all Zamp's:
+**The external prerequisites, each bound to the stage it actually blocks** (the stage-specific
+boundaries this handoff already carried; nothing here supersedes them):
 
-1. GitHub Environments `dev` and `pilot` configured — BOTH with a main-only deployment-branch
-   policy, `pilot` additionally with the designated reviewer — and read-only evidence of those
-   settings presented and reviewed.
-2. The custom-domain-vs-`workers.dev` decision on #67.
-3. The 6 high Dependabot alerts fixed or formally risk-accepted.
+1. GitHub Environments `dev` and `pilot` — BOTH with a main-only deployment-branch policy, `pilot`
+   additionally with the designated reviewer, with read-only evidence presented and reviewed —
+   are required **before any deploy slice or deployment gate may be approved**. They do not block
+   non-deploy implementation. Configuring them is Zamp's settings change.
+2. The custom-domain-vs-`workers.dev` decision on #67 — Zamp's decision — is what makes the real
+   callback/logout URLs and domain prefix knowable, so **a pilot deploy preflight cannot pass
+   without it**. It does not block implementation either.
+3. The 6 high Dependabot alerts must be **fixed or formally risk-accepted before the pilot GO**.
+   The decision and any risk acceptance are Zamp's; the remediation implementation is Opus work
+   once assigned, like any other change.
+
+Non-deploy implementation on later slices — smoke-gate wiring, F1/F2 harness code, the cleanup
+lane — may proceed under normal assignment and review while those clear.
 
 ## Ownership
 
-- Implementation executor: **Claude Opus 5** (worktree `../cba-issue-70`, branch
-  `task/70-deploy-pipeline-slice-a`, cut from `origin/main`).
+- Issue owner / implementation executor: **Claude Opus 5**. **No implementation worktree currently
+  exists** — the Slice A worktree and local branch were cleaned up after the merge, and the next
+  slice gets its own, cut from `origin/main` on assignment.
 - Architect / independent technical and security reviewer, read-only: **Codex**.
 - Assignment, approval, risk acceptance, gate and merge authority: **Zamp**.
 - One owner at a time: while this is in `active/`, no other agent takes #70 files.

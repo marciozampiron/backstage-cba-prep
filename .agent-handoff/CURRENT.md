@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-08-02 (#70 Slice A merged in PR #104; Slice B blocked on external prerequisites)
+Last updated: 2026-08-02 (#70 Slice A merged in PR #104; deploy stages gated on external prerequisites)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -146,12 +146,15 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ownership 2026-07-31.
 
-- `active/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, owner Claude Opus 5. **Slice A is
-  MERGED** (PR #104, `da0ed88e`, 6/6 checks green): the #69 deploy preflight, the release identity,
-  the manifest/assembly binding, the `deploy-release` entrypoint and the YAML-semantic lane
-  invariants. Nothing is deployed and no later slice is started. **Slice B is blocked** on the three
-  external prerequisites (Environments with main-only branch policy + pilot reviewer, the #67
-  domain decision, the 6 high Dependabot alerts) — all Zamp's.
+- `active/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, owner Claude Opus 5; no
+  implementation worktree exists until the next slice is assigned. **Slice A is MERGED** (PR #104,
+  `da0ed88e`, 6/6 checks green): the #69 deploy preflight, the release identity, the
+  manifest/assembly binding, the `deploy-release` entrypoint and the YAML-semantic lane invariants.
+  Nothing is deployed. The external prerequisites keep their stage-specific boundaries: the
+  Environments (main-only policy, pilot reviewer, reviewed evidence) block any DEPLOY slice or
+  deployment gate approval; the #67 domain decision is what lets a pilot deploy preflight pass; the
+  6 high Dependabot alerts block the pilot GO. Non-deploy implementation may proceed under normal
+  assignment.
   #70 owns the account-level half of #67 (custom-domain decision, Cloudflare project and Environment
   token, Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only
   stacks, the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the

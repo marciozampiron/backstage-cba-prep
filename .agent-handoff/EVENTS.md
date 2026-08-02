@@ -13,10 +13,11 @@ Append meaningful coordination changes here. Newest entries should go at the top
   `git branch -d`, slice `/tmp` artifacts removed. The remote branch is PRESERVED at the reviewed
   head — a `gh` prompt claimed to delete it, but the live remote still carries it, verified by
   `ls-remote`. The #91 worktree was untouched. Local `main` fast-forwarded to the merge.
-- Issue #70 stays OPEN; the handoff stays in `active/` because the later slices belong to it.
-  **Slice B must not open** until: GitHub Environments `dev`/`pilot` exist with main-only
-  deployment-branch policies (pilot with the designated reviewer) and read-only evidence reviewed;
-  the #67 custom-domain decision; and the 6 high Dependabot alerts fixed or formally risk-accepted.
+- Issue #70 stays OPEN; the handoff stays in `active/` because the later slices belong to it. The
+  external prerequisites keep their stage-specific boundaries: the Environments block deploy-slice
+  and deployment-gate approval, the #67 domain decision is what lets a pilot deploy preflight pass,
+  and the 6 high Dependabot alerts block the pilot GO. Non-deploy implementation may proceed under
+  normal assignment while they clear.
 - No deploy, cloud mutation, secret operation or paid call.
 
 ## 2026-07-31 — Claude — #70 taken into active ownership; Slice A implemented for review
