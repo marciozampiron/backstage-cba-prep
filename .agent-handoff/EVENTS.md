@@ -2,6 +2,33 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #106 delivered; all three #70 external prerequisites resolved
+
+- #106 CLOSED (Done). All six high Dependabot alerts remediated by upgrade, zero risk acceptance:
+  aws-cdk-lib 2.263.0 (bundles brace-expansion 5.0.8 — 2.262.2 was verified insufficient), postcss
+  8.5.25 and sharp 0.35.3 via web `overrides` (next pins both), fast-uri 3.1.5 via npm update, plus
+  a dev-only fix of the same advisory's 2.x line under `@node-minify/core`. Codex approved code and
+  artifact with zero findings; Opus operated the artifact as PR #107; Zamp merged at
+  `3583aedabcce88050137b27c0778631bd8752189` with all six CI lanes green including `quality (20)`,
+  the Node 20 leg. GitHub closed the six alerts automatically; Dependabot PR #83 auto-closed as
+  superseded; issue #106 closed by Opus under Zamp's instruction. Local cleanup done; remote branch
+  preserved at the reviewed head.
+- ENVIRONMENTS EVIDENCED: `/repos/:owner/:repo/environments` returns `dev` and `pilot`, BOTH with a
+  custom deployment-branch policy whose only entry is `main`, and `pilot` with
+  `required_reviewers: [marciozampiron]`. Every condition the #70 blocked-prerequisite section
+  demanded is met; the evidence enters review with this reconciliation commit. The same API calls
+  also returned the residual limitations, recorded rather than smoothed over:
+  `can_admins_bypass: true` on both Environments and `prevent_self_review: false` on pilot — the
+  binding satisfies the approved requirements but is not non-bypassable independent-human
+  enforcement. The
+  `release-pilot.yml` header disclosure was updated from "ungated" to the evidenced state — the
+  invariant test pinning that disclosure was updated in the same commit, as designed.
+- DOMAIN DECIDED: Zamp approved the pilot on the **`workers.dev`** origin, closing #67's open
+  decision. Exact callback/logout URLs and the domain prefix become knowable; the values still
+  enter only as Environment configuration at deploy time, never as tracked files.
+- With all three prerequisites resolved, the next #70 slice may be assigned. Two moderate root
+  alerts remain documented for a future SDK bump, outside any GO criterion.
+
 ## 2026-08-02 — Claude — #70 Slice A merged; local cleanup; Slice B blocked on external prerequisites
 
 - Slice A approved by Codex across eight review rounds (findings summarized in the entries below),

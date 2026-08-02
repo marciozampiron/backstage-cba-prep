@@ -28,20 +28,19 @@
 # step shapes (exact actions, exact run blocks), because round 3 and 4 proved both orderings and
 # blacklists can be talked around: `verb=deploy; npx cdk "$verb"` sailed past a verb regex.
 #
-# THE HUMAN GATE IS NOT YET REAL. As of 2026-07-31 this repository has ZERO configured GitHub
-# Environments. Naming one here does not create protection rules — an unconfigured Environment
-# offers no required reviewer and no branch restriction. The `environment:` keys below are the
-# binding that will carry the gate ONCE Zamp configures `dev` and `pilot` under a separate
-# repository-settings change. BOTH Environments must restrict deployment branches to main only —
-# dev too, not just pilot: an Environment without a branch policy hands its variables and secrets
-# to a workflow definition from ANY branch. `pilot` additionally requires the designated reviewer.
-# Until read-only evidence of those settings exists, this lane must be
-# treated as ungated, and no deploy slice may be approved.
+# THE HUMAN DEPLOYMENT BINDING IS REAL AS OF 2026-08-02. Both GitHub Environments exist and were
+# evidenced read-only via /repos/:owner/:repo/environments: `dev` and `pilot` each carry a custom
+# deployment-branch policy whose only entry is `main`, and `pilot` additionally requires the
+# designated reviewer (marciozampiron). The `environment:` keys below are the BINDING; the
+# protection lives in repository settings, which no workflow can grant itself. Any change to those
+# settings invalidates the evidence and must be re-evidenced before the next deploy approval.
+# (From 2026-07-31 to 2026-08-02 this header declared the lane ungated, because the repository had
+# zero configured Environments — kept as history so the requirement's origin stays visible.)
 #
 # ONE INHERENT LIMIT, stated rather than hidden: `workflow_dispatch` executes the workflow
 # DEFINITION from the branch the operator selects. The identity job constrains the RELEASE, not the
 # file; what stops a modified workflow from reaching pilot secrets is the pilot Environment's
-# deployment-branch restriction — part of the blocked prerequisite above.
+# deployment-branch restriction — which now exists and is main-only.
 name: Release Pilot
 
 on:

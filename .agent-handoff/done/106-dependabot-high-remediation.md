@@ -1,13 +1,19 @@
-# Active: Remediate the 6 high Dependabot alerts before pilot GO (#106)
+# Done: Remediate the 6 high Dependabot alerts before pilot GO (#106)
 
 Roles and messages are canonical in [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md). This file
 does not restate them.
 
 ## Status
 
-IMPLEMENTED locally; awaiting independent review. All six high alerts are remediated by version
-upgrades — **no risk acceptance was used** — plus one extra dev-only fix of the same advisory that
-surfaced during the work. Nothing is published, deployed or merged.
+DONE. The code cleared Codex review with zero findings; the reviewed publication artifact was
+operated by Opus as PR #107; Zamp merged it at `3583aedabcce88050137b27c0778631bd8752189` with all
+six CI lanes green — including `quality (20)`, the Node 20 leg the local runner could not cover.
+GitHub then closed all six high alerts automatically (**0 high open**), the Dependabot PR #83
+auto-closed as superseded when fast-uri ≥3.1.4 reached `main`, and issue #106 is CLOSED with the
+board item Done. All six were remediated by version upgrades — **no risk acceptance was used** —
+plus one extra dev-only fix of the same advisory that surfaced during the work. The remote branch
+`task/106-dependabot-high-remediation` is preserved at the reviewed head; local worktree, branch
+and `/tmp` artifacts were cleaned up under Zamp's authorization. Nothing was deployed.
 
 ## Ownership
 
@@ -43,9 +49,10 @@ one of the six listed alerts; recorded here so the count difference is explained
 
 ## PR #83 disposition
 
-Inspected, not reused. It bumps fast-uri 3.1.3 → 3.1.4 in the root lock only. This branch reaches
-3.1.5 (≥ the 3.1.4 patch floor) against current `main`, so #83 is superseded; recommend Zamp close
-it without merge after this lands.
+Inspected, not reused. It bumped fast-uri 3.1.3 → 3.1.4 in the root lock only; this branch reached
+3.1.5 against current `main`, superseding it. Final state: **CLOSED automatically by Dependabot**
+(2026-08-02T05:41:08Z) when fast-uri ≥3.1.4 reached `main` via PR #107 — **not merged, and no
+action remains**.
 
 ## Out of scope, deliberately
 

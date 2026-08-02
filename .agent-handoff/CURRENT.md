@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-08-02 (#70 Slice A merged in PR #104; deploy stages gated on external prerequisites)
+Last updated: 2026-08-02 (#106 delivered; all three #70 external prerequisites resolved with evidence)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -109,8 +109,8 @@ Project board remain the source of truth; this file summarizes local coordinatio
   bearer fails closed), /api/me §16 with a cached profile, and the learner sign-in/session UI
   with a proven PKCE S256 flow — published through `961af51`, CI green, synth/test only. **#82 and
   #75 are CLOSED (Done)**; #75 delivered the smoke-cleanup contract in PR #101. **#67's in-repo
-  delivery is merged** (PR #100), but #67 stays OPEN: it still needs the
-  custom-domain-vs-`workers.dev` decision and an actual deploy, neither of which is repository work.
+  delivery is merged** (PR #100), but #67 stays OPEN pending an actual deploy; its architecture
+  decision is CLOSED — **the pilot uses the `workers.dev` origin** (Zamp, 2026-08-02).
   Current work: **#70** (Cloudflare/AWS deploy pipeline and post-deploy smoke gates), then #79 ->
   close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
@@ -135,10 +135,12 @@ Project board remain the source of truth; this file summarizes local coordinatio
 - Local MCP inventory for agents: Stitch, Cloudflare Docs, Cloudflare API, AWS, GitHub, and Next.js
   DevTools. GitHub/Cloudflare use IDE OAuth, AWS exposes only the read-only diagnostics role, and
   Next.js DevTools is pinned locally to `0.4.0`. MCP configs remain local, mode `0600`, and ignored.
-- Housekeeping open: GitHub reported **8 Dependabot alerts on the default branch (6 high, 2
-  moderate)** during the #75 push on 2026-07-30 — this supersedes the older single-`postcss` note.
-  The 6 high must be fixed or formally risk-accepted before the pilot GO. Triage is not started and
-  no upgrade has been attempted. (Duplicate issue #45 is closed as a duplicate of #42.)
+- Housekeeping: the 6 HIGH Dependabot alerts are **RESOLVED** — #106 delivered upgrades for all six
+  (PR #107, merged `3583aeda`), zero risk acceptance, GitHub closed the alerts automatically. Two
+  MODERATE root alerts remain (`@hono/node-server`, `@modelcontextprotocol/sdk`), both only in the
+  optional AI-orchestration path, documented in `done/106-dependabot-high-remediation.md` for a
+  future SDK bump; they are not a GO criterion. (Duplicate issue #45 is closed as a duplicate of
+  #42.)
 - Tooling lesson (2026-07-08): verify CI-matrix (Node 20+22) compatibility for tooling changes —
   `node --test` glob-pattern paths need Node >=21; root test uses a shell-expanded `test/*.test.js`.
 
@@ -150,14 +152,14 @@ Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ow
   implementation worktree exists until the next slice is assigned. **Slice A is MERGED** (PR #104,
   `da0ed88e`, 6/6 checks green): the #69 deploy preflight, the release identity, the
   manifest/assembly binding, the `deploy-release` entrypoint and the YAML-semantic lane invariants.
-  Nothing is deployed. The external prerequisites keep their stage-specific boundaries: the
-  Environments (main-only policy, pilot reviewer, reviewed evidence) block any DEPLOY slice or
-  deployment gate approval; the #67 domain decision is what lets a pilot deploy preflight pass; the
-  6 high Dependabot alerts block the pilot GO. Non-deploy implementation may proceed under normal
-  assignment.
-  #70 owns the account-level half of #67 (custom-domain decision, Cloudflare project and Environment
-  token, Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only
-  stacks, the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
+  Nothing is deployed. **All three external prerequisites are RESOLVED (2026-08-02)**: the
+  Environments `dev`/`pilot` exist with main-only deployment-branch policies and the pilot
+  reviewer, evidenced read-only via the API; Zamp decided the pilot uses the **`workers.dev`**
+  origin, closing the decision #67 carried; and the 6 high Dependabot alerts were remediated in
+  #106. The next #70 slice may be assigned; deploy approvals follow the normal protocol.
+  #70 owns the account-level half of #67 (Cloudflare project and Environment token, Worker routes
+  and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks, the live
+  SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
   in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
 - `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
   own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and
@@ -169,17 +171,19 @@ own handoff; #91 is the publication toolchain. Neither may edit the other's surf
 
 **The deploy preflight is binding on every lane** (`infra/aws/bin/deploy-preflight.js`). It refuses
 before `cdk deploy` while `.invalid` survives into the effective Cognito callback/logout URLs, and
-unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. The
-custom-domain decision on #67 is what makes those values knowable; it is still open and is Zamp's.
+unless `authDomainPrefix` was explicitly supplied and confirmed unique in the target region. With
+`workers.dev` decided, those values are knowable — they still enter ONLY as Environment
+configuration at deploy time, never as tracked files.
 
-**BLOCKED PREREQUISITE — there is no human deployment gate yet.** As of 2026-07-31 the repository has
-**zero configured GitHub Environments**; an Environment named in a workflow but never configured is
-created on first use with no required reviewer and no branch restriction. `release-pilot.yml` binds
-`dev` and `pilot` so the gate has somewhere to attach, but until Zamp configures them — **BOTH with a
-main-only deployment-branch policy** (dev too: an Environment without one hands its variables and
-secrets to a workflow definition from any branch), and pilot additionally requiring the designated
-reviewer — **the lane is ungated and no deploy slice may be approved.** Read-only evidence of those
-settings is required first.
+**DEPLOYMENT BINDING EVIDENCED (2026-08-02).** The GitHub Environments `dev` and `pilot` are
+configured: both carry a custom deployment-branch policy whose only entry is `main`, and `pilot`
+requires `marciozampiron` as reviewer (read-only API evidence, recorded in the #70 handoff and
+EVENTS). The next #70 slice may be assigned; deploy approvals follow the normal protocol. **No AWS
+or Cloudflare deployment has happened yet** — everything beyond SecurityStack remains synth-only.
+Observed residual limitations, stated so the mechanism is not read as stronger than it is:
+`can_admins_bypass: true` on BOTH Environments, and `prevent_self_review: false` on pilot — the
+protection satisfies the approved requirements but is not non-bypassable independent-human
+enforcement, the same honest framing used for `enforce_admins=false` on publication.
 
 Moved to `done/` in this audit, each with the policy references moved alongside:
 
