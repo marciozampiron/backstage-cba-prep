@@ -155,11 +155,11 @@ Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ow
   Nothing is deployed. **All three external prerequisites are RESOLVED (2026-08-02)**: the
   Environments `dev`/`pilot` exist with main-only deployment-branch policies and the pilot
   reviewer, evidenced read-only via the API; Zamp decided the pilot uses the **`workers.dev`**
-  origin (#67's open decision); and the 6 high Dependabot alerts were remediated in #106. The next
-  #70 slice may be assigned; deploy approvals follow the normal protocol.
-  #70 owns the account-level half of #67 (custom-domain decision, Cloudflare project and Environment
-  token, Worker routes and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only
-  stacks, the live SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
+  origin, closing the decision #67 carried; and the 6 high Dependabot alerts were remediated in
+  #106. The next #70 slice may be assigned; deploy approvals follow the normal protocol.
+  #70 owns the account-level half of #67 (Cloudflare project and Environment token, Worker routes
+  and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks, the live
+  SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
   in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
 - `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
   own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and

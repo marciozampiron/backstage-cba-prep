@@ -32,6 +32,10 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
     'it is still open and is Zamp',
     'must be fixed or formally risk-accepted before the pilot GO',
     'custom-domain-vs-`workers.dev` decision',
+    // Round 3 of this closeout: the two forms that SURVIVED the first sweep, hiding inside the
+    // resolved-side paragraph itself. Exact strings, like every entry here.
+    "#67's open decision",
+    '#70 owns the account-level half of #67 (custom-domain decision',
   ]) {
     assert.equal(CURRENT.includes(stale), false, `CURRENT.md reintroduces a stale state: "${stale}"`);
   }
