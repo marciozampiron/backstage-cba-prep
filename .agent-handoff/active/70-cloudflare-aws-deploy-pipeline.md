@@ -7,19 +7,43 @@ This file does not restate either.
 
 ## Status
 
-**SLICE A IN REVIEW.** Taken into active ownership 2026-07-31 on Zamp's assignment, moved from
-`inbox/` with the policy references moved alongside.
+**SLICE A DELIVERED AND MERGED.** The code cleared eight Codex review rounds, read-only, with zero
+remaining findings. Opus operated the reviewed publication artifact, producing PR #104. Zamp merged
+it at `da0ed88ea01957401fe81ed8caf6d35dcb568311` on 2026-08-01, with 6/6 CI checks green including
+`synth`. The remote branch
+`task/70-deploy-pipeline-slice-a` is preserved at the reviewed head; the local worktree, branch and
+`/tmp` artifacts were cleaned up under Zamp's authorization.
 
-Issue #70 is OPEN. Issues #46 and #68 close behind it.
+Issue #70 stays OPEN — the later slices belong to it. Issues #46 and #68 close behind it.
 
-Slice A delivers the ordering and the refusals — the preflight, the lane skeleton and the human
-gates. **Nothing is deployed and no later slice is started.** No AWS call, no Cloudflare call, no
-preview, no secret access and no paid call was made producing it.
+Slice A delivered the ordering, the binding and the refusals — the #69 preflight conditions, the
+release identity, the manifest and assembly digests, the `deploy-release` entrypoint and the
+YAML-semantic lane invariants. **Nothing is deployed and no later slice is started.** No AWS
+mutation, no Cloudflare call, no preview, no secret access and no paid call was made producing or
+publishing it.
+
+**The external prerequisites, each bound to the stage it actually blocks** (the stage-specific
+boundaries this handoff already carried; nothing here supersedes them):
+
+1. GitHub Environments `dev` and `pilot` — BOTH with a main-only deployment-branch policy, `pilot`
+   additionally with the designated reviewer, with read-only evidence presented and reviewed —
+   are required **before any deploy slice or deployment gate may be approved**. They do not block
+   non-deploy implementation. Configuring them is Zamp's settings change.
+2. The custom-domain-vs-`workers.dev` decision on #67 — Zamp's decision — is what makes the real
+   callback/logout URLs and domain prefix knowable, so **a pilot deploy preflight cannot pass
+   without it**. It does not block implementation either.
+3. The 6 high Dependabot alerts must be **fixed or formally risk-accepted before the pilot GO**.
+   The decision and any risk acceptance are Zamp's; the remediation implementation is Opus work
+   once assigned, like any other change.
+
+Non-deploy implementation on later slices — smoke-gate wiring, F1/F2 harness code, the cleanup
+lane — may proceed under normal assignment and review while those clear.
 
 ## Ownership
 
-- Implementation executor: **Claude Opus 5** (worktree `../cba-issue-70`, branch
-  `task/70-deploy-pipeline-slice-a`, cut from `origin/main`).
+- Issue owner / implementation executor: **Claude Opus 5**. **No implementation worktree currently
+  exists** — the Slice A worktree and local branch were cleaned up after the merge, and the next
+  slice gets its own, cut from `origin/main` on assignment.
 - Architect / independent technical and security reviewer, read-only: **Codex**.
 - Assignment, approval, risk acceptance, gate and merge authority: **Zamp**.
 - One owner at a time: while this is in `active/`, no other agent takes #70 files.
