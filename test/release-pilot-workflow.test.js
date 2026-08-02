@@ -136,6 +136,15 @@ const EXPECTED_WORKFLOW = {
           "run": "npm test"
         },
         {
+          "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
+          "env": {
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
+          },
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+        },
+        {
           "name": "Configure AWS credentials (read-only preflight role)",
           "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
           "with": {
@@ -155,7 +164,7 @@ const EXPECTED_WORKFLOW = {
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
             "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
           },
-          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -199,6 +208,15 @@ const EXPECTED_WORKFLOW = {
           "run": "npm ci"
         },
         {
+          "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
+          "env": {
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
+          },
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+        },
+        {
           "name": "Configure AWS credentials (dev deploy role)",
           "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
           "with": {
@@ -218,7 +236,7 @@ const EXPECTED_WORKFLOW = {
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
           },
-          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         }
       ]
     },
@@ -267,6 +285,15 @@ const EXPECTED_WORKFLOW = {
           "run": "npm ci"
         },
         {
+          "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
+          "env": {
+            "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
+            "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
+          },
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+        },
+        {
           "name": "Configure AWS credentials (read-only preflight role)",
           "uses": "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c",
           "with": {
@@ -286,7 +313,7 @@ const EXPECTED_WORKFLOW = {
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
             "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
           },
-          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -478,6 +505,24 @@ export function releaseLaneErrors(text) {
         errors.push(`job "${name}" runs the deploy entrypoint without Zamp's cloud gate (CBA_CLOUD_GATE) in the step environment`);
       }
     }
+    // CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (Slice B1 round 3). Synth executes
+    // project code — the CDK app, esbuild, npm lifecycles — and anything running with the OIDC
+    // credentials can spend the role's sts:AssumeRole before the entrypoint validates the cloud
+    // gate. So after the pinned consumer, NOTHING executes except the reviewed entrypoints: no
+    // npm, no npx, no action step. Synth completes credential-free, before the consumer.
+    const consumerIdx = (job?.steps ?? []).findIndex(
+      (st) => st.uses === 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c',
+    );
+    if (consumerIdx >= 0) {
+      for (const st of job.steps.slice(consumerIdx + 1)) {
+        if (st.uses !== undefined) {
+          errors.push(`job "${name}" runs an action step after credential acquisition — only the reviewed entrypoints may execute with credentials`);
+        }
+        if (typeof st.run === 'string' && /\bnpm\b|\bnpx\b/.test(st.run)) {
+          errors.push(`job "${name}" runs project or package-manager code after credential acquisition and before the gate — synth and installs must complete before the OIDC consumer`);
+        }
+      }
+    }
     // OIDC authority is a capability, not a default (#70 round 8). When id-token: write exists,
     // EVERY action, command and dependency lifecycle script in the job can mint an
     // Environment-bound token — so the permission is allowed only where a reviewed OIDC consumer
@@ -590,6 +635,32 @@ test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoin
   const adminRole = raw.replace('secrets.AWS_DEPLOY_ROLE_ARN', 'secrets.AWS_ADMIN_ROLE_ARN');
   assert.notEqual(adminRole, raw);
   assert.ok(releaseLaneErrors(adminRole).some((e) => e.includes('canonical Environment-scoped deploy role secret AWS_DEPLOY_ROLE_ARN')));
+});
+
+test('POSITIVE CONTROL: project code cannot re-enter the credential window', () => {
+  // The exact round-3 shape: synth (project code) executing AFTER the OIDC consumer. Re-adding an
+  // npm invocation to the credentialed deploy step must trip the window rule by name.
+  const synthAfterCreds = raw.replace(
+    '          set -euo pipefail\n          printf \'%s\' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"\n',
+    '          set -euo pipefail\n          printf \'%s\' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"\n          npm run synth:quiet -- -c environment=dev\n',
+  );
+  assert.notEqual(synthAfterCreds, raw, 'mutation did not apply: synth after credentials');
+  assert.ok(
+    releaseLaneErrors(synthAfterCreds).some((e) => e.includes('after credential acquisition and before the gate')),
+    'project code after the consumer must trip the credential-window rule by name',
+  );
+
+  // An ACTION step after the consumer is the same hole with a different face — any action can
+  // exfiltrate or spend the credentials before the entrypoint's gate check.
+  const actionAfterCreds = raw.replace(
+    '      - name: Deploy the verified release through the sanctioned entrypoint\n',
+    '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\n        with:\n          persist-credentials: false\n      - name: Deploy the verified release through the sanctioned entrypoint\n',
+  );
+  assert.notEqual(actionAfterCreds, raw, 'mutation did not apply: action after credentials');
+  assert.ok(
+    releaseLaneErrors(actionAfterCreds).some((e) => e.includes('runs an action step after credential acquisition')),
+    'an action step after the consumer must trip the credential-window rule by name',
+  );
 });
 
 test('POSITIVE CONTROL: serialization, time bounds and the cloud gate cannot be loosened', () => {

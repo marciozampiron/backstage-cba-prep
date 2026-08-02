@@ -2,6 +2,36 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice B1 round 3: the authority chain closed end to end
+
+- Codex's round-3 review found four HIGHs, all in the authority/execution chain of da550184:
+  synth code received AWS credentials before the gate; the deployed CloudFormation execution role
+  could not actually execute the four stacks (and would fail on the first real deploy); the deploy
+  was not bound to the reviewed plan; the gate accepted loose date formats, had no TTL and was not
+  revalidated at the mutation boundary. Fix-forward, both reviewed commits preserved.
+- Credentials and project code never share a window now: synth runs credential-free BEFORE the
+  OIDC consumer in all three credentialed jobs; after the consumer only `node
+  bin/deploy-preflight.js` / `node bin/deploy-release.js` execute. A named lane invariant refuses
+  npm/npx or any action step after credential acquisition — proven by mutation and by deletion.
+- The execution authority exists and is enumerated: the four deployable stacks synthesize against
+  their own bootstrap qualifier (`cbarel`, reviewed constant in lib/app.js), whose versioned
+  execution policy covers every resource type the real templates create (a discovery test
+  synthesizes both tiers and refuses unmapped types), scopes resources to the tier name prefixes,
+  names each unavoidable wildcard as its own justified statement, pins `iam:CreateRole` to the new
+  runtime boundary every release-created role carries, conditions PassRole to Lambda, and denies
+  the GitHub/foundation roles outright. The SecurityStack keeps the #66 bootstrap; one execution
+  role per blast radius. Runbook step 12 records the human-gated creation; the render loop now
+  names all five templates.
+- The deploy executes only the reviewed plan: `diff_only` emits PLAN_DIGEST (canonical, sanitized
+  plan bytes); the deploy-mode gate NAMES that digest; a recomputed plan that differs — live state
+  moved — refuses as PLAN_CHANGED and needs a fresh review. The plan is emitted before the effect.
+  Gate v2 is strict RFC3339 UTC only (the reproduced `2099-01-01` and space-separated forms are
+  malformed now), carries approvedAt + decisionId, caps the window at one hour, and is revalidated
+  — expiry AND account — immediately before the deploy child spawns; a clock that crosses the
+  expiry during the diff refuses one spawn from the effect, proven with an injected clock.
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the four
+  Zamp-gated activation prerequisites now recorded in the workflow header.
+
 ## 2026-08-02 — Claude — #70 Slice B1 round 2: the effect closed, the authority delivered, the gate bound
 
 - Codex's round-2 review found six issues in the first Slice B1 commit (74e3d889): `--all` scoped

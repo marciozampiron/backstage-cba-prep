@@ -1,0 +1,330 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadReleaseBootstrapVersionParameter",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameters",
+      "Resource": "arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/cbarel/version"
+    },
+    {
+      "Sid": "ReadReleaseAssetsFromBootstrapBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cdk-cbarel-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:s3:::cdk-cbarel-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1/*"
+      ]
+    },
+    {
+      "Sid": "LambdaLifecycleOnOwnFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:AddPermission",
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:GetFunction",
+        "lambda:GetFunctionCodeSigningConfig",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetPolicy",
+        "lambda:GetRuntimeManagementConfig",
+        "lambda:ListTags",
+        "lambda:ListVersionsByFunction",
+        "lambda:PublishVersion",
+        "lambda:PutFunctionConcurrency",
+        "lambda:RemovePermission",
+        "lambda:TagResource",
+        "lambda:UntagResource",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-dev-*",
+        "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "ApiGatewayV2GeneratedIdsInRegion",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:POST",
+        "apigateway:PUT"
+      ],
+      "Resource": [
+        "arn:aws:apigateway:us-east-1::/apis",
+        "arn:aws:apigateway:us-east-1::/apis/*",
+        "arn:aws:apigateway:us-east-1::/tags/*"
+      ]
+    },
+    {
+      "Sid": "DynamoLifecycleOnOwnTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateTimeToLive"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-dev-*",
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "CognitoCreatePoolHasNoArnBeforeItExists",
+      "Effect": "Allow",
+      "Action": "cognito-idp:CreateUserPool",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CognitoLifecycleOnGeneratedPoolIds",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:CreateGroup",
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:DeleteGroup",
+        "cognito-idp:DeleteUserPool",
+        "cognito-idp:DeleteUserPoolClient",
+        "cognito-idp:DeleteUserPoolDomain",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:GetGroup",
+        "cognito-idp:GetUICustomization",
+        "cognito-idp:SetUICustomization",
+        "cognito-idp:SetUserPoolMfaConfig",
+        "cognito-idp:TagResource",
+        "cognito-idp:UntagResource",
+        "cognito-idp:UpdateGroup",
+        "cognito-idp:UpdateUserPool",
+        "cognito-idp:UpdateUserPoolClient"
+      ],
+      "Resource": "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*"
+    },
+    {
+      "Sid": "CloudWatchAlarmsOnOwnNames",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:PutCompositeAlarm",
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch:us-east-1:ACCOUNT_ID_PLACEHOLDER:alarm:cba-study-coach-dev-*",
+        "arn:aws:cloudwatch:us-east-1:ACCOUNT_ID_PLACEHOLDER:alarm:cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "CloudWatchDashboardsOnOwnNames",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:DeleteDashboards",
+        "cloudwatch:GetDashboard",
+        "cloudwatch:PutDashboard"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-dev-*",
+        "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "LogsLifecycleOnOwnGroups",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:DeleteLogGroup",
+        "logs:ListTagsForResource",
+        "logs:PutRetentionPolicy",
+        "logs:TagResource",
+        "logs:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-dev-*",
+        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "LogsQueryDefinitionsCarryNoScopingArn",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DeleteQueryDefinition",
+        "logs:DescribeLogGroups",
+        "logs:DescribeQueryDefinitions",
+        "logs:PutQueryDefinition"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SnsLifecycleOnOwnTopics",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:DeleteTopic",
+        "sns:GetTopicAttributes",
+        "sns:ListTagsForResource",
+        "sns:SetTopicAttributes",
+        "sns:TagResource",
+        "sns:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-dev-*",
+        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "KmsCreateKeyHasNoArnBeforeItExists",
+      "Effect": "Allow",
+      "Action": "kms:CreateKey",
+      "Resource": "*"
+    },
+    {
+      "Sid": "KmsKeyLifecycleOnGeneratedKeyIds",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CancelKeyDeletion",
+        "kms:DescribeKey",
+        "kms:EnableKeyRotation",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListResourceTags",
+        "kms:PutKeyPolicy",
+        "kms:ScheduleKeyDeletion",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:UpdateKeyDescription"
+      ],
+      "Resource": "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+    },
+    {
+      "Sid": "KmsAliasesOnOwnNames",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias",
+        "kms:DeleteAlias",
+        "kms:UpdateAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:alias/cba-study-coach-dev-*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:alias/cba-study-coach-pilot-*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ]
+    },
+    {
+      "Sid": "CreateRuntimeRolesOnlyWithPinnedBoundary",
+      "Effect": "Allow",
+      "Action": "iam:CreateRole",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime"
+        }
+      }
+    },
+    {
+      "Sid": "RuntimeRoleLifecycleOnOwnNames",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "AttachOnlyTheLambdaBasicExecutionManagedPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        }
+      }
+    },
+    {
+      "Sid": "PassRuntimeRolesToLambdaOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DenyTouchingGithubAndFoundationRoles",
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-*"
+      ]
+    },
+    {
+      "Sid": "DenyBoundaryDetachOrSwapOnRuntimeRoles",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "DenyRuntimeBoundaryPolicyMutation",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime"
+    }
+  ]
+}

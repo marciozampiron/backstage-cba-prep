@@ -118,8 +118,10 @@ class SecurityStack extends Stack {
       'ghaDeployBoundaryArn',
       `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy`,
     );
+    // The RELEASE bootstrap's roles (qualifier cbarel — lib/app.js): the deploy role drives
+    // releases only, and cannot reach the #66 SecurityStack bootstrap (hnb659fds) at all.
     const cdkBootstrapRoleArn = (name) =>
-      `arn:${this.partition}:iam::${this.account}:role/cdk-hnb659fds-${name}-role-${this.account}-${this.region}`;
+      `arn:${this.partition}:iam::${this.account}:role/cdk-cbarel-${name}-role-${this.account}-${this.region}`;
 
     const deployRole = new iam.Role(this, 'GithubDeployRole', {
       roleName: `cba-study-coach-gha-deploy-${environment}`,

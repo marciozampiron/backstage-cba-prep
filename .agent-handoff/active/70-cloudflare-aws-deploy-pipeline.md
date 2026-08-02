@@ -61,12 +61,27 @@ and the entrypoint requires Zamp's per-release cloud gate (`CBA_CLOUD_GATE`: exa
 assembly digest + `diff_only`/`deploy` mode + expiry) and puts the `cdk diff` plan on the record
 before any effect.
 
+The Codex round-3 review moved the remaining blockers out of the authority/execution chain, and
+the correction delivered: project code and credentials never share a window (synth runs
+credential-free before the OIDC consumer in every job; after the consumer only the reviewed
+entrypoints execute, enforced by a named invariant); the four deployable stacks execute through
+their OWN CDK bootstrap (qualifier `cbarel`, a reviewed constant) whose versioned execution
+policy (`cfn-exec-release.template.json`) enumerates the templates' real resource types with
+name-scoped resources and named wildcard exceptions, pins release-created roles to the runtime
+boundary, and explicitly denies touching the GitHub/foundation roles; the cloud gate is v2
+(strict RFC3339 UTC, `approvedAt` + TTL ≤ 1h, `decisionId`, and — for deploy mode — the
+`planDigest` of the reviewed plan), the plan is digested/emitted BEFORE any effect, a changed
+live state refuses as `PLAN_CHANGED`, and expiry + account are revalidated immediately before
+the deploy child spawns.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
-workflow header:** (1) provision `cba-study-coach-gha-deploy-dev` + its operator-managed boundary
+workflow header:** (1) the release bootstrap (`aws-bootstrap-and-oidc.md` step 12): three
+operator-managed policies + `cdk bootstrap --qualifier cbarel`; (2) provision
+`cba-study-coach-gha-deploy-dev` + its boundary (Zamp creates the policy outside CloudFormation)
 via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as
-the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (2) populate the dev Environment secrets and
-variables (read-only inspection on 2026-08-02 found ZERO of each); (3) per release, set
-`CBA_CLOUD_GATE` — first `diff_only` to review the plan, then `deploy` for the same digests.
+the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (3) populate the dev Environment secrets and variables (read-only
+inspection on 2026-08-02 found ZERO of each); (4) per release, set `CBA_CLOUD_GATE` — first
+`diff_only`, which emits `PLAN_DIGEST`; then `deploy` naming that digest inside a ≤1h window.
 
 ## Ownership
 

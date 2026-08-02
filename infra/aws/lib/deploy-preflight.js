@@ -102,7 +102,10 @@ const CODES = {
   CLOUD_GATE_MALFORMED: 'is not a well-formed cloud-execution gate (closed schema: issue, environment, releaseSha, assemblyDigest, mode, expiresAt)',
   CLOUD_GATE_MISMATCH: 'does not match the verified manifest — the gate authorizes exactly one release, one environment and one assembly, and this is not it',
   CLOUD_GATE_EXPIRED: 'has expired — the gate authorizes a bounded window, and this run is outside it',
+  CLOUD_GATE_TTL_EXCEEDED: 'grants a window longer than the maximum — a gate is a short-lived decision, never a standing authorization',
+  CLOUD_GATE_NOT_YET_VALID: 'is in the future — a gate whose approval instant has not arrived authorizes nothing yet',
   DIFF_FAILED: 'could not be produced — the plan child failed, and without the plan on the record there is no reviewed change to execute',
+  PLAN_CHANGED: 'does not match the plan the gate names — live state changed since the reviewed diff_only run, and a changed world needs a new review before any effect',
 };
 
 class PreflightError extends Error {

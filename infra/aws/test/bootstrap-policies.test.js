@@ -75,9 +75,9 @@ test('deploy boundary allows only sts:AssumeRole on exactly the three CDK bootst
   assert.equal(stmt.Effect, 'Allow');
   assert.deepEqual(asArray(stmt.Action), ['sts:AssumeRole']);
   assert.deepEqual(stmt.Resource, [
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
   ]);
   // No image-publishing (no container assets) and never the CloudFormation execution role.
   const flat = JSON.stringify(deployBoundary);

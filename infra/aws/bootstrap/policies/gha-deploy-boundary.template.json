@@ -6,9 +6,9 @@
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
       "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1"
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1"
       ]
     }
   ]

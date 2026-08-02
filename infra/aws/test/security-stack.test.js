@@ -103,7 +103,7 @@ test('GithubDeployRole: environment-scoped trust, pinned boundary, and ONLY boot
   assert.equal(stmt.Effect, 'Allow');
   const flatResources = JSON.stringify(stmt.Resource);
   for (const name of ['deploy', 'file-publishing', 'lookup']) {
-    assert.ok(flatResources.includes(`cdk-hnb659fds-${name}-role-`), `${name} bootstrap role expected`);
+    assert.ok(flatResources.includes(`cdk-cbarel-${name}-role-`), `${name} bootstrap role expected`);
   }
   assert.equal(stmt.Resource.length, 3, 'exactly the three bootstrap roles');
   assert.equal(flatResources.includes('image-publishing'), false, 'no container-asset authority');

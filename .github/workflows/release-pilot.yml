@@ -48,15 +48,28 @@
 # THIS LANE IS NOT YET OPERABLE, by design — activation has prerequisites, each human-gated and
 # each refusing loudly while absent (read-only inspection on 2026-08-02 found ZERO secrets and
 # ZERO variables in the dev Environment):
-#   1. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
+#   1. The RELEASE BOOTSTRAP (aws-bootstrap-and-oidc.md step 12): the three operator-managed
+#      policies (gha-deploy boundary, runtime boundary, cfn-exec-release) and `cdk bootstrap
+#      --qualifier cbarel` with the release execution policy — the enumerated authority the four
+#      deployable stacks execute through. Without it the deploy role's assumable targets do not
+#      exist and the lane cannot mutate anything.
+#   2. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
 #      operator-managed boundary and the extended #66 exec policy — a human-gated SecurityStack
 #      redeploy — then its ARN published as the dev Environment secret AWS_DEPLOY_ROLE_ARN.
-#   2. The dev Environment configuration: AWS_DEPLOY_PREFLIGHT_ROLE_ARN, AWS_REGION,
+#   3. The dev Environment configuration: AWS_DEPLOY_PREFLIGHT_ROLE_ARN, AWS_REGION,
 #      CBA_AUTH_CALLBACK_URLS, CBA_AUTH_LOGOUT_URLS, CBA_AUTH_DOMAIN_PREFIX,
 #      CBA_EXPECTED_USER_POOL_ID.
-#   3. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
-#      release and assembly digest — first with mode diff_only to put the reviewed plan on the
-#      record, then with mode deploy for the same digests. No gate, no children.
+#   4. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
+#      release, assembly digest, decision id and a bounded window (RFC3339 UTC, at most one
+#      hour) — first with mode diff_only, which emits PLAN_DIGEST for the reviewed plan; then
+#      with mode deploy NAMING that digest. A plan that no longer matches live state refuses as
+#      PLAN_CHANGED and needs a fresh review. No gate, no children.
+#
+# CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (round 3): synth — which executes project
+# code, bundlers and package lifecycles — runs in its own credential-free step BEFORE the OIDC
+# consumer in every job. After the consumer, the only thing that executes is the reviewed
+# entrypoint (node bin/deploy-preflight.js / node bin/deploy-release.js); a semantic invariant
+# refuses npm/npx or any action step after credential acquisition.
 name: Release Pilot
 
 on:
@@ -174,6 +187,18 @@ jobs:
         run: npm ci
       - name: Unit tests (context helpers and preflight)
         run: npm test
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
       - name: Configure AWS credentials (read-only preflight role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -191,11 +216,6 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
-          npm run synth:quiet -- \
-            -c environment=dev \
-            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
-            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
-            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment dev \
             --release-sha "$RELEASE_SHA" \
@@ -254,6 +274,18 @@ jobs:
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
       - name: Configure AWS credentials (dev deploy role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -272,11 +304,6 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
-          npm run synth:quiet -- \
-            -c environment=dev \
-            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
-            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
-            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-release.js \
             --manifest "$RUNNER_TEMP/manifest.json" \
             --environment dev \
@@ -319,6 +346,18 @@ jobs:
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=pilot \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
       - name: Configure AWS credentials (read-only preflight role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -336,11 +375,6 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
-          npm run synth:quiet -- \
-            -c environment=pilot \
-            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
-            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
-            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment pilot \
             --release-sha "$RELEASE_SHA" \

@@ -66,6 +66,7 @@ const DEPLOY_CONTEXT_KEYS = [
   'githubOidcProviderArn',
   'githubRepo',
   'githubTrustSub',
+  'runtimeBoundaryArn',
 ];
 
 // THE CLOSED DEPLOY EFFECT (#70 Slice B1 review). `cdk deploy --all` deploys whatever the app

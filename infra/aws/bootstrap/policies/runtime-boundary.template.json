@@ -1,0 +1,58 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RuntimeDataPlaneOnOwnTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DeleteItem",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:TransactWriteItems",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-dev-*",
+        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "RuntimeLogsWriteOnOwnGroups",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-dev-*",
+        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-pilot-*"
+      ]
+    },
+    {
+      "Sid": "RuntimeReadOnlyTelemetryUnscopedByService",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:GetDashboard",
+        "cloudwatch:GetMetricData",
+        "logs:DescribeLogGroups",
+        "logs:DescribeQueryDefinitions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RuntimeSnsReadOnOwnTopics",
+      "Effect": "Allow",
+      "Action": [
+        "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic"
+      ],
+      "Resource": [
+        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-dev-*",
+        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-pilot-*"
+      ]
+    }
+  ]
+}

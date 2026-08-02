@@ -52,6 +52,7 @@
 //
 // EXIT CODES  0 = deployed (child exit propagated) · 1 = refused · 2 = usage error.
 const { spawnSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -135,19 +136,35 @@ function sanitizeChildOutput(text) {
     .replace(/(?<!\d)\d{12}(?!\d)/g, '[account-redacted]');
 }
 
-/** The closed shape of Zamp's cloud-execution gate. Exactly these keys, nothing else. */
-const CLOUD_GATE_KEYS = ['assemblyDigest', 'environment', 'expiresAt', 'issue', 'mode', 'releaseSha'];
+/** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
+const CLOUD_GATE_KEYS = ['approvedAt', 'assemblyDigest', 'decisionId', 'environment', 'expiresAt', 'issue', 'mode', 'planDigest', 'releaseSha'];
 const CLOUD_GATE_MODES = ['diff_only', 'deploy'];
+
+/** STRICT RFC3339, UTC only. `Date.parse` alone accepted `2099-01-01` and a space-separated
+ * datetime — formats a human would not notice granting a century of authority. */
+const STRICT_RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
+
+/** A gate authorizes a WINDOW, never a standing state: at most one hour approvedAt -> expiresAt. */
+const CLOUD_GATE_MAX_TTL_MS = 60 * 60 * 1000;
+
+/** decisionId names Zamp's one decision, for the audit trail and the EVENTS record. */
+const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
 
 /**
  * Validate the human cloud-execution gate against the VERIFIED manifest.
  *
  * The GitHub Environment answers WHO may run the lane; it cannot bind the run to a reviewed plan.
  * This gate does: the human sets CBA_CLOUD_GATE (an Environment variable, writable only through
- * repository settings) naming the exact release, the exact assembly digest, a mode and an expiry.
- * `diff_only` puts the plan on the record and refuses the effect; `deploy` authorizes the effect
- * for THAT assembly only. A missing, malformed, mismatched or expired gate refuses before any
- * child process runs — absence of authorization is a refusal, never a default.
+ * repository settings) naming the exact release, the exact assembly digest, the decision, a mode,
+ * and a bounded window (approvedAt -> expiresAt, RFC3339 UTC, at most one hour). `diff_only` puts
+ * the plan on the record — and its digest in the output — while refusing the effect; `deploy`
+ * additionally names the PLAN it authorizes (`planDigest`), so an effect executes only when the
+ * plan recomputed against live state is byte-identical to the one the human reviewed. A missing,
+ * malformed, mismatched, premature or expired gate refuses before any child process runs —
+ * absence of authorization is a refusal, never a default. The gate CANNOT name the GitHub run id
+ * (it is set before dispatch, when no run exists); the binding is the decision plus the short
+ * window plus the plan digest, and a reused gate that meets all three executes only the exact
+ * reviewed plan — anything else refuses as PLAN_CHANGED.
  *
  * @returns {{gate: object} | {failures: Array<{check:string, code:string, field:string}>}}
  */
@@ -161,12 +178,18 @@ function checkCloudGate(raw, manifest, now) {
   } catch {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
   }
+  const strictInstant = (v) => typeof v === 'string' && STRICT_RFC3339_UTC.test(v) && !Number.isNaN(Date.parse(v));
   const malformed =
     !gate || typeof gate !== 'object' || Array.isArray(gate)
     || JSON.stringify(Object.keys(gate).sort()) !== JSON.stringify(CLOUD_GATE_KEYS)
     || gate.issue !== 70
     || !CLOUD_GATE_MODES.includes(gate.mode)
-    || typeof gate.expiresAt !== 'string' || Number.isNaN(Date.parse(gate.expiresAt));
+    || typeof gate.decisionId !== 'string' || !DECISION_ID.test(gate.decisionId)
+    || !strictInstant(gate.approvedAt)
+    || !strictInstant(gate.expiresAt)
+    // diff_only authorizes no effect, so it names no plan; deploy must name exactly one.
+    || (gate.mode === 'diff_only' && gate.planDigest !== null)
+    || (gate.mode === 'deploy' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
   if (malformed) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
   }
@@ -174,10 +197,41 @@ function checkCloudGate(raw, manifest, now) {
   for (const key of ['environment', 'releaseSha', 'assemblyDigest']) {
     if (gate[key] !== manifest[key]) failures.push({ check: 'GATE', code: 'CLOUD_GATE_MISMATCH', field: key });
   }
-  if (Date.parse(gate.expiresAt) <= now) {
+  const approved = Date.parse(gate.approvedAt);
+  const expires = Date.parse(gate.expiresAt);
+  if (expires <= approved || expires - approved > CLOUD_GATE_MAX_TTL_MS) {
+    failures.push({ check: 'GATE', code: 'CLOUD_GATE_TTL_EXCEEDED', field: 'expiresAt' });
+  }
+  if (approved > now) {
+    failures.push({ check: 'GATE', code: 'CLOUD_GATE_NOT_YET_VALID', field: 'approvedAt' });
+  }
+  if (expires <= now) {
     failures.push({ check: 'GATE', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
   }
   return failures.length > 0 ? { failures } : { gate };
+}
+
+/**
+ * The canonical form of a plan, and its digest — what a deploy-mode gate NAMES.
+ *
+ * The reviewed plan and the executed plan must be the SAME BYTES, not the same intention: live
+ * state can change between the diff_only run Zamp reviewed and the deploy run that executes, and
+ * in that case the same assembly produces a different diff. Canonicalization strips exactly the
+ * presentation noise (ANSI colour, CR, trailing whitespace) and nothing semantic; the digest is
+ * computed over the SANITIZED text, so it is stable and the gate value never embeds identifiers.
+ */
+function canonicalPlan(text) {
+  return (text || '')
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+}
+
+function planDigestOf(sanitizedPlanText) {
+  return crypto.createHash('sha256').update(canonicalPlan(sanitizedPlanText), 'utf8').digest('hex');
 }
 
 /** Default git reader: injectable, so the HEAD/worktree binding is testable offline. */
@@ -228,7 +282,7 @@ function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now() } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text) } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -365,8 +419,8 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     ];
 
     // 5a. `cdk diff` FIRST, every time: the plan for exactly this assembly goes on the record
-    //     before any effect, so what the human reviewed (diff_only) and what executes (deploy)
-    //     are diffs of the same digested bytes. A diff child that errors refuses the run.
+    //     before any effect, and its DIGEST is what a deploy-mode gate names. A diff child that
+    //     errors refuses the run — no plan, no effect.
     const diffChild = exec(['cdk', 'diff', '--exclusively', ...stacks, '--app', snapshot.dir], childEnv);
     const diffOutput = sanitizeChildOutput(`${diffChild.stdout || ''}\n${diffChild.stderr || ''}`).trimEnd();
     if (diffChild.status !== 0) {
@@ -374,14 +428,27 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       const refused = refuse();
       return { ...refused, output: `${refused.output}\n\n--- plan output (sanitized) ---\n${diffOutput}` };
     }
+    const digestOfPlan = planDigestOf(diffOutput);
+    // The plan is EMITTED before any effect — review material must exist before the mutation it
+    // authorizes, not after (round 3). The returned output repeats it for the retained record.
+    print([
+      ...header,
+      `  PLAN_DIGEST ${digestOfPlan}`,
+      '',
+      '--- plan (sanitized) ---',
+      diffOutput,
+      '',
+    ].join('\n'));
 
     // 5b. diff_only: the gate authorized the PLAN, not the effect. Stop here, successfully —
-    //     this is how the reviewed-diff GO prerequisite is produced without ever deploying.
+    //     this is how the reviewed-plan GO prerequisite is produced without ever deploying. Zamp
+    //     copies PLAN_DIGEST into the deploy-mode gate, and only that plan can then execute.
     if (gate.mode === 'diff_only') {
       return {
         exit: EXIT.OK,
         output: [
           ...header,
+          `  PLAN_DIGEST ${digestOfPlan}`,
           '  DIFF ONLY — the cloud gate authorizes the plan, not the effect. Nothing was deployed.',
           '',
           '--- plan (sanitized) ---',
@@ -391,7 +458,29 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       };
     }
 
-    // 5c. The effect, for a `deploy`-mode gate only.
+    // 5c. The plan the gate NAMED must be the plan that would execute. Live state can change
+    //     between the diff_only run the human reviewed and this run: same assembly, different
+    //     diff. Byte-identical canonical plans or no effect — a changed world needs a new review.
+    if (digestOfPlan !== gate.planDigest) {
+      failures.push({ check: 'DEPLOY', code: 'PLAN_CHANGED', field: 'planDigest' });
+      return refuse();
+    }
+
+    // 5d. REVALIDATION AT THE MUTATION BOUNDARY: the diff child took real time, and the gate is a
+    //     window, not a state. The expiry is re-checked against a fresh clock and the account is
+    //     re-resolved immediately before the effect — a gate that lapsed or credentials that
+    //     changed while the plan was computed refuse HERE, one spawn away from the mutation.
+    if (Date.parse(gate.expiresAt) <= now()) {
+      failures.push({ check: 'DEPLOY', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
+      return refuse();
+    }
+    const accountAtEffect = resolveAccountId(run);
+    if (accountAtEffect !== accountAtVerify) {
+      failures.push({ check: 'DEPLOY', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
+      return refuse();
+    }
+
+    // 5e. The effect, for a `deploy`-mode gate naming THIS plan.
     const child = exec(['cdk', 'deploy', '--exclusively', ...stacks, '--require-approval', 'never', '--app', snapshot.dir], childEnv);
     const deployOutput = sanitizeChildOutput(`${child.stdout || ''}\n${child.stderr || ''}`).trimEnd();
     const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
@@ -399,6 +488,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       exit,
       output: [
         ...header,
+        `  PLAN_DIGEST ${digestOfPlan} (matched the gate; decision ${gate.decisionId})`,
         child.status === 0 ? 'Deployed the verified context.' : 'The deploy child failed; the binding held.',
         '',
         '--- plan (sanitized) ---',
@@ -414,7 +504,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, EXIT };
+module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, canonicalPlan, planDigestOf, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

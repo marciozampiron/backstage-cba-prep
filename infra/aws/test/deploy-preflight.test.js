@@ -745,7 +745,17 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
   return withDir(assemblyFiles, (asm) => withManifest(manifest, (p) => fn(p, asm, manifest)));
 }
 
-/** A valid deploy-mode cloud gate for THIS manifest — the authorization every effect now requires. */
+/** The tests' frozen clock: every gate window is bounded, so `now` is always injected. */
+const GATE_NOW = Date.parse('2026-08-02T12:00:00Z');
+
+/** The plan digest for a diff child that printed `stdout`/`stderr` — the same composition the
+ * entrypoint uses, so deploy-mode gates in tests name exactly the plan their fake child emits. */
+const { sanitizeChildOutput, planDigestOf } = require('../bin/deploy-release');
+const planDigestFor = (stdout = '', stderr = '') =>
+  planDigestOf(sanitizeChildOutput(`${stdout}\n${stderr}`).trimEnd());
+
+/** A valid deploy-mode cloud gate for THIS manifest — the authorization every effect requires:
+ * bounded window around GATE_NOW, a decision id, and the digest of the (empty) fake plan. */
 const gateFor = (manifest, over = {}) =>
   JSON.stringify({
     issue: 70,
@@ -753,7 +763,10 @@ const gateFor = (manifest, over = {}) =>
     releaseSha: manifest.releaseSha,
     assemblyDigest: manifest.assemblyDigest,
     mode: 'deploy',
-    expiresAt: '2099-01-01T00:00:00Z',
+    decisionId: 'zamp-2026-08-02.b1-deploy-01',
+    approvedAt: '2026-08-02T11:50:00Z',
+    expiresAt: '2026-08-02T12:30:00Z',
+    planDigest: planDigestFor(),
     ...over,
   });
 
@@ -768,6 +781,7 @@ test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — bo
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
       env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2', CBA_CLOUD_GATE: gateFor(manifest) },
+      now: () => GATE_NOW,
       exec: (args, childEnv) => {
         execs.push({ args, childEnv });
         // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child would run. The
@@ -1039,6 +1053,7 @@ test('deploy-release refuses identity mismatches and a failing child honestly', 
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
       env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) },
+      now: () => GATE_NOW,
       exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
     });
     assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
@@ -1054,6 +1069,7 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
         git: happyGit(),
         cdkJsonPath: CDK_JSON,
         env: gateValue === undefined ? {} : { CBA_CLOUD_GATE: gateValue },
+        now: () => GATE_NOW,
         exec: () => assert.fail('a run without a valid gate must never spawn a child'),
         ...opts,
       });
@@ -1065,7 +1081,9 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       assert.match(r.output, /CLOUD_GATE_MISSING/, label);
     }
 
-    // The shape is CLOSED: exactly the six keys, issue 70, a known mode, a parseable expiry.
+    // The shape is CLOSED: exactly the nine keys, issue 70, a known mode, a decision id, STRICT
+    // RFC3339 UTC instants, and a plan digest matching the mode. `Date.parse` alone accepted
+    // `2099-01-01` and a space-separated datetime — the exact round-3 reproductions refuse here.
     const good = JSON.parse(gateFor(manifest));
     for (const [label, mangled] of [
       ['not JSON', 'not json'],
@@ -1076,6 +1094,15 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       ['an unknown mode', JSON.stringify({ ...good, mode: 'deploy_all' })],
       ['a non-string expiry', JSON.stringify({ ...good, expiresAt: 9999999999 })],
       ['an unparseable expiry', JSON.stringify({ ...good, expiresAt: 'sometime soon' })],
+      ['a date-only expiry (round-3 repro)', JSON.stringify({ ...good, expiresAt: '2099-01-01' })],
+      ['a space-separated expiry (round-3 repro)', JSON.stringify({ ...good, expiresAt: '2026-08-02 12:30:00' })],
+      ['an offset expiry — UTC Z only', JSON.stringify({ ...good, expiresAt: '2026-08-02T12:30:00+00:00' })],
+      ['a date-only approval', JSON.stringify({ ...good, approvedAt: '2026-08-02' })],
+      ['a missing decision id', JSON.stringify({ ...good, decisionId: '' })],
+      ['a malformed decision id', JSON.stringify({ ...good, decisionId: 'a b c' })],
+      ['a deploy gate with no plan digest', JSON.stringify({ ...good, planDigest: null })],
+      ['a deploy gate with a malformed plan digest', JSON.stringify({ ...good, planDigest: 'zz' })],
+      ['a diff_only gate naming a plan', JSON.stringify({ ...good, mode: 'diff_only' })],
     ]) {
       const r = attempt(mangled);
       assert.equal(r.exit, 1, label);
@@ -1094,11 +1121,29 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       assert.match(r.output, /CLOUD_GATE_MISMATCH/, label);
     }
 
-    // Expiry against the INJECTED clock — a gate is a window, not a standing authorization.
-    const expired = attempt(gateFor(manifest, { expiresAt: '2026-08-02T00:00:00Z' }), { now: () => Date.parse('2026-08-02T00:00:01Z') });
+    // The window, against the INJECTED clock — a gate is a decision with a bounded life, never a
+    // standing authorization. An old gate REPRESENTED on a later run is the same refusal.
+    const expired = attempt(gateFor(manifest), { now: () => Date.parse('2026-08-02T12:30:00Z') });
     assert.equal(expired.exit, 1);
     assert.match(expired.output, /CLOUD_GATE_EXPIRED/);
-    const stillOpen = attempt(gateFor(manifest, { expiresAt: '2026-08-02T00:00:00Z' }), { now: () => Date.parse('2026-08-01T23:59:59Z'), exec: happyExec });
+    const yesterdays = attempt(gateFor(manifest, { approvedAt: '2026-08-01T11:50:00Z', expiresAt: '2026-08-01T12:30:00Z' }));
+    assert.equal(yesterdays.exit, 1, 'a stale gate re-presented the next day authorizes nothing');
+    assert.match(yesterdays.output, /CLOUD_GATE_EXPIRED/);
+    const future = attempt(gateFor(manifest, { approvedAt: '2026-08-02T12:10:00Z', expiresAt: '2026-08-02T12:40:00Z' }));
+    assert.equal(future.exit, 1);
+    assert.match(future.output, /CLOUD_GATE_NOT_YET_VALID/);
+    // TTL ceiling: a century, a two-hour window, and an inverted window are each refused — the
+    // 2099-style standing authorization the review reproduced can no longer be expressed.
+    for (const [label, over] of [
+      ['a century', { expiresAt: '2099-01-01T00:00:00Z' }],
+      ['two hours', { expiresAt: '2026-08-02T13:51:00Z' }],
+      ['inverted', { expiresAt: '2026-08-02T11:00:00Z' }],
+    ]) {
+      const r = attempt(gateFor(manifest, over));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_TTL_EXCEEDED/, label);
+    }
+    const stillOpen = attempt(gateFor(manifest), { now: () => Date.parse('2026-08-02T12:29:59Z'), exec: happyExec });
     assert.equal(stillOpen.exit, 0, stillOpen.output);
   });
 });
@@ -1110,7 +1155,8 @@ test('diff_only puts the plan on the record and deploys NOTHING', () => {
       run: stubAws(),
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only' }) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only', planDigest: null }) },
+      now: () => GATE_NOW,
       exec: (args) => {
         execs.push(args);
         return { status: 0, stdout: 'Stack ApiStack\nResources\n[~] AWS::Lambda::Function BffFunction\n', stderr: '' };
@@ -1133,6 +1179,7 @@ test('a failing plan child refuses the run — no plan, no effect', () => {
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
       env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      now: () => GATE_NOW,
       exec: (args) => {
         execs.push(args);
         assert.equal(args[1], 'diff', 'the deploy child must never spawn after a failed plan');
@@ -1142,6 +1189,110 @@ test('a failing plan child refuses the run — no plan, no effect', () => {
     assert.equal(r.exit, 1);
     assert.equal(execs.length, 1);
     assert.match(r.output, /DIFF_FAILED/);
+  });
+});
+
+test('ROUND-3 REPRO: live state changed between diff_only and deploy — the effect refuses as PLAN_CHANGED', () => {
+  withRelease((p, asm, manifest) => {
+    // Run 1 — diff_only: the plan over live state A goes on the record with its digest.
+    const reviewed = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      exec: () => ({ status: 0, stdout: 'Stack ApiStack\n[~] Function BffFunction memory 512 -> 1024\n', stderr: '' }),
+    });
+    assert.equal(reviewed.exit, 0, reviewed.output);
+    const namedDigest = reviewed.output.match(/PLAN_DIGEST ([0-9a-f]{64})/)[1];
+    assert.equal(namedDigest, planDigestFor('Stack ApiStack\n[~] Function BffFunction memory 512 -> 1024\n'));
+
+    // Run 2 — deploy, gate naming that digest, but the WORLD moved: same assembly, different diff.
+    const execs = [];
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: namedDigest }) },
+      now: () => GATE_NOW,
+      exec: (args) => {
+        execs.push(args);
+        assert.equal(args[1], 'diff', 'the deploy child must never spawn on a changed plan');
+        return { status: 0, stdout: 'Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n', stderr: '' };
+      },
+    });
+    assert.equal(r.exit, 1);
+    assert.equal(execs.length, 1, 'exactly the plan child ran');
+    assert.match(r.output, /PLAN_CHANGED/);
+
+    // And the same drifted world, re-reviewed (gate naming the NEW digest), executes.
+    const newDigest = planDigestFor('Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n');
+    const rereviewed = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: newDigest }) },
+      now: () => GATE_NOW,
+      exec: (args) => ({ status: 0, stdout: args[1] === 'diff' ? 'Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n' : '', stderr: '' }),
+    });
+    assert.equal(rereviewed.exit, 0, rereviewed.output);
+    assert.equal(rereviewed.executed, true);
+  });
+});
+
+test('ROUND-3 REPRO: the clock crosses the expiry DURING the diff — revalidation refuses one spawn from the effect', () => {
+  withRelease((p, asm, manifest) => {
+    // now() is consumed once at the gate check, then again at the mutation boundary. The diff
+    // "takes" 31 minutes: valid when the gate was checked, lapsed by the time the effect would run.
+    const instants = [Date.parse('2026-08-02T12:00:00Z'), Date.parse('2026-08-02T12:31:00Z')];
+    const execs = [];
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: stubAws(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z'),
+      exec: (args) => {
+        execs.push(args);
+        assert.equal(args[1], 'diff', 'the deploy child must never spawn after the window lapsed');
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+    assert.equal(r.exit, 1);
+    assert.equal(execs.length, 1, 'only the plan child ran');
+    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+  });
+});
+
+test('the plan is EMITTED before the effect, and the account is re-resolved at the mutation boundary', () => {
+  withRelease((p, asm, manifest) => {
+    const order = [];
+    let stsCalls = 0;
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: (args, o) => {
+        if (args[0] === 'sts') {
+          stsCalls += 1;
+          return { status: 0, stdout: JSON.stringify({ Account: ACCOUNT }), stderr: '' };
+        }
+        return stubAws()(args, o);
+      },
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      now: () => GATE_NOW,
+      print: (text) => order.push(['print', text]),
+      exec: (args) => {
+        order.push(['exec', args[1]]);
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+    assert.equal(r.exit, 0, r.output);
+    // Review material exists BEFORE the mutation it authorizes: diff runs, the plan is printed,
+    // only then does the deploy child spawn.
+    assert.deepEqual(order.map(([kind, v]) => (kind === 'exec' ? `exec:${v}` : 'print')), ['exec:diff', 'print', 'exec:deploy']);
+    assert.match(order[1][1], /PLAN_DIGEST [0-9a-f]{64}/);
+    // Identity at verification, immediately after, and again at the mutation boundary.
+    assert.equal(stsCalls, 3, 'the account is resolved at verify, before the plan, and before the effect');
   });
 });
 
@@ -1170,7 +1321,8 @@ test('poisoned child output cannot leak identifiers — redaction is by shape, n
       run: stubAws(),
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: planDigestFor(`child diff says ${POISONS.join(' ')}`, `err ${POISONS[0]}`) }) },
+      now: () => GATE_NOW,
       exec: (args) => ({ status: 0, stdout: `child ${args[1]} says ${POISONS.join(' ')}`, stderr: `err ${POISONS[0]}` }),
     });
     assert.equal(r.exit, 0, r.output);
@@ -1228,7 +1380,7 @@ test('the snapshot preserves the executable bit, so an honest executable asset d
     assert.equal(r.exit, 0, r.output);
     const manifest = JSON.parse(written[0]);
     withManifest(manifest, (mp) => {
-      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, exec: happyExec });
+      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, now: () => GATE_NOW, exec: happyExec });
       assert.equal(rel.exit, 0, rel.output);
     });
   });
@@ -1240,7 +1392,7 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
   try {
     // Success.
     withRelease((p2, asm, manifest) => {
-      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, tmpBase, exec: happyExec });
+      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, now: () => GATE_NOW, tmpBase, exec: happyExec });
       assert.equal(r.exit, 0, r.output);
       assertEmpty('success');
     });
@@ -1280,7 +1432,7 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
 
       runDeployRelease(releaseArgs(p2, asm), {
         run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON,
-        env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) }, tmpBase,
+        env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) }, now: () => GATE_NOW, tmpBase,
         exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
       });
       assertEmpty('a failing child');
