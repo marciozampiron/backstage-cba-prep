@@ -1318,21 +1318,25 @@ test('ROUND-4/5 REPRO: principals cannot collide in the digest AND stay visibly 
       Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'Pool', ResourceType: 'AWS::Cognito::UserPool', Details: [{ Target: { Attribute: 'Properties', Name: 'AdminCreateUserConfig' }, CausingEntity: arn }] } }],
     },
   });
-  const roleA = `arn:aws:iam::${ACCOUNT}:role/role-a`;
-  const roleB = `arn:aws:iam::${ACCOUNT}:role/role-b`;
-  const planA = principal(roleA);
-  const planB = principal(roleB);
+  // Round 6: the expected deploy role versus an attacker's role — Zamp must be able to CLASSIFY
+  // them, not merely tell two opaque hashes apart. Structure stays verbatim (service, region,
+  // resource path — repository-public names); only the ACCOUNT is pseudonymized, at 128 bits.
+  const expectedRole = `arn:aws:iam::${ACCOUNT}:role/cba-study-coach-gha-deploy-dev`;
+  const attackerRole = `arn:aws:iam::${ACCOUNT}:role/evil-admin`;
+  const planA = principal(expectedRole);
+  const planB = principal(attackerRole);
   assert.notEqual(digestOf(planA), digestOf(planB), 'different principals MUST produce different plan digests');
   const { renderPlan } = require('../bin/deploy-release');
   const render = (d) => renderPlan(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], d[PILOT_STACK_NAMES[i]])));
-  assert.notEqual(render(planA), render(planB), 'different principals MUST render distinguishably — an opaque id is not reviewable material');
-  for (const [rendering, raw] of [[render(planA), roleA], [render(planB), roleB]]) {
-    assert.equal(rendering.includes(raw), false, 'the rendering never carries the identifier itself');
-    assert.match(rendering, /\[arn#[0-9a-f]{8}\]/, 'the identifier appears as a stable fingerprint');
+  assert.notEqual(render(planA), render(planB), 'different principals MUST render distinguishably');
+  assert.match(render(planA), /arn:aws:iam::\[acct#[0-9a-f]{32}\]:role\/cba-study-coach-gha-deploy-dev/, 'the EXPECTED principal is classifiable by its visible path');
+  assert.match(render(planB), /arn:aws:iam::\[acct#[0-9a-f]{32}\]:role\/evil-admin/, 'an ATTACKER principal is exposed by its visible path — not hidden behind an opaque hash');
+  for (const rendering of [render(planA), render(planB)]) {
+    assert.equal(rendering.includes(ACCOUNT), false, 'the rendering never carries the account id');
     assert.match(rendering, /Properties\.AdminCreateUserConfig/, 'the changed property is named — semantics, not just identity');
   }
-  // The same principal always fingerprints identically — a KNOWN principal is recognizable.
-  assert.equal(render(planA), render(principal(roleA)), 'fingerprints are stable across renderings');
+  // 128-bit pseudonyms: no feasible collision surface, stable across renderings.
+  assert.equal(render(planA), render(principal(expectedRole)), 'pseudonyms are stable across renderings');
 
   // End to end: a gate naming plan A refuses when the world holds plan B.
   withRelease((p, asm, manifest) => {

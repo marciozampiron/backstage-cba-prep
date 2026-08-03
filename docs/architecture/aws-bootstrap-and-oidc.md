@@ -314,12 +314,11 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     `cba-study-coach-boundary-gha-deploy-<env>`) may ONLY assume that tier's
     `cdk-<qualifier>-{deploy,file-publishing,lookup}-role-*`; deployment ends in that tier's
     execution role, whose policy enumerates the four templates' real resource types with
-    tier-scoped resource names, demands the `Project`/`Environment` tags wherever AWS offers no
-    ARN to scope to (Cognito pools and KMS keys: `aws:RequestTag` on create, `aws:ResourceTag` on
-    lifecycle), and names its one residual: API Gateway sub-resources are untaggable in the
-    service model, so below the tag-confined API creation the confinement is account + region +
-    `/apis` path scope only — recorded for Zamp's risk decision, with account isolation as the
-    documented alternative. Every role a release creates is pinned to
+    tier-scoped resource names and demands the `Project`/`Environment` tags wherever AWS offers
+    no ARN to scope to — Cognito pools, KMS keys AND every API Gateway operation (`aws:RequestTag`
+    on create, `aws:ResourceTag` on root and child lifecycle; the governance tags themselves are
+    fenced by explicit denies against removal or foreign replacement, so an owned resource cannot
+    be untagged out of its confinement). Every role a release creates is pinned to
     `cba-study-coach-boundary-runtime-<env>` by the `iam:PermissionsBoundary` condition; touching
     the `cba-study-coach-gha-*` roles or the `cdk-hnb659fds-*` foundation is explicitly denied.
     Redeploying the SecurityStack after this step (it now carries the per-tier GitHub deploy

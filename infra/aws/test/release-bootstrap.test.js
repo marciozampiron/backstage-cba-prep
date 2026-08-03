@@ -138,31 +138,55 @@ test('every wildcard is a NAMED exception, and each is confined by the PROJECT A
   assert.deepEqual(byId.CognitoLifecycleOnlyOnProjectTaggedPools.Condition.StringEquals, RESOURCE_TAGGED);
   assert.deepEqual(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Condition.StringEquals, RESOURCE_TAGGED);
   assert.ok(asArray(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Action).includes('kms:ScheduleKeyDeletion'), 'the destructive KMS actions are exactly the tag-confined ones');
-  // API Gateway (round 5): creation demands the REQUEST tags; the ROOT API lifecycle demands the
-  // RESOURCE tags — a foreign API's root (delete, reconfigure, repoint) is unreachable whatever
-  // its id. Only the ENUMERATED subresource paths remain tag-free (their ARNs are untaggable in
-  // the service model), and every one of them carries a second path segment, so no pattern in
-  // the residual can address a bare /apis/{api-id}. The residual is NAMED, never implicit.
+  // API Gateway (rounds 5-6): creation demands the REQUEST tags; the ROOT lifecycle and EVERY
+  // CHILD operation demand the RESOURCE tags (the service authorization reference lists
+  // aws:ResourceTag for these resource families — children authorize against the owning API's
+  // tags). A foreign API — root or child — is unreachable whatever its id.
   assert.deepEqual(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Condition.StringEquals, REQUEST_TAGGED);
   assert.equal(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Resource, 'arn:aws:apigateway:us-east-1::/apis');
   assert.deepEqual(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Condition.StringEquals, RESOURCE_TAGGED);
   assert.equal(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Resource, 'arn:aws:apigateway:us-east-1::/apis/*');
   assert.equal(asArray(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Action).includes('apigateway:POST'), false, 'subresource creation never rides the root statement');
-  const residual = byId.ApiGatewayV2EnumeratedSubresourcePathsNamedResidual;
-  assert.ok(residual, 'the residual is NAMED, never implicit');
-  for (const resource of asArray(residual.Resource)) {
-    assert.match(resource, /^arn:aws:apigateway:us-east-1::\/apis\/\*\/[a-z]+(\/\*)?$/, `residual path "${resource}" must carry a second path segment — a bare /apis/{id} is out of its reach`);
+  const children = byId.ApiGatewayV2ChildLifecycleOnlyOnProjectTaggedApis;
+  assert.ok(children, 'the child-lifecycle statement must exist');
+  assert.deepEqual(children.Condition.StringEquals, RESOURCE_TAGGED, 'FOREIGN CHILD DELETION control: children are tag-confined too');
+  for (const resource of asArray(children.Resource)) {
+    assert.match(resource, /^arn:aws:apigateway:us-east-1::\/apis\/\*\/[a-z]+(\/\*)?$/, `child path "${resource}" must carry a second path segment`);
   }
-  // FOREIGN API DELETION control: no unconditioned statement can address a root API. Every
-  // statement whose pattern reaches /apis/* either demands the resource tags or enumerates
-  // deeper segments only.
+  // TAG OPERATIONS control (round 6): the V2 tags API is POST/DELETE/GET — no PUT anywhere —
+  // and every tag mutation demands ownership of the resource being touched, while the
+  // governance keys can neither be REMOVED nor REPLACED, even on owned resources.
+  const tagOps = byId.ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources;
+  assert.deepEqual(asArray(tagOps.Action).sort(), ['apigateway:DELETE', 'apigateway:GET', 'apigateway:POST']);
+  assert.deepEqual(tagOps.Condition.StringEquals, RESOURCE_TAGGED, 'FOREIGN UNTAGGING control: tag mutation requires ownership');
+  assert.deepEqual(byId.DenyGovernanceTagRemoval['ForAnyValue:StringEquals'] ?? byId.DenyGovernanceTagRemoval.Condition['ForAnyValue:StringEquals'], { 'aws:TagKeys': ['Project', 'Environment'] }, 'governance tags can never be removed');
+  assert.equal(byId.DenyGovernanceTagRemoval.Effect, 'Deny');
+  assert.equal(byId.DenyProjectTagReplacement.Condition.StringNotEquals['aws:RequestTag/Project'], 'CBAStudyCoach', 'the Project tag can never be replaced with a foreign value');
+  assert.equal(byId.DenyEnvironmentTagReplacement.Condition.StringNotEquals['aws:RequestTag/Environment'], 'ENVIRONMENT_PLACEHOLDER', 'the Environment tag can never be re-aimed at another tier');
+  // The same governance protection covers the other tag-scoped families (Cognito, KMS): removal
+  // denied, replacement denied — an owned resource cannot be untagged out of the confinement.
+  assert.deepEqual(byId.DenyGovernanceTagRemovalOnTagScopedFamilies.Condition['ForAnyValue:StringEquals'], { 'aws:TagKeys': ['Project', 'Environment'] });
+  assert.deepEqual(asArray(byId.DenyGovernanceTagRemovalOnTagScopedFamilies.Action).sort(), ['cognito-idp:UntagResource', 'kms:UntagResource']);
+  assert.ok(byId.DenyProjectTagReplacementOnTagScopedFamilies && byId.DenyEnvironmentTagReplacementOnTagScopedFamilies);
+  // NO UNCONDITIONED APIGATEWAY MUTATION, anywhere: every Allow that can write demands tags.
   for (const stmt of releaseExec.Statement.filter((st) => st.Effect === 'Allow')) {
-    for (const resource of asArray(stmt.Resource)) {
-      if (resource === 'arn:aws:apigateway:us-east-1::/apis/*') {
-        assert.ok(stmt.Condition?.StringEquals?.['aws:ResourceTag/Project'], `statement "${stmt.Sid}" reaches root APIs without demanding ownership tags`);
-      }
+    const actions = asArray(stmt.Action).filter((a) => a.startsWith('apigateway:'));
+    if (actions.length === 0) continue;
+    const mutating = actions.some((a) => a !== 'apigateway:GET');
+    if (mutating) {
+      const c = stmt.Condition?.StringEquals ?? {};
+      assert.ok(
+        c['aws:ResourceTag/Project'] === 'CBAStudyCoach' || c['aws:RequestTag/Project'] === 'CBAStudyCoach',
+        `statement "${stmt.Sid}" mutates API Gateway without demanding ownership tags`,
+      );
     }
   }
+  // OWNED OPERATIONS SUCCEED: the condition values are EXACTLY the tags the real templates carry
+  // — the confinement matches what the app deploys, not a hoped-for label.
+  const templates = synthDeployables('dev');
+  const api = Object.values(templates.ApiStack.toJSON().Resources).find((r) => r.Type === 'AWS::ApiGatewayV2::Api');
+  assert.equal(api.Properties.Tags.Project, 'CBAStudyCoach');
+  assert.equal(api.Properties.Tags.Environment, 'dev');
   assert.deepEqual(asArray(byId.LogsQueryDefinitionsCarryNoScopingArn.Action).sort(), [
     'logs:DeleteQueryDefinition',
     'logs:DescribeLogGroups',
@@ -292,11 +316,13 @@ test('ROUND-5: the REAL dependency graph respects the reviewed plan waves — fr
   for (const environment of ['dev', 'pilot']) {
     const app = new App({ context: { environment } });
     buildStacks(app);
-    // Cross-stack references materialize at SYNTH time; the assembly carries the real edges.
+    // Cross-stack references materialize at SYNTH time; the assembly carries the metadata edges.
     const assembly = app.synth();
     let edges = 0;
+    const templatesById = {};
     for (const artifact of assembly.stacks) {
       if (!DEPLOYABLE_STACK_IDS.includes(artifact.id)) continue;
+      templatesById[artifact.id] = artifact.template;
       for (const dep of artifact.dependencies) {
         if (!DEPLOYABLE_STACK_IDS.includes(dep.id)) continue; // SecurityStack: foundation, human-gated, pre-existing
         edges += 1;
@@ -307,7 +333,95 @@ test('ROUND-5: the REAL dependency graph respects the reviewed plan waves — fr
       }
     }
     assert.ok(edges >= 3, `the discovery must actually see the cross-stack edges (saw ${edges})`);
+    // ROUND 6: metadata edges are not the ground truth — a LITERAL Fn::ImportValue pasted into a
+    // template creates no CDK dependency edge and would still strand a fresh tier. Walk the
+    // synthesized TEMPLATES themselves: every import must name an export whose producer sits in
+    // an earlier wave — or in the FOUNDATION (SecurityStack), which pre-exists every wave and is
+    // deployed by the human operator under the #66 bootstrap.
+    const foundation = Object.fromEntries(
+      assembly.stacks.filter((a) => a.id === 'SecurityStack').map((a) => [a.id, a.template]),
+    );
+    const realViolations = waveImportViolations(templatesById, waves, foundation);
+    assert.deepEqual(realViolations, [], `literal imports must respect the wave order:\n${realViolations.join('\n')}`);
   }
+});
+
+/** Every Fn::ImportValue in `template`, walked recursively — objects, arrays, nested intrinsics. */
+function collectImports(node, out = []) {
+  if (Array.isArray(node)) {
+    for (const item of node) collectImports(item, out);
+    return out;
+  }
+  if (node && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'Fn::ImportValue') out.push(value);
+      else collectImports(value, out);
+    }
+  }
+  return out;
+}
+
+/** Wave-order violations across a {stackId: templateJSON} set: unresolvable import names,
+ * imports with no producing export, and producers not strictly in an earlier wave. */
+function waveImportViolations(templatesById, waves, foundationTemplates = {}) {
+  const waveOf = (id) => (Object.hasOwn(foundationTemplates, id) ? -1 : waves.findIndex((group) => group.includes(id)));
+  const exportedBy = {};
+  for (const [stackId, template] of Object.entries({ ...foundationTemplates, ...templatesById })) {
+    for (const output of Object.values(template.Outputs ?? {})) {
+      const name = output?.Export?.Name;
+      if (typeof name === 'string') exportedBy[name] = stackId;
+    }
+  }
+  const violations = [];
+  for (const [stackId, template] of Object.entries(templatesById)) {
+    for (const imported of collectImports(template)) {
+      if (typeof imported !== 'string') {
+        violations.push(`${stackId} imports a NON-LITERAL export name (${JSON.stringify(imported)}) — unverifiable, refused`);
+        continue;
+      }
+      const producer = exportedBy[imported];
+      if (!producer) {
+        violations.push(`${stackId} imports "${imported}", which no deployable stack exports — a fresh tier cannot satisfy it`);
+        continue;
+      }
+      if (!(waveOf(producer) < waveOf(stackId))) {
+        violations.push(`${stackId} imports "${imported}" from ${producer}, whose wave is not earlier — a fresh tier could not plan ${stackId}`);
+      }
+    }
+  }
+  return violations;
+}
+
+test('ROUND-6 POSITIVE CONTROL: the import walker catches literal imports the metadata never sees', () => {
+  const waves = DEPLOYMENT_PLAN_GROUPS.slice(0, -1);
+  const base = {
+    IdentityStack: { Resources: {}, Outputs: { A: { Value: 'x', Export: { Name: 'identity:pool' } } } },
+    DataStack: { Resources: {} },
+    ApiStack: { Resources: { Fn: { Type: 'AWS::Lambda::Function', Properties: { Env: { 'Fn::ImportValue': 'identity:pool' } } } } },
+    ObservabilityStack: { Resources: {}, Outputs: { B: { Value: 'y', Export: { Name: 'obs:topic' } } } },
+  };
+  assert.deepEqual(waveImportViolations(base, waves), [], 'a well-ordered literal import passes');
+
+  // A literal import pasted into a template — NO CDK metadata edge exists for any of these.
+  const laterWave = structuredClone(base);
+  laterWave.IdentityStack.Resources.Bad = { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::ImportValue': 'obs:topic' } } };
+  assert.equal(waveImportViolations(laterWave, waves).length, 1, 'an earlier wave importing a later wave is caught');
+
+  const sameWave = structuredClone(base);
+  sameWave.DataStack.Resources.Bad = { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::ImportValue': 'identity:pool' } } };
+  assert.equal(waveImportViolations(sameWave, waves).length, 1, 'a same-wave import is caught — waves are strict');
+
+  const orphan = structuredClone(base);
+  orphan.ApiStack.Resources.Bad = { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::ImportValue': 'nobody:exports-this' } } };
+  assert.equal(waveImportViolations(orphan, waves).length, 1, 'an import nobody exports is caught');
+
+  const nonLiteral = structuredClone(base);
+  nonLiteral.ApiStack.Resources.Bad = { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::ImportValue': { 'Fn::Sub': 'x-${AWS::Region}' } } } };
+  assert.equal(waveImportViolations(nonLiteral, waves).length, 1, 'a non-literal export name is unverifiable and refused');
+
+  const nested = structuredClone(base);
+  nested.DataStack.Resources.Deep = { Type: 'X', Properties: { A: [{ B: { C: [{ 'Fn::ImportValue': 'obs:topic' }] } }] } };
+  assert.equal(waveImportViolations(nested, waves).length, 1, 'the walk is RECURSIVE — depth hides nothing');
 });
 
 test('no real 12-digit account id in the release bootstrap templates', () => {

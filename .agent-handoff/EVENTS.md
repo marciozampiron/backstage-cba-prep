@@ -2,6 +2,38 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-03 — Claude — #70 Slice B1 round 6: children tag-confined, identities classifiable, imports walked
+
+- Codex's round-6 review of f6942f55: the API Gateway child paths still allowed unconditioned
+  mutation beneath every API id (and /tags/* allowed unconditioned tag deletion — a compromised
+  role could strip a foreign API's governance tags); the 8-hex fingerprints made principals
+  distinguishable but not CLASSIFIABLE (an approved role and an attacker's role were two opaque
+  hashes, with a feasible 32-bit collision surface); and the wave guard walked CDK metadata
+  edges, which a literal Fn::ImportValue pasted into a template never creates. Two HIGHs, one
+  MEDIUM. Fix-forward, all five reviewed commits preserved.
+- Every API Gateway operation now demands ownership: children (routes, integrations,
+  authorizers, stages, deployments, cors) authorize against the owning API's Project/Environment
+  tags per the service authorization reference; the V2 tags API is shaped POST/DELETE/GET with
+  resource ownership required; and the governance tags themselves are FENCED — removal of
+  Project/Environment explicitly denied, replacement with foreign values explicitly denied — on
+  API Gateway, Cognito and KMS alike, so an owned resource cannot be untagged out of its
+  confinement. A control asserts no unconditioned apigateway mutation exists anywhere, and the
+  condition values are proven EQUAL to the tags the real synthesized templates carry.
+- Review material uses STRUCTURED pseudonymization now: service, region, resource type and path
+  render VERBATIM (the expected deploy role and role/evil-admin are each classifiable at sight);
+  only account material renders as pseudonyms, at 128 bits — no feasible collision surface.
+  Stated limit, on the record: a 12-digit account space is enumerable offline against any
+  unkeyed derivation; the pseudonym prevents log disclosure (the mask-aws-account-id posture),
+  it is not cryptographic secrecy.
+- The fresh-tier guard walks the synthesized TEMPLATES recursively for literal Fn::ImportValue,
+  resolves every export name to its producer, and requires the producer in an earlier wave — or
+  in the SecurityStack foundation, which pre-exists every wave. Positive controls feed it
+  doctored templates the CDK metadata never sees: later-wave, same-wave, orphaned, non-literal
+  and deeply nested imports are each caught.
+- Every new rule proven by deletion: the child tag condition (1 test), the governance-removal
+  deny (1), the structured rendering collapsed to opaque hashes (1), the import collector
+  blinded (1). Nothing was deployed, published or mutated.
+
 ## 2026-08-02 — Claude — #70 Slice B1 round 5: waves for the first deploy, the root API closed, semantics made reviewable
 
 - Codex's round-5 review of f49481d7: a fresh tier could not prepare all four change sets (the

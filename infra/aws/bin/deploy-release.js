@@ -320,24 +320,42 @@ function waitForStack(run, credEnv, stackName, { attempts = 120, sleep }) {
   return false;
 }
 
-/** Like sanitizeChildOutput, but each redaction carries a short FINGERPRINT of the raw value.
- * Round 5: pure redaction made two plans differing only in an IAM principal render identically —
- * reviewable material must let the human SEE that two principals differ (and recognize a known
- * one by its stable fingerprint) without the log ever carrying the identifier itself. */
+/** STRUCTURED PSEUDONYMIZATION for review material (rounds 5-6). Pure redaction made two
+ * principals indistinguishable, and an 8-hex fingerprint made them distinguishable but not
+ * CLASSIFIABLE — Zamp could see that two hashes differed, never that one was the expected deploy
+ * role and the other an attacker's. Review material now preserves the SAFE STRUCTURE — service,
+ * region, resource type and resource path stay verbatim (role names in this project are public
+ * repository content; the path is exactly what a human classifies by) — and pseudonymizes only
+ * the ACCOUNT-identifying material, at 128 bits (32 hex — no feasible collision surface).
+ * Stated limit: a 12-digit account space is enumerable offline against any unkeyed derivation;
+ * this pseudonym prevents disclosure in logs (the same posture as mask-aws-account-id), it is
+ * not cryptographic secrecy for the account id. */
+function pseudonym(value) {
+  return crypto.createHash('sha256').update(`cba-pseudonym:${value}`, 'utf8').digest('hex').slice(0, 32);
+}
+
 function fingerprintSanitize(text) {
   if (!text) return '';
-  const fp = (kind) => (match) => `[${kind}#${crypto.createHash('sha256').update(match, 'utf8').digest('hex').slice(0, 8)}]`;
   return text
-    .replace(/arn:[a-zA-Z0-9-]*:[^\s"'`\\]+/g, fp('arn'))
-    .replace(/https?:\/\/[^\s"'`\\]+/g, fp('url'))
-    .replace(/\b[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{5,}\b/g, fp('user-pool'))
-    .replace(/(?<!\d)\d{12}(?!\d)/g, fp('account'));
+    // ARNs that embed an account: keep partition/service/region/resource verbatim, replace the
+    // account. `arn:aws:iam::123456789012:role/evil-admin` renders as
+    // `arn:aws:iam::[acct#…]:role/evil-admin` — classifiable, unattributable.
+    .replace(/\b(arn:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:)(\d{12})(:[^\s"'`\\]+)/g, (m, head, acct, tail) => `${head}[acct#${pseudonym(acct)}]${tail}`)
+    // Generated endpoint hosts: pseudonymize the generated first label, keep the service domain
+    // and path — `https://[endpoint#…].execute-api.us-east-1.amazonaws.com/prod` stays legible.
+    .replace(/(https?:\/\/)([A-Za-z0-9-]+)(\.[^\s"'`\\]+)/g, (m, scheme, label, rest) => `${scheme}[endpoint#${pseudonym(label)}]${rest}`)
+    // Cognito pool ids: keep the region prefix, pseudonymize the generated suffix.
+    .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region, id) => `${region}_[pool#${pseudonym(id)}]`)
+    // Any bare 12-digit run that survived (bucket names, ids inside text).
+    .replace(/(?<!\d)\d{12}(?!\d)/g, (m) => `[acct#${pseudonym(m)}]`);
 }
 
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
- * Round 5: the SEMANTICS must be reviewable — property values (from --include-property-values),
- * causing entities and policy bodies render with fingerprinted identifiers, so what Zamp
- * approves is the CONTENT of the change, never just an opaque change-set id. */
+ * Rounds 5-6: the SEMANTICS must be reviewable — property values (from
+ * --include-property-values), causing entities and policy bodies render with STRUCTURED
+ * pseudonymization: paths and types verbatim, accounts at 128-bit pseudonyms — so what Zamp
+ * approves is the CONTENT of the change and the IDENTITY class of every principal, never just
+ * an opaque change-set id or an opaque hash. */
 function renderPlan(planEntries) {
   const lines = [];
   for (const entry of planEntries) {

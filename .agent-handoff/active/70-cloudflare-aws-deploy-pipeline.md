@@ -88,13 +88,26 @@ group it covers — first deployments run in dependency WAVES (Identity+Data →
 Observability, each wave planned/reviewed/executed under its own gate, because a change set
 whose `Fn::ImportValue` producers are unexecuted cannot even be created; a discovery test walks
 the real CDK assembly graph and refuses wave-order violations); the API Gateway ROOT lifecycle
-is tag-confined (`aws:ResourceTag`) so a foreign API's root is unreachable whatever its id, and
-the residual shrank to the ENUMERATED untaggable subresource paths (every pattern carries a
-second path segment); the plan describes retrieve `--include-property-values` and the rendering
-shows the SEMANTICS — named properties, before/after values, causing entities — with
-FINGERPRINTED identifiers (stable per value), so different principals are visibly
-distinguishable without the log ever carrying an identifier; and a change set that is not
+is tag-confined (`aws:ResourceTag`) so a foreign API's root is unreachable whatever its id; the
+plan describes retrieve `--include-property-values` and a change set that is not
 `ExecutionStatus: AVAILABLE` never receives a reviewable digest.
+
+The round-6 review closed the remaining seams: EVERY API Gateway child operation (routes,
+integrations, authorizers, stages, deployments, cors) now demands the owning API's
+Project/Environment tags (the service authorization reference lists `aws:ResourceTag` for these
+resource families — children authorize against the parent's tags), the V2 tags API is shaped as
+POST/DELETE/GET with ownership required, and the GOVERNANCE TAGS themselves are fenced: removal
+of Project/Environment is explicitly denied and replacement with foreign values is explicitly
+denied — on API Gateway, Cognito and KMS alike, so an owned resource cannot be untagged out of
+its confinement. Review material now uses STRUCTURED pseudonymization: service, region, type
+and resource path render VERBATIM (repository-public names — the expected deploy role and an
+attacker's `role/evil-admin` are each classifiable at sight) while account material renders as
+128-bit pseudonyms (no feasible collision surface; stated limit: a 12-digit space is enumerable
+offline against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
+`mask-aws-account-id`). And the fresh-tier wave guard walks the synthesized TEMPLATES for
+literal `Fn::ImportValue` (recursively, with a positive control the CDK metadata never sees),
+resolving each export to its producer, which must sit in an earlier wave — or in the
+SecurityStack foundation, which pre-exists every wave.
 
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):

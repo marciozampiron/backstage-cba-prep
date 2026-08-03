@@ -64,8 +64,9 @@
 #      release, assembly digest, decision id, a bounded window (strict RFC3339 UTC, at most one
 #      hour) and the REVIEWED PLAN GROUP it covers — first with mode plan_only, which PREPARES
 #      one named CloudFormation change set per stack in the group and emits PLAN_DIGEST over
-#      their unredacted canonical describes (property values included — the rendering shows the
-#      semantics with fingerprinted identifiers); then with mode deploy NAMING that digest, which
+#      their unredacted canonical describes (property values included — the rendering keeps
+#      service/type/resource paths VERBATIM so principals are classifiable, and pseudonymizes
+#      only account material at 128 bits); then with mode deploy NAMING that digest, which
 #      executes EXACTLY those change sets. A recreated or drifted plan refuses as PLAN_CHANGED;
 #      an OBSOLETE change set never receives a digest; CloudFormation itself refuses a change
 #      set whose stack moved after preparation. FIRST DEPLOYMENT of a tier runs in dependency

@@ -75,7 +75,7 @@
       }
     },
     {
-      "Sid": "ApiGatewayV2EnumeratedSubresourcePathsNamedResidual",
+      "Sid": "ApiGatewayV2ChildLifecycleOnlyOnProjectTaggedApis",
       "Effect": "Allow",
       "Action": [
         "apigateway:DELETE",
@@ -96,17 +96,75 @@
         "arn:aws:apigateway:us-east-1::/apis/*/deployments",
         "arn:aws:apigateway:us-east-1::/apis/*/deployments/*",
         "arn:aws:apigateway:us-east-1::/apis/*/cors"
-      ]
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
-      "Sid": "ApiGatewayV2TagOperations",
+      "Sid": "ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources",
       "Effect": "Allow",
       "Action": [
         "apigateway:DELETE",
         "apigateway:GET",
-        "apigateway:PUT"
+        "apigateway:POST"
       ],
-      "Resource": "arn:aws:apigateway:us-east-1::/tags/*"
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "DenyGovernanceTagRemoval",
+      "Effect": "Deny",
+      "Action": "apigateway:DELETE",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyProjectTagReplacement",
+      "Effect": "Deny",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach"
+        }
+      }
+    },
+    {
+      "Sid": "DenyEnvironmentTagReplacement",
+      "Effect": "Deny",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Environment"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
       "Sid": "DynamoLifecycleOnOwnTables",
@@ -331,6 +389,70 @@
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "lambda.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DenyGovernanceTagRemovalOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:UntagResource",
+        "kms:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyProjectTagReplacementOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:TagResource",
+        "kms:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach"
+        }
+      }
+    },
+    {
+      "Sid": "DenyEnvironmentTagReplacementOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:TagResource",
+        "kms:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Environment"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
         }
       }
     },
