@@ -77,11 +77,14 @@ function contextDigest({ releaseSha, environment, region, accountId, context }) 
   return createHash('sha256').update(payload).digest('hex');
 }
 
-function defaultRun(args, { timeoutMs } = {}) {
+function defaultRun(args, { timeoutMs, env } = {}) {
   return spawnSync('aws', [...args, '--cli-connect-timeout', '5', '--cli-read-timeout', '20'], {
     encoding: 'utf8',
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
+    // Callers hand in ASSUMED-ROLE credentials (and the imposed region) for the CloudFormation
+    // change-set calls; ambient credentials are never widened, only replaced for one child.
+    env: env ? { ...process.env, ...env } : process.env,
   });
 }
 

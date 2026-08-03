@@ -88,7 +88,7 @@ test('GithubDeployRole: environment-scoped trust, pinned boundary, and ONLY boot
     );
     assert.ok(trust.includes('"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"'));
     const boundary = JSON.stringify(role.Properties.PermissionsBoundary);
-    assert.match(boundary, /cba-study-coach-boundary-gha-deploy/, 'the operator-managed deploy boundary is attached');
+    assert.match(boundary, new RegExp(`cba-study-coach-boundary-gha-deploy-${environment}`), "THIS TIER'S deploy boundary is attached — never the other's");
   }
 
   // Least privilege is structural: the ONLY inline permission is assuming the three CDK
@@ -103,11 +103,21 @@ test('GithubDeployRole: environment-scoped trust, pinned boundary, and ONLY boot
   assert.equal(stmt.Effect, 'Allow');
   const flatResources = JSON.stringify(stmt.Resource);
   for (const name of ['deploy', 'file-publishing', 'lookup']) {
-    assert.ok(flatResources.includes(`cdk-cbarel-${name}-role-`), `${name} bootstrap role expected`);
+    assert.ok(flatResources.includes(`cdk-cbarpil-${name}-role-`), `${name} bootstrap role expected (pilot tier)`);
   }
   assert.equal(stmt.Resource.length, 3, 'exactly the three bootstrap roles');
   assert.equal(flatResources.includes('image-publishing'), false, 'no container-asset authority');
   assert.equal(flatResources.includes('cfn-exec'), false, 'never the CloudFormation execution role directly');
+
+  // Per-environment isolation (round 4): the dev role names ONLY the dev bootstrap.
+  const devTemplate = synthTemplate({ environment: 'dev' });
+  const devStmt = Object.values(devTemplate.findResources('AWS::IAM::Policy'))
+    .flatMap((p) => p.Properties.PolicyDocument.Statement)
+    .find((st) => st.Action === 'sts:AssumeRole');
+  const devFlat = JSON.stringify(devStmt.Resource);
+  assert.ok(devFlat.includes('cdk-cbardev-deploy-role-'), 'the dev tier assumes its own bootstrap');
+  assert.equal(devFlat.includes('cbarpil'), false, 'dev authority must not reach the pilot bootstrap');
+  assert.equal(flatResources.includes('cbardev'), false, 'pilot authority must not reach the dev bootstrap');
 });
 
 test('OVERPRIVILEGE CONTROL: the closed action set — no wildcard, no iam:, no admin-shaped grant anywhere', () => {

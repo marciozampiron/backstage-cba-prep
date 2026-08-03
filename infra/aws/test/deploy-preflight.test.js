@@ -748,14 +748,59 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
 /** The tests' frozen clock: every gate window is bounded, so `now` is always injected. */
 const GATE_NOW = Date.parse('2026-08-02T12:00:00Z');
 
-/** The plan digest for a diff child that printed `stdout`/`stderr` — the same composition the
- * entrypoint uses, so deploy-mode gates in tests name exactly the plan their fake child emits. */
-const { sanitizeChildOutput, planDigestOf } = require('../bin/deploy-release');
-const planDigestFor = (stdout = '', stderr = '') =>
-  planDigestOf(sanitizeChildOutput(`${stdout}\n${stderr}`).trimEnd());
+/* ---- round-4 harness: the plan IS the change sets ------------------------------------------- */
+const { sanitizeChildOutput, planDigestOf, canonicalChangeSet } = require('../bin/deploy-release');
 
-/** A valid deploy-mode cloud gate for THIS manifest — the authorization every effect requires:
- * bounded window around GATE_NOW, a decision id, and the digest of the (empty) fake plan. */
+/** The reviewed execution order and this (pilot) manifest's CloudFormation stack names. */
+const ORDERED_IDS = ['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'];
+const PILOT_STACK_NAMES = ORDERED_IDS.map((id) => `cba-study-coach-pilot-${id.replace(/Stack$/, '').toLowerCase()}`);
+
+/** One fake describe-change-set body per stack — poisonable and overridable per test. */
+const describedFor = (stackName, over = {}) => ({
+  ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70/${stackName}`,
+  Status: 'CREATE_COMPLETE',
+  ExecutionStatus: 'AVAILABLE',
+  Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'BffFunction', ResourceType: 'AWS::Lambda::Function' } }],
+  ...over,
+});
+const fullDescribes = (over = {}) =>
+  Object.fromEntries(PILOT_STACK_NAMES.map((n) => [n, describedFor(n, over[n] || {})]));
+
+/** The digest EXACTLY as production computes it: canonical entries over UNREDACTED describes. */
+const digestOf = (describes) =>
+  planDigestOf(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], describes[PILOT_STACK_NAMES[i]])));
+
+/** A cloud stub covering sts (identity + assume-role) and cloudformation (describe/execute/poll).
+ * Records every call; `onCall` may intercept and return a response. */
+function cloudRun({ describes = fullDescribes(), account = ACCOUNT, stackStatus = 'UPDATE_COMPLETE', onCall } = {}) {
+  const calls = [];
+  const fn = (args, opts) => {
+    calls.push({ args, opts });
+    if (onCall) {
+      const intercepted = onCall(args, calls);
+      if (intercepted) return intercepted;
+    }
+    if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { status: 0, stdout: JSON.stringify({ Account: account }), stderr: '' };
+    if (args[0] === 'sts' && args[1] === 'assume-role') {
+      return { status: 0, stdout: JSON.stringify({ Credentials: { AccessKeyId: 'ASIATESTKEY', SecretAccessKey: 'secret', SessionToken: 'token' } }), stderr: '' };
+    }
+    if (args[0] === 'cloudformation' && args[1] === 'describe-change-set') {
+      const stackName = args[args.indexOf('--stack-name') + 1];
+      const body = describes[stackName];
+      if (!body) return { status: 254, stdout: '', stderr: 'ChangeSetNotFound' };
+      return { status: 0, stdout: JSON.stringify(body), stderr: '' };
+    }
+    if (args[0] === 'cloudformation' && args[1] === 'execute-change-set') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') return { status: 0, stdout: JSON.stringify({ Stacks: [{ StackStatus: stackStatus }] }), stderr: '' };
+    return stubAws()(args, opts);
+  };
+  fn.calls = calls;
+  fn.of = (verb) => calls.filter((c) => c.args[1] === verb);
+  return fn;
+}
+
+/** A valid deploy-mode cloud gate for THIS manifest: bounded window around GATE_NOW, a decision
+ * id, and the digest of the default fake change sets. */
 const gateFor = (manifest, over = {}) =>
   JSON.stringify({
     issue: 70,
@@ -766,63 +811,93 @@ const gateFor = (manifest, over = {}) =>
     decisionId: 'zamp-2026-08-02.b1-deploy-01',
     approvedAt: '2026-08-02T11:50:00Z',
     expiresAt: '2026-08-02T12:30:00Z',
-    planDigest: planDigestFor(),
+    planDigest: digestOf(fullDescribes()),
     ...over,
   });
 
-/** Child executor that succeeds for both the diff and the deploy child. */
+/** Prepare-child executor that succeeds; deploy mode spawns no cdk child at all. */
 const happyExec = () => ({ status: 0, stdout: '', stderr: '' });
 
-test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — both by construction', () => {
+/** Options shared by every happy deploy-mode invocation. */
+const deployOpts = (manifest, over = {}) => ({
+  run: cloudRun(),
+  git: happyGit(),
+  cdkJsonPath: CDK_JSON,
+  env: { CBA_CLOUD_GATE: gateFor(manifest) },
+  now: () => GATE_NOW,
+  sleep: () => {},
+  exec: () => assert.fail('deploy mode spawns no cdk child — the plan was prepared under plan_only'),
+  ...over,
+});
+
+test('plan_only PREPARES the closed change sets from the SNAPSHOT; deploy EXECUTES exactly them', () => {
+  // Part A — plan_only: the ONE moment change sets may be created. The cdk child prepares (never
+  // executes) one named change set per stack, from the private snapshot, in the reviewed
+  // dependency order, with --exclusively — never --all, never SecurityStack.
   withRelease((p, asm, manifest) => {
-    const execs = [];
+    const prepares = [];
+    const run = cloudRun();
     const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run,
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2', CBA_CLOUD_GATE: gateFor(manifest) },
+      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
+      sleep: () => {},
       exec: (args, childEnv) => {
-        execs.push({ args, childEnv });
-        // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child would run. The
+        prepares.push({ args, childEnv });
+        // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child runs. The
         // snapshot the child was handed must still carry the verified digest.
         fs.writeFileSync(path.join(asm, 'asset.abc123', 'index.mjs'), 'export const handler = () => "evil";');
         const snapDigest = require('../bin/deploy-preflight').assemblyDigest(args[args.indexOf('--app') + 1]);
-        execs[execs.length - 1].snapDigest = snapDigest.digest;
+        prepares[prepares.length - 1].snapDigest = snapDigest.digest;
         return { status: 0, stdout: '', stderr: '' };
       },
     });
     assert.equal(r.exit, 0, r.output);
-    // Slice B1: the PLAN child runs first, then the effect — same snapshot, same closed stack set.
-    assert.equal(execs.length, 2, 'exactly one diff and one deploy');
-    const [diff, deploy] = execs;
-    const STACKS = ['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack'];
-    assert.deepEqual(diff.args.slice(0, 2), ['cdk', 'diff']);
-    assert.deepEqual(diff.args.slice(2, 7), ['--exclusively', ...STACKS]);
-    const { args, childEnv } = deploy;
-    // The effect is the CLOSED stack set with --exclusively — never `--all`, which would deploy
-    // whatever the app grew (the account-global SecurityStack included), and never dependency
-    // expansion, which would drag SecurityStack behind ObservabilityStack.
-    assert.deepEqual(args.slice(0, 7), ['cdk', 'deploy', '--exclusively', ...STACKS]);
-    assert.deepEqual(args.slice(7, 9), ['--require-approval', 'never']);
+    assert.equal(r.executed, false, 'plan_only performs no effect');
+    assert.equal(prepares.length, 1, 'exactly one prepare child');
+    const { args, childEnv } = prepares[0];
+    assert.deepEqual(args.slice(0, 3), ['cdk', 'deploy', '--method=prepare-change-set']);
+    assert.deepEqual(args.slice(3, 5), ['--change-set-name', `cba-70-${manifest.releaseSha.slice(0, 12)}`]);
+    assert.deepEqual(args.slice(5, 10), ['--exclusively', ...ORDERED_IDS], 'the reviewed EXECUTION order, closed');
     assert.equal(args.includes('--all'), false, '--all must never reach a child');
-    for (const child of execs) {
-      assert.equal(child.args.includes('SecurityStack'), false, 'the account-global foundation is outside the release blast radius');
-      assert.equal(child.args.includes('AiOrchestrationStack'), false, 'the deferred placeholder is outside the release blast radius');
-    }
-    // The child deploys a PRIVATE SNAPSHOT via --app — never the original mutable path, never
-    // source. The check-to-use window on the original directory is what round 5 closed.
-    assert.equal(args[9], '--app');
-    const appPath = args[10];
+    assert.equal(args.includes('SecurityStack'), false, 'the foundation is outside the release blast radius');
+    const appPath = args[args.indexOf('--app') + 1];
     assert.notEqual(appPath, asm, 'the original assembly path must never be reopened by the child');
-    assert.equal(diff.args[diff.args.indexOf('--app') + 1], appPath, 'the plan and the effect read the SAME snapshot');
-    // ROUND-4 REPRO 2 (region): the ambient environment said us-west-2 everywhere; the verified
-    // region is imposed on every variable the CDK or the SDK reads.
     assert.equal(childEnv.AWS_REGION, 'us-east-1');
     assert.equal(childEnv.AWS_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.CDK_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.PATH, '/usr/bin', 'the rest of the environment passes through');
-    assert.equal(deploy.snapDigest, manifest.assemblyDigest, 'the deployed snapshot carries the verified digest even after the original was mutated');
+    assert.equal(prepares[0].snapDigest, manifest.assemblyDigest, 'the prepared snapshot carries the verified digest even after the original was mutated');
+    assert.match(r.output, /PLAN_DIGEST [0-9a-f]{64}/);
+    // The change sets were described under the ASSUMED tier deploy role, never executed.
+    const assume = run.of('assume-role');
+    assert.equal(assume.length, 1);
+    assert.match(assume[0].args[assume[0].args.indexOf('--role-arn') + 1], /cdk-cbarpil-deploy-role/, "this tier's qualifier, nobody else's");
+    assert.equal(run.of('describe-change-set').length, 4);
+    assert.equal(run.of('execute-change-set').length, 0, 'plan_only executes NOTHING');
+  });
+
+  // Part B — deploy: NO cdk child at all. The reviewed change sets are re-described, the digest
+  // must match the gate, and exactly those change-set ids execute, in order, under the assumed
+  // role with the verified region imposed.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.executed, true);
+    const executes = run.of('execute-change-set');
+    assert.deepEqual(
+      executes.map((c) => c.args[c.args.indexOf('--change-set-name') + 1]),
+      PILOT_STACK_NAMES.map((n) => `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70/${n}`),
+      'exactly the reviewed change-set ids, in the reviewed order',
+    );
+    for (const call of [...executes, ...run.of('describe-change-set')]) {
+      assert.equal(call.opts?.env?.AWS_ACCESS_KEY_ID, 'ASIATESTKEY', 'CloudFormation calls run under the assumed tier role');
+      assert.equal(call.opts?.env?.AWS_REGION, 'us-east-1', 'the verified region is imposed on the AWS CLI too');
+    }
+    assert.match(r.output, /matched the gate; decision zamp-2026-08-02\.b1-deploy-01/);
   });
 });
 
@@ -1048,16 +1123,16 @@ test('deploy-release refuses identity mismatches and a failing child honestly', 
     assert.equal(noAccount.exit, 1);
     assert.match(noAccount.output, /ACCOUNT_UNRESOLVED/);
 
-    const childFails = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
-      git: happyGit(),
-      cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) },
-      now: () => GATE_NOW,
-      exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
-    });
-    assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
-    assert.equal(childFails.executed, true);
+    // A refused EXECUTION is honest, never a deployed release: CloudFormation refuses a change
+    // set whose stack moved after preparation, and that refusal surfaces as EXECUTE_FAILED with
+    // the partial record — the round-4 stale-execution shape.
+    const run = cloudRun({ onCall: (args) => (args[1] === 'execute-change-set' ? { status: 254, stdout: '', stderr: 'ChangeSet is stale; the stack was modified' } : null) });
+    const staleExec = runDeployRelease(releaseArgs(p, asm), deployOpts(capturedManifest(), { run }));
+    assert.equal(staleExec.exit, 1, 'a refused execution must not read as a deployed release');
+    assert.equal(staleExec.executed, false);
+    assert.match(staleExec.output, /EXECUTE_FAILED/);
+    assert.match(staleExec.output, /Executed before the failure: none/);
+    assert.equal(run.of('execute-change-set').length, 1, 'the refusal stops the sequence');
   });
 });
 
@@ -1102,7 +1177,13 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       ['a malformed decision id', JSON.stringify({ ...good, decisionId: 'a b c' })],
       ['a deploy gate with no plan digest', JSON.stringify({ ...good, planDigest: null })],
       ['a deploy gate with a malformed plan digest', JSON.stringify({ ...good, planDigest: 'zz' })],
-      ['a diff_only gate naming a plan', JSON.stringify({ ...good, mode: 'diff_only' })],
+      ['a plan_only gate naming a plan', JSON.stringify({ ...good, mode: 'plan_only' })],
+      ['the retired diff_only mode', JSON.stringify({ ...good, mode: 'diff_only' })],
+      // F5 (round 4): Date.parse silently normalizes calendar-invalid instants into other dates.
+      ['a calendar-invalid day (2026-02-30)', JSON.stringify({ ...good, expiresAt: '2026-02-30T12:10:00Z' })],
+      ['a calendar-invalid month', JSON.stringify({ ...good, expiresAt: '2026-13-01T12:10:00Z' })],
+      ['a calendar-invalid approval (April 31st)', JSON.stringify({ ...good, approvedAt: '2026-04-31T11:50:00Z' })],
+      ['fractional seconds (whole seconds only)', JSON.stringify({ ...good, expiresAt: '2026-08-02T12:30:00.500Z' })],
     ]) {
       const r = attempt(mangled);
       assert.equal(r.exit, 1, label);
@@ -1143,156 +1224,189 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       assert.equal(r.exit, 1, label);
       assert.match(r.output, /CLOUD_GATE_TTL_EXCEEDED/, label);
     }
-    const stillOpen = attempt(gateFor(manifest), { now: () => Date.parse('2026-08-02T12:29:59Z'), exec: happyExec });
+    const stillOpen = attempt(gateFor(manifest), { run: cloudRun(), sleep: () => {}, now: () => Date.parse('2026-08-02T12:29:59Z') });
     assert.equal(stillOpen.exit, 0, stillOpen.output);
   });
 });
 
-test('diff_only puts the plan on the record and deploys NOTHING', () => {
+test('plan_only puts the change sets on the record and deploys NOTHING', () => {
   withRelease((p, asm, manifest) => {
-    const execs = [];
+    const run = cloudRun();
     const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run,
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only', planDigest: null }) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
-      exec: (args) => {
-        execs.push(args);
-        return { status: 0, stdout: 'Stack ApiStack\nResources\n[~] AWS::Lambda::Function BffFunction\n', stderr: '' };
-      },
+      sleep: () => {},
+      exec: happyExec,
     });
     assert.equal(r.exit, 0, r.output);
-    assert.equal(r.executed, false, 'a diff_only run performs no effect');
-    assert.equal(execs.length, 1, 'exactly one child: the plan');
-    assert.equal(execs[0][1], 'diff');
-    assert.match(r.output, /DIFF ONLY/);
-    assert.match(r.output, /BffFunction/, 'the plan is on the record for review');
+    assert.equal(r.executed, false, 'a plan_only run performs no effect');
+    assert.equal(run.of('execute-change-set').length, 0, 'no change set may execute');
+    assert.match(r.output, /PLAN ONLY/);
+    assert.match(r.output, /PLAN_DIGEST [0-9a-f]{64}/);
+    assert.match(r.output, /BffFunction/, 'the plan rendering is on the record for review');
+    const digest = r.output.match(/PLAN_DIGEST ([0-9a-f]{64})/)[1];
+    assert.equal(digest, digestOf(fullDescribes()), 'the recorded digest is the digest of the UNREDACTED canonical describes');
   });
 });
 
-test('a failing plan child refuses the run — no plan, no effect', () => {
+test('a failing prepare child refuses the run — no change sets, no plan, no effect', () => {
   withRelease((p, asm, manifest) => {
-    const execs = [];
+    const run = cloudRun();
     const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run,
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
-      exec: (args) => {
-        execs.push(args);
-        assert.equal(args[1], 'diff', 'the deploy child must never spawn after a failed plan');
-        return { status: 1, stdout: '', stderr: 'diff exploded' };
-      },
+      sleep: () => {},
+      exec: () => ({ status: 1, stdout: '', stderr: 'prepare exploded' }),
     });
     assert.equal(r.exit, 1);
-    assert.equal(execs.length, 1);
-    assert.match(r.output, /DIFF_FAILED/);
+    assert.match(r.output, /PLAN_PREPARE_FAILED/);
+    assert.equal(run.of('assume-role').length, 0, 'no role is assumed for a plan that failed to prepare');
+    assert.equal(run.of('execute-change-set').length, 0);
   });
 });
 
-test('ROUND-3 REPRO: live state changed between diff_only and deploy — the effect refuses as PLAN_CHANGED', () => {
+test('ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED', () => {
   withRelease((p, asm, manifest) => {
-    // Run 1 — diff_only: the plan over live state A goes on the record with its digest.
+    // Run 1 — plan_only over live state A: the change sets and their digest go on the record.
+    const describesA = fullDescribes();
     const reviewed = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run: cloudRun({ describes: describesA }),
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'diff_only', planDigest: null }) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
-      exec: () => ({ status: 0, stdout: 'Stack ApiStack\n[~] Function BffFunction memory 512 -> 1024\n', stderr: '' }),
+      sleep: () => {},
+      exec: happyExec,
     });
     assert.equal(reviewed.exit, 0, reviewed.output);
     const namedDigest = reviewed.output.match(/PLAN_DIGEST ([0-9a-f]{64})/)[1];
-    assert.equal(namedDigest, planDigestFor('Stack ApiStack\n[~] Function BffFunction memory 512 -> 1024\n'));
+    assert.equal(namedDigest, digestOf(describesA));
 
-    // Run 2 — deploy, gate naming that digest, but the WORLD moved: same assembly, different diff.
-    const execs = [];
-    const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
-      git: happyGit(),
-      cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: namedDigest }) },
-      now: () => GATE_NOW,
-      exec: (args) => {
-        execs.push(args);
-        assert.equal(args[1], 'diff', 'the deploy child must never spawn on a changed plan');
-        return { status: 0, stdout: 'Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n', stderr: '' };
-      },
-    });
+    // Run 2 — deploy naming that digest, but the change sets were RECREATED (new immutable ids):
+    // same shapes, different world. Nothing executes.
+    const describesB = fullDescribes();
+    for (const name of PILOT_STACK_NAMES) describesB[name].ChangeSetId = `${describesB[name].ChangeSetId}/recreated`;
+    const run = cloudRun({ describes: describesB });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: namedDigest }) } }));
     assert.equal(r.exit, 1);
-    assert.equal(execs.length, 1, 'exactly the plan child ran');
     assert.match(r.output, /PLAN_CHANGED/);
+    assert.equal(run.of('execute-change-set').length, 0, 'a drifted plan must never execute');
 
-    // And the same drifted world, re-reviewed (gate naming the NEW digest), executes.
-    const newDigest = planDigestFor('Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n');
-    const rereviewed = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
-      git: happyGit(),
-      cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: newDigest }) },
-      now: () => GATE_NOW,
-      exec: (args) => ({ status: 0, stdout: args[1] === 'diff' ? 'Stack ApiStack\n[-] AWS::DynamoDB::Table SimulationTable DESTROY\n' : '', stderr: '' }),
-    });
+    // Re-reviewed — a fresh plan_only over the new world, a gate naming ITS digest — executes.
+    const rerun = cloudRun({ describes: describesB });
+    const rereviewed = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run: rerun, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describesB) }) } }));
     assert.equal(rereviewed.exit, 0, rereviewed.output);
-    assert.equal(rereviewed.executed, true);
+    assert.equal(rerun.of('execute-change-set').length, 4);
   });
 });
 
-test('ROUND-3 REPRO: the clock crosses the expiry DURING the diff — revalidation refuses one spawn from the effect', () => {
+test('ROUND-4 REPRO: the digest is computed BEFORE redaction — ARN principals cannot collide', () => {
+  // Codex reproduced two plans differing only in an ARN principal that sanitized to the same text
+  // and the same SHA-256. The digest now covers the UNREDACTED canonical describes, so the two
+  // plans differ; the sanitized RENDERINGS may be identical — they are presentation, not identity.
+  const principal = (arn) => fullDescribes({
+    [PILOT_STACK_NAMES[0]]: {
+      Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'Pool', ResourceType: 'AWS::Cognito::UserPool', Details: [{ CausingEntity: arn }] } }],
+    },
+  });
+  const planA = principal(`arn:aws:iam::${ACCOUNT}:role/role-a`);
+  const planB = principal(`arn:aws:iam::${ACCOUNT}:role/role-b`);
+  assert.notEqual(digestOf(planA), digestOf(planB), 'different principals MUST produce different plan digests');
+  const { renderPlan } = require('../bin/deploy-release');
+  const render = (d) => renderPlan(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], d[PILOT_STACK_NAMES[i]])));
+  assert.equal(render(planA), render(planB), 'the sanitized renderings collide — which is exactly why they are never digested');
+
+  // End to end: a gate naming plan A refuses when the world holds plan B.
   withRelease((p, asm, manifest) => {
-    // now() is consumed once at the gate check, then again at the mutation boundary. The diff
-    // "takes" 31 minutes: valid when the gate was checked, lapsed by the time the effect would run.
-    const instants = [Date.parse('2026-08-02T12:00:00Z'), Date.parse('2026-08-02T12:31:00Z')];
-    const execs = [];
-    const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
-      git: happyGit(),
-      cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest) },
-      now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z'),
-      exec: (args) => {
-        execs.push(args);
-        assert.equal(args[1], 'diff', 'the deploy child must never spawn after the window lapsed');
-        return { status: 0, stdout: '', stderr: '' };
-      },
-    });
+    const run = cloudRun({ describes: planB });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(planA) }) } }));
     assert.equal(r.exit, 1);
-    assert.equal(execs.length, 1, 'only the plan child ran');
-    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+    assert.match(r.output, /PLAN_CHANGED/);
+    assert.equal(run.of('execute-change-set').length, 0);
   });
 });
 
-test('the plan is EMITTED before the effect, and the account is re-resolved at the mutation boundary', () => {
+test('ROUND-4 REPRO: the window lapses during the FINAL account resolution — the effect never starts', () => {
+  withRelease((p, asm, manifest) => {
+    // now() is consumed at the gate check, then per mutation. The third STS resolution is slow:
+    // by the time the per-mutation check runs, the window has lapsed. Account FIRST, clock LAST.
+    const instants = [Date.parse('2026-08-02T12:00:00Z')];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run,
+      now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z'),
+    }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+    assert.match(r.output, /Executed before the window lapsed: none/);
+    assert.equal(run.of('execute-change-set').length, 0, 'no mutation may start after the window lapsed');
+  });
+});
+
+test('the window is re-checked before EVERY mutation — a lapse mid-sequence stops with the honest record', () => {
+  withRelease((p, asm, manifest) => {
+    // Valid at the gate check and for the first two executions; lapsed before the third.
+    const instants = [
+      Date.parse('2026-08-02T12:00:00Z'), // gate check
+      Date.parse('2026-08-02T12:05:00Z'), // before execute #1
+      Date.parse('2026-08-02T12:10:00Z'), // before execute #2
+      Date.parse('2026-08-02T12:31:00Z'), // before execute #3 — lapsed
+    ];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z') }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+    assert.equal(run.of('execute-change-set').length, 2, 'exactly the in-window executions happened');
+    assert.match(r.output, /Executed before the window lapsed: cba-study-coach-pilot-identity, cba-study-coach-pilot-data/);
+    assert.match(r.output, /Remaining change sets were NOT executed/);
+  });
+});
+
+test('the plan is EMITTED before the effect, the account is re-resolved at the mutation boundary, and NO_CHANGES skips', () => {
   withRelease((p, asm, manifest) => {
     const order = [];
     let stsCalls = 0;
-    const r = runDeployRelease(releaseArgs(p, asm), {
-      run: (args, o) => {
-        if (args[0] === 'sts') {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[1]]: { Status: 'FAILED', StatusReason: "The submitted information didn't contain changes." },
+    });
+    const run = cloudRun({
+      describes,
+      onCall: (args) => {
+        if (args[0] === 'sts' && args[1] === 'get-caller-identity') {
           stsCalls += 1;
           return { status: 0, stdout: JSON.stringify({ Account: ACCOUNT }), stderr: '' };
         }
-        return stubAws()(args, o);
-      },
-      git: happyGit(),
-      cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest) },
-      now: () => GATE_NOW,
-      print: (text) => order.push(['print', text]),
-      exec: (args) => {
-        order.push(['exec', args[1]]);
-        return { status: 0, stdout: '', stderr: '' };
+        if (args[1] === 'execute-change-set') order.push(`execute:${args[args.indexOf('--change-set-name') + 1].split('/').pop()}`);
+        return null;
       },
     });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) },
+      print: (text) => order.push('print'),
+    }));
     assert.equal(r.exit, 0, r.output);
-    // Review material exists BEFORE the mutation it authorizes: diff runs, the plan is printed,
-    // only then does the deploy child spawn.
-    assert.deepEqual(order.map(([kind, v]) => (kind === 'exec' ? `exec:${v}` : 'print')), ['exec:diff', 'print', 'exec:deploy']);
-    assert.match(order[1][1], /PLAN_DIGEST [0-9a-f]{64}/);
-    // Identity at verification, immediately after, and again at the mutation boundary.
-    assert.equal(stsCalls, 3, 'the account is resolved at verify, before the plan, and before the effect');
+    // Review material exists BEFORE the mutation it authorizes; the NO_CHANGES stack never executes.
+    assert.deepEqual(order, ['print', 'execute:cba-study-coach-pilot-identity', 'execute:cba-study-coach-pilot-api', 'execute:cba-study-coach-pilot-observability']);
+    assert.equal(stsCalls, 3, 'identity at verification, immediately after, and at the mutation boundary — account FIRST, clock LAST');
+  });
+});
+
+test('a reviewed plan that no longer EXISTS refuses — expired or deleted change sets are not re-prepared', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    delete describes[PILOT_STACK_NAMES[2]]; // the ApiStack change set vanished
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_MISSING/);
+    assert.equal(run.of('execute-change-set').length, 0, 'deploy mode NEVER creates change sets — that is plan_only, under review');
   });
 });
 
@@ -1315,17 +1429,34 @@ test('poisoned child output cannot leak identifiers — redaction is by shape, n
   assert.match(clean, /\[account-redacted\]/);
   assert.match(clean, /progress-line-stays/, 'sanitization redacts identifiers, not the record of what happened');
 
-  // And end to end: whatever BOTH children print reaches the caller sanitized.
+  // And end to end: describe output carrying identifiers in its change details renders sanitized
+  // — the digest saw the raw bytes, the human-facing record never does.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[0]]: {
+        Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: `Role ${POISONS[1]}`, ResourceType: `Type ${POISONS[4]}` } }],
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run: cloudRun({ describes }),
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) },
+    }));
+    assert.equal(r.exit, 0, r.output);
+    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, poison);
+  });
+
+  // A failing PREPARE child's output is sanitized too, on the refusal path.
   withRelease((p, asm, manifest) => {
     const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run: cloudRun(),
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: planDigestFor(`child diff says ${POISONS.join(' ')}`, `err ${POISONS[0]}`) }) },
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
-      exec: (args) => ({ status: 0, stdout: `child ${args[1]} says ${POISONS.join(' ')}`, stderr: `err ${POISONS[0]}` }),
+      sleep: () => {},
+      exec: () => ({ status: 1, stdout: POISONS.join(' '), stderr: POISONS[0] }),
     });
-    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.exit, 1);
     for (const poison of POISONS) assert.equal(r.output.includes(poison), false, poison);
   });
 });
@@ -1380,7 +1511,7 @@ test('the snapshot preserves the executable bit, so an honest executable asset d
     assert.equal(r.exit, 0, r.output);
     const manifest = JSON.parse(written[0]);
     withManifest(manifest, (mp) => {
-      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, now: () => GATE_NOW, exec: happyExec });
+      const rel = runDeployRelease(releaseArgs(mp, asm), deployOpts(manifest));
       assert.equal(rel.exit, 0, rel.output);
     });
   });
@@ -1392,7 +1523,7 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
   try {
     // Success.
     withRelease((p2, asm, manifest) => {
-      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: { CBA_CLOUD_GATE: gateFor(manifest) }, now: () => GATE_NOW, tmpBase, exec: happyExec });
+      const r = runDeployRelease(releaseArgs(p2, asm), deployOpts(manifest, { tmpBase }));
       assert.equal(r.exit, 0, r.output);
       assertEmpty('success');
     });
@@ -1430,12 +1561,11 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
       });
       assertEmpty('an account-swap refusal');
 
-      runDeployRelease(releaseArgs(p2, asm), {
-        run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON,
-        env: { CBA_CLOUD_GATE: gateFor(capturedManifest()) }, now: () => GATE_NOW, tmpBase,
-        exec: (args) => ({ status: args[1] === 'deploy' ? 3 : 0, stdout: '', stderr: '' }),
-      });
-      assertEmpty('a failing child');
+      runDeployRelease(releaseArgs(p2, asm), deployOpts(capturedManifest(), {
+        tmpBase,
+        run: cloudRun({ onCall: (args) => (args[1] === 'execute-change-set' ? { status: 254, stdout: '', stderr: 'stale' } : null) }),
+      }));
+      assertEmpty('a refused execution');
     });
   } finally {
     fs.rmSync(tmpBase, { recursive: true, force: true });

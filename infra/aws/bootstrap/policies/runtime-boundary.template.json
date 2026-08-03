@@ -12,10 +12,7 @@
         "dynamodb:TransactWriteItems",
         "dynamodb:UpdateItem"
       ],
-      "Resource": [
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-dev-*",
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "RuntimeLogsWriteOnOwnGroups",
@@ -25,10 +22,7 @@
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ],
-      "Resource": [
-        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-dev-*",
-        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "RuntimeReadOnlyTelemetryUnscopedByService",
@@ -49,10 +43,7 @@
         "sns:GetTopicAttributes",
         "sns:ListSubscriptionsByTopic"
       ],
-      "Resource": [
-        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-dev-*",
-        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     }
   ]
 }

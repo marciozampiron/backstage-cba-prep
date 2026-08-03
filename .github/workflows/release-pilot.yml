@@ -48,11 +48,12 @@
 # THIS LANE IS NOT YET OPERABLE, by design — activation has prerequisites, each human-gated and
 # each refusing loudly while absent (read-only inspection on 2026-08-02 found ZERO secrets and
 # ZERO variables in the dev Environment):
-#   1. The RELEASE BOOTSTRAP (aws-bootstrap-and-oidc.md step 12): the three operator-managed
-#      policies (gha-deploy boundary, runtime boundary, cfn-exec-release) and `cdk bootstrap
-#      --qualifier cbarel` with the release execution policy — the enumerated authority the four
-#      deployable stacks execute through. Without it the deploy role's assumable targets do not
-#      exist and the lane cannot mutate anything.
+#   1. The RELEASE BOOTSTRAPS (aws-bootstrap-and-oidc.md step 12): PER ENVIRONMENT, the three
+#      operator-managed policies (gha-deploy boundary, runtime boundary, cfn-exec-release —
+#      rendered per tier) and `cdk bootstrap --qualifier cbardev|cbarpil --toolkit-stack-name
+#      cba-release-toolkit-<env>` with that tier's execution policy — the enumerated authority
+#      the four deployable stacks execute through, one blast radius per tier. Without it the
+#      deploy role's assumable targets do not exist and the lane cannot mutate anything.
 #   2. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
 #      operator-managed boundary and the extended #66 exec policy — a human-gated SecurityStack
 #      redeploy — then its ARN published as the dev Environment secret AWS_DEPLOY_ROLE_ARN.
@@ -60,10 +61,12 @@
 #      CBA_AUTH_CALLBACK_URLS, CBA_AUTH_LOGOUT_URLS, CBA_AUTH_DOMAIN_PREFIX,
 #      CBA_EXPECTED_USER_POOL_ID.
 #   4. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
-#      release, assembly digest, decision id and a bounded window (RFC3339 UTC, at most one
-#      hour) — first with mode diff_only, which emits PLAN_DIGEST for the reviewed plan; then
-#      with mode deploy NAMING that digest. A plan that no longer matches live state refuses as
-#      PLAN_CHANGED and needs a fresh review. No gate, no children.
+#      release, assembly digest, decision id and a bounded window (strict RFC3339 UTC, at most
+#      one hour) — first with mode plan_only, which PREPARES one named CloudFormation change set
+#      per stack and emits PLAN_DIGEST over their unredacted canonical describes; then with mode
+#      deploy NAMING that digest, which executes EXACTLY those change sets. A recreated or
+#      drifted plan refuses as PLAN_CHANGED and needs a fresh review; CloudFormation itself
+#      refuses a change set whose stack moved after preparation. No gate, no children.
 #
 # CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (round 3): synth — which executes project
 # code, bundlers and package lifecycles — runs in its own credential-free step BEFORE the OIDC
@@ -237,13 +240,16 @@ jobs:
   # the freshly synthesized assembly, recomputes BOTH digests (context: release+environment+region+
   # account+bound values; assembly: every regular file), re-resolves the account immediately before
   # the effect, validates Zamp's CLOUD GATE (CBA_CLOUD_GATE — an Environment variable naming the
-  # exact release, the exact assembly digest, a diff_only|deploy mode and an expiry), puts the
-  # `cdk diff` plan on the record, imposes the verified region on the child, and deploys the
-  # private snapshot via --app — EXACTLY the closed stack set the manifest names, with
-  # --exclusively, never --all: the account-global SecurityStack and the deferred
-  # AiOrchestrationStack are structurally outside the release blast radius. Everything the CDK
-  # children print is sanitized by shape (ARNs, URLs, pool ids, account digits) before it reaches
-  # this log. A re-synth that differs from what the preflight digested REFUSES — determinism is
+  # exact release, the exact assembly digest, a plan_only|deploy mode, a bounded window and — for
+  # deploy — the PLAN_DIGEST of the reviewed change sets), and then: plan_only PREPARES one named
+  # change set per stack from the private snapshot (--exclusively over the closed set, never
+  # --all — the account-global SecurityStack and the deferred AiOrchestrationStack are
+  # structurally outside the release blast radius) and puts the digest of their unredacted
+  # canonical describes on the record; deploy re-describes those exact change sets, requires the
+  # digest the gate names, and EXECUTES them in the reviewed dependency order under this tier's
+  # assumed bootstrap role, re-checking window and account immediately before each mutation.
+  # Everything a child prints is sanitized by shape (ARNs, URLs, pool ids, account digits) before
+  # it reaches this log. A re-synth that differs from what the preflight digested REFUSES — determinism is
   # verified, never assumed. This is the only stage job holding id-token: write, because it is the
   # only stage job with the pinned OIDC consumer; AWS_DEPLOY_ROLE_ARN is the canonical
   # Environment-scoped deploy-role secret (design §3), distinct from the read-only preflight

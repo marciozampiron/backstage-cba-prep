@@ -65,23 +65,34 @@ The Codex round-3 review moved the remaining blockers out of the authority/execu
 the correction delivered: project code and credentials never share a window (synth runs
 credential-free before the OIDC consumer in every job; after the consumer only the reviewed
 entrypoints execute, enforced by a named invariant); the four deployable stacks execute through
-their OWN CDK bootstrap (qualifier `cbarel`, a reviewed constant) whose versioned execution
-policy (`cfn-exec-release.template.json`) enumerates the templates' real resource types with
-name-scoped resources and named wildcard exceptions, pins release-created roles to the runtime
-boundary, and explicitly denies touching the GitHub/foundation roles; the cloud gate is v2
-(strict RFC3339 UTC, `approvedAt` + TTL ≤ 1h, `decisionId`, and — for deploy mode — the
-`planDigest` of the reviewed plan), the plan is digested/emitted BEFORE any effect, a changed
-live state refuses as `PLAN_CHANGED`, and expiry + account are revalidated immediately before
-the deploy child spawns.
+their tier's OWN CDK bootstrap (round 4: qualifier PER ENVIRONMENT — `cbardev`/`cbarpil`,
+reviewed constants — with its own toolkit stack, so dev authority reaches only dev) whose
+versioned execution policy (`cfn-exec-release.template.json`, rendered per tier) enumerates the
+templates' real resource types with tier-scoped resource names, demands the Project/Environment
+TAGS wherever AWS offers no ARN to scope to (Cognito and KMS: RequestTag on create, ResourceTag
+on lifecycle — "generated id" establishes no ownership), names its one residual (API Gateway
+sub-resources are untaggable; recorded for Zamp's risk decision with account isolation as the
+alternative), pins release-created roles to the per-tier runtime boundary, and explicitly denies
+touching the GitHub/foundation roles; the cloud gate is v2
+(strict RFC3339 UTC with calendar round-trip, `approvedAt` + TTL ≤ 1h, `decisionId`, and — for
+deploy mode — the `planDigest` of the reviewed plan), and — after the round-4 review — the plan
+IS the CloudFormation change sets: `plan_only` prepares one named change set per stack and
+digests the canonical UNREDACTED describes (change-set ids, full details, principals); `deploy`
+re-describes exactly those change sets, requires the digest the gate names, and executes them in
+the reviewed dependency order, resolving the account FIRST and re-checking the window as the
+LAST operation before EACH mutation. A recreated or drifted plan refuses as `PLAN_CHANGED`;
+CloudFormation itself refuses a change set whose stack moved after preparation.
 
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
-workflow header:** (1) the release bootstrap (`aws-bootstrap-and-oidc.md` step 12): three
-operator-managed policies + `cdk bootstrap --qualifier cbarel`; (2) provision
+workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
+three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
+--toolkit-stack-name cba-release-toolkit-<env>`; (2) provision
 `cba-study-coach-gha-deploy-dev` + its boundary (Zamp creates the policy outside CloudFormation)
 via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as
 the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (3) populate the dev Environment secrets and variables (read-only
 inspection on 2026-08-02 found ZERO of each); (4) per release, set `CBA_CLOUD_GATE` — first
-`diff_only`, which emits `PLAN_DIGEST`; then `deploy` naming that digest inside a ≤1h window.
+`plan_only`, which prepares the change sets and emits `PLAN_DIGEST`; then `deploy` naming that
+digest inside a ≤1h window.
 
 ## Ownership
 

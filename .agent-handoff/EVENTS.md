@@ -2,6 +2,44 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice B1 round 4: the plan became change sets, the bootstrap split per tier
+
+- Codex's round-4 review of 38f3adbf: the gate still did not authorize the executed plan (`cdk
+  deploy` created a NEW change set over possibly different state, and the digest — computed after
+  sanitization — collided for two plans differing only in an ARN principal, reproduced); the
+  "second bootstrap" would have updated the existing CDKToolkit (no `--toolkit-stack-name`) and
+  both tiers shared cdk-cbarel-* roles, so dev authority reached pilot; the execution policy
+  allowed destructive operations on ALL apis/pools/keys in the region ("generated id" establishes
+  no ownership); the gate could expire during the final STS call and still deploy; and the
+  "strict" RFC3339 accepted calendar-invalid dates (2026-02-30 silently became March). Four
+  HIGHs, one LOW. Fix-forward, all three reviewed commits preserved.
+- THE PLAN IS THE CHANGE SETS NOW. `plan_only` prepares one NAMED CloudFormation change set per
+  stack (the one moment change sets may be created) and digests the canonical UNREDACTED
+  describes — immutable change-set ids, full change details, principals and all; sanitized output
+  is presentation only, and the reproduced principal collision is a regression test. `deploy`
+  spawns no cdk child at all: it re-describes exactly those change sets, requires the digest the
+  gate names (a recreated set has a new id — PLAN_CHANGED), resolves the account FIRST and
+  re-checks the window as the LAST operation before EACH execute-change-set, executes them in the
+  reviewed dependency order under the tier's assumed bootstrap role, and reports partial progress
+  honestly. CloudFormation itself refuses a change set whose stack moved after preparation.
+- THE BOOTSTRAP SPLIT PER TIER: qualifiers `cbardev`/`cbarpil` (reviewed constants), separate
+  toolkit stacks (`--toolkit-stack-name cba-release-toolkit-<env>` — without it the CDK would
+  have updated the existing CDKToolkit), per-tier deploy-role boundaries, per-tier runtime
+  boundaries, per-tier execution policies rendered from ONE parameterized template each — a dev
+  rendering names not one pilot resource, and tests pin that both ways.
+- OWNERSHIP IS TAGS, NOT ID SHAPE: Cognito and KMS statements demand Project/Environment tags —
+  aws:RequestTag on create (the resource has no ARN yet), aws:ResourceTag on lifecycle — so
+  PutKeyPolicy/ScheduleKeyDeletion/DeleteUserPool reach only this project's tier-tagged
+  resources. The one residual is NAMED: API Gateway sub-resources are untaggable in the service
+  model; below the tag-confined API creation, confinement is account+region+path only — recorded
+  for Zamp's risk decision, account isolation documented as the alternative.
+- The RFC3339 validation now round-trips through the calendar (2026-02-30, 2026-13-01, April 31
+  and fractional seconds all refuse as malformed). Every new rule proven by deletion: plan-digest
+  comparison (2 tests), per-mutation window re-check (2), unredacted-details digest (12),
+  calendar round-trip (1), boundary account resolution (1).
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the four
+  Zamp-gated activation prerequisites, now per tier, recorded in the workflow header.
+
 ## 2026-08-02 — Claude — #70 Slice B1 round 3: the authority chain closed end to end
 
 - Codex's round-3 review found four HIGHs, all in the authority/execution chain of da550184:

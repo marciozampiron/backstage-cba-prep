@@ -5,7 +5,7 @@
       "Sid": "ReadReleaseBootstrapVersionParameter",
       "Effect": "Allow",
       "Action": "ssm:GetParameters",
-      "Resource": "arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/cbarel/version"
+      "Resource": "arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/QUALIFIER_PLACEHOLDER/version"
     },
     {
       "Sid": "ReadReleaseAssetsFromBootstrapBucket",
@@ -16,8 +16,8 @@
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::cdk-cbarel-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1",
-        "arn:aws:s3:::cdk-cbarel-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1/*"
+        "arn:aws:s3:::cdk-QUALIFIER_PLACEHOLDER-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:s3:::cdk-QUALIFIER_PLACEHOLDER-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1/*"
       ]
     },
     {
@@ -43,13 +43,22 @@
         "lambda:UpdateFunctionCode",
         "lambda:UpdateFunctionConfiguration"
       ],
-      "Resource": [
-        "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-dev-*",
-        "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
-      "Sid": "ApiGatewayV2GeneratedIdsInRegion",
+      "Sid": "ApiGatewayV2CreateOnlyProjectTaggedApis",
+      "Effect": "Allow",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/apis",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "ApiGatewayV2SubresourcesNamedResidualUntaggable",
       "Effect": "Allow",
       "Action": [
         "apigateway:DELETE",
@@ -59,7 +68,6 @@
         "apigateway:PUT"
       ],
       "Resource": [
-        "arn:aws:apigateway:us-east-1::/apis",
         "arn:aws:apigateway:us-east-1::/apis/*",
         "arn:aws:apigateway:us-east-1::/tags/*"
       ]
@@ -80,19 +88,22 @@
         "dynamodb:UpdateTable",
         "dynamodb:UpdateTimeToLive"
       ],
-      "Resource": [
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-dev-*",
-        "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
-      "Sid": "CognitoCreatePoolHasNoArnBeforeItExists",
+      "Sid": "CognitoCreateOnlyProjectTaggedPools",
       "Effect": "Allow",
       "Action": "cognito-idp:CreateUserPool",
-      "Resource": "*"
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
-      "Sid": "CognitoLifecycleOnGeneratedPoolIds",
+      "Sid": "CognitoLifecycleOnlyOnProjectTaggedPools",
       "Effect": "Allow",
       "Action": [
         "cognito-idp:CreateGroup",
@@ -115,7 +126,13 @@
         "cognito-idp:UpdateUserPool",
         "cognito-idp:UpdateUserPoolClient"
       ],
-      "Resource": "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*"
+      "Resource": "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
       "Sid": "CloudWatchAlarmsOnOwnNames",
@@ -129,10 +146,7 @@
         "cloudwatch:TagResource",
         "cloudwatch:UntagResource"
       ],
-      "Resource": [
-        "arn:aws:cloudwatch:us-east-1:ACCOUNT_ID_PLACEHOLDER:alarm:cba-study-coach-dev-*",
-        "arn:aws:cloudwatch:us-east-1:ACCOUNT_ID_PLACEHOLDER:alarm:cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:cloudwatch:us-east-1:ACCOUNT_ID_PLACEHOLDER:alarm:cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "CloudWatchDashboardsOnOwnNames",
@@ -142,10 +156,7 @@
         "cloudwatch:GetDashboard",
         "cloudwatch:PutDashboard"
       ],
-      "Resource": [
-        "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-dev-*",
-        "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "LogsLifecycleOnOwnGroups",
@@ -158,10 +169,7 @@
         "logs:TagResource",
         "logs:UntagResource"
       ],
-      "Resource": [
-        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-dev-*",
-        "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:logs:us-east-1:ACCOUNT_ID_PLACEHOLDER:log-group:*cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "LogsQueryDefinitionsCarryNoScopingArn",
@@ -186,19 +194,22 @@
         "sns:TagResource",
         "sns:UntagResource"
       ],
-      "Resource": [
-        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-dev-*",
-        "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:sns:us-east-1:ACCOUNT_ID_PLACEHOLDER:cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
-      "Sid": "KmsCreateKeyHasNoArnBeforeItExists",
+      "Sid": "KmsCreateOnlyProjectTaggedKeys",
       "Effect": "Allow",
       "Action": "kms:CreateKey",
-      "Resource": "*"
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
-      "Sid": "KmsKeyLifecycleOnGeneratedKeyIds",
+      "Sid": "KmsKeyLifecycleOnlyOnProjectTaggedKeys",
       "Effect": "Allow",
       "Action": [
         "kms:CancelKeyDeletion",
@@ -213,7 +224,13 @@
         "kms:UntagResource",
         "kms:UpdateKeyDescription"
       ],
-      "Resource": "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      "Resource": "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
     },
     {
       "Sid": "KmsAliasesOnOwnNames",
@@ -224,8 +241,7 @@
         "kms:UpdateAlias"
       ],
       "Resource": [
-        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:alias/cba-study-coach-dev-*",
-        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:alias/cba-study-coach-pilot-*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:alias/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*",
         "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
       ]
     },
@@ -233,13 +249,10 @@
       "Sid": "CreateRuntimeRolesOnlyWithPinnedBoundary",
       "Effect": "Allow",
       "Action": "iam:CreateRole",
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
-      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*",
       "Condition": {
         "StringEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime"
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime-ENVIRONMENT_PLACEHOLDER"
         }
       }
     },
@@ -258,10 +271,7 @@
         "iam:UntagRole",
         "iam:UpdateAssumeRolePolicy"
       ],
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "AttachOnlyTheLambdaBasicExecutionManagedPolicy",
@@ -270,10 +280,7 @@
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy"
       ],
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
-      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*",
       "Condition": {
         "ArnEquals": {
           "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -284,10 +291,7 @@
       "Sid": "PassRuntimeRolesToLambdaOnly",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
-      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": "lambda.amazonaws.com"
@@ -310,10 +314,7 @@
         "iam:DeleteRolePermissionsBoundary",
         "iam:PutRolePermissionsBoundary"
       ],
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-dev-*",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-pilot-*"
-      ]
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
     {
       "Sid": "DenyRuntimeBoundaryPolicyMutation",
@@ -324,7 +325,7 @@
         "iam:DeletePolicyVersion",
         "iam:SetDefaultPolicyVersion"
       ],
-      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime"
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime-ENVIRONMENT_PLACEHOLDER"
     }
   ]
 }

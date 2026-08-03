@@ -104,8 +104,14 @@ const CODES = {
   CLOUD_GATE_EXPIRED: 'has expired — the gate authorizes a bounded window, and this run is outside it',
   CLOUD_GATE_TTL_EXCEEDED: 'grants a window longer than the maximum — a gate is a short-lived decision, never a standing authorization',
   CLOUD_GATE_NOT_YET_VALID: 'is in the future — a gate whose approval instant has not arrived authorizes nothing yet',
-  DIFF_FAILED: 'could not be produced — the plan child failed, and without the plan on the record there is no reviewed change to execute',
-  PLAN_CHANGED: 'does not match the plan the gate names — live state changed since the reviewed diff_only run, and a changed world needs a new review before any effect',
+  PLAN_PREPARE_FAILED: 'could not be prepared — the change-set child failed, and without named change sets there is no plan to review or execute',
+  BOOTSTRAP_ROLE_UNASSUMABLE: 'could not be assumed — without this tier\'s cdk deploy role there is no way to read or execute the change sets',
+  CHANGE_SET_MISSING: 'has no prepared change set under this release\'s name — the reviewed plan does not exist (expired, deleted, or never prepared); run plan_only again',
+  CHANGE_SET_UNREADABLE: 'has a change set that could not be described — an unreadable plan authorizes nothing',
+  CHANGE_SET_FAILED: 'has a change set in a failed state — a plan that CloudFormation itself rejected cannot be reviewed or executed',
+  PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
+  EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',
+  STACK_EXECUTION_FAILED: 'did not reach a healthy terminal state — the execution failed or rolled back; the partial record above is the honest state',
 };
 
 class PreflightError extends Error {

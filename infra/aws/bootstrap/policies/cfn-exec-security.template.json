@@ -45,16 +45,24 @@
       "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh"
     },
     {
-      "Sid": "CreateGhaDeployRolesOnlyWithPinnedBoundary",
+      "Sid": "CreateGhaDeployRoleDevOnlyWithItsBoundary",
       "Effect": "Allow",
       "Action": "iam:CreateRole",
-      "Resource": [
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot"
-      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev",
       "Condition": {
         "StringEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy"
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateGhaDeployRolePilotOnlyWithItsBoundary",
+      "Effect": "Allow",
+      "Action": "iam:CreateRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-pilot"
         }
       }
     },
@@ -108,7 +116,8 @@
       ],
       "Resource": [
         "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-pilot-boundary-bedrock-refresh",
-        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy"
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-dev",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-pilot"
       ]
     }
   ]

@@ -83,6 +83,34 @@ const DEPLOYABLE_STACK_IDS = Object.freeze(['ApiStack', 'DataStack', 'IdentitySt
 // decision behind it.
 const EXCLUDED_STACK_IDS = Object.freeze(['AiOrchestrationStack', 'SecurityStack']);
 
+// PER-ENVIRONMENT release bootstraps (#70 Slice B1 round 4). One qualifier — one toolkit stack,
+// one set of cdk-<qualifier>-* roles, one execution policy, one deploy-role boundary — PER TIER,
+// so dev authority reaches only dev resources and can never execute a pilot change. Reviewed
+// constants, never context: a configurable qualifier would let a deploy re-aim itself at a
+// differently-privileged bootstrap.
+const RELEASE_BOOTSTRAP_QUALIFIERS = Object.freeze({ dev: 'cbardev', pilot: 'cbarpil' });
+
+// The reviewed EXECUTION order for change sets — dependency order, not the alphabetical closed
+// set: Api consumes Identity + Data exports, Observability watches Api + Data. Same MEMBERS as
+// DEPLOYABLE_STACK_IDS (a test pins the set equality); different, deliberate sequence.
+const DEPLOYMENT_EXECUTION_ORDER = Object.freeze(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack']);
+
+// One source for CloudFormation stack names: the app builds them from these suffixes, and the
+// deploy entrypoint reconstructs them to address change sets — a drifted copy would prepare a
+// plan for one stack and execute another's.
+const STACK_NAME_SUFFIXES = Object.freeze({
+  ApiStack: 'api',
+  DataStack: 'data',
+  IdentityStack: 'identity',
+  ObservabilityStack: 'observability',
+});
+
+function stackNameFor(environment, stackId) {
+  const suffix = STACK_NAME_SUFFIXES[stackId];
+  if (!suffix) throw new Error(`stack id "${stackId}" has no reviewed stack-name suffix`);
+  return `cba-study-coach-${environment}-${suffix}`;
+}
+
 // What `getContext` will read at all: the deploy contract plus the tier selector, nothing else.
 const READABLE_CONTEXT_KEYS = new Set([...DEPLOY_CONTEXT_KEYS, 'environment']);
 
@@ -187,4 +215,8 @@ module.exports = {
   DEPLOY_CONTEXT_KEYS,
   DEPLOYABLE_STACK_IDS,
   EXCLUDED_STACK_IDS,
+  RELEASE_BOOTSTRAP_QUALIFIERS,
+  DEPLOYMENT_EXECUTION_ORDER,
+  STACK_NAME_SUFFIXES,
+  stackNameFor,
 };

@@ -203,17 +203,27 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    ```bash
    ACCT=$(aws sts get-caller-identity --query Account --output text)
    mkdir -p /tmp/cba-bootstrap
-   for t in bedrock-refresh-boundary cfn-exec-security \
-            gha-deploy-boundary runtime-boundary cfn-exec-release; do
+   for t in bedrock-refresh-boundary cfn-exec-security; do
      sed "s/ACCOUNT_ID_PLACEHOLDER/$ACCT/g" \
        infra/aws/bootstrap/policies/$t.template.json > /tmp/cba-bootstrap/$t.json
    done
+   # The #70 release trio renders PER ENVIRONMENT (dev -> qualifier cbardev, pilot -> cbarpil):
+   for e in dev pilot; do
+     case "$e" in dev) q=cbardev;; pilot) q=cbarpil;; esac
+     for t in gha-deploy-boundary runtime-boundary cfn-exec-release; do
+       sed -e "s/ACCOUNT_ID_PLACEHOLDER/$ACCT/g" \
+           -e "s/ENVIRONMENT_PLACEHOLDER/$e/g" \
+           -e "s/QUALIFIER_PLACEHOLDER/$q/g" \
+         infra/aws/bootstrap/policies/$t.template.json > /tmp/cba-bootstrap/$t-$e.json
+     done
+   done
    ```
 
-   Five templates render together: the #66 pair (bedrock-refresh boundary + scoped SecurityStack
-   execution policy) and the #70 release trio (the GitHub deploy-role boundary, the runtime
-   boundary every release-created role carries, and the release CloudFormation execution
-   policy) — see step 12.
+   Five templates, two rendering families: the #66 pair (bedrock-refresh boundary + scoped
+   SecurityStack execution policy, account substitution only) and the #70 release trio (the
+   GitHub deploy-role boundary, the runtime boundary every release-created role carries, and the
+   release CloudFormation execution policy — account + ENVIRONMENT + QUALIFIER substitution, one
+   rendering per tier so dev authority names not one pilot resource) — see step 12.
 
 5. **Create the operator-managed policies** (outside CloudFormation): the permissions boundary
    `cba-study-coach-pilot-boundary-bedrock-refresh` (caps the refresh role at
@@ -270,42 +280,51 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
 11. **Harden (recommended)**: create the `ai-batch` Environment with a required reviewer, add
     `environment: ai-batch` to the workflow's `refresh` job, and switch the trust policy subject to
     the environment-scoped form (§2).
-12. **Release bootstrap (#70 Slice B1)** — a SECOND CDK bootstrap, qualifier `cbarel`, whose
-    CloudFormation execution role runs the four DEPLOYABLE stacks (Api/Data/Identity/
-    Observability — `lib/app.js` pins the qualifier as a reviewed constant) and can do nothing
-    the #66 bootstrap does: one execution role per blast radius. Rendered per step 4; each
-    creation is human-gated:
+12. **Release bootstraps (#70 Slice B1)** — a SEPARATE CDK bootstrap PER ENVIRONMENT (dev:
+    qualifier `cbardev`, pilot: `cbarpil` — reviewed constants in `lib/context.js`), each with its
+    OWN toolkit stack, execution role and policy, so dev authority reaches only dev and neither
+    tier touches the #66 foundation bootstrap. `--toolkit-stack-name` is REQUIRED: without it the
+    CDK would update the existing `CDKToolkit` stack instead of creating the separate bootstrap
+    this design names. Rendered per step 4; each creation is human-gated:
 
     ```bash
-    # Operator-managed policies (outside CloudFormation):
-    aws iam create-policy \
-      --policy-name cba-study-coach-boundary-gha-deploy \
-      --policy-document file:///tmp/cba-bootstrap/gha-deploy-boundary.json
-    aws iam create-policy \
-      --policy-name cba-study-coach-boundary-runtime \
-      --policy-document file:///tmp/cba-bootstrap/runtime-boundary.json
-    RELEASE_EXEC_ARN=$(aws iam create-policy \
-      --policy-name cba-study-coach-cfn-exec-release \
-      --policy-document file:///tmp/cba-bootstrap/cfn-exec-release.json \
-      --query 'Policy.Arn' --output text)
+    for e in dev pilot; do
+      case "$e" in dev) q=cbardev;; pilot) q=cbarpil;; esac
+      # Operator-managed policies (outside CloudFormation), one set per tier:
+      aws iam create-policy \
+        --policy-name "cba-study-coach-boundary-gha-deploy-$e" \
+        --policy-document "file:///tmp/cba-bootstrap/gha-deploy-boundary-$e.json"
+      aws iam create-policy \
+        --policy-name "cba-study-coach-boundary-runtime-$e" \
+        --policy-document "file:///tmp/cba-bootstrap/runtime-boundary-$e.json"
+      RELEASE_EXEC_ARN=$(aws iam create-policy \
+        --policy-name "cba-study-coach-cfn-exec-release-$e" \
+        --policy-document "file:///tmp/cba-bootstrap/cfn-exec-release-$e.json" \
+        --query 'Policy.Arn' --output text)
 
-    cd infra/aws
-    npx --no-install cdk bootstrap "aws://$ACCT/us-east-1" \
-      --qualifier cbarel \
-      --cloudformation-execution-policies "$RELEASE_EXEC_ARN" \
-      --termination-protection
+      (cd infra/aws && npx --no-install cdk bootstrap "aws://$ACCT/us-east-1" \
+        --qualifier "$q" \
+        --toolkit-stack-name "cba-release-toolkit-$e" \
+        --cloudformation-execution-policies "$RELEASE_EXEC_ARN" \
+        --termination-protection)
+    done
     ```
 
-    The chain a release then rides: the GitHub deploy role (SecurityStack, boundary
-    `cba-study-coach-boundary-gha-deploy`) may ONLY assume `cdk-cbarel-{deploy,file-publishing,
-    lookup}-role-*`; deployment ends in the `cbarel` execution role, whose policy enumerates the
-    four templates' real resource types with name-scoped resources (wildcards only where AWS
-    offers no ARN to scope to — pool/key creation, logs query definitions — each a named
-    statement); every role a release creates is pinned to `cba-study-coach-boundary-runtime` by
-    the `iam:PermissionsBoundary` condition, and touching the `cba-study-coach-gha-*` roles or
-    the `cdk-hnb659fds-*` foundation is explicitly denied. Redeploying the SecurityStack after
-    this step (it now carries the GitHub deploy role) is a separate human-gated `cdk deploy
-    SecurityStack` under the #66 bootstrap, step 7 form.
+    The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary
+    `cba-study-coach-boundary-gha-deploy-<env>`) may ONLY assume that tier's
+    `cdk-<qualifier>-{deploy,file-publishing,lookup}-role-*`; deployment ends in that tier's
+    execution role, whose policy enumerates the four templates' real resource types with
+    tier-scoped resource names, demands the `Project`/`Environment` tags wherever AWS offers no
+    ARN to scope to (Cognito pools and KMS keys: `aws:RequestTag` on create, `aws:ResourceTag` on
+    lifecycle), and names its one residual: API Gateway sub-resources are untaggable in the
+    service model, so below the tag-confined API creation the confinement is account + region +
+    `/apis` path scope only — recorded for Zamp's risk decision, with account isolation as the
+    documented alternative. Every role a release creates is pinned to
+    `cba-study-coach-boundary-runtime-<env>` by the `iam:PermissionsBoundary` condition; touching
+    the `cba-study-coach-gha-*` roles or the `cdk-hnb659fds-*` foundation is explicitly denied.
+    Redeploying the SecurityStack after this step (it now carries the per-tier GitHub deploy
+    roles) is a separate human-gated `cdk deploy SecurityStack` under the #66 bootstrap, step 7
+    form.
 
 ## 5. CDK target (for #49/#53)
 

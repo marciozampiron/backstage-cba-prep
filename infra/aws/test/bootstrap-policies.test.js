@@ -22,8 +22,10 @@ const BOUNDARY_ARN =
   'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-pilot-boundary-bedrock-refresh';
 const ROLE_ARN =
   'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh';
-const DEPLOY_BOUNDARY_ARN =
-  'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy';
+const DEPLOY_BOUNDARY_ARNS = {
+  dev: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-dev',
+  pilot: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-pilot',
+};
 const DEPLOY_ROLE_ARNS = [
   'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev',
   'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot',
@@ -55,34 +57,47 @@ test('boundary resources = standard inference profile + the 3 routed model ARNs'
 });
 
 test('exec policy: CreateRole requires the exact iam:PermissionsBoundary and the exact role', () => {
-  // Two grants, each pinned name-to-boundary: the bedrock-refresh role to ITS boundary, the two
-  // GitHub deploy roles (#70 Slice B1) to the deploy boundary. No unpinned CreateRole exists.
+  // Three grants, each pinned name-to-boundary: the bedrock-refresh role to ITS boundary, and
+  // EACH GitHub deploy role to ITS TIER'S boundary (round 4: per-environment isolation). No
+  // unpinned CreateRole exists, and no statement can create the other tier's role.
   const createRole = execPolicy.Statement.filter(
     (s) => s.Effect === 'Allow' && asArray(s.Action).includes('iam:CreateRole'),
   );
-  assert.equal(createRole.length, 2, 'exactly two CreateRole grants — refresh and gha-deploy');
+  assert.equal(createRole.length, 3, 'exactly three CreateRole grants — refresh, gha-deploy-dev, gha-deploy-pilot');
   const refresh = createRole.find((s) => asArray(s.Resource).includes(ROLE_ARN));
   assert.deepEqual(asArray(refresh.Resource), [ROLE_ARN]);
   assert.equal(refresh.Condition?.StringEquals?.['iam:PermissionsBoundary'], BOUNDARY_ARN);
-  const deploy = createRole.find((s) => s !== refresh);
-  assert.deepEqual(asArray(deploy.Resource), DEPLOY_ROLE_ARNS);
-  assert.equal(deploy.Condition?.StringEquals?.['iam:PermissionsBoundary'], DEPLOY_BOUNDARY_ARN);
+  for (const env of ['dev', 'pilot']) {
+    const stmt = createRole.find((s) => asArray(s.Resource).some((r) => r.endsWith(`gha-deploy-${env}`)));
+    assert.ok(stmt, `the ${env} CreateRole grant must exist`);
+    assert.deepEqual(asArray(stmt.Resource), [`arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-${env}`]);
+    assert.equal(stmt.Condition?.StringEquals?.['iam:PermissionsBoundary'], DEPLOY_BOUNDARY_ARNS[env], `${env} role pins to the ${env} boundary — never the other tier's`);
+  }
 });
 
-test('deploy boundary allows only sts:AssumeRole on exactly the three CDK bootstrap roles', () => {
+test('deploy boundary allows only sts:AssumeRole on exactly ONE TIER\'s three CDK bootstrap roles', () => {
   assert.equal(deployBoundary.Statement.length, 1, 'a single boundary statement');
   const [stmt] = deployBoundary.Statement;
   assert.equal(stmt.Effect, 'Allow');
   assert.deepEqual(asArray(stmt.Action), ['sts:AssumeRole']);
+  // The template renders per environment (QUALIFIER_PLACEHOLDER -> cbardev | cbarpil), so ONE
+  // rendered boundary reaches ONE tier's bootstrap — dev authority cannot execute pilot.
   assert.deepEqual(stmt.Resource, [
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-cbarel-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1',
   ]);
-  // No image-publishing (no container assets) and never the CloudFormation execution role.
+  for (const [env, qualifier] of [['dev', 'cbardev'], ['pilot', 'cbarpil']]) {
+    const rendered = JSON.stringify(deployBoundary).replaceAll('QUALIFIER_PLACEHOLDER', qualifier);
+    assert.ok(rendered.includes(`cdk-${qualifier}-deploy-role`), `${env} rendering reaches its own bootstrap`);
+    assert.equal(rendered.includes('QUALIFIER_PLACEHOLDER'), false, 'every placeholder renders');
+  }
+  // No image-publishing (no container assets), never the CloudFormation execution role, and
+  // never the #66 foundation bootstrap.
   const flat = JSON.stringify(deployBoundary);
   assert.ok(!flat.includes('image-publishing'), 'no container-asset authority');
   assert.ok(!flat.includes('cfn-exec'), 'the exec role is assumed by CloudFormation, never by GitHub');
+  assert.ok(!flat.includes('hnb659fds'), 'the foundation bootstrap is unreachable from the release chain');
 });
 
 test('exec policy: gha-deploy role lifecycle is confined to exactly the two deploy roles', () => {
@@ -111,7 +126,7 @@ test('exec policy: boundary tampering stays explicitDeny', () => {
   );
   assert.deepEqual(asArray(roleDeny.Resource), [ROLE_ARN, ...DEPLOY_ROLE_ARNS]);
   const policyDeny = denies.find((s) => asArray(s.Action).includes('iam:DeletePolicy'));
-  assert.deepEqual(asArray(policyDeny.Resource), [BOUNDARY_ARN, DEPLOY_BOUNDARY_ARN]);
+  assert.deepEqual(asArray(policyDeny.Resource), [BOUNDARY_ARN, DEPLOY_BOUNDARY_ARNS.dev, DEPLOY_BOUNDARY_ARNS.pilot]);
 });
 
 test('exec policy Allow statements carry no PassRole, lambda, logs, s3, or bedrock actions', () => {

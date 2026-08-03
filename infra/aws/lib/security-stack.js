@@ -5,7 +5,7 @@
 // parameters, so no real account id ever appears in the repo or the synthesized template.
 const { Stack, ArnFormat, CfnOutput } = require('aws-cdk-lib');
 const iam = require('aws-cdk-lib/aws-iam');
-const { getContext, parseArnList } = require('./context');
+const { getContext, parseArnList, RELEASE_BOOTSTRAP_QUALIFIERS } = require('./context');
 const { applyFoundationTags } = require('./tags');
 
 const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com';
@@ -116,12 +116,14 @@ class SecurityStack extends Stack {
     const environment = ctx('environment', 'pilot');
     const deployBoundaryArn = ctx(
       'ghaDeployBoundaryArn',
-      `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy`,
+      `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-${environment}`,
     );
-    // The RELEASE bootstrap's roles (qualifier cbarel — lib/app.js): the deploy role drives
-    // releases only, and cannot reach the #66 SecurityStack bootstrap (hnb659fds) at all.
+    // THIS TIER'S release bootstrap roles (per-environment qualifier, lib/context.js): the dev
+    // deploy role can assume only cdk-cbardev-* — it cannot execute a pilot change, and neither
+    // tier can reach the #66 SecurityStack bootstrap (hnb659fds) at all.
+    const releaseQualifier = RELEASE_BOOTSTRAP_QUALIFIERS[environment];
     const cdkBootstrapRoleArn = (name) =>
-      `arn:${this.partition}:iam::${this.account}:role/cdk-cbarel-${name}-role-${this.account}-${this.region}`;
+      `arn:${this.partition}:iam::${this.account}:role/cdk-${releaseQualifier}-${name}-role-${this.account}-${this.region}`;
 
     const deployRole = new iam.Role(this, 'GithubDeployRole', {
       roleName: `cba-study-coach-gha-deploy-${environment}`,

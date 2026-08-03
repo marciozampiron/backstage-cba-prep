@@ -39,10 +39,12 @@
 //     exactly the DEPLOYABLE stacks from lib/context.js and the child gets them with
 //     `--exclusively` — so the account-global SecurityStack, the deferred AiOrchestrationStack,
 //     and any stack anyone adds tomorrow are structurally outside a release's blast radius.
-//   * The HUMAN CLOUD GATE binds the run to a reviewed plan (Slice B1 review). CBA_CLOUD_GATE
-//     must name this exact release and assembly digest, unexpired; `diff_only` puts the plan on
-//     the record and refuses the effect, `deploy` executes it. `cdk diff` runs before every
-//     deploy, so what was reviewed and what executes are plans over the same digested bytes.
+//   * The HUMAN CLOUD GATE binds the run to a reviewed plan (Slice B1 rounds 2-4). CBA_CLOUD_GATE
+//     must name this exact release and assembly digest inside a bounded window; `plan_only`
+//     PREPARES named CloudFormation change sets and puts their digest on the record while
+//     refusing the effect; `deploy` NAMES that digest and EXECUTES exactly those change sets —
+//     an id is immutable, so a recreated or drifted plan refuses as PLAN_CHANGED, and
+//     CloudFormation itself refuses a change set whose stack moved after preparation.
 //   * Everything the CDK children print is CAPTURED and sanitized by shape — ARNs, URLs, Cognito
 //     pool ids, 12-digit account runs — because `Outputs:` and `Stack ARN:` would otherwise hand
 //     the BFF endpoint, the identity pool and the account structure to any log reader.
@@ -57,6 +59,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { describeFailure, PreflightError } = require('../lib/deploy-preflight');
+const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_EXECUTION_ORDER, stackNameFor } = require('../lib/context');
 const {
   contextDigest,
   assemblyDigest,
@@ -100,12 +103,13 @@ function usage() {
     '  -c key=value            the effective context (repeatable) — the SAME values the',
     '                          preflight validated; the digest is recomputed from them',
     '',
-    'It verifies the manifest digest against the effective values and the resolved account,',
-    'requires CBA_CLOUD_GATE (the human cloud-execution gate) to name this exact release and',
-    'assembly, re-resolves the account immediately before the effect, puts the `cdk diff` plan',
-    'on the record, and then — deploy-mode gate only — deploys EXACTLY the verified stack set',
-    'with --exclusively. Raw `cdk deploy` invocations are forbidden by the workflow invariants;',
-    'this entrypoint is the only path to a deployment.',
+    'It verifies the manifest digest against the effective values and the resolved account and',
+    'requires CBA_CLOUD_GATE (the human cloud gate) to name this exact release and assembly.',
+    'plan_only prepares one named change set per stack and puts PLAN_DIGEST on the record;',
+    'deploy re-describes those exact change sets, requires the digest the gate names, resolves',
+    'the account and re-checks the window immediately before EACH execution, and executes',
+    'exactly the reviewed change sets. Raw `cdk deploy` invocations are forbidden by the',
+    'workflow invariants; this entrypoint is the only path to a deployment.',
   ].join('\n');
 }
 
@@ -138,11 +142,20 @@ function sanitizeChildOutput(text) {
 
 /** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
 const CLOUD_GATE_KEYS = ['approvedAt', 'assemblyDigest', 'decisionId', 'environment', 'expiresAt', 'issue', 'mode', 'planDigest', 'releaseSha'];
-const CLOUD_GATE_MODES = ['diff_only', 'deploy'];
+const CLOUD_GATE_MODES = ['plan_only', 'deploy'];
 
-/** STRICT RFC3339, UTC only. `Date.parse` alone accepted `2099-01-01` and a space-separated
- * datetime — formats a human would not notice granting a century of authority. */
-const STRICT_RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
+/** STRICT RFC3339, UTC only, whole seconds. `Date.parse` alone accepted `2099-01-01` and a
+ * space-separated datetime — formats a human would not notice granting a century of authority. */
+const STRICT_RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+/** Format AND calendar (round 4): `Date.parse` silently normalizes 2026-02-30 into March — a
+ * calendar-invalid instant is not a stricter format, it is a DIFFERENT date than the human
+ * wrote. The canonical round-trip refuses anything the calendar itself would rewrite. */
+function strictUtcInstant(v) {
+  if (typeof v !== 'string' || !STRICT_RFC3339_UTC.test(v)) return false;
+  const ms = Date.parse(v);
+  return !Number.isNaN(ms) && new Date(ms).toISOString() === v.replace('Z', '.000Z');
+}
 
 /** A gate authorizes a WINDOW, never a standing state: at most one hour approvedAt -> expiresAt. */
 const CLOUD_GATE_MAX_TTL_MS = 60 * 60 * 1000;
@@ -156,10 +169,10 @@ const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
  * The GitHub Environment answers WHO may run the lane; it cannot bind the run to a reviewed plan.
  * This gate does: the human sets CBA_CLOUD_GATE (an Environment variable, writable only through
  * repository settings) naming the exact release, the exact assembly digest, the decision, a mode,
- * and a bounded window (approvedAt -> expiresAt, RFC3339 UTC, at most one hour). `diff_only` puts
- * the plan on the record — and its digest in the output — while refusing the effect; `deploy`
- * additionally names the PLAN it authorizes (`planDigest`), so an effect executes only when the
- * plan recomputed against live state is byte-identical to the one the human reviewed. A missing,
+ * and a bounded window (approvedAt -> expiresAt, strict RFC3339 UTC, at most one hour). `plan_only`
+ * prepares the named change sets and puts their digest on the record while refusing the effect;
+ * `deploy` additionally names the PLAN it authorizes (`planDigest`), so an effect executes only
+ * the exact change sets whose unredacted canonical describes the human reviewed. A missing,
  * malformed, mismatched, premature or expired gate refuses before any child process runs —
  * absence of authorization is a refusal, never a default. The gate CANNOT name the GitHub run id
  * (it is set before dispatch, when no run exists); the binding is the decision plus the short
@@ -178,17 +191,16 @@ function checkCloudGate(raw, manifest, now) {
   } catch {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
   }
-  const strictInstant = (v) => typeof v === 'string' && STRICT_RFC3339_UTC.test(v) && !Number.isNaN(Date.parse(v));
   const malformed =
     !gate || typeof gate !== 'object' || Array.isArray(gate)
     || JSON.stringify(Object.keys(gate).sort()) !== JSON.stringify(CLOUD_GATE_KEYS)
     || gate.issue !== 70
     || !CLOUD_GATE_MODES.includes(gate.mode)
     || typeof gate.decisionId !== 'string' || !DECISION_ID.test(gate.decisionId)
-    || !strictInstant(gate.approvedAt)
-    || !strictInstant(gate.expiresAt)
-    // diff_only authorizes no effect, so it names no plan; deploy must name exactly one.
-    || (gate.mode === 'diff_only' && gate.planDigest !== null)
+    || !strictUtcInstant(gate.approvedAt)
+    || !strictUtcInstant(gate.expiresAt)
+    // plan_only authorizes no effect, so it names no plan; deploy must name exactly one.
+    || (gate.mode === 'plan_only' && gate.planDigest !== null)
     || (gate.mode === 'deploy' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
   if (malformed) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
@@ -212,26 +224,111 @@ function checkCloudGate(raw, manifest, now) {
 }
 
 /**
- * The canonical form of a plan, and its digest — what a deploy-mode gate NAMES.
+ * THE PLAN IS A SET OF NAMED, IMMUTABLE CHANGE SETS (round 4) — not a diff rendering.
  *
- * The reviewed plan and the executed plan must be the SAME BYTES, not the same intention: live
- * state can change between the diff_only run Zamp reviewed and the deploy run that executes, and
- * in that case the same assembly produces a different diff. Canonicalization strips exactly the
- * presentation noise (ANSI colour, CR, trailing whitespace) and nothing semantic; the digest is
- * computed over the SANITIZED text, so it is stable and the gate value never embeds identifiers.
+ * Round 3 bound the gate to a `cdk diff` text, and the review broke it twice: `cdk deploy`
+ * created a NEW change set over possibly different live state (drift after the diff executed
+ * unreviewed), and the digest was computed AFTER sanitization — two plans differing only in an
+ * ARN principal produced the same redacted text and the same SHA-256. Now the plan IS the
+ * CloudFormation change sets: plan_only PREPARES one named change set per stack and digests the
+ * canonical UNREDACTED describe output — change-set ids, full change details, principals and
+ * all; the deploy-mode gate NAMES that digest; and the deploy run re-describes the SAME change
+ * sets (an id is immutable — a recreated set has a new id and refuses as PLAN_CHANGED) and
+ * EXECUTES exactly them. CloudFormation itself refuses to execute a change set whose stack moved
+ * after preparation, so post-review drift dies in the service, not in a text comparison.
+ * Sanitized output is presentation only; nothing is digested after redaction.
  */
-function canonicalPlan(text) {
-  return (text || '')
-    .replace(/\u001b\[[0-9;]*m/g, '')
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('\n')
-    .trim();
+function deepSortKeys(value) {
+  if (Array.isArray(value)) return value.map(deepSortKeys);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value).sort()) out[key] = deepSortKeys(value[key]);
+    return out;
+  }
+  return value;
 }
 
-function planDigestOf(sanitizedPlanText) {
-  return crypto.createHash('sha256').update(canonicalPlan(sanitizedPlanText), 'utf8').digest('hex');
+function planDigestOf(planEntries) {
+  return crypto.createHash('sha256').update(JSON.stringify(deepSortKeys(planEntries)), 'utf8').digest('hex');
+}
+
+/** One canonical entry per stack, from the UNREDACTED describe-change-set output. */
+function canonicalChangeSet(stackId, stackName, described) {
+  const noChanges =
+    described.Status === 'FAILED'
+    && /didn't contain changes|No updates are to be performed/i.test(described.StatusReason || '');
+  return {
+    stackId,
+    stackName,
+    changeSetId: described.ChangeSetId,
+    status: noChanges ? 'NO_CHANGES' : described.Status,
+    executionStatus: described.ExecutionStatus,
+    changes: described.Changes || [],
+  };
+}
+
+/** Assume one of THIS TIER'S cdk bootstrap roles; the ambient GitHub role can do nothing else. */
+function assumeBootstrapRole(run, { account, region, qualifier, name, session }) {
+  const arn = `arn:aws:iam::${account}:role/cdk-${qualifier}-${name}-role-${account}-${region}`;
+  const res = run(['sts', 'assume-role', '--role-arn', arn, '--role-session-name', session, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000 });
+  if (!res || res.status !== 0) return null;
+  try {
+    const c = JSON.parse(res.stdout || '{}').Credentials;
+    if (!c || !c.AccessKeyId || !c.SecretAccessKey || !c.SessionToken) return null;
+    return { AWS_ACCESS_KEY_ID: c.AccessKeyId, AWS_SECRET_ACCESS_KEY: c.SecretAccessKey, AWS_SESSION_TOKEN: c.SessionToken };
+  } catch {
+    return null;
+  }
+}
+
+/** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
+function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
+  const res = run(['cloudformation', 'describe-change-set', '--change-set-name', changeSetName, '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: credEnv });
+  if (!res) return { error: true };
+  if (res.status !== 0) {
+    return /ChangeSetNotFound|does not exist/i.test(`${res.stderr || ''}${res.stdout || ''}`) ? { missing: true } : { error: true };
+  }
+  try {
+    return { described: JSON.parse(res.stdout) };
+  } catch {
+    return { error: true };
+  }
+}
+
+/** Poll the stack to a terminal status after executing its change set. Injectable sleep. */
+function waitForStack(run, credEnv, stackName, { attempts = 120, sleep }) {
+  for (let i = 0; i < attempts; i += 1) {
+    const res = run(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: credEnv });
+    if (!res || res.status !== 0) return false;
+    let status = null;
+    try {
+      status = JSON.parse(res.stdout || '{}').Stacks?.[0]?.StackStatus ?? null;
+    } catch {
+      return false;
+    }
+    if (status === 'CREATE_COMPLETE' || status === 'UPDATE_COMPLETE') return true;
+    if (status === null || /FAILED|ROLLBACK/.test(status)) return false;
+    sleep();
+  }
+  return false;
+}
+
+/** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested. */
+function renderPlan(planEntries) {
+  const lines = [];
+  for (const entry of planEntries) {
+    lines.push(`  ${entry.stackName} — ${entry.status}${entry.status === 'NO_CHANGES' ? '' : ` (${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'})`}`);
+    for (const change of entry.changes) {
+      const rc = change.ResourceChange || {};
+      lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${rc.Replacement === 'True' ? '  [REPLACEMENT]' : ''}`);
+    }
+  }
+  return sanitizeChildOutput(lines.join('\n'));
+}
+
+/** Five seconds between stack-status polls; injectable so tests never actually wait. */
+function defaultSleep() {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
 }
 
 /** Default git reader: injectable, so the HEAD/worktree binding is testable offline. */
@@ -282,7 +379,7 @@ function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text) } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text), sleep = defaultSleep } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -398,15 +495,15 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     }
     const gate = gateCheck.gate;
 
-  // 5. The plan, then — only in deploy mode — the effect, both CONSTRUCTED from the verified
-  //    objects. The stack set comes from the manifest, whose closed shape pinned it to the
-  //    DEPLOYABLE list; `--exclusively` makes the CDK touch exactly those stacks — never `--all`,
-  //    which would deploy whatever the app grew (the account-global SecurityStack included), and
-  //    never dependency expansion, which would drag SecurityStack behind ObservabilityStack. The
-  //    child deploys the VERIFIED ASSEMBLY (`--app`) — passing mutable source would discard the
-  //    digest that was just checked. The verified region is IMPOSED on the child's environment,
-  //    and everything either child prints is sanitized before it reaches a log.
+  // 5. THE PLAN IS THE CHANGE SETS. plan_only PREPARES one named change set per stack from the
+  //    verified snapshot and digests the canonical UNREDACTED describes; deploy re-describes the
+  //    SAME change sets, requires the digest the gate NAMES, and executes exactly them. `--all`
+  //    does not exist here; `--exclusively` pins the prepare to the closed set; the execution
+  //    order is the reviewed dependency order, not the alphabetical closed set.
     const stacks = [...manifest.target.stacks];
+    const orderedStacks = DEPLOYMENT_EXECUTION_ORDER.filter((id) => stacks.includes(id));
+    const qualifier = RELEASE_BOOTSTRAP_QUALIFIERS[manifest.environment];
+    const changeSetName = `cba-70-${manifest.releaseSha.slice(0, 12)}`;
     const childEnv = {
       ...env,
       AWS_REGION: manifest.region,
@@ -418,84 +515,124 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned, stacks: ${stacks.join(' ')})`,
     ];
 
-    // 5a. `cdk diff` FIRST, every time: the plan for exactly this assembly goes on the record
-    //     before any effect, and its DIGEST is what a deploy-mode gate names. A diff child that
-    //     errors refuses the run — no plan, no effect.
-    const diffChild = exec(['cdk', 'diff', '--exclusively', ...stacks, '--app', snapshot.dir], childEnv);
-    const diffOutput = sanitizeChildOutput(`${diffChild.stdout || ''}\n${diffChild.stderr || ''}`).trimEnd();
-    if (diffChild.status !== 0) {
-      failures.push({ check: 'DEPLOY', code: 'DIFF_FAILED', field: 'plan' });
-      const refused = refuse();
-      return { ...refused, output: `${refused.output}\n\n--- plan output (sanitized) ---\n${diffOutput}` };
+    // 5a. plan_only: PREPARE the named change sets — the one moment new change sets may be
+    //     created. The CDK child publishes assets and creates (never executes) one change set
+    //     per stack, all named for this release, all from the verified snapshot.
+    if (gate.mode === 'plan_only') {
+      const prepare = exec(['cdk', 'deploy', '--method=prepare-change-set', '--change-set-name', changeSetName, '--exclusively', ...orderedStacks, '--require-approval', 'never', '--app', snapshot.dir], childEnv);
+      if (prepare.status !== 0) {
+        failures.push({ check: 'PLAN', code: 'PLAN_PREPARE_FAILED', field: 'plan' });
+        const refused = refuse();
+        return { ...refused, output: `${refused.output}\n\n--- prepare output (sanitized) ---\n${sanitizeChildOutput(`${prepare.stdout || ''}\n${prepare.stderr || ''}`).trimEnd()}` };
+      }
     }
-    const digestOfPlan = planDigestOf(diffOutput);
-    // The plan is EMITTED before any effect — review material must exist before the mutation it
-    // authorizes, not after (round 3). The returned output repeats it for the retained record.
-    print([
-      ...header,
+
+    // 5b. DESCRIBE the change sets under this tier's assumed deploy role — in BOTH modes. The
+    //     canonical entries carry the immutable change-set ids and the full, unredacted change
+    //     details; their digest is what a deploy-mode gate names. (Round 4: digesting after
+    //     sanitization let two plans differing only in an ARN principal collide.)
+    const credEnv = assumeBootstrapRole(run, { account: accountAtVerify, region: manifest.region, qualifier, name: 'deploy', session: `cba-70-${gate.mode}` });
+    if (!credEnv) {
+      failures.push({ check: 'PLAN', code: 'BOOTSTRAP_ROLE_UNASSUMABLE', field: 'deployRole' });
+      return refuse();
+    }
+    const cfnEnv = { ...credEnv, AWS_REGION: manifest.region, AWS_DEFAULT_REGION: manifest.region };
+    const planEntries = [];
+    for (const stackId of orderedStacks) {
+      const stackName = stackNameFor(manifest.environment, stackId);
+      const described = describePlannedChangeSet(run, cfnEnv, stackName, changeSetName);
+      if (described.missing) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_MISSING', field: stackId });
+        continue;
+      }
+      if (described.error) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_UNREADABLE', field: stackId });
+        continue;
+      }
+      const entry = canonicalChangeSet(stackId, stackName, described.described);
+      if (entry.status !== 'NO_CHANGES' && entry.status !== 'CREATE_COMPLETE') {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_FAILED', field: stackId });
+        continue;
+      }
+      planEntries.push(entry);
+    }
+    if (failures.length > 0) return refuse();
+    const digestOfPlan = planDigestOf(planEntries);
+
+    // The plan goes on the record BEFORE any effect — review material must exist before the
+    // mutation it authorizes. Rendering is sanitized; the digest was not.
+    const planBlock = [
       `  PLAN_DIGEST ${digestOfPlan}`,
       '',
-      '--- plan (sanitized) ---',
-      diffOutput,
+      '--- plan (change sets, sanitized rendering) ---',
+      renderPlan(planEntries),
       '',
-    ].join('\n'));
+    ].join('\n');
+    print([...header, planBlock].join('\n'));
 
-    // 5b. diff_only: the gate authorized the PLAN, not the effect. Stop here, successfully —
-    //     this is how the reviewed-plan GO prerequisite is produced without ever deploying. Zamp
-    //     copies PLAN_DIGEST into the deploy-mode gate, and only that plan can then execute.
-    if (gate.mode === 'diff_only') {
+    // 5c. plan_only stops here, successfully: Zamp reviews the rendering, then issues a
+    //     deploy-mode gate NAMING this digest. Only these exact change sets can then execute.
+    if (gate.mode === 'plan_only') {
       return {
         exit: EXIT.OK,
         output: [
           ...header,
           `  PLAN_DIGEST ${digestOfPlan}`,
-          '  DIFF ONLY — the cloud gate authorizes the plan, not the effect. Nothing was deployed.',
+          '  PLAN ONLY — the cloud gate authorizes preparation, not the effect. Nothing was deployed.',
           '',
-          '--- plan (sanitized) ---',
-          diffOutput,
+          '--- plan (change sets, sanitized rendering) ---',
+          renderPlan(planEntries),
         ].join('\n'),
         executed: false,
       };
     }
 
-    // 5c. The plan the gate NAMED must be the plan that would execute. Live state can change
-    //     between the diff_only run the human reviewed and this run: same assembly, different
-    //     diff. Byte-identical canonical plans or no effect — a changed world needs a new review.
+    // 5d. The plan the gate NAMED must be the plan that will execute — same change-set ids, same
+    //     unredacted change details. A recreated change set, a drifted describe, or any edit
+    //     refuses as PLAN_CHANGED: a changed world needs a new review.
     if (digestOfPlan !== gate.planDigest) {
       failures.push({ check: 'DEPLOY', code: 'PLAN_CHANGED', field: 'planDigest' });
       return refuse();
     }
 
-    // 5d. REVALIDATION AT THE MUTATION BOUNDARY: the diff child took real time, and the gate is a
-    //     window, not a state. The expiry is re-checked against a fresh clock and the account is
-    //     re-resolved immediately before the effect — a gate that lapsed or credentials that
-    //     changed while the plan was computed refuse HERE, one spawn away from the mutation.
-    if (Date.parse(gate.expiresAt) <= now()) {
-      failures.push({ check: 'DEPLOY', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
-      return refuse();
-    }
+    // 5e. REVALIDATION AT THE MUTATION BOUNDARY, in the round-4 order: identity FIRST (the STS
+    //     round-trip takes real time), then the clock as the LAST operation before EACH
+    //     execute — a gate that lapses during the account resolution, or between two stacks,
+    //     refuses before the next mutation with the honest partial record.
     const accountAtEffect = resolveAccountId(run);
     if (accountAtEffect !== accountAtVerify) {
       failures.push({ check: 'DEPLOY', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
       return refuse();
     }
-
-    // 5e. The effect, for a `deploy`-mode gate naming THIS plan.
-    const child = exec(['cdk', 'deploy', '--exclusively', ...stacks, '--require-approval', 'never', '--app', snapshot.dir], childEnv);
-    const deployOutput = sanitizeChildOutput(`${child.stdout || ''}\n${child.stderr || ''}`).trimEnd();
-    const exit = child.status === 0 ? EXIT.OK : EXIT.REFUSED;
+    const executed = [];
+    for (const entry of planEntries) {
+      if (entry.status === 'NO_CHANGES') continue;
+      if (Date.parse(gate.expiresAt) <= now()) {
+        failures.push({ check: 'DEPLOY', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
+        const refused = refuse();
+        return { ...refused, output: `${refused.output}\nExecuted before the window lapsed: ${executed.length === 0 ? 'none' : executed.join(', ')}. Remaining change sets were NOT executed.` };
+      }
+      const execution = run(['cloudformation', 'execute-change-set', '--change-set-name', entry.changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+      if (!execution || execution.status !== 0) {
+        failures.push({ check: 'DEPLOY', code: 'EXECUTE_FAILED', field: entry.stackId });
+        const refused = refuse();
+        return { ...refused, output: `${refused.output}\nExecuted before the failure: ${executed.length === 0 ? 'none' : executed.join(', ')}. Remaining change sets were NOT executed.` };
+      }
+      if (!waitForStack(run, cfnEnv, entry.stackName, { sleep })) {
+        failures.push({ check: 'DEPLOY', code: 'STACK_EXECUTION_FAILED', field: entry.stackId });
+        const refused = refuse();
+        return { ...refused, output: `${refused.output}\nExecuted before the failure: ${[...executed, entry.stackName].join(', ')}. Remaining change sets were NOT executed.` };
+      }
+      executed.push(entry.stackName);
+    }
     return {
-      exit,
+      exit: EXIT.OK,
       output: [
         ...header,
         `  PLAN_DIGEST ${digestOfPlan} (matched the gate; decision ${gate.decisionId})`,
-        child.status === 0 ? 'Deployed the verified context.' : 'The deploy child failed; the binding held.',
-        '',
-        '--- plan (sanitized) ---',
-        diffOutput,
-        '',
-        '--- deploy output (sanitized) ---',
-        deployOutput,
+        executed.length === 0
+          ? 'Every change set reported NO_CHANGES; the environment already IS the reviewed plan.'
+          : `Executed the reviewed change sets, in order: ${executed.join(', ')}.`,
       ].join('\n'),
       executed: true,
     };
@@ -504,7 +641,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, canonicalPlan, planDigestOf, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

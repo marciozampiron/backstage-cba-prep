@@ -11,7 +11,7 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { App } = require('aws-cdk-lib');
 const { Template } = require('aws-cdk-lib/assertions');
-const { buildStacks, RELEASE_BOOTSTRAP_QUALIFIER } = require('../lib/app');
+const { buildStacks, RELEASE_BOOTSTRAP_QUALIFIERS } = require('../lib/app');
 const { DEPLOYABLE_STACK_IDS } = require('../lib/context');
 
 const POLICIES_DIR = join(__dirname, '..', 'bootstrap', 'policies');
@@ -80,7 +80,7 @@ test('every resource type the deployable stacks create maps to a service the rel
   }
 });
 
-test('the release exec policy grants ONLY the enumerated services, with name-scoped resources', () => {
+test('the release exec policy grants ONLY the enumerated services, with tier-scoped resources', () => {
   const ALLOWED_SERVICES = ['apigateway', 'cloudwatch', 'cognito-idp', 'dynamodb', 'iam', 'kms', 'lambda', 'logs', 's3', 'sns', 'ssm'];
   for (const action of allowActions(releaseExec)) {
     const service = action.split(':')[0];
@@ -88,36 +88,62 @@ test('the release exec policy grants ONLY the enumerated services, with name-sco
     assert.equal(action.includes('*'), false, `wildcard action "${action}" is banned in an Allow`);
   }
   assert.equal(JSON.stringify(releaseExec).includes('AdministratorAccess'), false, 'no managed admin policy, ever');
-  // Every scoped resource names OUR prefixes: the app's stack families, the release bootstrap's
-  // own artifacts, or the account-scoped generated-id families justified below.
+  // Every scoped resource names OUR prefixes — and the template is PER ENVIRONMENT (round 4):
+  // one rendering per tier, so a rendered dev policy contains not one pilot resource.
   for (const stmt of releaseExec.Statement.filter((s) => s.Effect === 'Allow')) {
     for (const resource of asArray(stmt.Resource)) {
       if (resource === '*') continue; // policed by the justified-wildcard test
       assert.match(
         resource,
-        /cba-study-coach-|cdk-bootstrap\/cbarel\/|cdk-cbarel-|:userpool\/\*$|:key\/\*$|:\/apis|:\/tags\/\*$/,
-        `resource "${resource}" is scoped to nothing this app owns`,
+        /cba-study-coach-ENVIRONMENT_PLACEHOLDER-|cdk-bootstrap\/QUALIFIER_PLACEHOLDER\/|cdk-QUALIFIER_PLACEHOLDER-|:userpool\/\*$|:key\/\*$|:\/apis|:\/tags\/\*$/,
+        `resource "${resource}" is scoped to nothing this tier owns`,
       );
     }
   }
+  // Rendered per tier, nothing leaks across: the dev rendering names no pilot resource and no
+  // pilot qualifier, and vice versa; every placeholder renders.
+  for (const [env, qualifier, other, otherQ] of [['dev', 'cbardev', 'pilot', 'cbarpil'], ['pilot', 'cbarpil', 'dev', 'cbardev']]) {
+    const rendered = JSON.stringify(releaseExec)
+      .replaceAll('ACCOUNT_ID_PLACEHOLDER', '111122223333')
+      .replaceAll('ENVIRONMENT_PLACEHOLDER', env)
+      .replaceAll('QUALIFIER_PLACEHOLDER', qualifier);
+    assert.equal(rendered.includes('PLACEHOLDER'), false, 'every placeholder renders');
+    assert.equal(rendered.includes(`cba-study-coach-${other}-`), false, `${env} authority must not name ${other} resources`);
+    assert.equal(rendered.includes(otherQ), false, `${env} authority must not name the ${other} bootstrap`);
+  }
 });
 
-test('every wildcard in the release exec policy is a NAMED justified exception', () => {
-  // Resource "*" appears ONLY where AWS offers no ARN to scope to: creating a Cognito pool or a
-  // KMS key (no ARN exists before the resource does) and Logs query definitions/describes (no
-  // scoping ARN in the action model). Anything else with "*" is a review failure by name.
+test('every wildcard is a NAMED exception, and each is confined by the PROJECT AND TIER TAGS', () => {
+  // Round 4: "generated id" establishes no ownership. Where AWS offers no ARN to scope to, the
+  // statement must instead demand the project + environment tags — on the REQUEST for creation
+  // (the resource does not exist yet) and on the RESOURCE for lifecycle. Logs query definitions
+  // carry neither ARN nor tags: they stay a named, read-mostly exception.
+  const byId = Object.fromEntries(releaseExec.Statement.map((s) => [s.Sid, s]));
   const starStatements = releaseExec.Statement.filter(
     (s) => s.Effect === 'Allow' && asArray(s.Resource).includes('*'),
   ).map((s) => s.Sid).sort();
   assert.deepEqual(starStatements, [
-    'CognitoCreatePoolHasNoArnBeforeItExists',
-    'KmsCreateKeyHasNoArnBeforeItExists',
+    'CognitoCreateOnlyProjectTaggedPools',
+    'KmsCreateOnlyProjectTaggedKeys',
     'LogsQueryDefinitionsCarryNoScopingArn',
   ]);
-  // And those statements hold only their stated actions — a wildcard exception must not grow.
-  const byId = Object.fromEntries(releaseExec.Statement.map((s) => [s.Sid, s]));
-  assert.deepEqual(asArray(byId.CognitoCreatePoolHasNoArnBeforeItExists.Action), ['cognito-idp:CreateUserPool']);
-  assert.deepEqual(asArray(byId.KmsCreateKeyHasNoArnBeforeItExists.Action), ['kms:CreateKey']);
+  const REQUEST_TAGGED = { 'aws:RequestTag/Project': 'CBAStudyCoach', 'aws:RequestTag/Environment': 'ENVIRONMENT_PLACEHOLDER' };
+  const RESOURCE_TAGGED = { 'aws:ResourceTag/Project': 'CBAStudyCoach', 'aws:ResourceTag/Environment': 'ENVIRONMENT_PLACEHOLDER' };
+  assert.deepEqual(asArray(byId.CognitoCreateOnlyProjectTaggedPools.Action), ['cognito-idp:CreateUserPool']);
+  assert.deepEqual(byId.CognitoCreateOnlyProjectTaggedPools.Condition.StringEquals, REQUEST_TAGGED);
+  assert.deepEqual(asArray(byId.KmsCreateOnlyProjectTaggedKeys.Action), ['kms:CreateKey']);
+  assert.deepEqual(byId.KmsCreateOnlyProjectTaggedKeys.Condition.StringEquals, REQUEST_TAGGED);
+  // Lifecycle over generated-id families demands the RESOURCE tags — a foreign pool or key,
+  // whoever created it, refuses by tag, not by luck of the id.
+  assert.deepEqual(byId.CognitoLifecycleOnlyOnProjectTaggedPools.Condition.StringEquals, RESOURCE_TAGGED);
+  assert.deepEqual(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Condition.StringEquals, RESOURCE_TAGGED);
+  assert.ok(asArray(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Action).includes('kms:ScheduleKeyDeletion'), 'the destructive KMS actions are exactly the tag-confined ones');
+  // API Gateway: creation demands the request tags; sub-resources are UNTAGGABLE in the service
+  // model — a NAMED residual (account+region+path scope only), stated for Zamp's risk decision,
+  // with account isolation as the recorded alternative.
+  assert.deepEqual(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Condition.StringEquals, REQUEST_TAGGED);
+  assert.equal(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Resource, 'arn:aws:apigateway:us-east-1::/apis');
+  assert.ok(byId.ApiGatewayV2SubresourcesNamedResidualUntaggable, 'the residual is NAMED, never implicit');
   assert.deepEqual(asArray(byId.LogsQueryDefinitionsCarryNoScopingArn.Action).sort(), [
     'logs:DeleteQueryDefinition',
     'logs:DescribeLogGroups',
@@ -141,11 +167,11 @@ test('release-created IAM authority is pinned: boundary-conditioned CreateRole, 
   const createRole = byId.CreateRuntimeRolesOnlyWithPinnedBoundary;
   assert.equal(
     createRole.Condition?.StringEquals?.['iam:PermissionsBoundary'],
-    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime',
-    'every role a release creates carries the runtime boundary',
+    'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime-ENVIRONMENT_PLACEHOLDER',
+    "every role a release creates carries THIS TIER'S runtime boundary",
   );
   for (const resource of asArray(createRole.Resource)) {
-    assert.match(resource, /:role\/cba-study-coach-(dev|pilot)-\*$/, 'runtime roles live under the tier prefixes only');
+    assert.match(resource, /:role\/cba-study-coach-ENVIRONMENT_PLACEHOLDER-\*$/, "runtime roles live under this tier's prefix only");
   }
   const passRole = byId.PassRuntimeRolesToLambdaOnly;
   assert.equal(passRole.Condition?.StringEquals?.['iam:PassedToService'], 'lambda.amazonaws.com');
@@ -182,7 +208,7 @@ test('the runtime boundary is a data-plane ceiling: own-prefix writes, read-only
           assert.match(action, /:(Describe|Get)[A-Za-z]*$/, `unscoped "${action}" must be read-only`);
         }
       } else {
-        assert.match(resource, /cba-study-coach-(dev|pilot)-\*/, `boundary resource "${resource}" must stay inside the tier prefixes`);
+        assert.match(resource, /cba-study-coach-ENVIRONMENT_PLACEHOLDER-\*/, `boundary resource "${resource}" must stay inside this tier's prefix`);
       }
     }
     for (const action of asArray(stmt.Action)) {
@@ -196,21 +222,24 @@ test('the runtime boundary is a data-plane ceiling: own-prefix writes, read-only
   assert.equal(JSON.stringify(runtimeBoundary).includes('sts:'), false, 'no role acquisition at runtime, ever');
 });
 
-test('the deployable stacks synthesize against the RELEASE bootstrap; the foundation keeps its own', () => {
-  assert.equal(RELEASE_BOOTSTRAP_QUALIFIER, 'cbarel');
-  const app = new App({ context: { environment: 'dev' } });
-  const stacks = buildStacks(app);
-  for (const [id, stack] of [['ApiStack', stacks.api], ['DataStack', stacks.data], ['IdentityStack', stacks.identity], ['ObservabilityStack', stacks.observability]]) {
-    const flat = JSON.stringify(Template.fromStack(stack).toJSON());
-    assert.ok(flat.includes('/cdk-bootstrap/cbarel/version'), `${id} must check the RELEASE bootstrap version`);
-    assert.equal(flat.includes('hnb659fds'), false, `${id} must not reference the foundation bootstrap`);
+test('each tier synthesizes against ITS OWN release bootstrap; the foundation keeps its own', () => {
+  assert.deepEqual(RELEASE_BOOTSTRAP_QUALIFIERS, { dev: 'cbardev', pilot: 'cbarpil' });
+  for (const [environment, qualifier, otherQualifier] of [['dev', 'cbardev', 'cbarpil'], ['pilot', 'cbarpil', 'cbardev']]) {
+    const app = new App({ context: { environment } });
+    const stacks = buildStacks(app);
+    for (const [id, stack] of [['ApiStack', stacks.api], ['DataStack', stacks.data], ['IdentityStack', stacks.identity], ['ObservabilityStack', stacks.observability]]) {
+      const flat = JSON.stringify(Template.fromStack(stack).toJSON());
+      assert.ok(flat.includes(`/cdk-bootstrap/${qualifier}/version`), `${id} (${environment}) must check ITS tier's bootstrap version`);
+      assert.equal(flat.includes('hnb659fds'), false, `${id} must not reference the foundation bootstrap`);
+      assert.equal(flat.includes(otherQualifier), false, `${id} (${environment}) must not reference the other tier's bootstrap`);
+    }
+    const securityFlat = JSON.stringify(Template.fromStack(stacks.security).toJSON());
+    assert.ok(securityFlat.includes('/cdk-bootstrap/hnb659fds/version'), 'SecurityStack stays on the #66 foundation bootstrap');
+    // The foundation EXECUTES only through its own bootstrap. (The deploy role's inline policy
+    // legitimately NAMES the cdk-<qualifier>-* roles it may assume — that is authority to drive
+    // releases, not an execution path for the SecurityStack itself.)
+    assert.equal(securityFlat.includes(`/cdk-bootstrap/${qualifier}/version`), false, 'the foundation cannot execute through a release bootstrap');
   }
-  const securityFlat = JSON.stringify(Template.fromStack(stacks.security).toJSON());
-  assert.ok(securityFlat.includes('/cdk-bootstrap/hnb659fds/version'), 'SecurityStack stays on the #66 foundation bootstrap');
-  // The foundation EXECUTES only through its own bootstrap. (The deploy role's inline policy
-  // legitimately NAMES the cdk-cbarel-* roles it may assume — that is authority to drive
-  // releases, not an execution path for the SecurityStack itself.)
-  assert.equal(securityFlat.includes('/cdk-bootstrap/cbarel/version'), false, 'the foundation cannot execute through the release bootstrap');
 });
 
 test('every role a release creates carries the runtime permissions boundary — in the real templates', () => {
