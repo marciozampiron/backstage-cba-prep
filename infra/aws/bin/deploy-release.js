@@ -354,30 +354,50 @@ function pseudonym(value) {
  */
 const DECISION_BEARING_HOST_SUFFIXES = ['.workers.dev', '.amazoncognito.com'];
 const UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
-const PUBLIC_NAME_SERVICES = new Set(['iam', 'lambda', 'dynamodb', 'sns', 'logs', 'cloudwatch', 's3', 'ssm', 'sts']);
 const APIGW_GENERATED_COLLECTIONS = new Set(['apis', 'routes', 'integrations', 'authorizers', 'deployments', 'models']);
+
+/** Names THIS PROJECT chose, provably: the stack families, the release bootstrap artifacts and
+ * the lambda/apigateway log-group prefixes that embed them. Round 8: "belongs to a known AWS
+ * service" proved nothing — a FORMAT either matches a reviewed project-name family or it
+ * pseudonymizes. */
+const PROJECT_NAME_SHAPE = /(^|[:/])(cba-study-coach-|cdk-cbardev-|cdk-cbarpil-)/;
+const projectNamed = (value) => PROJECT_NAME_SHAPE.test(value);
 
 function renderHost(host) {
   const lower = host.toLowerCase();
   if (lower === 'localhost' || lower === '127.0.0.1') return host;
   if (DECISION_BEARING_HOST_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return host;
+  // Exact family, explicit parts: the generated api id pseudonymizes, the service suffix stays.
   const generated = lower.match(/^([a-z0-9-]+)\.(execute-api\.[a-z0-9-]+\.amazonaws\.com)$/);
   if (generated) return `[api#${pseudonym(generated[1])}].${generated[2]}`;
-  if (lower.endsWith('.amazonaws.com')) return host; // service hosts; bucket-style labels are project-named
+  // Round 8: NO blanket for *.amazonaws.com — a bucket-style or ELB-style host name is not
+  // proven public by its suffix. Anything outside the exact families above is unexpected.
   return `[unexpected-host#${pseudonym(lower)}]`;
 }
 
 function renderArnResource(service, resource) {
-  if (PUBLIC_NAME_SERVICES.has(service)) return resource;
+  // Principals stay classifiable — the round-6 contract, confirmed in review: the expected
+  // deploy role and role/evil-admin must each be READ, not hidden. IAM resources are principal
+  // material; STS assumed-role keeps the role path but pseudonymizes the caller-chosen session.
+  if (service === 'iam') return resource;
+  if (service === 'sts') {
+    const assumed = resource.match(/^(assumed-role\/[^/]+)\/(.+)$/);
+    if (assumed) return `${assumed[1]}/[session#${pseudonym(assumed[2])}]`;
+    return `[resource#${pseudonym(resource)}]`;
+  }
   if (service === 'kms') {
+    if (/^alias\//.test(resource)) return projectNamed(resource.slice(6)) ? resource : `alias/[alias#${pseudonym(resource.slice(6))}]`;
     return resource.replace(/^key\/[^\s]+$/, (m) => `key/[key#${pseudonym(m.slice(4))}]`);
   }
   if (service === 'cognito-idp') {
     return resource.replace(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)$/, (m, region, id) => `userpool/${region}_[pool#${pseudonym(id)}]`);
   }
   if (service === 'cloudformation') {
-    // stack/<project-chosen-name>/<generated-uuid>, changeSet/<name>/<uuid>: keep names, hide ids.
-    return resource.replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`);
+    // stack/<name>/<generated-uuid>, changeSet/<name>/<uuid>: names stay only when the project
+    // chose them; generated ids always pseudonymize.
+    const parts = resource.split('/');
+    if (parts.length >= 2 && !projectNamed(parts[1])) parts[1] = `[name#${pseudonym(parts[1])}]`;
+    return parts.join('/').replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`);
   }
   if (service === 'apigateway') {
     const segments = resource.split('/');
@@ -388,19 +408,53 @@ function renderArnResource(service, resource) {
     }
     return segments.join('/');
   }
-  return `[resource#${pseudonym(resource)}]`; // unknown is not proven public
+  if (service === 's3') {
+    // Bucket names stay only for the project's bootstrap-asset buckets; OBJECT KEYS are content
+    // hashes and internal paths — never public, whoever owns the bucket.
+    const slash = resource.indexOf('/');
+    const bucket = slash === -1 ? resource : resource.slice(0, slash);
+    const renderedBucket = projectNamed(bucket) ? bucket : `[bucket#${pseudonym(bucket)}]`;
+    return slash === -1 ? renderedBucket : `${renderedBucket}/[key#${pseudonym(resource.slice(slash + 1))}]`;
+  }
+  if (service === 'ssm') {
+    // Exactly the release bootstrap-version parameters are reviewed public structure.
+    if (/^parameter\/cdk-bootstrap\/(cbardev|cbarpil)\/version$/.test(resource)) return resource;
+    return `[resource#${pseudonym(resource)}]`;
+  }
+  // Project-named resources of the enumerated data-plane services stay legible; everything
+  // else — and every unknown service — pseudonymizes whole. Unknown is not proven public.
+  if (['lambda', 'dynamodb', 'sns', 'logs', 'cloudwatch'].includes(service) && projectNamed(resource)) {
+    return resource;
+  }
+  return `[resource#${pseudonym(resource)}]`;
+}
+
+/** Round 8: URLs are parsed with the STRUCTURED WHATWG parser, never an ad hoc regex — userinfo,
+ * IPv6 literals, ports, query and fragment are grammar the regex missed, and credentials rode
+ * through it. The rules: embedded credentials never appear (the whole URL becomes a
+ * [credentialed-url#…] marker — a URL carrying credentials is itself unexpected in a plan); an
+ * unparseable candidate never falls back to raw text; query and fragment always strip. */
+function renderUrl(candidate) {
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return `[unparseable-url#${pseudonym(candidate)}]`;
+  }
+  if (url.username || url.password) {
+    return `${url.protocol}//[credentialed-url#${pseudonym(candidate)}]`;
+  }
+  const port = url.port ? `:${url.port}` : '';
+  const suffix = url.search || url.hash ? '?[query-redacted]' : '';
+  return `${url.protocol}//${renderHost(url.hostname)}${port}${url.pathname}${suffix}`;
 }
 
 function fingerprintSanitize(text) {
   if (!text) return '';
   return text
-    // URLs first: host by type, path verbatim, query/fragment stripped — tokens live there.
-    .replace(/(https?:\/\/)([A-Za-z0-9.-]+)([^\s"'`\\]*)/g, (m, scheme, host, rest) => {
-      const cut = rest.search(/[?#]/);
-      const path = cut === -1 ? rest : rest.slice(0, cut);
-      const suffix = cut === -1 ? '' : '?[query-redacted]';
-      return `${scheme}${renderHost(host)}${path}${suffix}`;
-    })
+    // URLs first, via the structured parser: host by type, path verbatim, query/fragment
+    // stripped, credentials never rendered, unparseable spans never emitted raw.
+    .replace(/https?:\/\/[^\s"'`\\]+/g, (m) => renderUrl(m))
     // ARNs with an account: account pseudonymized, resource rendered by service type.
     .replace(/\b(arn:[a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}):([^\s"'`\\]+)/g,
       (m, prefix, service, region, acct, resource) => `${prefix}:${service}:${region}:[acct#${pseudonym(acct)}]:${renderArnResource(service, resource)}`)

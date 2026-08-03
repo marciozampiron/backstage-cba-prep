@@ -2,6 +2,31 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-03 — Claude — #70 Slice B1 round 8: the renderer's own exceptions closed
+
+- Codex's round-8 review of b507e587: the renderer's exceptions were broader than the reviewed
+  types — any `*.amazonaws.com` host passed whole (bucket-style and ELB-style names are not
+  public), and the per-service allowlist let S3 object keys, SSM parameter paths and STS
+  resources through verbatim; and the ad hoc URL regex missed grammar — embedded credentials
+  printed (`user:supersecret@…`) and IPv6 literals bypassed query stripping entirely. Two
+  MEDIUMs. Fix-forward, all eight reviewed commits preserved.
+- No suffix or service allowlist survives: a FORMAT either matches a reviewed project-name
+  family (cba-study-coach-, cdk-cbardev-, cdk-cbarpil-, the exact bootstrap-version parameters)
+  or it pseudonymizes. S3 object keys never render, whoever owns the bucket; foreign bucket
+  names and SSM paths never render; STS keeps the principal's role path (classifiability, the
+  round-6 contract) but pseudonymizes the caller-chosen session; outside the exact host families
+  (workers.dev, amazoncognito.com, localhost, the execute-api pattern) every host — amazonaws or
+  not — is an [unexpected-host#…] marker.
+- URLs are parsed with the STRUCTURED WHATWG parser: credentials never render — the whole URL
+  becomes a [credentialed-url#…] marker; IPv6 and every unrecognized host form are markers;
+  an unparseable candidate is never emitted raw; ports survive as structure; query and fragment
+  always strip.
+- The six round-8 reproductions are direct regressions, and the VULNERABLE implementations were
+  each proven to fail them: the amazonaws blanket, the S3 allowlist, the SSM allowlist, the
+  credential pass-through and the round-7 ad hoc parser — five reversions, five failures,
+  byte-identical restoration verified after each.
+- Nothing was deployed, published or mutated.
+
 ## 2026-08-03 — Claude — #70 Slice B1 round 7: the renderer became type-aware
 
 - Codex's round-7 review of 22eaf263 (API Gateway confinement and the import walker CONFIRMED

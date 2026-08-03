@@ -107,7 +107,15 @@ actually reviews for origins/callbacks/CORS, project-chosen stack and alias name
 GENERATED material renders as 128-bit pseudonyms (KMS key UUIDs, API Gateway ids, pool ids,
 stack UUIDs, execute-api labels, accounts), URL query values are stripped, a hostname no
 reviewed decision produced is marked `[unexpected-host#…]`, and an unknown service's resource is
-pseudonymized whole — unknown is not proven public. The expected origin and an attacker origin
+pseudonymized whole — unknown is not proven public. The round-8 review tightened the same rule
+against the renderer's own exceptions: there is NO `*.amazonaws.com` blanket and NO per-service
+allowlist — a FORMAT either matches a reviewed project-name family (`cba-study-coach-`,
+`cdk-cbardev-`, `cdk-cbarpil-`, the exact bootstrap-version parameters) or it pseudonymizes;
+S3 object keys never render (whoever owns the bucket), SSM parameter paths and foreign bucket
+names never render, STS keeps the principal's role path but pseudonymizes the caller-chosen
+session; and URLs go through the STRUCTURED WHATWG parser — embedded credentials never render
+(the whole URL becomes a `[credentialed-url#…]` marker), IPv6 literals and every unrecognized
+form are markers, unparseable spans are never emitted raw, query and fragment always strip. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for

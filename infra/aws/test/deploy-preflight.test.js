@@ -1601,6 +1601,60 @@ test('ROUND-7: generated identifiers and query values never render — names thi
   assert.match(fingerprintSanitize(`arn:aws:iam::${ACCOUNT}:role/evil-admin`), /role\/evil-admin/);
 });
 
+test('ROUND-8: no suffix allowlist — service membership proves nothing, format rules decide', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // The exact round-8 reproductions, in order. A bucket-style or ELB-style amazonaws host is
+  // not proven public by its suffix — outside the exact reviewed families, hosts are unexpected.
+  const bucketHost = fingerprintSanitize('https://secret-bucket.s3.us-east-1.amazonaws.com/obj');
+  assert.equal(bucketHost.includes('secret-bucket'), false, 'a bucket-style host must never render');
+  assert.match(bucketHost, /\[unexpected-host#[0-9a-f]{32}\]/);
+  const elbHost = fingerprintSanitize('https://generated-id.elb.us-east-1.amazonaws.com/health');
+  assert.equal(elbHost.includes('generated-id'), false, 'an ELB-style host must never render');
+  // S3 object keys are content hashes and internal paths — never public, whoever owns the
+  // bucket; foreign bucket NAMES are not public either. The project asset bucket stays legible.
+  const foreignObject = fingerprintSanitize('arn:aws:s3:::private-bucket/asset-secret-hash');
+  assert.equal(foreignObject.includes('private-bucket'), false);
+  assert.equal(foreignObject.includes('asset-secret-hash'), false);
+  assert.match(foreignObject, /\[bucket#[0-9a-f]{32}\]\/\[key#[0-9a-f]{32}\]/);
+  const ownAsset = fingerprintSanitize(`arn:aws:s3:::cdk-cbardev-assets-${ACCOUNT}-us-east-1/abc123hash.zip`);
+  assert.match(ownAsset, /cdk-cbardev-assets-\[acct#[0-9a-f]{32}\]-us-east-1/, 'the project asset bucket stays classifiable');
+  assert.equal(ownAsset.includes('abc123hash'), false, 'object keys never render, even ours');
+  // SSM parameter paths are not public by default — exactly the bootstrap-version parameters are.
+  const privateParam = fingerprintSanitize(`arn:aws:ssm:us-east-1:${ACCOUNT}:parameter/prod/private/name`);
+  assert.equal(privateParam.includes('prod/private/name'), false, 'a parameter path must never render');
+  assert.match(
+    fingerprintSanitize(`arn:aws:ssm:us-east-1:${ACCOUNT}:parameter/cdk-bootstrap/cbardev/version`),
+    /parameter\/cdk-bootstrap\/cbardev\/version/,
+    'the reviewed bootstrap parameter stays legible',
+  );
+  // STS: the ROLE path is principal material and stays; the caller-chosen session never renders.
+  const sts = fingerprintSanitize(`arn:aws:sts::${ACCOUNT}:assumed-role/cba-study-coach-gha-deploy-dev/covert-session-name`);
+  assert.match(sts, /assumed-role\/cba-study-coach-gha-deploy-dev\/\[session#[0-9a-f]{32}\]/);
+  assert.equal(sts.includes('covert-session-name'), false);
+  // Data-plane services: project-named resources stay; anything else pseudonymizes whole.
+  assert.match(fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:cba-study-coach-dev-bff`), /function:cba-study-coach-dev-bff/);
+  assert.equal(fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:foreign-fn`).includes('foreign-fn'), false);
+});
+
+test('ROUND-8: URLs go through the STRUCTURED parser — credentials, IPv6 and ports cannot ride past it', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // Userinfo: credentials NEVER appear — the whole URL becomes a classifiable marker.
+  const credentialed = fingerprintSanitize('https://user:supersecret@evil.example/collect');
+  assert.equal(credentialed.includes('supersecret'), false, 'a password must never render');
+  assert.equal(credentialed.includes('evil.example'), false);
+  assert.match(credentialed, /https:\/\/\[credentialed-url#[0-9a-f]{32}\]/);
+  // IPv6 literal with a token: the ad hoc regex never matched it and printed everything.
+  const ipv6 = fingerprintSanitize('https://[2001:db8::1]/?token=secret');
+  assert.equal(ipv6.includes('secret'), false, 'the token must never render');
+  assert.equal(ipv6.includes('2001:db8'), false, 'an IP-literal host is not decision-bearing');
+  assert.match(ipv6, /\[unexpected-host#[0-9a-f]{32}\]\/\?\[query-redacted\]/);
+  // Ports survive as structure; query still strips; the decision-bearing host stays.
+  assert.match(fingerprintSanitize('https://x.workers.dev:8443/reset?token=s'), /https:\/\/x\.workers\.dev:8443\/reset\?\[query-redacted\]/);
+  // Fragments are query-class material.
+  assert.match(fingerprintSanitize('https://x.workers.dev/page#access_token=abc'), /\?\[query-redacted\]/);
+  assert.equal(fingerprintSanitize('https://x.workers.dev/page#access_token=abc').includes('access_token'), false);
+});
+
 test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
   const { sanitizeChildOutput } = require('../bin/deploy-release');
   const POISONS = [
