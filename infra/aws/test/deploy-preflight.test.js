@@ -1547,6 +1547,60 @@ test('ROUND-5: property values are RETRIEVED and the semantics render reviewably
   });
 });
 
+test('ROUND-7: endpoint identities are classifiable — the expected origin and an attacker origin read in clear', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // The first label of a workers.dev host IS the decision Zamp reviews (the approved pilot
+  // origin, the Cognito callbacks, CORS). Both origins must read VERBATIM — visibly different
+  // identities, not two opaque hashes reproducing the round-5 defect for endpoints.
+  const expected = fingerprintSanitize('CallbackURLs: https://cba-study-coach-pilot.workers.dev/auth/callback');
+  const attacker = fingerprintSanitize('CallbackURLs: https://evil.workers.dev/auth/callback');
+  assert.match(expected, /https:\/\/cba-study-coach-pilot\.workers\.dev\/auth\/callback/, 'the EXPECTED origin reads in clear');
+  assert.match(attacker, /https:\/\/evil\.workers\.dev\/auth\/callback/, 'an ATTACKER origin is exposed in clear — classifiable at sight');
+  assert.notEqual(expected, attacker);
+  // The project-chosen Cognito auth domain is decision-bearing too.
+  assert.match(
+    fingerprintSanitize('https://cba-study-coach-dev.auth.us-east-1.amazoncognito.com/login'),
+    /cba-study-coach-dev\.auth\.us-east-1\.amazoncognito\.com/,
+  );
+  // A hostname NO reviewed decision produced is visibly classifiable as unexpected — never
+  // rendered verbatim (it may itself be an exfiltration vector), never silently hash-blended.
+  const unknown = fingerprintSanitize('https://exfil.attacker.example/collect');
+  assert.match(unknown, /\[unexpected-host#[0-9a-f]{32}\]/);
+  assert.equal(unknown.includes('attacker.example'), false);
+  // Generated execute-api labels stay pseudonymized — the service domain stays legible.
+  const api = fingerprintSanitize('https://ab12cd34.execute-api.us-east-1.amazonaws.com/prod');
+  assert.equal(api.includes('ab12cd34'), false);
+  assert.match(api, /\[api#[0-9a-f]{32}\]\.execute-api\.us-east-1\.amazonaws\.com\/prod/);
+});
+
+test('ROUND-7: generated identifiers and query values never render — names this project chose always do', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // KMS key UUIDs are generated, not repository-public.
+  const kms = fingerprintSanitize(`arn:aws:kms:us-east-1:${ACCOUNT}:key/12345678-1234-1234-1234-1234567890ab`);
+  assert.equal(kms.includes('12345678-1234-1234-1234-1234567890ab'), false, 'a key UUID must never render');
+  assert.match(kms, /key\/\[key#[0-9a-f]{32}\]/);
+  // API Gateway api ids are generated.
+  const api = fingerprintSanitize('arn:aws:apigateway:us-east-1::/apis/a1b2c3d4/routes/xyz9876');
+  assert.equal(api.includes('a1b2c3d4'), false, 'an api id must never render');
+  assert.equal(api.includes('xyz9876'), false, 'a route id must never render');
+  // CloudFormation stack ids are generated; the stack NAME is project-chosen and must stay.
+  const cfn = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/deadbeef-1234-1234-1234-abcdefabcdef`);
+  assert.equal(cfn.includes('deadbeef-1234-1234-1234-abcdefabcdef'), false, 'a stack id must never render');
+  assert.match(cfn, /stack\/cba-study-coach-dev-api\/\[id#[0-9a-f]{32}\]/, 'the project-chosen stack name stays classifiable');
+  // URL query values carry tokens — stripped, with the stripping visible.
+  const url = fingerprintSanitize('https://x.workers.dev/reset?token=secret-value');
+  assert.equal(url.includes('secret-value'), false, 'a query token must never render');
+  assert.match(url, /\/reset\?\[query-redacted\]/);
+  // A free-standing UUID (outside any ARN) is generated material too.
+  assert.equal(fingerprintSanitize('key id 12345678-1234-1234-1234-1234567890ab').includes('1234567890ab'), false);
+  // And an UNKNOWN service's resource is pseudonymized whole — unknown is not proven public.
+  const foreign = fingerprintSanitize(`arn:aws:someservice:us-east-1:${ACCOUNT}:widget/private-name`);
+  assert.equal(foreign.includes('private-name'), false);
+  assert.match(foreign, /\[resource#[0-9a-f]{32}\]/);
+  // IAM role paths remain verbatim — that is the round-6 contract, unchanged.
+  assert.match(fingerprintSanitize(`arn:aws:iam::${ACCOUNT}:role/evil-admin`), /role\/evil-admin/);
+});
+
 test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
   const { sanitizeChildOutput } = require('../bin/deploy-release');
   const POISONS = [

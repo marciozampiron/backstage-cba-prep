@@ -334,20 +334,86 @@ function pseudonym(value) {
   return crypto.createHash('sha256').update(`cba-pseudonym:${value}`, 'utf8').digest('hex').slice(0, 32);
 }
 
+/** TYPE-AWARE rendering rules (round 7). A generic first-label rule reproduced the round-5
+ * defect for ENDPOINTS: `cba-study-coach-pilot.workers.dev` and `evil.workers.dev` both became
+ * opaque hashes, when the first label IS the identity Zamp reviews for the approved workers.dev
+ * origin, the Cognito callbacks and CORS. And a generic "paths are public structure" rule leaked
+ * the other way: KMS key UUIDs, API Gateway api ids, stack ids and URL query values are NOT
+ * repository-public. So the renderer decides BY TYPE:
+ *   - DECISION-BEARING hostnames render VERBATIM, from a reviewed suffix list (workers.dev — the
+ *     approved pilot origin family; amazoncognito.com — the project-chosen auth domain;
+ *     localhost). An UNKNOWN hostname renders as [unexpected-host#…] — visibly classifiable as
+ *     something no reviewed decision produced.
+ *   - GENERATED labels are pseudonymized inside known service domains (execute-api api ids).
+ *   - URL query strings and fragments are stripped to [query-redacted] — tokens live there.
+ *   - ARN resource parts are public for the services whose names THIS PROJECT chooses (iam,
+ *     lambda, dynamodb, sns, logs, cloudwatch, s3, kms aliases, cloudformation stack NAMES) and
+ *     pseudonymized where AWS generates them (kms key UUIDs, apigateway ids, cognito pool ids,
+ *     cloudformation stack/changeset UUIDs). An UNKNOWN service's resource is pseudonymized
+ *     whole — unknown is not proven public.
+ */
+const DECISION_BEARING_HOST_SUFFIXES = ['.workers.dev', '.amazoncognito.com'];
+const UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
+const PUBLIC_NAME_SERVICES = new Set(['iam', 'lambda', 'dynamodb', 'sns', 'logs', 'cloudwatch', 's3', 'ssm', 'sts']);
+const APIGW_GENERATED_COLLECTIONS = new Set(['apis', 'routes', 'integrations', 'authorizers', 'deployments', 'models']);
+
+function renderHost(host) {
+  const lower = host.toLowerCase();
+  if (lower === 'localhost' || lower === '127.0.0.1') return host;
+  if (DECISION_BEARING_HOST_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return host;
+  const generated = lower.match(/^([a-z0-9-]+)\.(execute-api\.[a-z0-9-]+\.amazonaws\.com)$/);
+  if (generated) return `[api#${pseudonym(generated[1])}].${generated[2]}`;
+  if (lower.endsWith('.amazonaws.com')) return host; // service hosts; bucket-style labels are project-named
+  return `[unexpected-host#${pseudonym(lower)}]`;
+}
+
+function renderArnResource(service, resource) {
+  if (PUBLIC_NAME_SERVICES.has(service)) return resource;
+  if (service === 'kms') {
+    return resource.replace(/^key\/[^\s]+$/, (m) => `key/[key#${pseudonym(m.slice(4))}]`);
+  }
+  if (service === 'cognito-idp') {
+    return resource.replace(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)$/, (m, region, id) => `userpool/${region}_[pool#${pseudonym(id)}]`);
+  }
+  if (service === 'cloudformation') {
+    // stack/<project-chosen-name>/<generated-uuid>, changeSet/<name>/<uuid>: keep names, hide ids.
+    return resource.replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`);
+  }
+  if (service === 'apigateway') {
+    const segments = resource.split('/');
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      if (APIGW_GENERATED_COLLECTIONS.has(segments[i]) && segments[i + 1] && segments[i + 1] !== '*') {
+        segments[i + 1] = `[id#${pseudonym(segments[i + 1])}]`;
+      }
+    }
+    return segments.join('/');
+  }
+  return `[resource#${pseudonym(resource)}]`; // unknown is not proven public
+}
+
 function fingerprintSanitize(text) {
   if (!text) return '';
   return text
-    // ARNs that embed an account: keep partition/service/region/resource verbatim, replace the
-    // account. `arn:aws:iam::111122223333:role/evil-admin` (the docs example account) renders as
-    // `arn:aws:iam::[acct#…]:role/evil-admin` — classifiable, unattributable.
-    .replace(/\b(arn:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:)(\d{12})(:[^\s"'`\\]+)/g, (m, head, acct, tail) => `${head}[acct#${pseudonym(acct)}]${tail}`)
-    // Generated endpoint hosts: pseudonymize the generated first label, keep the service domain
-    // and path — `https://[endpoint#…].execute-api.us-east-1.amazonaws.com/prod` stays legible.
-    .replace(/(https?:\/\/)([A-Za-z0-9-]+)(\.[^\s"'`\\]+)/g, (m, scheme, label, rest) => `${scheme}[endpoint#${pseudonym(label)}]${rest}`)
-    // Cognito pool ids: keep the region prefix, pseudonymize the generated suffix.
+    // URLs first: host by type, path verbatim, query/fragment stripped — tokens live there.
+    .replace(/(https?:\/\/)([A-Za-z0-9.-]+)([^\s"'`\\]*)/g, (m, scheme, host, rest) => {
+      const cut = rest.search(/[?#]/);
+      const path = cut === -1 ? rest : rest.slice(0, cut);
+      const suffix = cut === -1 ? '' : '?[query-redacted]';
+      return `${scheme}${renderHost(host)}${path}${suffix}`;
+    })
+    // ARNs with an account: account pseudonymized, resource rendered by service type.
+    .replace(/\b(arn:[a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}):([^\s"'`\\]+)/g,
+      (m, prefix, service, region, acct, resource) => `${prefix}:${service}:${region}:[acct#${pseudonym(acct)}]:${renderArnResource(service, resource)}`)
+    // Account-less ARNs (apigateway, s3): resource rendered by service type.
+    .replace(/\b(arn:[a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*)::([^\s"'`\\]+)/g,
+      (m, prefix, service, region, resource) => `${prefix}:${service}:${region}::${renderArnResource(service, resource)}`)
+    // Free-standing Cognito pool ids: keep the region prefix, pseudonymize the generated suffix.
     .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region, id) => `${region}_[pool#${pseudonym(id)}]`)
-    // Any bare 12-digit run that survived (bucket names, ids inside text).
-    .replace(/(?<!\d)\d{12}(?!\d)/g, (m) => `[acct#${pseudonym(m)}]`);
+    // Free-standing generated UUIDs (key ids, stack ids outside ARNs).
+    .replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`)
+    // Any bare 12-digit run that survived (bucket names, ids inside text). Hex-adjacent digits
+    // are excluded so the pass can never fire INSIDE an already-emitted pseudonym's hex.
+    .replace(/(?<![0-9a-fA-F#])\d{12}(?![0-9a-fA-F])/g, (m) => `[acct#${pseudonym(m)}]`);
 }
 
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.

@@ -99,12 +99,18 @@ resource families — children authorize against the parent's tags), the V2 tags
 POST/DELETE/GET with ownership required, and the GOVERNANCE TAGS themselves are fenced: removal
 of Project/Environment is explicitly denied and replacement with foreign values is explicitly
 denied — on API Gateway, Cognito and KMS alike, so an owned resource cannot be untagged out of
-its confinement. Review material now uses STRUCTURED pseudonymization: service, region, type
-and resource path render VERBATIM (repository-public names — the expected deploy role and an
-attacker's `role/evil-admin` are each classifiable at sight) while account material renders as
-128-bit pseudonyms (no feasible collision surface; stated limit: a 12-digit space is enumerable
-offline against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
-`mask-aws-account-id`). And the fresh-tier wave guard walks the synthesized TEMPLATES for
+its confinement. Review material now uses TYPE-AWARE structured pseudonymization
+(rounds 6-7 — the round-6 claim that every resource path is public was FALSE, and the generic
+first-label rule reproduced the round-5 defect for endpoints): DECISION-BEARING identities
+render VERBATIM — IAM role paths, the full `workers.dev` and `amazoncognito.com` hostnames Zamp
+actually reviews for origins/callbacks/CORS, project-chosen stack and alias names — while
+GENERATED material renders as 128-bit pseudonyms (KMS key UUIDs, API Gateway ids, pool ids,
+stack UUIDs, execute-api labels, accounts), URL query values are stripped, a hostname no
+reviewed decision produced is marked `[unexpected-host#…]`, and an unknown service's resource is
+pseudonymized whole — unknown is not proven public. The expected origin and an attacker origin
+read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
+against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
+`mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for
 literal `Fn::ImportValue` (recursively, with a positive control the CDK metadata never sees),
 resolving each export to its producer, which must sit in an earlier wave — or in the
 SecurityStack foundation, which pre-exists every wave.

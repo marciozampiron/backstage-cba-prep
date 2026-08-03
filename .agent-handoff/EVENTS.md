@@ -2,6 +2,32 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-03 — Claude — #70 Slice B1 round 7: the renderer became type-aware
+
+- Codex's round-7 review of 22eaf263 (API Gateway confinement and the import walker CONFIRMED
+  CLOSED): the generic first-label rule reproduced the round-5 defect for ENDPOINTS — the
+  approved `cba-study-coach-pilot.workers.dev` origin and `evil.workers.dev` both rendered as
+  opaque hashes, when the first label IS the identity Zamp reviews for origins, callbacks and
+  CORS; and the round-6 claim that every ARN path is repository-public was FALSE — KMS key
+  UUIDs, API Gateway ids, stack UUIDs and URL query values rendered verbatim. One HIGH, one
+  MEDIUM. Fix-forward, all seven reviewed commits preserved.
+- The renderer decides BY TYPE now. Decision-bearing identities render VERBATIM: IAM role paths,
+  full hostnames from the reviewed suffix list (`workers.dev` — the approved pilot origin
+  family; `amazoncognito.com` — the project-chosen auth domain; localhost), project-chosen stack
+  and alias names. Generated material pseudonymizes at 128 bits: KMS key UUIDs, API Gateway
+  api/route ids, Cognito pool ids, CloudFormation stack/changeset UUIDs, execute-api labels,
+  free-standing UUIDs, accounts. URL query strings strip to `[query-redacted]` — tokens live
+  there. A hostname no reviewed decision produced renders `[unexpected-host#…]` — classifiable
+  as unexpected, never verbatim (it may itself exfiltrate), never hash-blended into the crowd.
+  An unknown service's ARN resource pseudonymizes whole — unknown is not proven public.
+- Direct regressions: expected-versus-attacker workers.dev origins both read in clear and
+  differ; raw KMS/API/stack identifiers and a query token never render; the Cognito auth domain
+  stays legible; IAM stays the round-6 contract. And per the review's demand, the BROKEN
+  implementations were each proven to FAIL: hosts collapsed to hashes, query returned verbatim,
+  KMS UUIDs verbatim, unknown hosts verbatim, API ids verbatim — five reversions, five failures,
+  byte-identical restoration verified.
+- Nothing was deployed, published or mutated.
+
 ## 2026-08-03 — Claude — #70 Slice B1 round 6: children tag-confined, identities classifiable, imports walked
 
 - Codex's round-6 review of f6942f55: the API Gateway child paths still allowed unconditioned
