@@ -812,6 +812,7 @@ const gateFor = (manifest, over = {}) =>
     approvedAt: '2026-08-02T11:50:00Z',
     expiresAt: '2026-08-02T12:30:00Z',
     planDigest: digestOf(fullDescribes()),
+    stacks: [...ORDERED_IDS],
     ...over,
   });
 
@@ -1306,21 +1307,32 @@ test('ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names —
   });
 });
 
-test('ROUND-4 REPRO: the digest is computed BEFORE redaction — ARN principals cannot collide', () => {
-  // Codex reproduced two plans differing only in an ARN principal that sanitized to the same text
-  // and the same SHA-256. The digest now covers the UNREDACTED canonical describes, so the two
-  // plans differ; the sanitized RENDERINGS may be identical — they are presentation, not identity.
+test('ROUND-4/5 REPRO: principals cannot collide in the digest AND stay visibly distinguishable in review', () => {
+  // Round 4: two plans differing only in an ARN principal sanitized to the same text and the
+  // same SHA-256 — the digest now covers the UNREDACTED canonical describes. Round 5: pure
+  // redaction ALSO made them indistinguishable to the human — the rendering now fingerprints
+  // every identifier, so Zamp SEES that two principals differ (and can recognize a known one by
+  // its stable fingerprint) while the log never carries the identifier itself.
   const principal = (arn) => fullDescribes({
     [PILOT_STACK_NAMES[0]]: {
-      Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'Pool', ResourceType: 'AWS::Cognito::UserPool', Details: [{ CausingEntity: arn }] } }],
+      Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'Pool', ResourceType: 'AWS::Cognito::UserPool', Details: [{ Target: { Attribute: 'Properties', Name: 'AdminCreateUserConfig' }, CausingEntity: arn }] } }],
     },
   });
-  const planA = principal(`arn:aws:iam::${ACCOUNT}:role/role-a`);
-  const planB = principal(`arn:aws:iam::${ACCOUNT}:role/role-b`);
+  const roleA = `arn:aws:iam::${ACCOUNT}:role/role-a`;
+  const roleB = `arn:aws:iam::${ACCOUNT}:role/role-b`;
+  const planA = principal(roleA);
+  const planB = principal(roleB);
   assert.notEqual(digestOf(planA), digestOf(planB), 'different principals MUST produce different plan digests');
   const { renderPlan } = require('../bin/deploy-release');
   const render = (d) => renderPlan(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], d[PILOT_STACK_NAMES[i]])));
-  assert.equal(render(planA), render(planB), 'the sanitized renderings collide — which is exactly why they are never digested');
+  assert.notEqual(render(planA), render(planB), 'different principals MUST render distinguishably — an opaque id is not reviewable material');
+  for (const [rendering, raw] of [[render(planA), roleA], [render(planB), roleB]]) {
+    assert.equal(rendering.includes(raw), false, 'the rendering never carries the identifier itself');
+    assert.match(rendering, /\[arn#[0-9a-f]{8}\]/, 'the identifier appears as a stable fingerprint');
+    assert.match(rendering, /Properties\.AdminCreateUserConfig/, 'the changed property is named — semantics, not just identity');
+  }
+  // The same principal always fingerprints identically — a KNOWN principal is recognizable.
+  assert.equal(render(planA), render(principal(roleA)), 'fingerprints are stable across renderings');
 
   // End to end: a gate naming plan A refuses when the world holds plan B.
   withRelease((p, asm, manifest) => {
@@ -1407,6 +1419,127 @@ test('a reviewed plan that no longer EXISTS refuses — expired or deleted chang
     assert.equal(r.exit, 1);
     assert.match(r.output, /CHANGE_SET_MISSING/);
     assert.equal(run.of('execute-change-set').length, 0, 'deploy mode NEVER creates change sets — that is plan_only, under review');
+  });
+});
+
+test('ROUND-5: the gate names a REVIEWED plan group — waves for a fresh tier, and nothing else', () => {
+  withRelease((p, asm, manifest) => {
+    // Wave 1 (Identity + Data): prepare, describe, digest and execute EXACTLY those two stacks —
+    // this is how a fresh tier deploys, wave by wave, each under its own gate, because a change
+    // set whose Fn::ImportValue producers are unexecuted cannot even be created.
+    const wave1 = ['IdentityStack', 'DataStack'];
+    const wave1Names = PILOT_STACK_NAMES.slice(0, 2);
+    const wave1Digest = planDigestOf(wave1.map((id, i) => canonicalChangeSet(id, wave1Names[i], fullDescribes()[wave1Names[i]])));
+    const prepares = [];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null, stacks: wave1 }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: (args) => { prepares.push(args); return { status: 0, stdout: '', stderr: '' }; },
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.deepEqual(prepares[0].slice(5, 8), ['--exclusively', 'IdentityStack', 'DataStack'], 'the prepare covers the WAVE, nothing more');
+    assert.equal(run.of('describe-change-set').length, 2, 'only the wave is described');
+    assert.match(r.output, new RegExp(`PLAN_DIGEST ${wave1Digest}`), 'the digest covers exactly the wave');
+
+    // And a deploy-mode gate for that wave executes exactly those two change sets.
+    const run2 = cloudRun();
+    const r2 = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run: run2,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { stacks: wave1, planDigest: wave1Digest }) },
+    }));
+    assert.equal(r2.exit, 0, r2.output);
+    assert.deepEqual(
+      run2.of('execute-change-set').map((c) => c.args[c.args.indexOf('--change-set-name') + 1].split('/').pop()),
+      wave1Names,
+    );
+
+    // Anything outside the closed group list authorizes nothing: a lone consumer stack, a
+    // foundation smuggle, a reordered full set, an empty set.
+    for (const [label, stacks] of [
+      ['a lone producer subset', ['DataStack']],
+      ['a foundation smuggle', ['SecurityStack', 'ApiStack']],
+      ['a reordered full set', ['ObservabilityStack', 'ApiStack', 'DataStack', 'IdentityStack']],
+      ['an empty set', []],
+      ['a non-array', 'IdentityStack'],
+    ]) {
+      const bad = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+        run: cloudRun(),
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null, stacks }) },
+        exec: () => assert.fail(`${label} must never reach a prepare`),
+      }));
+      assert.equal(bad.exit, 1, label);
+      assert.match(bad.output, /CLOUD_GATE_STACKS_INVALID/, label);
+    }
+  });
+});
+
+test('ROUND-5: an UNAVAILABLE change set never receives a reviewable digest — in either mode', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[2]]: { ExecutionStatus: 'OBSOLETE' },
+    });
+    // plan_only refuses: an obsolete set must be re-prepared, not put on the record.
+    const planned = runDeployRelease(releaseArgs(p, asm), {
+      run: cloudRun({ describes }),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(planned.exit, 1);
+    assert.match(planned.output, /CHANGE_SET_UNAVAILABLE/);
+    assert.equal(planned.output.includes('PLAN_DIGEST'), false, 'no digest may exist for an unexecutable plan');
+    // deploy refuses BEFORE the digest comparison could even bless it.
+    const run = cloudRun({ describes });
+    const deployed = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) } }));
+    assert.equal(deployed.exit, 1);
+    assert.match(deployed.output, /CHANGE_SET_UNAVAILABLE/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-5: property values are RETRIEVED and the semantics render reviewably', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[0]]: {
+        Changes: [{
+          Type: 'Resource',
+          ResourceChange: {
+            Action: 'Modify',
+            LogicalResourceId: 'BffFunction',
+            ResourceType: 'AWS::Lambda::Function',
+            Replacement: 'False',
+            Details: [{ Target: { Attribute: 'Properties', Name: 'MemorySize', RequiresRecreation: 'Never', BeforeValue: '512', AfterValue: '1024' } }],
+          },
+        }],
+      },
+    });
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(r.exit, 0, r.output);
+    // The describes asked CloudFormation for the property values — without the flag there is
+    // nothing semantic to review, only an opaque change-set id.
+    for (const call of run.of('describe-change-set')) {
+      assert.ok(call.args.includes('--include-property-values'), 'property values must be retrieved');
+    }
+    assert.match(r.output, /Properties\.MemorySize/, 'the changed property is named');
+    assert.match(r.output, /before: "512"/, 'the before value is visible');
+    assert.match(r.output, /after: {2}"1024"/, 'the after value is visible');
   });
 });
 

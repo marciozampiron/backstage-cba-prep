@@ -104,6 +104,8 @@ const CODES = {
   CLOUD_GATE_EXPIRED: 'has expired — the gate authorizes a bounded window, and this run is outside it',
   CLOUD_GATE_TTL_EXCEEDED: 'grants a window longer than the maximum — a gate is a short-lived decision, never a standing authorization',
   CLOUD_GATE_NOT_YET_VALID: 'is in the future — a gate whose approval instant has not arrived authorizes nothing yet',
+  CLOUD_GATE_STACKS_INVALID: 'names a stack group outside the reviewed plan groups — first deployments run wave by wave (each wave under its own gate), steady state uses the full group, and nothing else is authorizable',
+  CHANGE_SET_UNAVAILABLE: 'has a change set that is not AVAILABLE to execute — an obsolete or superseded plan must be re-prepared and re-reviewed, never gated only to fail at execution',
   PLAN_PREPARE_FAILED: 'could not be prepared — the change-set child failed, and without named change sets there is no plan to review or execute',
   BOOTSTRAP_ROLE_UNASSUMABLE: 'could not be assumed — without this tier\'s cdk deploy role there is no way to read or execute the change sets',
   CHANGE_SET_MISSING: 'has no prepared change set under this release\'s name — the reviewed plan does not exist (expired, deleted, or never prepared); run plan_only again',

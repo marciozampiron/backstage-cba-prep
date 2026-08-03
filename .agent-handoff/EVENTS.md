@@ -2,6 +2,39 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-02 — Claude — #70 Slice B1 round 5: waves for the first deploy, the root API closed, semantics made reviewable
+
+- Codex's round-5 review of f49481d7: a fresh tier could not prepare all four change sets (the
+  consumers' Fn::ImportValue producers would be unexecuted — the tests had faked their way past
+  it); the API Gateway policy still allowed unconditioned DELETE/PATCH on /apis/* — which
+  includes every root API in the region, not just subresources; the digest bound plans whose
+  security semantics the human could not SEE (no property values retrieved, principals rendered
+  identically by design); and CREATE_COMPLETE was accepted without ExecutionStatus AVAILABLE, so
+  an obsolete change set could be gated only to fail at execution. Three HIGHs, one MEDIUM.
+  Fix-forward, all four reviewed commits preserved.
+- The cloud gate (v3) now NAMES the reviewed plan group it authorizes, from a closed list:
+  dependency WAVES for a fresh tier (Identity+Data → Api → Observability, each wave planned,
+  reviewed and executed under its own gate) and the full set for steady state. A discovery test
+  walks the REAL CDK assembly graph and refuses any cross-stack edge violating the wave order —
+  a new import that would strand a fresh tier fails in the suite, not in the account.
+- The API Gateway ROOT lifecycle is tag-confined: DELETE/GET/PATCH/PUT on /apis/* demand the
+  Project/Environment resource tags, so a foreign API's root is unreachable whatever its id;
+  subresource authority is now an ENUMERATED path list where every pattern carries a second path
+  segment (a bare /apis/{id} is out of its reach), and a control asserts no unconditioned
+  statement can address a root API. The residual shrank to foreign subresources under guessed
+  ids — named, bounded, recorded.
+- Review material carries SEMANTICS now: describes retrieve --include-property-values; the
+  rendering names changed properties with before/after values and causing entities; and every
+  identifier appears as a STABLE FINGERPRINT ([arn#a1b2c3d4]) — two principals are visibly
+  different, a known principal is recognizable, and the log still never carries the identifier.
+  The round-4 test that required identical renderings was inverted into the round-5 contract.
+- An unexecutable change set (ExecutionStatus not AVAILABLE) never receives a digest, in either
+  mode. Every new rule proven by deletion: group validation (1), AVAILABLE requirement (1),
+  property-value retrieval (1), fingerprint rendering (1).
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the per-tier
+  activation prerequisites in the workflow header; the runbook's step 12 now documents the
+  wave-by-wave first deployment.
+
 ## 2026-08-02 — Claude — #70 Slice B1 round 4: the plan became change sets, the bootstrap split per tier
 
 - Codex's round-4 review of 38f3adbf: the gate still did not authorize the executed plan (`cdk

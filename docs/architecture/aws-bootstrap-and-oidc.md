@@ -326,6 +326,15 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     roles) is a separate human-gated `cdk deploy SecurityStack` under the #66 bootstrap, step 7
     form.
 
+    **First deployment of a tier runs in dependency waves.** A CloudFormation change set whose
+    `Fn::ImportValue` producers are unexecuted cannot be created, so the cloud gate names the
+    reviewed plan group it covers and a fresh tier deploys as three plan/review/execute cycles —
+    Identity+Data, then Api, then Observability — each wave under its own `CBA_CLOUD_GATE`
+    (`plan_only` emits `PLAN_DIGEST`; `deploy` names it). Steady state, where every export
+    already exists, uses the full group in a single cycle. The groups are reviewed constants
+    (`DEPLOYMENT_PLAN_GROUPS`, `infra/aws/lib/context.js`); a discovery test walks the real CDK
+    assembly graph and refuses any cross-stack edge that violates the wave order.
+
 ## 5. CDK target (for #49/#53)
 
 When the CDK app is scaffolded (#53), the security-stack encodes exactly the artifacts above:

@@ -83,6 +83,19 @@ the reviewed dependency order, resolving the account FIRST and re-checking the w
 LAST operation before EACH mutation. A recreated or drifted plan refuses as `PLAN_CHANGED`;
 CloudFormation itself refuses a change set whose stack moved after preparation.
 
+The round-5 review closed the last gaps in that chain: the gate now NAMES the reviewed plan
+group it covers — first deployments run in dependency WAVES (Identity+Data → Api →
+Observability, each wave planned/reviewed/executed under its own gate, because a change set
+whose `Fn::ImportValue` producers are unexecuted cannot even be created; a discovery test walks
+the real CDK assembly graph and refuses wave-order violations); the API Gateway ROOT lifecycle
+is tag-confined (`aws:ResourceTag`) so a foreign API's root is unreachable whatever its id, and
+the residual shrank to the ENUMERATED untaggable subresource paths (every pattern carries a
+second path segment); the plan describes retrieve `--include-property-values` and the rendering
+shows the SEMANTICS — named properties, before/after values, causing entities — with
+FINGERPRINTED identifiers (stable per value), so different principals are visibly
+distinguishable without the log ever carrying an identifier; and a change set that is not
+`ExecutionStatus: AVAILABLE` never receives a reviewable digest.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
@@ -90,9 +103,10 @@ three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cb
 `cba-study-coach-gha-deploy-dev` + its boundary (Zamp creates the policy outside CloudFormation)
 via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as
 the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (3) populate the dev Environment secrets and variables (read-only
-inspection on 2026-08-02 found ZERO of each); (4) per release, set `CBA_CLOUD_GATE` — first
-`plan_only`, which prepares the change sets and emits `PLAN_DIGEST`; then `deploy` naming that
-digest inside a ≤1h window.
+inspection on 2026-08-02 found ZERO of each); (4) per release, set `CBA_CLOUD_GATE` — naming the
+reviewed plan group (a wave on a fresh tier; the full set in steady state): first `plan_only`,
+which prepares that group's change sets and emits `PLAN_DIGEST`; then `deploy` naming that
+digest inside a ≤1h window — wave by wave until the tier exists.
 
 ## Ownership
 

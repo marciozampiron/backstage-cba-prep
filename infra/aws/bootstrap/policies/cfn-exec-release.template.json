@@ -58,7 +58,24 @@
       }
     },
     {
-      "Sid": "ApiGatewayV2SubresourcesNamedResidualUntaggable",
+      "Sid": "ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:PUT"
+      ],
+      "Resource": "arn:aws:apigateway:us-east-1::/apis/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "ApiGatewayV2EnumeratedSubresourcePathsNamedResidual",
       "Effect": "Allow",
       "Action": [
         "apigateway:DELETE",
@@ -68,9 +85,28 @@
         "apigateway:PUT"
       ],
       "Resource": [
-        "arn:aws:apigateway:us-east-1::/apis/*",
-        "arn:aws:apigateway:us-east-1::/tags/*"
+        "arn:aws:apigateway:us-east-1::/apis/*/routes",
+        "arn:aws:apigateway:us-east-1::/apis/*/routes/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/integrations",
+        "arn:aws:apigateway:us-east-1::/apis/*/integrations/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers",
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/stages",
+        "arn:aws:apigateway:us-east-1::/apis/*/stages/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments",
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/cors"
       ]
+    },
+    {
+      "Sid": "ApiGatewayV2TagOperations",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PUT"
+      ],
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*"
     },
     {
       "Sid": "DynamoLifecycleOnOwnTables",

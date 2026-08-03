@@ -95,6 +95,21 @@ const RELEASE_BOOTSTRAP_QUALIFIERS = Object.freeze({ dev: 'cbardev', pilot: 'cba
 // DEPLOYABLE_STACK_IDS (a test pins the set equality); different, deliberate sequence.
 const DEPLOYMENT_EXECUTION_ORDER = Object.freeze(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack']);
 
+// THE REVIEWED PLAN GROUPS (#70 Slice B1 round 5). A change set for a stack that consumes
+// Fn::ImportValue exports cannot even be CREATED while the producer stacks are unexecuted — so a
+// fresh tier cannot prepare all four plans at once, and pretending otherwise would fail on the
+// first real deployment. The cloud gate therefore names WHICH group it authorizes, from this
+// closed list: the three dependency WAVES for a fresh tier (each wave planned, reviewed and
+// executed before the next can be planned), and the full set for steady state, where every
+// export already exists. A discovery test walks the REAL CDK dependency graph and refuses any
+// cross-stack edge that violates the wave order.
+const DEPLOYMENT_PLAN_GROUPS = Object.freeze([
+  Object.freeze(['IdentityStack', 'DataStack']),
+  Object.freeze(['ApiStack']),
+  Object.freeze(['ObservabilityStack']),
+  DEPLOYMENT_EXECUTION_ORDER,
+]);
+
 // One source for CloudFormation stack names: the app builds them from these suffixes, and the
 // deploy entrypoint reconstructs them to address change sets — a drifted copy would prepare a
 // plan for one stack and execute another's.
@@ -217,6 +232,7 @@ module.exports = {
   EXCLUDED_STACK_IDS,
   RELEASE_BOOTSTRAP_QUALIFIERS,
   DEPLOYMENT_EXECUTION_ORDER,
+  DEPLOYMENT_PLAN_GROUPS,
   STACK_NAME_SUFFIXES,
   stackNameFor,
 };

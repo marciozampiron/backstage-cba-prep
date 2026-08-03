@@ -59,7 +59,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { describeFailure, PreflightError } = require('../lib/deploy-preflight');
-const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_EXECUTION_ORDER, stackNameFor } = require('../lib/context');
+const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_EXECUTION_ORDER, DEPLOYMENT_PLAN_GROUPS, stackNameFor } = require('../lib/context');
 const {
   contextDigest,
   assemblyDigest,
@@ -141,7 +141,7 @@ function sanitizeChildOutput(text) {
 }
 
 /** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
-const CLOUD_GATE_KEYS = ['approvedAt', 'assemblyDigest', 'decisionId', 'environment', 'expiresAt', 'issue', 'mode', 'planDigest', 'releaseSha'];
+const CLOUD_GATE_KEYS = ['approvedAt', 'assemblyDigest', 'decisionId', 'environment', 'expiresAt', 'issue', 'mode', 'planDigest', 'releaseSha', 'stacks'];
 const CLOUD_GATE_MODES = ['plan_only', 'deploy'];
 
 /** STRICT RFC3339, UTC only, whole seconds. `Date.parse` alone accepted `2099-01-01` and a
@@ -204,6 +204,13 @@ function checkCloudGate(raw, manifest, now) {
     || (gate.mode === 'deploy' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
   if (malformed) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
+  }
+  // Round 5: the gate names WHICH reviewed plan group it authorizes. A fresh tier cannot even
+  // CREATE a change set whose Fn::ImportValue producers are unexecuted, so first deployments run
+  // wave by wave — each wave planned, reviewed and executed under its own gate — and steady
+  // state uses the full group. Anything outside the closed list authorizes nothing.
+  if (!DEPLOYMENT_PLAN_GROUPS.some((group) => JSON.stringify(group) === JSON.stringify(gate.stacks))) {
+    return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_STACKS_INVALID', field: 'stacks' }] };
   }
   const failures = [];
   for (const key of ['environment', 'releaseSha', 'assemblyDigest']) {
@@ -283,7 +290,7 @@ function assumeBootstrapRole(run, { account, region, qualifier, name, session })
 
 /** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
 function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
-  const res = run(['cloudformation', 'describe-change-set', '--change-set-name', changeSetName, '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: credEnv });
+  const res = run(['cloudformation', 'describe-change-set', '--change-set-name', changeSetName, '--stack-name', stackName, '--include-property-values', '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: credEnv });
   if (!res) return { error: true };
   if (res.status !== 0) {
     return /ChangeSetNotFound|does not exist/i.test(`${res.stderr || ''}${res.stdout || ''}`) ? { missing: true } : { error: true };
@@ -313,7 +320,24 @@ function waitForStack(run, credEnv, stackName, { attempts = 120, sleep }) {
   return false;
 }
 
-/** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested. */
+/** Like sanitizeChildOutput, but each redaction carries a short FINGERPRINT of the raw value.
+ * Round 5: pure redaction made two plans differing only in an IAM principal render identically —
+ * reviewable material must let the human SEE that two principals differ (and recognize a known
+ * one by its stable fingerprint) without the log ever carrying the identifier itself. */
+function fingerprintSanitize(text) {
+  if (!text) return '';
+  const fp = (kind) => (match) => `[${kind}#${crypto.createHash('sha256').update(match, 'utf8').digest('hex').slice(0, 8)}]`;
+  return text
+    .replace(/arn:[a-zA-Z0-9-]*:[^\s"'`\\]+/g, fp('arn'))
+    .replace(/https?:\/\/[^\s"'`\\]+/g, fp('url'))
+    .replace(/\b[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{5,}\b/g, fp('user-pool'))
+    .replace(/(?<!\d)\d{12}(?!\d)/g, fp('account'));
+}
+
+/** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
+ * Round 5: the SEMANTICS must be reviewable — property values (from --include-property-values),
+ * causing entities and policy bodies render with fingerprinted identifiers, so what Zamp
+ * approves is the CONTENT of the change, never just an opaque change-set id. */
 function renderPlan(planEntries) {
   const lines = [];
   for (const entry of planEntries) {
@@ -321,9 +345,18 @@ function renderPlan(planEntries) {
     for (const change of entry.changes) {
       const rc = change.ResourceChange || {};
       lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${rc.Replacement === 'True' ? '  [REPLACEMENT]' : ''}`);
+      for (const detail of rc.Details || []) {
+        const target = detail.Target || {};
+        const attr = target.Attribute === 'Properties' && target.Name ? `Properties.${target.Name}` : (target.Attribute || '?');
+        lines.push(`      ~ ${attr}${detail.CausingEntity ? `  (caused by ${detail.CausingEntity})` : ''}${target.RequiresRecreation && target.RequiresRecreation !== 'Never' ? `  [recreation: ${target.RequiresRecreation}]` : ''}`);
+        if (target.BeforeValue !== undefined) lines.push(`        before: ${JSON.stringify(target.BeforeValue)}`);
+        if (target.AfterValue !== undefined) lines.push(`        after:  ${JSON.stringify(target.AfterValue)}`);
+      }
+      if (rc.BeforeContext !== undefined) lines.push(`      before-context: ${typeof rc.BeforeContext === 'string' ? rc.BeforeContext : JSON.stringify(rc.BeforeContext)}`);
+      if (rc.AfterContext !== undefined) lines.push(`      after-context:  ${typeof rc.AfterContext === 'string' ? rc.AfterContext : JSON.stringify(rc.AfterContext)}`);
     }
   }
-  return sanitizeChildOutput(lines.join('\n'));
+  return fingerprintSanitize(lines.join('\n'));
 }
 
 /** Five seconds between stack-status polls; injectable so tests never actually wait. */
@@ -500,8 +533,11 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   //    SAME change sets, requires the digest the gate NAMES, and executes exactly them. `--all`
   //    does not exist here; `--exclusively` pins the prepare to the closed set; the execution
   //    order is the reviewed dependency order, not the alphabetical closed set.
-    const stacks = [...manifest.target.stacks];
-    const orderedStacks = DEPLOYMENT_EXECUTION_ORDER.filter((id) => stacks.includes(id));
+    // Round 5: the GATE names which reviewed plan group this run covers — a dependency wave on a
+    // fresh tier (Fn::ImportValue producers must EXECUTE before consumers can even be planned),
+    // or the full set in steady state. The group was validated against the closed list; the
+    // manifest still bounds it: every named stack is inside the closed deployable set.
+    const orderedStacks = DEPLOYMENT_EXECUTION_ORDER.filter((id) => gate.stacks.includes(id) && manifest.target.stacks.includes(id));
     const qualifier = RELEASE_BOOTSTRAP_QUALIFIERS[manifest.environment];
     const changeSetName = `cba-70-${manifest.releaseSha.slice(0, 12)}`;
     const childEnv = {
@@ -512,7 +548,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     };
     const header = [
       `deploy-release — environment ${manifest.environment}, release ${manifest.releaseSha.slice(0, 12)}`,
-      `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned, stacks: ${stacks.join(' ')})`,
+      `  PASS  BINDING (digest ${manifest.contextDigest.slice(0, 16)}…, account pinned, plan group: ${orderedStacks.join(' ')})`,
     ];
 
     // 5a. plan_only: PREPARE the named change sets — the one moment new change sets may be
@@ -552,6 +588,12 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       const entry = canonicalChangeSet(stackId, stackName, described.described);
       if (entry.status !== 'NO_CHANGES' && entry.status !== 'CREATE_COMPLETE') {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_FAILED', field: stackId });
+        continue;
+      }
+      // Round 5: CREATE_COMPLETE is not enough — an OBSOLETE or otherwise unexecutable change
+      // set must never receive a reviewable digest and a human gate only to fail at execution.
+      if (entry.status !== 'NO_CHANGES' && entry.executionStatus !== 'AVAILABLE') {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_UNAVAILABLE', field: stackId });
         continue;
       }
       planEntries.push(entry);
@@ -641,7 +683,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, sanitizeChildOutput, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, sanitizeChildOutput, fingerprintSanitize, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

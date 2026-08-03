@@ -12,7 +12,7 @@ const { join } = require('node:path');
 const { App } = require('aws-cdk-lib');
 const { Template } = require('aws-cdk-lib/assertions');
 const { buildStacks, RELEASE_BOOTSTRAP_QUALIFIERS } = require('../lib/app');
-const { DEPLOYABLE_STACK_IDS } = require('../lib/context');
+const { DEPLOYABLE_STACK_IDS, DEPLOYMENT_PLAN_GROUPS, DEPLOYMENT_EXECUTION_ORDER } = require('../lib/context');
 
 const POLICIES_DIR = join(__dirname, '..', 'bootstrap', 'policies');
 const releaseExec = JSON.parse(readFileSync(join(POLICIES_DIR, 'cfn-exec-release.template.json'), 'utf8'));
@@ -138,12 +138,31 @@ test('every wildcard is a NAMED exception, and each is confined by the PROJECT A
   assert.deepEqual(byId.CognitoLifecycleOnlyOnProjectTaggedPools.Condition.StringEquals, RESOURCE_TAGGED);
   assert.deepEqual(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Condition.StringEquals, RESOURCE_TAGGED);
   assert.ok(asArray(byId.KmsKeyLifecycleOnlyOnProjectTaggedKeys.Action).includes('kms:ScheduleKeyDeletion'), 'the destructive KMS actions are exactly the tag-confined ones');
-  // API Gateway: creation demands the request tags; sub-resources are UNTAGGABLE in the service
-  // model — a NAMED residual (account+region+path scope only), stated for Zamp's risk decision,
-  // with account isolation as the recorded alternative.
+  // API Gateway (round 5): creation demands the REQUEST tags; the ROOT API lifecycle demands the
+  // RESOURCE tags — a foreign API's root (delete, reconfigure, repoint) is unreachable whatever
+  // its id. Only the ENUMERATED subresource paths remain tag-free (their ARNs are untaggable in
+  // the service model), and every one of them carries a second path segment, so no pattern in
+  // the residual can address a bare /apis/{api-id}. The residual is NAMED, never implicit.
   assert.deepEqual(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Condition.StringEquals, REQUEST_TAGGED);
   assert.equal(byId.ApiGatewayV2CreateOnlyProjectTaggedApis.Resource, 'arn:aws:apigateway:us-east-1::/apis');
-  assert.ok(byId.ApiGatewayV2SubresourcesNamedResidualUntaggable, 'the residual is NAMED, never implicit');
+  assert.deepEqual(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Condition.StringEquals, RESOURCE_TAGGED);
+  assert.equal(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Resource, 'arn:aws:apigateway:us-east-1::/apis/*');
+  assert.equal(asArray(byId.ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis.Action).includes('apigateway:POST'), false, 'subresource creation never rides the root statement');
+  const residual = byId.ApiGatewayV2EnumeratedSubresourcePathsNamedResidual;
+  assert.ok(residual, 'the residual is NAMED, never implicit');
+  for (const resource of asArray(residual.Resource)) {
+    assert.match(resource, /^arn:aws:apigateway:us-east-1::\/apis\/\*\/[a-z]+(\/\*)?$/, `residual path "${resource}" must carry a second path segment — a bare /apis/{id} is out of its reach`);
+  }
+  // FOREIGN API DELETION control: no unconditioned statement can address a root API. Every
+  // statement whose pattern reaches /apis/* either demands the resource tags or enumerates
+  // deeper segments only.
+  for (const stmt of releaseExec.Statement.filter((st) => st.Effect === 'Allow')) {
+    for (const resource of asArray(stmt.Resource)) {
+      if (resource === 'arn:aws:apigateway:us-east-1::/apis/*') {
+        assert.ok(stmt.Condition?.StringEquals?.['aws:ResourceTag/Project'], `statement "${stmt.Sid}" reaches root APIs without demanding ownership tags`);
+      }
+    }
+  }
   assert.deepEqual(asArray(byId.LogsQueryDefinitionsCarryNoScopingArn.Action).sort(), [
     'logs:DeleteQueryDefinition',
     'logs:DescribeLogGroups',
@@ -258,6 +277,36 @@ test('every role a release creates carries the runtime permissions boundary — 
       }
     }
     assert.ok(rolesSeen >= 2, 'the discovery must actually see the runtime and gate roles');
+  }
+});
+
+test('ROUND-5: the REAL dependency graph respects the reviewed plan waves — fresh-tier imports resolve', () => {
+  // A change set whose Fn::ImportValue producers are unexecuted cannot be created, so the wave
+  // structure is only sound if every cross-stack edge in the REAL CDK graph points to an EARLIER
+  // wave. Discovery, not assertion by hope: a new cross-stack reference that breaks the wave
+  // order fails here, before it fails on somebody's fresh tier.
+  const waves = DEPLOYMENT_PLAN_GROUPS.slice(0, -1); // the last group is the steady-state full set
+  assert.deepEqual(waves.flat().sort(), [...DEPLOYABLE_STACK_IDS].sort(), 'the waves partition the deployable set');
+  assert.deepEqual(DEPLOYMENT_PLAN_GROUPS.at(-1), DEPLOYMENT_EXECUTION_ORDER, 'steady state is the full execution order');
+  const waveOf = (id) => waves.findIndex((group) => group.includes(id));
+  for (const environment of ['dev', 'pilot']) {
+    const app = new App({ context: { environment } });
+    buildStacks(app);
+    // Cross-stack references materialize at SYNTH time; the assembly carries the real edges.
+    const assembly = app.synth();
+    let edges = 0;
+    for (const artifact of assembly.stacks) {
+      if (!DEPLOYABLE_STACK_IDS.includes(artifact.id)) continue;
+      for (const dep of artifact.dependencies) {
+        if (!DEPLOYABLE_STACK_IDS.includes(dep.id)) continue; // SecurityStack: foundation, human-gated, pre-existing
+        edges += 1;
+        assert.ok(
+          waveOf(dep.id) < waveOf(artifact.id),
+          `${artifact.id} depends on ${dep.id} but wave ${waveOf(dep.id)} is not earlier than wave ${waveOf(artifact.id)} — a fresh tier could not plan ${artifact.id}`,
+        );
+      }
+    }
+    assert.ok(edges >= 3, `the discovery must actually see the cross-stack edges (saw ${edges})`);
   }
 });
 
