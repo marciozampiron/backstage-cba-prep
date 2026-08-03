@@ -338,7 +338,7 @@ function fingerprintSanitize(text) {
   if (!text) return '';
   return text
     // ARNs that embed an account: keep partition/service/region/resource verbatim, replace the
-    // account. `arn:aws:iam::123456789012:role/evil-admin` renders as
+    // account. `arn:aws:iam::111122223333:role/evil-admin` (the docs example account) renders as
     // `arn:aws:iam::[acct#…]:role/evil-admin` — classifiable, unattributable.
     .replace(/\b(arn:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:)(\d{12})(:[^\s"'`\\]+)/g, (m, head, acct, tail) => `${head}[acct#${pseudonym(acct)}]${tail}`)
     // Generated endpoint hosts: pseudonymize the generated first label, keep the service domain
