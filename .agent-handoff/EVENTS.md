@@ -2,6 +2,36 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-04 — Claude — #70 Slice B1 round 10: the material completed, the last default inverted
+
+- Codex's round-10 review of 23d77ea2: the presentation rebuilt `ResourceChange` from six
+  hand-picked fields, so `PolicyAction`, `Scope`, `PhysicalResourceId`, `ChangeSetId` and
+  `ModuleInfo` never reached the human — two plans differing only in `Retain` versus `Delete`
+  rendered identically while the gate bound different bytes; and the sanitizer was still
+  fail-OPEN for arbitrary strings and structured keys (secrets inside serialized JSON, a URL used
+  as a map key, a URL wrapped in punctuation, and any suffix trailing a CloudFormation stack id).
+  One HIGH, one MEDIUM. Fix-forward, all ten reviewed commits preserved.
+- The review material carries the COMPLETE change now: each change renders as a concise summary
+  line (action, type, logical id, replacement, policy, scope) FOLLOWED by the whole sanitized
+  ResourceChange as canonical JSON. Nothing is selected away, and a field CloudFormation adds
+  upstream appears without anyone remembering to add it — proven with an unenumerated field.
+- Scalars fail CLOSED. A string renders verbatim only for an explicitly reviewed public form —
+  the closed CFN vocabulary, an AWS::Service::Type, a number, a region, a project-owned name, or
+  a URL/ARN through its own grammar; everything else is a deterministic [value#…] marker, so
+  equal values stay comparable while unknown material stays unshown. Keys are sanitized like
+  values. URL/ARN spans are recognized anywhere in a string, including behind punctuation and
+  inside serialized JSON, and bracketed IPv6 authorities are parsed rather than shredded.
+- BeforeValue/AfterValue and the context blobs are parsed and walked — which is also what keeps a
+  decision-bearing origin READABLE through JSON's legal `\/` escapes: without the walk the
+  approved workers.dev callback collapses into markers and the classifiability contract dies
+  inside every serialized value. That is the regression the walk alone satisfies.
+- The CloudFormation ARN grammar is complete and anchored: stack/<name>/<uuid> exactly, so a
+  trailing `covert-suffix` fails closed to a whole-resource pseudonym.
+- Five protections, five reversions, five failures: the full-JSON rendering, the fail-closed
+  scalars, the key sanitization, the JSON walk and the anchored CFN grammar each drop their own
+  regression when removed. Byte-identical restoration verified. Nothing was deployed, published
+  or mutated.
+
 ## 2026-08-04 — Claude — #70 Slice B1 round 9: values classified as fields, grammars anchored
 
 - Codex's round-9 review of 6f8c702f (the six round-8 reproductions confirmed closed): the

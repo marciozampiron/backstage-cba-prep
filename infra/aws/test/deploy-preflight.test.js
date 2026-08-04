@@ -1711,6 +1711,123 @@ test('ROUND-9: anchored per-service grammars — one project-named segment never
   assert.equal(bucket.includes(ACCOUNT), false, 'the account inside a bucket name must never render');
 });
 
+test('ROUND-10: renderPlan carries the COMPLETE change — destructive policy is visible, no field selected away', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const withPolicy = (policyAction) => [canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        PolicyAction: policyAction,
+        Scope: ['Properties'],
+        LogicalResourceId: 'Table',
+        PhysicalResourceId: 'cba-study-coach-pilot-simulation',
+        ResourceType: 'AWS::DynamoDB::Table',
+        ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/11111111-2222-3333-4444-555555555555`,
+        ModuleInfo: { TypeHierarchy: 'AWS::Module', LogicalIdHierarchy: 'Mod' },
+        Details: [{ Target: { Attribute: 'Properties', Name: 'BillingMode' }, Evaluation: 'Static', ChangeSource: 'DirectModification' }],
+      },
+    }],
+  }))];
+  // The exact round-10 reproduction: two plans differing ONLY in the destructive policy must
+  // render differently, and each must NAME the policy it authorizes.
+  const retain = renderPlan(withPolicy('Retain'));
+  const del = renderPlan(withPolicy('Delete'));
+  assert.notEqual(retain, del, 'a different destructive policy must change the review material');
+  assert.match(retain, /\[policy: Retain\]/);
+  assert.match(del, /\[policy: Delete\]/);
+  // Every officially defined field the round-9 summary dropped now reaches the human, because
+  // the WHOLE ResourceChange renders — no hand-picked subset to fall behind the API.
+  for (const field of ['PolicyAction', 'Scope', 'PhysicalResourceId', 'ChangeSetId', 'ModuleInfo', 'Evaluation', 'ChangeSource', 'Details', 'LogicalResourceId', 'ResourceType']) {
+    assert.ok(del.includes(field), `${field} must appear in the review material`);
+  }
+  assert.match(del, /full change \(sanitized\)/);
+  // A field nobody enumerated here still reaches the material — that is the point of rendering
+  // the whole structure rather than a selection.
+  const future = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], {
+    Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Add', LogicalResourceId: 'X', ResourceType: 'AWS::DynamoDB::Table', SomeFutureField: 'Retain' } }],
+  }))]);
+  assert.ok(future.includes('SomeFutureField'), 'an unenumerated field must still render');
+});
+
+test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuation-wrapped values cannot leak', () => {
+  const { renderPlan, fingerprintSanitize } = require('../bin/deploy-release');
+  const SECRET = 'supersecret';
+  const credentialed = `https://user:${SECRET}@evil.example/private`;
+  const entries = [canonicalChangeSet('ApiStack', PILOT_STACK_NAMES[2], describedFor(PILOT_STACK_NAMES[2], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        LogicalResourceId: 'Fn',
+        ResourceType: 'AWS::Lambda::Function',
+        Details: [{
+          Target: {
+            Attribute: 'Properties',
+            Name: 'Environment',
+            // BeforeValue/AfterValue are STRINGS in the AWS contract — a serialized object hides
+            // structure from a value walker unless it is parsed and walked.
+            BeforeValue: JSON.stringify({ endpoint: credentialed }),
+            AfterValue: JSON.stringify({ [credentialed]: 'x' }),
+          },
+        }],
+        // A sensitive URL used as a KEY, and one wrapped in punctuation inside a value.
+        BeforeContext: JSON.stringify({ [credentialed]: { note: `endpoint=(${credentialed})` } }),
+        AfterContext: `endpoint=(${credentialed})`,
+      },
+    }],
+  }))];
+  const rendered = renderPlan(entries);
+  assert.equal(rendered.includes(SECRET), false, 'no secret may survive anywhere in the material');
+  assert.equal(rendered.includes('evil.example'), false);
+  assert.match(rendered, /credentialed-url#[0-9a-f]{32}/, 'the credentialed URL is marked, wherever it sat');
+  // Directly, too: as a bare value, as a key, and wrapped in punctuation.
+  assert.equal(fingerprintSanitize(`endpoint=(${credentialed})`).includes(SECRET), false, 'punctuation must not hide a URL from the classifier');
+  assert.equal(fingerprintSanitize(JSON.stringify({ [credentialed]: 1 })).includes(SECRET), false);
+  // An unparseable context is not proven safe: it goes through the fail-closed scalar rules.
+  assert.equal(fingerprintSanitize(`{"broken": "${credentialed}"`).includes(SECRET), false);
+  // And an unknown scalar is a deterministic marker — equal values stay comparable.
+  const a = fingerprintSanitize('some-unknown-value');
+  assert.match(a, /^\[value#[0-9a-f]{32}\]$/);
+  assert.equal(a, fingerprintSanitize('some-unknown-value'), 'markers are deterministic');
+  assert.notEqual(a, fingerprintSanitize('other-unknown-value'));
+  // The reviewed public forms still read in clear inside the same material.
+  assert.match(fingerprintSanitize('AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff'), /AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff/);
+
+  // PARSING is what keeps a serialized value REVIEWABLE, not merely safe. JSON legally escapes
+  // `/` as `\/`, which hides the URL from any flat text scan: without the walk the approved
+  // origin collapses into a wall of markers and the round-6..9 classifiability contract dies
+  // inside every serialized value. Parsed and walked, it reads in clear — while a credentialed
+  // URL in the same position stays a marker.
+  const { sanitizeValueDeep } = require('../bin/deploy-release');
+  const escapedApproved = '{"endpoint":"https:\\/\\/cba-study-coach-pilot.workers.dev\\/auth\\/callback"}';
+  assert.match(
+    sanitizeValueDeep({ BeforeValue: escapedApproved }).BeforeValue,
+    /https:\/\/cba-study-coach-pilot\.workers\.dev\/auth\/callback/,
+    'a serialized decision-bearing origin must stay classifiable through the walk',
+  );
+  const escapedCredentialed = `{"endpoint":"https:\\/\\/user:${SECRET}@evil.example\\/x"}`;
+  const walkedSecret = sanitizeValueDeep({ AfterValue: escapedCredentialed }).AfterValue;
+  assert.equal(walkedSecret.includes(SECRET), false);
+  assert.match(walkedSecret, /credentialed-url#[0-9a-f]{32}/);
+});
+
+test('ROUND-10: the CloudFormation ARN grammar is complete — an extra suffix fails closed', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  const uuid = '11111111-2222-3333-4444-555555555555';
+  // The reviewed shape: stack/<project-chosen name>/<generated id>.
+  const exact = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/${uuid}`);
+  assert.match(exact, /stack\/cba-study-coach-dev-api\/\[id#[0-9a-f]{32}\]/);
+  // Round 10: anything trailing the id used to survive because the check merely looked for an
+  // emitted [id# marker. The complete grammar refuses the whole resource instead.
+  const suffixed = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/${uuid}/covert-suffix`);
+  assert.equal(suffixed.includes('covert-suffix'), false, 'a trailing segment must never render');
+  assert.match(suffixed, /\[resource#[0-9a-f]{32}\]/);
+  // A foreign stack name pseudonymizes; a nested-but-unsupported shape fails closed.
+  assert.equal(fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/foreign-stack/${uuid}`).includes('foreign-stack'), false);
+  assert.match(fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stackset/x/y/z`), /\[resource#[0-9a-f]{32}\]/);
+});
+
 test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
   const { sanitizeChildOutput } = require('../bin/deploy-release');
   const POISONS = [

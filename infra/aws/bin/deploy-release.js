@@ -354,14 +354,53 @@ function pseudonym(value) {
  */
 const DECISION_BEARING_HOST_SUFFIXES = ['.workers.dev', '.amazoncognito.com'];
 const UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
+const UUID_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The names THIS PROJECT chose, as ANCHORED grammars — a whole segment, never a substring. */
 const PROJECT_TOKEN = '(?:cba-study-coach|cdk-cbardev|cdk-cbarpil)-[A-Za-z0-9-]+';
+const PROJECT_TOKEN_EXACT = new RegExp(`^${PROJECT_TOKEN}$`);
 
 /** URL paths a reviewed decision produces: the committed auth callback/logout shapes, the Cognito
  * hosted-UI endpoints and the API stage roots. Any OTHER path is data, not reviewed structure —
  * round 9: a secret can live in a path segment as easily as in a query value. */
 const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
+
+/* ============================ ROUND 10: FAIL-CLOSED SCALARS ==================================
+ *
+ * Round 9 still preserved any word it did not recognize as dangerous. That is fail-OPEN by
+ * construction: an unknown scalar is not proven public, and the review reproduced secrets riding
+ * inside serialized JSON, inside map KEYS and behind punctuation the token split never separated.
+ *
+ * The rule is now inverted. A scalar renders VERBATIM only when it matches an explicitly
+ * reviewed public FORM — the closed CloudFormation vocabulary, an `AWS::Service::Type`, a number,
+ * an AWS region, a project-owned name, or a URL/ARN whose own field-aware grammar renders it.
+ * EVERY other scalar becomes a deterministic `[value#…]` marker. Determinism is what keeps the
+ * material reviewable: equal values render equal markers, so before/after comparison survives
+ * even where the value itself must not be shown.
+ */
+const CFN_VOCABULARY = new Set([
+  // ResourceChange / Change
+  'Add', 'Modify', 'Remove', 'Import', 'Resource',
+  'True', 'False', 'Conditional',
+  'Never', 'Always', 'Conditionally',
+  'Static', 'Dynamic',
+  'Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'UpdateReplacePolicy', 'DeletionPolicy', 'Tags',
+  'ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic',
+  // PolicyAction — the destructive semantics the round-10 review demanded be visible
+  'Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot',
+  // change-set and stack status vocabulary
+  'CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS',
+  'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED', 'AVAILABLE', 'UNAVAILABLE', 'OBSOLETE',
+  'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'NOT_EXECUTED', 'NO_CHANGES',
+]);
+const RESOURCE_TYPE_EXACT = /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
+const NUMBER_EXACT = /^-?\d+(?:\.\d+)?$/;
+const REGION_EXACT = /^[a-z]{2}-[a-z]+-\d$/;
+/** CloudFormation logical ids and property names: alphanumeric, and only in TYPED positions —
+ * this shape is never trusted for a free scalar, where an arbitrary word would also match it. */
+const IDENTIFIER_EXACT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
+/** Structural map keys. A key carrying a URL or an ARN is classified, never kept by shape. */
+const KEY_SHAPE = /^[A-Za-z][A-Za-z0-9:._-]{0,254}$/;
 
 function renderHost(host) {
   const lower = host.toLowerCase();
@@ -375,11 +414,9 @@ function renderHost(host) {
   return `[unexpected-host#${pseudonym(lower)}]`;
 }
 
-/** Round 9: URLs are FIELDS, not text. Any scheme reaches this classifier (the round-8 scanner
- * recognized only http(s), so postgres://user:secret@… sailed past it whole); only http(s) with a
+/** Round 9: URLs are FIELDS, not text. Any scheme reaches this classifier; only http(s) with a
  * reviewed host renders structurally; paths render ONLY when a reviewed decision produces that
- * exact shape — a path segment carries secrets as easily as a query value; credentials never
- * render; an unparseable candidate never falls back to raw text. */
+ * exact shape; credentials never render; an unparseable candidate never falls back to raw text. */
 function renderUrl(candidate) {
   let url;
   try {
@@ -402,8 +439,7 @@ function renderUrl(candidate) {
 /** Round 9: per-service resource grammars, ANCHORED — the grammar names exactly which segment is
  * project-owned identity and pseudonymizes every other segment (aliases, streams, sessions,
  * groups, generated ids). A resource whose COMPLETE shape a branch does not recognize fails
- * CLOSED to a whole-resource pseudonym — including inside known services; round 8 proved that a
- * known prefix in one segment must never bless the rest of the string. */
+ * CLOSED to a whole-resource pseudonym — including inside known services. */
 function renderArnResource(service, resource) {
   const whole = () => `[resource#${pseudonym(resource)}]`;
   if (service === 'iam') {
@@ -416,8 +452,8 @@ function renderArnResource(service, resource) {
   }
   if (service === 'kms') {
     if (new RegExp(`^alias/${PROJECT_TOKEN}$`).test(resource)) return resource;
-    if (/^alias\/.+$/.test(resource)) return `alias/[alias#${pseudonym(resource.slice(6))}]`;
-    if (/^key\/.+$/.test(resource)) return `key/[key#${pseudonym(resource.slice(4))}]`;
+    if (/^alias\/[^/]+$/.test(resource)) return `alias/[alias#${pseudonym(resource.slice(6))}]`;
+    if (/^key\/[^/]+$/.test(resource)) return `key/[key#${pseudonym(resource.slice(4))}]`;
     return whole();
   }
   if (service === 'cognito-idp') {
@@ -427,11 +463,15 @@ function renderArnResource(service, resource) {
     return `userpool/${pool[1]}_[pool#${pseudonym(pool[2])}]${trailing}`;
   }
   if (service === 'cloudformation') {
-    const m = resource.match(/^(stack|changeSet)\/([^/]+)(\/.+)?$/);
+    // ROUND 10: the COMPLETE grammar, anchored end to end. The round-9 form pseudonymized the
+    // UUID and then accepted whatever trailed it, so `stack/name/<uuid>/extra` leaked `extra`.
+    const withId = resource.match(/^(stack|changeSet)\/([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+    const nameOnly = resource.match(/^(stack|changeSet)\/([^/]+)$/);
+    const m = withId || nameOnly;
     if (!m) return whole();
-    const name = new RegExp(`^${PROJECT_TOKEN}$`).test(m[2]) || /^cba-70-[0-9a-f]{12}$/.test(m[2]) ? m[2] : `[name#${pseudonym(m[2])}]`;
-    const trailing = m[3] ? m[3].replace(UUID_SHAPE, (u) => `[id#${pseudonym(u)}]`) : '';
-    return `${m[1]}/${name}${/\[id#|^$/.test(trailing) ? trailing : `/[path#${pseudonym(trailing.slice(1))}]`}`;
+    const reviewedName = PROJECT_TOKEN_EXACT.test(m[2]) || /^cba-70-[0-9a-f]{12}$/.test(m[2]);
+    const name = reviewedName ? m[2] : `[name#${pseudonym(m[2])}]`;
+    return withId ? `${m[1]}/${name}/[id#${pseudonym(m[3])}]` : `${m[1]}/${name}`;
   }
   if (service === 'apigateway') {
     // The COMPLETE v2 grammar or nothing: /apis[/{id}[/{collection}[/{id}]]] with the reviewed
@@ -468,7 +508,7 @@ function renderArnResource(service, resource) {
     return m[2] === undefined ? resource : `table/${m[1]}/${m[2]}/[id#${pseudonym(m[3])}]`;
   }
   if (service === 'sns') {
-    return new RegExp(`^${PROJECT_TOKEN}$`).test(resource) ? resource : whole();
+    return PROJECT_TOKEN_EXACT.test(resource) ? resource : whole();
   }
   if (service === 'logs') {
     const m = resource.match(new RegExp(`^log-group:((?:/aws/[a-z0-9-]+/)?${PROJECT_TOKEN})(?::\\*)?(?::log-stream:(.+))?$`));
@@ -490,7 +530,9 @@ function renderArn(token) {
   return `${m[1]}:${m[2]}:${m[3]}:${m[4]}:${acct}:${renderArnResource(m[3], m[6])}`;
 }
 
-/** Residual per-token passes for material embedded in prose: pool ids, UUIDs, bare accounts. */
+/** Residual passes for identifying material embedded INSIDE classifier output — an account id
+ * inside a kept bucket name, a UUID inside a kept path. The digit pass is hex-fenced so it can
+ * never rewrite the inside of an already-emitted pseudonym. */
 function renderResidual(token) {
   return token
     .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region, id) => `${region}_[pool#${pseudonym(id)}]`)
@@ -498,78 +540,156 @@ function renderResidual(token) {
     .replace(/(?<![0-9a-fA-F#])\d{12}(?![0-9a-fA-F])/g, (m) => `[acct#${pseudonym(m)}]`);
 }
 
-/** Round 9: strings are sanitized TOKEN BY TOKEN — every token is CLASSIFIED (URL of any scheme,
- * ARN, residual identifiers) and rendered by its own field-aware rule. There is no outer text
- * scanner deciding what the structured parsers get to see: a token either matches a classifier
- * completely or its identifying material hits the residual passes. */
-function fingerprintSanitize(text) {
-  if (!text) return '';
-  return String(text)
-    .split(/(\s+)/)
-    .map((token) => {
-      if (/^\s*$/.test(token)) return token;
-      // The residual passes ALSO run over classifier output: a verbatim-blessed segment (a
-      // project bucket name, a kept path) can still embed an account id or a UUID. The digit
-      // pass is hex-fenced, so it can never rewrite the inside of an emitted pseudonym.
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) return renderResidual(renderUrl(token));
-      if (/^arn:/.test(token)) return renderResidual(renderArn(token));
-      return renderResidual(token);
-    })
-    .join('');
+/** A free-position word: verbatim ONLY for an explicitly reviewed public form. */
+function renderFreeWord(word) {
+  if (CFN_VOCABULARY.has(word)) return word;
+  if (RESOURCE_TYPE_EXACT.test(word)) return word;
+  if (NUMBER_EXACT.test(word)) return word;
+  if (REGION_EXACT.test(word)) return word;
+  if (PROJECT_TOKEN_EXACT.test(word)) return word;
+  return `[value#${pseudonym(word)}]`;
 }
 
-/** Sanitize a STRUCTURED value recursively — strings by the token classifier, containers by
- * walking; the CFN Before/AfterContext JSON strings parse first and fail CLOSED to a pseudonym
- * when unparseable, so presentation is composed from sanitized VALUES, never from raw text. */
-function sanitizeValueDeep(value) {
-  if (Array.isArray(value)) return value.map(sanitizeValueDeep);
+/** URL and ARN spans, recognized ANYWHERE in a string — round 10: the round-9 classifier split on
+ * whitespace and matched only at a token's start, so `endpoint=(https://user:secret@host/p)`
+ * never reached the URL parser. Terminators exclude the punctuation that wraps values. */
+const URL_OR_ARN_SPAN = /(?:[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:\[[0-9a-fA-F:.]+\])?[^\s"'`\\<>()[\]{},;]*)|(?:arn:[^\s"'`\\<>()[\]{},;]+)/g;
+/** A word run inside free text: everything between structural punctuation and whitespace. `:`
+ * stays INSIDE a run so `AWS::Lambda::Function` is one recognizable form — a colon-joined run
+ * that is not a reviewed form (`key:secret`) becomes a single marker, which is the safe side. */
+const FREE_WORD_RUN = /[^\s"'`\\<>()[\]{},;=|]+/g;
+
+/** Sanitize an arbitrary string: classify every URL/ARN span wherever it sits, fail-close every
+ * remaining word run. Structural punctuation survives so the material stays readable. */
+function sanitizeScalarString(text) {
+  const source = String(text);
+  let out = '';
+  let last = 0;
+  for (const match of source.matchAll(URL_OR_ARN_SPAN)) {
+    out += source.slice(last, match.index).replace(FREE_WORD_RUN, renderFreeWord);
+    const token = match[0];
+    out += renderResidual(token.startsWith('arn:') ? renderArn(token) : renderUrl(token));
+    last = match.index + token.length;
+  }
+  out += source.slice(last).replace(FREE_WORD_RUN, renderFreeWord);
+  return out;
+}
+
+/** The public name kept for the existing call sites and controls. */
+const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
+
+/** TYPED CloudFormation fields: each key names the anchored grammar its value must match. A value
+ * outside its field's grammar is pseudonymized — the field's type is the authorization, never the
+ * value's appearance. Keys absent from this map are FREE positions (fail-closed scalars). */
+const FIELD_KIND = {
+  Action: 'vocabulary',
+  Replacement: 'vocabulary',
+  RequiresRecreation: 'vocabulary',
+  Attribute: 'vocabulary',
+  ChangeSource: 'vocabulary',
+  Evaluation: 'vocabulary',
+  PolicyAction: 'vocabulary',
+  Type: 'vocabulary',
+  ChangeType: 'vocabulary',
+  Status: 'vocabulary',
+  ExecutionStatus: 'vocabulary',
+  Scope: 'vocabulary',
+  ResourceType: 'resourceType',
+  LogicalResourceId: 'identifier',
+  Name: 'identifier',
+  stackId: 'identifier',
+  CausingEntity: 'reference',
+  PhysicalResourceId: 'reference',
+  stackName: 'reference',
+  BeforeValue: 'json',
+  AfterValue: 'json',
+  BeforeContext: 'json',
+  AfterContext: 'json',
+};
+
+function renderTypedString(kind, value) {
+  const marker = () => `[value#${pseudonym(value)}]`;
+  if (kind === 'vocabulary') return CFN_VOCABULARY.has(value) ? value : marker();
+  if (kind === 'resourceType') return RESOURCE_TYPE_EXACT.test(value) ? value : marker();
+  if (kind === 'identifier') return IDENTIFIER_EXACT.test(value) ? value : sanitizeScalarString(value);
+  if (kind === 'reference') {
+    if (/^arn:/.test(value)) return renderResidual(renderArn(value));
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
+    if (PROJECT_TOKEN_EXACT.test(value) || IDENTIFIER_EXACT.test(value)) return renderResidual(value);
+    return marker();
+  }
+  return sanitizeScalarString(value);
+}
+
+/** A map key: classified when it carries a URL or an ARN, kept when it is structural, marked
+ * otherwise. Round 10: keys were preserved literally, so a URL used as a key rendered whole. */
+function renderKey(key) {
+  if (/^arn:/.test(key) || /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(key)) return sanitizeScalarString(key);
+  if (KEY_SHAPE.test(key)) return renderResidual(key);
+  return `[key#${pseudonym(key)}]`;
+}
+
+/** Sanitize a STRUCTURED value recursively: keys AND values, arrays inheriting their parent
+ * field, strings routed through their field's grammar or the fail-closed scalar rules. */
+function sanitizeValueDeep(value, kind = 'free') {
+  if (Array.isArray(value)) return value.map((entry) => sanitizeValueDeep(entry, kind));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [key, entry] of Object.entries(value)) out[key] = sanitizeValueDeep(entry);
+    for (const [key, entry] of Object.entries(value)) {
+      out[renderKey(key)] = sanitizeValueDeep(entry, FIELD_KIND[key] ?? 'free');
+    }
     return out;
   }
-  if (typeof value === 'string') return fingerprintSanitize(value);
+  if (typeof value === 'string') {
+    if (kind === 'json') return sanitizeJsonish(value);
+    return renderTypedString(kind, value);
+  }
   return value;
 }
 
-function sanitizeContextBlob(context) {
-  if (typeof context !== 'string') return sanitizeValueDeep(context);
+/** BeforeValue/AfterValue and the context blobs are STRINGS in the CloudFormation contract, so a
+ * serialized object hides structure from a value walker. Parse first, walk the structure, and
+ * fail CLOSED to a pseudonym when the string is not parseable JSON. */
+function sanitizeJsonish(value) {
+  if (typeof value !== 'string') return sanitizeValueDeep(value);
+  let parsed;
   try {
-    return JSON.stringify(sanitizeValueDeep(JSON.parse(context)));
+    parsed = JSON.parse(value);
   } catch {
-    return `[context#${pseudonym(context)}]`; // unparseable context is not proven safe
+    return sanitizeScalarString(value);
   }
+  if (parsed && typeof parsed === 'object') return JSON.stringify(sanitizeValueDeep(parsed));
+  return sanitizeScalarString(value);
 }
 
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
- * Round 9: presentation is composed FROM SANITIZED VALUES — every string in the canonical
- * entries is classified and rendered field-aware BEFORE any line exists, and the Before/After
- * context blobs are parsed as JSON and walked (failing closed when unparseable). There is no
- * final text pass: a text scanner deciding what the structured parsers see was exactly the
- * round-9 finding. */
+ *
+ * Round 10: presentation carries the COMPLETE change, not a hand-picked subset. A six-field
+ * summary hid PolicyAction, Scope, PhysicalResourceId, ChangeSetId, ModuleInfo and every field
+ * CloudFormation adds tomorrow — two plans that differed only in `PolicyAction: Retain` versus
+ * `Delete` rendered identically, so the gate bound different bytes while the human could not see
+ * which destructive policy they were authorizing. Each change now renders as a concise summary
+ * line (the fields a reader scans first) FOLLOWED BY the whole sanitized ResourceChange as
+ * canonical JSON — so nothing is omitted by selection, and a field added upstream appears
+ * without anyone remembering to add it here.
+ *
+ * Every string in that structure — keys included — passes its field's anchored grammar or the
+ * fail-closed scalar rules BEFORE any line exists. There is no final text pass. */
 function renderPlan(planEntries) {
   const lines = [];
   for (const rawEntry of planEntries) {
-    const entry = {
-      ...sanitizeValueDeep({ stackName: rawEntry.stackName, status: rawEntry.status }),
-      changes: (rawEntry.changes || []).map((change) => {
-        const rc = change.ResourceChange || {};
-        return {
-          ...sanitizeValueDeep({
-            Action: rc.Action,
-            ResourceType: rc.ResourceType,
-            LogicalResourceId: rc.LogicalResourceId,
-            Replacement: rc.Replacement,
-            Details: rc.Details,
-          }),
-          BeforeContext: rc.BeforeContext === undefined ? undefined : sanitizeContextBlob(rc.BeforeContext),
-          AfterContext: rc.AfterContext === undefined ? undefined : sanitizeContextBlob(rc.AfterContext),
-        };
-      }),
-    };
-    lines.push(`  ${entry.stackName} — ${entry.status}${entry.status === 'NO_CHANGES' ? '' : ` (${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'})`}`);
-    for (const rc of entry.changes) {
-      lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${rc.Replacement === 'True' ? '  [REPLACEMENT]' : ''}`);
+    const stackName = renderTypedString('reference', String(rawEntry.stackName ?? ''));
+    const status = renderTypedString('vocabulary', String(rawEntry.status ?? ''));
+    const changes = (rawEntry.changes || []).map((change) => sanitizeValueDeep(change));
+    lines.push(`  ${stackName} — ${status}${status === 'NO_CHANGES' ? '' : ` (${changes.length} change${changes.length === 1 ? '' : 's'})`}`);
+    for (const change of changes) {
+      const rc = change.ResourceChange || {};
+      const flags = [
+        rc.Replacement === 'True' ? '[REPLACEMENT]' : '',
+        rc.PolicyAction ? `[policy: ${rc.PolicyAction}]` : '',
+        Array.isArray(rc.Scope) && rc.Scope.length > 0 ? `[scope: ${rc.Scope.join(',')}]` : '',
+      ].filter(Boolean).join('  ');
+      lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${flags ? `  ${flags}` : ''}`);
       for (const detail of rc.Details || []) {
         const target = detail.Target || {};
         const attr = target.Attribute === 'Properties' && target.Name ? `Properties.${target.Name}` : (target.Attribute || '?');
@@ -577,8 +697,9 @@ function renderPlan(planEntries) {
         if (target.BeforeValue !== undefined) lines.push(`        before: ${JSON.stringify(target.BeforeValue)}`);
         if (target.AfterValue !== undefined) lines.push(`        after:  ${JSON.stringify(target.AfterValue)}`);
       }
-      if (rc.BeforeContext !== undefined) lines.push(`      before-context: ${rc.BeforeContext}`);
-      if (rc.AfterContext !== undefined) lines.push(`      after-context:  ${rc.AfterContext}`);
+      // The complete change, canonically ordered — the summary above is a reading aid, this is
+      // the material. Sorting keys keeps two renderings of the same change textually comparable.
+      lines.push(`      full change (sanitized): ${JSON.stringify(deepSortKeys(change))}`);
     }
   }
   return lines.join('\n');

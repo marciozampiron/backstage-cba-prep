@@ -127,7 +127,22 @@ segment carries secrets as easily as a query value — an approved host does not
 unreviewed path); and the per-service ARN grammars are ANCHORED: only the exact project-owned
 identity segment renders — lambda aliases, log streams, Cognito groups, STS sessions and every
 unrecognized or v1-shaped resource pseudonymize, and every known-service branch fails CLOSED to
-a whole-resource pseudonym when the complete shape does not match. The expected origin and an attacker origin
+a whole-resource pseudonym when the complete shape does not match.
+
+Round 10 inverted the last default and completed the material: an unknown scalar is no longer
+preserved because nothing recognized it as dangerous — a string renders VERBATIM only when it
+matches an explicitly reviewed public form (the closed CloudFormation vocabulary, an
+`AWS::Service::Type`, a number, a region, a project-owned name, or a URL/ARN through its own
+grammar), and every other scalar becomes a deterministic `[value#…]` marker (equal values render
+equal markers, so before/after comparison survives what must not be shown). Map KEYS are
+sanitized like values; URL and ARN spans are recognized ANYWHERE in a string, including behind
+punctuation and inside serialized JSON; `BeforeValue`/`AfterValue`/context blobs are parsed and
+walked, which is also what keeps a decision-bearing origin readable through JSON's `\/` escapes;
+and the CloudFormation ARN grammar is complete, so a suffix trailing the stack id fails closed.
+The review material now carries the WHOLE sanitized `ResourceChange` as canonical JSON beside
+the concise summary — `PolicyAction`, `Scope`, `PhysicalResourceId`, `ChangeSetId`, `ModuleInfo`
+and any field CloudFormation adds later reach Zamp without a hand-picked field list to fall
+behind, so a plan that retains and a plan that DELETES a table can never render alike. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for
