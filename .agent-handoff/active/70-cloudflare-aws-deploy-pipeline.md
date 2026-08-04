@@ -115,7 +115,19 @@ S3 object keys never render (whoever owns the bucket), SSM parameter paths and f
 names never render, STS keeps the principal's role path but pseudonymizes the caller-chosen
 session; and URLs go through the STRUCTURED WHATWG parser — embedded credentials never render
 (the whole URL becomes a `[credentialed-url#…]` marker), IPv6 literals and every unrecognized
-form are markers, unparseable spans are never emitted raw, query and fragment always strip. The expected origin and an attacker origin
+form are markers, unparseable spans are never emitted raw, query and fragment always strip.
+
+The round-9 review removed the renderer's last structural weakness: there is no outer text
+scanner deciding what the parsers see — presentation is composed FROM SANITIZED VALUES (every
+string in the canonical entries is classified token by token; the CFN Before/After context
+blobs parse as JSON and are walked, failing closed to a pseudonym when unparseable); the URL
+classifier admits ANY scheme (a `postgres://user:secret@…` value is a credentialed marker, not
+prose), URL PATHS render only when a reviewed decision produces that exact shape (a path
+segment carries secrets as easily as a query value — an approved host does not bless an
+unreviewed path); and the per-service ARN grammars are ANCHORED: only the exact project-owned
+identity segment renders — lambda aliases, log streams, Cognito groups, STS sessions and every
+unrecognized or v1-shaped resource pseudonymize, and every known-service branch fails CLOSED to
+a whole-resource pseudonym when the complete shape does not match. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for

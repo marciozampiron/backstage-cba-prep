@@ -354,14 +354,14 @@ function pseudonym(value) {
  */
 const DECISION_BEARING_HOST_SUFFIXES = ['.workers.dev', '.amazoncognito.com'];
 const UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
-const APIGW_GENERATED_COLLECTIONS = new Set(['apis', 'routes', 'integrations', 'authorizers', 'deployments', 'models']);
 
-/** Names THIS PROJECT chose, provably: the stack families, the release bootstrap artifacts and
- * the lambda/apigateway log-group prefixes that embed them. Round 8: "belongs to a known AWS
- * service" proved nothing — a FORMAT either matches a reviewed project-name family or it
- * pseudonymizes. */
-const PROJECT_NAME_SHAPE = /(^|[:/])(cba-study-coach-|cdk-cbardev-|cdk-cbarpil-)/;
-const projectNamed = (value) => PROJECT_NAME_SHAPE.test(value);
+/** The names THIS PROJECT chose, as ANCHORED grammars — a whole segment, never a substring. */
+const PROJECT_TOKEN = '(?:cba-study-coach|cdk-cbardev|cdk-cbarpil)-[A-Za-z0-9-]+';
+
+/** URL paths a reviewed decision produces: the committed auth callback/logout shapes, the Cognito
+ * hosted-UI endpoints and the API stage roots. Any OTHER path is data, not reviewed structure —
+ * round 9: a secret can live in a path segment as easily as in a query value. */
+const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
 
 function renderHost(host) {
   const lower = host.toLowerCase();
@@ -375,65 +375,11 @@ function renderHost(host) {
   return `[unexpected-host#${pseudonym(lower)}]`;
 }
 
-function renderArnResource(service, resource) {
-  // Principals stay classifiable — the round-6 contract, confirmed in review: the expected
-  // deploy role and role/evil-admin must each be READ, not hidden. IAM resources are principal
-  // material; STS assumed-role keeps the role path but pseudonymizes the caller-chosen session.
-  if (service === 'iam') return resource;
-  if (service === 'sts') {
-    const assumed = resource.match(/^(assumed-role\/[^/]+)\/(.+)$/);
-    if (assumed) return `${assumed[1]}/[session#${pseudonym(assumed[2])}]`;
-    return `[resource#${pseudonym(resource)}]`;
-  }
-  if (service === 'kms') {
-    if (/^alias\//.test(resource)) return projectNamed(resource.slice(6)) ? resource : `alias/[alias#${pseudonym(resource.slice(6))}]`;
-    return resource.replace(/^key\/[^\s]+$/, (m) => `key/[key#${pseudonym(m.slice(4))}]`);
-  }
-  if (service === 'cognito-idp') {
-    return resource.replace(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)$/, (m, region, id) => `userpool/${region}_[pool#${pseudonym(id)}]`);
-  }
-  if (service === 'cloudformation') {
-    // stack/<name>/<generated-uuid>, changeSet/<name>/<uuid>: names stay only when the project
-    // chose them; generated ids always pseudonymize.
-    const parts = resource.split('/');
-    if (parts.length >= 2 && !projectNamed(parts[1])) parts[1] = `[name#${pseudonym(parts[1])}]`;
-    return parts.join('/').replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`);
-  }
-  if (service === 'apigateway') {
-    const segments = resource.split('/');
-    for (let i = 0; i < segments.length - 1; i += 1) {
-      if (APIGW_GENERATED_COLLECTIONS.has(segments[i]) && segments[i + 1] && segments[i + 1] !== '*') {
-        segments[i + 1] = `[id#${pseudonym(segments[i + 1])}]`;
-      }
-    }
-    return segments.join('/');
-  }
-  if (service === 's3') {
-    // Bucket names stay only for the project's bootstrap-asset buckets; OBJECT KEYS are content
-    // hashes and internal paths — never public, whoever owns the bucket.
-    const slash = resource.indexOf('/');
-    const bucket = slash === -1 ? resource : resource.slice(0, slash);
-    const renderedBucket = projectNamed(bucket) ? bucket : `[bucket#${pseudonym(bucket)}]`;
-    return slash === -1 ? renderedBucket : `${renderedBucket}/[key#${pseudonym(resource.slice(slash + 1))}]`;
-  }
-  if (service === 'ssm') {
-    // Exactly the release bootstrap-version parameters are reviewed public structure.
-    if (/^parameter\/cdk-bootstrap\/(cbardev|cbarpil)\/version$/.test(resource)) return resource;
-    return `[resource#${pseudonym(resource)}]`;
-  }
-  // Project-named resources of the enumerated data-plane services stay legible; everything
-  // else — and every unknown service — pseudonymizes whole. Unknown is not proven public.
-  if (['lambda', 'dynamodb', 'sns', 'logs', 'cloudwatch'].includes(service) && projectNamed(resource)) {
-    return resource;
-  }
-  return `[resource#${pseudonym(resource)}]`;
-}
-
-/** Round 8: URLs are parsed with the STRUCTURED WHATWG parser, never an ad hoc regex — userinfo,
- * IPv6 literals, ports, query and fragment are grammar the regex missed, and credentials rode
- * through it. The rules: embedded credentials never appear (the whole URL becomes a
- * [credentialed-url#…] marker — a URL carrying credentials is itself unexpected in a plan); an
- * unparseable candidate never falls back to raw text; query and fragment always strip. */
+/** Round 9: URLs are FIELDS, not text. Any scheme reaches this classifier (the round-8 scanner
+ * recognized only http(s), so postgres://user:secret@… sailed past it whole); only http(s) with a
+ * reviewed host renders structurally; paths render ONLY when a reviewed decision produces that
+ * exact shape — a path segment carries secrets as easily as a query value; credentials never
+ * render; an unparseable candidate never falls back to raw text. */
 function renderUrl(candidate) {
   let url;
   try {
@@ -442,46 +388,187 @@ function renderUrl(candidate) {
     return `[unparseable-url#${pseudonym(candidate)}]`;
   }
   if (url.username || url.password) {
-    return `${url.protocol}//[credentialed-url#${pseudonym(candidate)}]`;
+    return `[credentialed-url#${pseudonym(candidate)}]`;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return `[url#${pseudonym(candidate)}]`; // an unknown scheme is not proven public
   }
   const port = url.port ? `:${url.port}` : '';
+  const path = REVIEWED_URL_PATHS.has(url.pathname) ? url.pathname : `/[path#${pseudonym(url.pathname)}]`;
   const suffix = url.search || url.hash ? '?[query-redacted]' : '';
-  return `${url.protocol}//${renderHost(url.hostname)}${port}${url.pathname}${suffix}`;
+  return `${url.protocol}//${renderHost(url.hostname)}${port}${path}${suffix}`;
 }
 
-function fingerprintSanitize(text) {
-  if (!text) return '';
-  return text
-    // URLs first, via the structured parser: host by type, path verbatim, query/fragment
-    // stripped, credentials never rendered, unparseable spans never emitted raw.
-    .replace(/https?:\/\/[^\s"'`\\]+/g, (m) => renderUrl(m))
-    // ARNs with an account: account pseudonymized, resource rendered by service type.
-    .replace(/\b(arn:[a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}):([^\s"'`\\]+)/g,
-      (m, prefix, service, region, acct, resource) => `${prefix}:${service}:${region}:[acct#${pseudonym(acct)}]:${renderArnResource(service, resource)}`)
-    // Account-less ARNs (apigateway, s3): resource rendered by service type.
-    .replace(/\b(arn:[a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*)::([^\s"'`\\]+)/g,
-      (m, prefix, service, region, resource) => `${prefix}:${service}:${region}::${renderArnResource(service, resource)}`)
-    // Free-standing Cognito pool ids: keep the region prefix, pseudonymize the generated suffix.
+/** Round 9: per-service resource grammars, ANCHORED — the grammar names exactly which segment is
+ * project-owned identity and pseudonymizes every other segment (aliases, streams, sessions,
+ * groups, generated ids). A resource whose COMPLETE shape a branch does not recognize fails
+ * CLOSED to a whole-resource pseudonym — including inside known services; round 8 proved that a
+ * known prefix in one segment must never bless the rest of the string. */
+function renderArnResource(service, resource) {
+  const whole = () => `[resource#${pseudonym(resource)}]`;
+  if (service === 'iam') {
+    // Principal material stays classifiable (the round-6 contract) — but only in its exact shape.
+    return /^(role|policy|user|group|instance-profile|oidc-provider|saml-provider|server-certificate)\/[!-~]+$/.test(resource) ? resource : whole();
+  }
+  if (service === 'sts') {
+    const assumed = resource.match(/^(assumed-role\/[^/]+)\/([^/]+)$/);
+    return assumed ? `${assumed[1]}/[session#${pseudonym(assumed[2])}]` : whole();
+  }
+  if (service === 'kms') {
+    if (new RegExp(`^alias/${PROJECT_TOKEN}$`).test(resource)) return resource;
+    if (/^alias\/.+$/.test(resource)) return `alias/[alias#${pseudonym(resource.slice(6))}]`;
+    if (/^key\/.+$/.test(resource)) return `key/[key#${pseudonym(resource.slice(4))}]`;
+    return whole();
+  }
+  if (service === 'cognito-idp') {
+    const pool = resource.match(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)(\/.+)?$/);
+    if (!pool) return whole();
+    const trailing = pool[3] ? `/[path#${pseudonym(pool[3].slice(1))}]` : '';
+    return `userpool/${pool[1]}_[pool#${pseudonym(pool[2])}]${trailing}`;
+  }
+  if (service === 'cloudformation') {
+    const m = resource.match(/^(stack|changeSet)\/([^/]+)(\/.+)?$/);
+    if (!m) return whole();
+    const name = new RegExp(`^${PROJECT_TOKEN}$`).test(m[2]) || /^cba-70-[0-9a-f]{12}$/.test(m[2]) ? m[2] : `[name#${pseudonym(m[2])}]`;
+    const trailing = m[3] ? m[3].replace(UUID_SHAPE, (u) => `[id#${pseudonym(u)}]`) : '';
+    return `${m[1]}/${name}${/\[id#|^$/.test(trailing) ? trailing : `/[path#${pseudonym(trailing.slice(1))}]`}`;
+  }
+  if (service === 'apigateway') {
+    // The COMPLETE v2 grammar or nothing: /apis[/{id}[/{collection}[/{id}]]] with the reviewed
+    // collections, or /tags/{arn}. A v1 path (restapis/…) or any unrecognized shape fails closed.
+    if (resource === '/apis' || resource === '/tags/*') return resource;
+    const tags = resource.match(/^\/tags\/(.+)$/);
+    if (tags) return `/tags/[arn#${pseudonym(tags[1])}]`;
+    const m = resource.match(/^\/apis\/([^/]+)(?:\/(routes|integrations|authorizers|deployments|models|stages|cors)(?:\/([^/]+))?)?$/);
+    if (!m) return whole();
+    const apiId = m[1] === '*' ? '*' : `[id#${pseudonym(m[1])}]`;
+    if (!m[2]) return `/apis/${apiId}`;
+    if (!m[3]) return `/apis/${apiId}/${m[2]}`;
+    const childId = m[3] === '*' ? '*' : `[id#${pseudonym(m[3])}]`;
+    return `/apis/${apiId}/${m[2]}/${childId}`;
+  }
+  if (service === 's3') {
+    const slash = resource.indexOf('/');
+    const bucket = slash === -1 ? resource : resource.slice(0, slash);
+    const bucketOk = /^(cdk-cbardev-assets|cdk-cbarpil-assets|cba-study-coach)-[a-z0-9.-]+$/.test(bucket);
+    const renderedBucket = bucketOk ? bucket : `[bucket#${pseudonym(bucket)}]`;
+    return slash === -1 ? renderedBucket : `${renderedBucket}/[key#${pseudonym(resource.slice(slash + 1))}]`;
+  }
+  if (service === 'ssm') {
+    return /^parameter\/cdk-bootstrap\/(cbardev|cbarpil)\/version$/.test(resource) ? resource : whole();
+  }
+  if (service === 'lambda') {
+    const m = resource.match(new RegExp(`^function:(${PROJECT_TOKEN})(?::(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `function:${m[1]}:[qualifier#${pseudonym(m[2])}]`;
+  }
+  if (service === 'dynamodb') {
+    const m = resource.match(new RegExp(`^table/(${PROJECT_TOKEN})(?:/(index|stream)/(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `table/${m[1]}/${m[2]}/[id#${pseudonym(m[3])}]`;
+  }
+  if (service === 'sns') {
+    return new RegExp(`^${PROJECT_TOKEN}$`).test(resource) ? resource : whole();
+  }
+  if (service === 'logs') {
+    const m = resource.match(new RegExp(`^log-group:((?:/aws/[a-z0-9-]+/)?${PROJECT_TOKEN})(?::\\*)?(?::log-stream:(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `log-group:${m[1]}:log-stream:[stream#${pseudonym(m[2])}]`;
+  }
+  if (service === 'cloudwatch') {
+    return new RegExp(`^(alarm:|dashboard/)${PROJECT_TOKEN}$`).test(resource) ? resource : whole();
+  }
+  return whole(); // an unknown service is not proven public
+}
+
+/** An exact ARN token, parsed by FIELDS: arn:partition:service:region:account:resource. A token
+ * that does not parse as an ARN never falls back to raw text. */
+function renderArn(token) {
+  const m = token.match(/^(arn):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}|):(.+)$/);
+  if (!m) return `[arn#${pseudonym(token)}]`;
+  const acct = m[5] === '' ? '' : `[acct#${pseudonym(m[5])}]`;
+  return `${m[1]}:${m[2]}:${m[3]}:${m[4]}:${acct}:${renderArnResource(m[3], m[6])}`;
+}
+
+/** Residual per-token passes for material embedded in prose: pool ids, UUIDs, bare accounts. */
+function renderResidual(token) {
+  return token
     .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region, id) => `${region}_[pool#${pseudonym(id)}]`)
-    // Free-standing generated UUIDs (key ids, stack ids outside ARNs).
     .replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`)
-    // Any bare 12-digit run that survived (bucket names, ids inside text). Hex-adjacent digits
-    // are excluded so the pass can never fire INSIDE an already-emitted pseudonym's hex.
     .replace(/(?<![0-9a-fA-F#])\d{12}(?![0-9a-fA-F])/g, (m) => `[acct#${pseudonym(m)}]`);
 }
 
+/** Round 9: strings are sanitized TOKEN BY TOKEN — every token is CLASSIFIED (URL of any scheme,
+ * ARN, residual identifiers) and rendered by its own field-aware rule. There is no outer text
+ * scanner deciding what the structured parsers get to see: a token either matches a classifier
+ * completely or its identifying material hits the residual passes. */
+function fingerprintSanitize(text) {
+  if (!text) return '';
+  return String(text)
+    .split(/(\s+)/)
+    .map((token) => {
+      if (/^\s*$/.test(token)) return token;
+      // The residual passes ALSO run over classifier output: a verbatim-blessed segment (a
+      // project bucket name, a kept path) can still embed an account id or a UUID. The digit
+      // pass is hex-fenced, so it can never rewrite the inside of an emitted pseudonym.
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(token)) return renderResidual(renderUrl(token));
+      if (/^arn:/.test(token)) return renderResidual(renderArn(token));
+      return renderResidual(token);
+    })
+    .join('');
+}
+
+/** Sanitize a STRUCTURED value recursively — strings by the token classifier, containers by
+ * walking; the CFN Before/AfterContext JSON strings parse first and fail CLOSED to a pseudonym
+ * when unparseable, so presentation is composed from sanitized VALUES, never from raw text. */
+function sanitizeValueDeep(value) {
+  if (Array.isArray(value)) return value.map(sanitizeValueDeep);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) out[key] = sanitizeValueDeep(entry);
+    return out;
+  }
+  if (typeof value === 'string') return fingerprintSanitize(value);
+  return value;
+}
+
+function sanitizeContextBlob(context) {
+  if (typeof context !== 'string') return sanitizeValueDeep(context);
+  try {
+    return JSON.stringify(sanitizeValueDeep(JSON.parse(context)));
+  } catch {
+    return `[context#${pseudonym(context)}]`; // unparseable context is not proven safe
+  }
+}
+
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
- * Rounds 5-6: the SEMANTICS must be reviewable — property values (from
- * --include-property-values), causing entities and policy bodies render with STRUCTURED
- * pseudonymization: paths and types verbatim, accounts at 128-bit pseudonyms — so what Zamp
- * approves is the CONTENT of the change and the IDENTITY class of every principal, never just
- * an opaque change-set id or an opaque hash. */
+ * Round 9: presentation is composed FROM SANITIZED VALUES — every string in the canonical
+ * entries is classified and rendered field-aware BEFORE any line exists, and the Before/After
+ * context blobs are parsed as JSON and walked (failing closed when unparseable). There is no
+ * final text pass: a text scanner deciding what the structured parsers see was exactly the
+ * round-9 finding. */
 function renderPlan(planEntries) {
   const lines = [];
-  for (const entry of planEntries) {
+  for (const rawEntry of planEntries) {
+    const entry = {
+      ...sanitizeValueDeep({ stackName: rawEntry.stackName, status: rawEntry.status }),
+      changes: (rawEntry.changes || []).map((change) => {
+        const rc = change.ResourceChange || {};
+        return {
+          ...sanitizeValueDeep({
+            Action: rc.Action,
+            ResourceType: rc.ResourceType,
+            LogicalResourceId: rc.LogicalResourceId,
+            Replacement: rc.Replacement,
+            Details: rc.Details,
+          }),
+          BeforeContext: rc.BeforeContext === undefined ? undefined : sanitizeContextBlob(rc.BeforeContext),
+          AfterContext: rc.AfterContext === undefined ? undefined : sanitizeContextBlob(rc.AfterContext),
+        };
+      }),
+    };
     lines.push(`  ${entry.stackName} — ${entry.status}${entry.status === 'NO_CHANGES' ? '' : ` (${entry.changes.length} change${entry.changes.length === 1 ? '' : 's'})`}`);
-    for (const change of entry.changes) {
-      const rc = change.ResourceChange || {};
+    for (const rc of entry.changes) {
       lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${rc.Replacement === 'True' ? '  [REPLACEMENT]' : ''}`);
       for (const detail of rc.Details || []) {
         const target = detail.Target || {};
@@ -490,11 +577,11 @@ function renderPlan(planEntries) {
         if (target.BeforeValue !== undefined) lines.push(`        before: ${JSON.stringify(target.BeforeValue)}`);
         if (target.AfterValue !== undefined) lines.push(`        after:  ${JSON.stringify(target.AfterValue)}`);
       }
-      if (rc.BeforeContext !== undefined) lines.push(`      before-context: ${typeof rc.BeforeContext === 'string' ? rc.BeforeContext : JSON.stringify(rc.BeforeContext)}`);
-      if (rc.AfterContext !== undefined) lines.push(`      after-context:  ${typeof rc.AfterContext === 'string' ? rc.AfterContext : JSON.stringify(rc.AfterContext)}`);
+      if (rc.BeforeContext !== undefined) lines.push(`      before-context: ${rc.BeforeContext}`);
+      if (rc.AfterContext !== undefined) lines.push(`      after-context:  ${rc.AfterContext}`);
     }
   }
-  return fingerprintSanitize(lines.join('\n'));
+  return lines.join('\n');
 }
 
 /** Five seconds between stack-status polls; injectable so tests never actually wait. */
@@ -821,7 +908,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, sanitizeChildOutput, fingerprintSanitize, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, sanitizeChildOutput, fingerprintSanitize, sanitizeValueDeep, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

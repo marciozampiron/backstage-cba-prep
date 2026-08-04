@@ -2,6 +2,33 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-04 — Claude — #70 Slice B1 round 9: values classified as fields, grammars anchored
+
+- Codex's round-9 review of 6f8c702f (the six round-8 reproductions confirmed closed): the
+  structured parser only saw what an incomplete text scanner handed it — `postgres://` with
+  credentials passed whole (the scanner knew only http/s), a backslash cut the candidate and
+  stranded `?token=…` outside it, and pathnames rendered verbatim under any host including the
+  approved one; and `projectNamed()` blessed a WHOLE resource after finding a project prefix in
+  one segment — lambda aliases, log streams and Cognito groups rode through, an API Gateway v1
+  path returned entirely, and known-service branches failed OPEN when their expected shape did
+  not match. Two MEDIUMs. Fix-forward, all nine reviewed commits preserved.
+- Presentation is composed FROM SANITIZED VALUES now: every string in the canonical entries is
+  classified token by token (URL of any scheme, ARN, residual identifiers) and rendered by its
+  own field-aware rule; the CFN Before/After context blobs parse as JSON and are walked, failing
+  closed when unparseable; residual passes run over classifier output too, so an account inside
+  a verbatim-blessed bucket name still pseudonymizes. There is no outer scanner.
+- URL paths render only from the reviewed shape list (the committed auth callback/logout forms,
+  the Cognito hosted-UI endpoints, the stage roots) — an approved workers.dev host does not
+  bless an unreviewed path. Unknown schemes are markers; credentialed URLs are markers whatever
+  the scheme.
+- The per-service ARN grammars are ANCHORED: only the exact project-owned identity segment
+  renders; aliases, streams, groups, sessions, qualifiers and generated ids pseudonymize; every
+  known-service branch — and every unknown service — fails CLOSED to a whole-resource pseudonym.
+- The eight review reproductions are direct regressions, and the round-8 implementation was
+  proven to FAIL them: the http-only classifier, verbatim paths, substring blessing and the
+  cognito fail-open each reverted and each caught. The round-7/8 classification controls hold
+  under the tightened contract. Nothing was deployed, published or mutated.
+
 ## 2026-08-03 — Claude — #70 Slice B1 round 8: the renderer's own exceptions closed
 
 - Codex's round-8 review of b507e587: the renderer's exceptions were broader than the reviewed

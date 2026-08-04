@@ -1587,10 +1587,11 @@ test('ROUND-7: generated identifiers and query values never render — names thi
   const cfn = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/deadbeef-1234-1234-1234-abcdefabcdef`);
   assert.equal(cfn.includes('deadbeef-1234-1234-1234-abcdefabcdef'), false, 'a stack id must never render');
   assert.match(cfn, /stack\/cba-study-coach-dev-api\/\[id#[0-9a-f]{32}\]/, 'the project-chosen stack name stays classifiable');
-  // URL query values carry tokens — stripped, with the stripping visible.
+  // URL query values carry tokens — stripped, with the stripping visible. (Round 9 also
+  // pseudonymizes the unreviewed /reset path: secrets ride path segments as easily.)
   const url = fingerprintSanitize('https://x.workers.dev/reset?token=secret-value');
   assert.equal(url.includes('secret-value'), false, 'a query token must never render');
-  assert.match(url, /\/reset\?\[query-redacted\]/);
+  assert.match(url, /\/\[path#[0-9a-f]{32}\]\?\[query-redacted\]/);
   // A free-standing UUID (outside any ARN) is generated material too.
   assert.equal(fingerprintSanitize('key id 12345678-1234-1234-1234-1234567890ab').includes('1234567890ab'), false);
   // And an UNKNOWN service's resource is pseudonymized whole — unknown is not proven public.
@@ -1642,17 +1643,72 @@ test('ROUND-8: URLs go through the STRUCTURED parser — credentials, IPv6 and p
   const credentialed = fingerprintSanitize('https://user:supersecret@evil.example/collect');
   assert.equal(credentialed.includes('supersecret'), false, 'a password must never render');
   assert.equal(credentialed.includes('evil.example'), false);
-  assert.match(credentialed, /https:\/\/\[credentialed-url#[0-9a-f]{32}\]/);
+  assert.match(credentialed, /\[credentialed-url#[0-9a-f]{32}\]/);
   // IPv6 literal with a token: the ad hoc regex never matched it and printed everything.
   const ipv6 = fingerprintSanitize('https://[2001:db8::1]/?token=secret');
   assert.equal(ipv6.includes('secret'), false, 'the token must never render');
   assert.equal(ipv6.includes('2001:db8'), false, 'an IP-literal host is not decision-bearing');
   assert.match(ipv6, /\[unexpected-host#[0-9a-f]{32}\]\/\?\[query-redacted\]/);
-  // Ports survive as structure; query still strips; the decision-bearing host stays.
-  assert.match(fingerprintSanitize('https://x.workers.dev:8443/reset?token=s'), /https:\/\/x\.workers\.dev:8443\/reset\?\[query-redacted\]/);
+  // Ports survive as structure; query still strips; the decision-bearing host stays — and the
+  // round-9 contract pseudonymizes the unreviewed path too: secrets ride path segments.
+  assert.match(fingerprintSanitize('https://x.workers.dev:8443/reset?token=s'), /https:\/\/x\.workers\.dev:8443\/\[path#[0-9a-f]{32}\]\?\[query-redacted\]/);
   // Fragments are query-class material.
   assert.match(fingerprintSanitize('https://x.workers.dev/page#access_token=abc'), /\?\[query-redacted\]/);
   assert.equal(fingerprintSanitize('https://x.workers.dev/page#access_token=abc').includes('access_token'), false);
+});
+
+test('ROUND-9: values are classified as FIELDS — no outer scanner decides what the parsers see', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // 1. Any scheme reaches the classifier: the round-8 scanner recognized only http(s), and a
+  // postgres URL with credentials sailed past it whole.
+  const pg = fingerprintSanitize('postgres://user:supersecret@db.internal/cba');
+  assert.equal(pg.includes('supersecret'), false, 'credentials in a non-http URL must never render');
+  assert.equal(pg.includes('db.internal'), false);
+  assert.match(pg, /\[credentialed-url#[0-9a-f]{32}\]/);
+  // 2. A backslash cannot cut the candidate and strand the query outside it: the token goes to
+  // the WHATWG parser whole (which treats \ as / in special schemes) — the token never renders.
+  const backslash = fingerprintSanitize('https://evil.example\\?token=supersecret');
+  assert.equal(backslash.includes('supersecret'), false, 'a backslash-smuggled query must never render');
+  // 3-4. Paths are DATA unless a reviewed decision produces that exact shape — under an
+  // unexpected host AND under the approved workers.dev origin alike.
+  const foreignPath = fingerprintSanitize('https://evil.example/reset/supersecret-token');
+  assert.equal(foreignPath.includes('supersecret-token'), false, 'a path secret must never render');
+  const ownPath = fingerprintSanitize('https://cba-study-coach-pilot.workers.dev/reset/supersecret-token');
+  assert.equal(ownPath.includes('supersecret-token'), false, 'an approved host does not bless an unreviewed path');
+  assert.match(ownPath, /https:\/\/cba-study-coach-pilot\.workers\.dev\/\[path#[0-9a-f]{32}\]/, 'the host stays classifiable; the path does not leak');
+  // The reviewed shapes still read in clear.
+  assert.match(fingerprintSanitize('https://cba-study-coach-pilot.workers.dev/auth/callback'), /\/auth\/callback$/);
+});
+
+test('ROUND-9: anchored per-service grammars — one project-named segment never blesses the rest', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // 5. A Lambda ALIAS is caller-chosen data riding behind the project-named function.
+  const lambda = fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:cba-study-coach-dev-bff:covert-alias`);
+  assert.equal(lambda.includes('covert-alias'), false, 'a lambda alias must never render');
+  assert.match(lambda, /function:cba-study-coach-dev-bff:\[qualifier#[0-9a-f]{32}\]/, 'the project-owned identity segment stays');
+  // 6. A LOG STREAM is generated material behind the project-named group.
+  const logs = fingerprintSanitize(`arn:aws:logs:us-east-1:${ACCOUNT}:log-group:/aws/lambda/cba-study-coach-dev-bff:log-stream:generated-secret-stream`);
+  assert.equal(logs.includes('generated-secret-stream'), false, 'a log stream must never render');
+  assert.match(logs, /log-group:\/aws\/lambda\/cba-study-coach-dev-bff:log-stream:\[stream#[0-9a-f]{32}\]/);
+  // 7. A Cognito GROUP behind the pool id is unreviewed trailing material.
+  const cognito = fingerprintSanitize(`arn:aws:cognito-idp:us-east-1:${ACCOUNT}:userpool/us-east-1_ABCdef123/group/covert-group`);
+  assert.equal(cognito.includes('covert-group'), false, 'a cognito group must never render');
+  assert.match(cognito, /userpool\/us-east-1_\[pool#[0-9a-f]{32}\]\/\[path#[0-9a-f]{32}\]/);
+  // 8. An API Gateway V1 path is outside the reviewed v2 grammar — the whole resource fails
+  // closed, exactly like every known-service branch whose complete shape does not match.
+  const v1 = fingerprintSanitize('arn:aws:apigateway:us-east-1::/restapis/abc123/deployments/xyz');
+  assert.equal(v1.includes('restapis'), false, 'a v1 path is not proven public');
+  assert.match(v1, /\[resource#[0-9a-f]{32}\]/);
+  // Fail-closed inside known services: a cognito shape the grammar does not recognize, and a
+  // foreign lambda resource, each pseudonymize WHOLE — never return the original.
+  const badPool = fingerprintSanitize(`arn:aws:cognito-idp:us-east-1:${ACCOUNT}:identityprovider/covert-idp`);
+  assert.equal(badPool.includes('covert-idp'), false);
+  const badLambda = fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:layer:covert-layer:3`);
+  assert.equal(badLambda.includes('covert-layer'), false);
+  // The account embedded in a verbatim-blessed segment still pseudonymizes: residual passes run
+  // over classifier output too.
+  const bucket = fingerprintSanitize(`arn:aws:s3:::cdk-cbardev-assets-${ACCOUNT}-us-east-1/key.zip`);
+  assert.equal(bucket.includes(ACCOUNT), false, 'the account inside a bucket name must never render');
 });
 
 test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
