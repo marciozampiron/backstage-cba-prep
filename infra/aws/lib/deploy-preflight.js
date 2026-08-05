@@ -110,6 +110,7 @@ const CODES = {
   BOOTSTRAP_ROLE_UNASSUMABLE: 'could not be assumed — without this tier\'s cdk deploy role there is no way to read or execute the change sets',
   CHANGE_SET_MISSING: 'has no prepared change set under this release\'s name — the reviewed plan does not exist (expired, deleted, or never prepared); run plan_only again',
   CHANGE_SET_UNREADABLE: 'has a change set that could not be described — an unreadable plan authorizes nothing',
+  CHANGE_SET_PAGINATION_UNCONSUMED: 'has a change set whose description did not finish paginating — a partial plan describes an effect nobody reviewed, so it authorizes nothing',
   CHANGE_SET_FAILED: 'has a change set in a failed state — a plan that CloudFormation itself rejected cannot be reviewed or executed',
   PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
   EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',

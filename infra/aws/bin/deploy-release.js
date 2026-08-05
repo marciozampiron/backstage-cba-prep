@@ -113,8 +113,8 @@ function usage() {
   ].join('\n');
 }
 
-/** Default executor: the CDK child, output CAPTURED — never inherited — so everything the child
- * prints passes through `sanitizeChildOutput` before a human or a CI log sees it. Injectable.
+/** Default executor: the CDK child, output CAPTURED — never inherited. Round 11: captured child
+ * text is never reproduced at all; only a stable code, a byte count and a digest are recorded.
  * The env is supplied by the caller with the verified region imposed — never ambient as-is. */
 function defaultExec(args, env) {
   const res = spawnSync('npx', args, { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
@@ -122,22 +122,18 @@ function defaultExec(args, env) {
 }
 
 /**
- * Redact deployment-identifying material from child output (#70 Slice B1 review).
+ * ROUND 11: UNSTRUCTURED CHILD TEXT IS NEVER ECHOED.
  *
- * CDK prints `Outputs:` and `Stack ARN:` on success — for this app that is the BFF endpoint, the
- * Cognito pool/client identifiers and the SecurityStack ARNs, and `mask-aws-account-id` masks NONE
- * of it because the account id also travels inside ARN and URL structure. Redaction is by SHAPE,
- * not by known value: every ARN, every URL, every Cognito pool id and every 12-digit run is
- * removed, so an output added tomorrow leaks nothing today. Order matters — ARNs and URLs embed
- * account ids, so they are redacted before the bare-digit pass.
+ * A second, shape-based scanner used to sanitize the prepare child's stdout/stderr — a different
+ * policy from the plan renderer's, and a weaker one: it left `postgres://user:secret@host/db`
+ * intact on the refusal path, straight into a persistent CI log. There is now ONE policy, and
+ * for arbitrary child text it is silence: the run records a stable exit code, the byte count and
+ * a digest, so the operator can correlate the failure with the runner's own protected logs
+ * without the release lane reproducing a single byte of it.
  */
-function sanitizeChildOutput(text) {
-  if (!text) return '';
-  return text
-    .replace(/arn:[a-zA-Z0-9-]*:[^\s"'`]+/g, '[arn-redacted]')
-    .replace(/https?:\/\/[^\s"'`]+/g, '[url-redacted]')
-    .replace(/\b[a-z]{2}-[a-z]+-\d_[A-Za-z0-9]{5,}\b/g, '[user-pool-redacted]')
-    .replace(/(?<!\d)\d{12}(?!\d)/g, '[account-redacted]');
+function childEvidence(child) {
+  const bytes = `${child.stdout || ''}${child.stderr || ''}`;
+  return `child not echoed — exit=${child.status} bytes=${Buffer.byteLength(bytes, 'utf8')} sha256=${crypto.createHash('sha256').update(bytes, 'utf8').digest('hex')}`;
 }
 
 /** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
@@ -264,6 +260,12 @@ function canonicalChangeSet(stackId, stackName, described) {
   const noChanges =
     described.Status === 'FAILED'
     && /didn't contain changes|No updates are to be performed/i.test(described.StatusReason || '');
+  // ROUND 11: the canonical entry carries the COMPLETE description, not a chosen subset. The
+  // executable semantics of a change set live OUTSIDE `Changes` — Capabilities (what IAM the
+  // execution may create), OnStackFailure (DELETE can destroy the stack after a failed create),
+  // RollbackConfiguration, NotificationARNs, Tags, Parameters, ImportExistingResources,
+  // IncludeNestedStacks — and a digest that ignored them let two materially different
+  // authorizations produce identical bytes and identical review material.
   return {
     stackId,
     stackName,
@@ -271,6 +273,7 @@ function canonicalChangeSet(stackId, stackName, described) {
     status: noChanges ? 'NO_CHANGES' : described.Status,
     executionStatus: described.ExecutionStatus,
     changes: described.Changes || [],
+    describe: described,
   };
 }
 
@@ -289,17 +292,39 @@ function assumeBootstrapRole(run, { account, region, qualifier, name, session })
 }
 
 /** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
+const CHANGE_SET_PAGE_LIMIT = 40;
+
 function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
-  const res = run(['cloudformation', 'describe-change-set', '--change-set-name', changeSetName, '--stack-name', stackName, '--include-property-values', '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: credEnv });
-  if (!res) return { error: true };
-  if (res.status !== 0) {
-    return /ChangeSetNotFound|does not exist/i.test(`${res.stderr || ''}${res.stdout || ''}`) ? { missing: true } : { error: true };
+  // ROUND 11: DescribeChangeSet PAGINATES. A first page that carries a NextToken describes only
+  // part of the plan, and digesting or reviewing that part would authorize an effect nobody saw.
+  // Every page is consumed here and the assembled body carries NO cursor — or the run refuses.
+  let base = null;
+  const changes = [];
+  let token = null;
+  for (let page = 0; page < CHANGE_SET_PAGE_LIMIT; page += 1) {
+    const args = ['cloudformation', 'describe-change-set', '--change-set-name', changeSetName, '--stack-name', stackName, '--include-property-values', '--output', 'json', '--no-cli-pager'];
+    if (token) args.push('--next-token', token);
+    const res = run(args, { timeoutMs: 30_000, env: credEnv });
+    if (!res) return { error: true };
+    if (res.status !== 0) {
+      return /ChangeSetNotFound|does not exist/i.test(`${res.stderr || ''}${res.stdout || ''}`) ? { missing: true } : { error: true };
+    }
+    let body;
+    try {
+      body = JSON.parse(res.stdout);
+    } catch {
+      return { error: true };
+    }
+    if (!base) base = body;
+    changes.push(...(body.Changes || []));
+    token = typeof body.NextToken === 'string' && body.NextToken !== '' ? body.NextToken : null;
+    if (!token) {
+      // The assembled description: every page's changes, no cursor left to follow.
+      const { NextToken: _consumed, ...rest } = base;
+      return { described: { ...rest, Changes: changes } };
+    }
   }
-  try {
-    return { described: JSON.parse(res.stdout) };
-  } catch {
-    return { error: true };
-  }
+  return { paginationUnconsumed: true };
 }
 
 /** Poll the stack to a terminal status after executing its change set. Injectable sleep. */
@@ -365,42 +390,82 @@ const PROJECT_TOKEN_EXACT = new RegExp(`^${PROJECT_TOKEN}$`);
  * round 9: a secret can live in a path segment as easily as in a query value. */
 const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
 
-/* ============================ ROUND 10: FAIL-CLOSED SCALARS ==================================
+/* ===================== ROUND 11: KNOWN FIELD + VALIDATED VALUE ================================
  *
- * Round 9 still preserved any word it did not recognize as dangerous. That is fail-OPEN by
- * construction: an unknown scalar is not proven public, and the review reproduced secrets riding
- * inside serialized JSON, inside map KEYS and behind punctuation the token split never separated.
+ * Round 10 still preserved text by generic FORM: a numeric string, a structural-looking key, an
+ * identifier-shaped value, a project prefix. Each of those is an assumption about content that
+ * the content itself never proved — `111122223333` is a numeric string AND an account id,
+ * `supersecret` is identifier-shaped, `cba-study-coach-supersecret` carries our prefix.
  *
- * The rule is now inverted. A scalar renders VERBATIM only when it matches an explicitly
- * reviewed public FORM — the closed CloudFormation vocabulary, an `AWS::Service::Type`, a number,
- * an AWS region, a project-owned name, or a URL/ARN whose own field-aware grammar renders it.
- * EVERY other scalar becomes a deterministic `[value#…]` marker. Determinism is what keeps the
- * material reviewable: equal values render equal markers, so before/after comparison survives
- * even where the value itself must not be shown.
+ * The rule is now: text survives only where a KNOWN SCHEMA FIELD holds a VALUE ITS OWN VALIDATOR
+ * ACCEPTS. There is no free-form allowance left:
+ *   - free scalars (unknown keys, nested user JSON, prose) pseudonymize WHOLE;
+ *   - only real JSON numbers render as numbers; a numeric STRING is a marker;
+ *   - only schema keys render; every other key is a marker;
+ *   - PhysicalResourceId pseudonymizes whole — a physical id is generated or arbitrary, and no
+ *     grammar bound to it is worth the assumption;
+ *   - stackName is validated against the stack names THIS deploy computed, not a name shape.
+ * The ONE structural exception is the URL/ARN classifiers, which are not format allowances but
+ * field-aware parsers: they preserve only reviewed host families and project-owned segments and
+ * pseudonymize everything else, and they are what keeps the approved origin and the expected
+ * principal classifiable (rounds 6-9). Removing them would lose that with no containment gained.
  */
-const CFN_VOCABULARY = new Set([
-  // ResourceChange / Change
-  'Add', 'Modify', 'Remove', 'Import', 'Resource',
-  'True', 'False', 'Conditional',
-  'Never', 'Always', 'Conditionally',
-  'Static', 'Dynamic',
-  'Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'UpdateReplacePolicy', 'DeletionPolicy', 'Tags',
-  'ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic',
-  // PolicyAction — the destructive semantics the round-10 review demanded be visible
-  'Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot',
-  // change-set and stack status vocabulary
-  'CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS',
-  'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED', 'AVAILABLE', 'UNAVAILABLE', 'OBSOLETE',
-  'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'NOT_EXECUTED', 'NO_CHANGES',
+
+/** The DescribeChangeSet / ResourceChange schema keys. A key outside this set is a marker: an
+ * arbitrary map key is content, and content is not proven public. */
+const CFN_SCHEMA_KEYS = new Set([
+  // change-set level
+  'ChangeSetName', 'ChangeSetId', 'StackId', 'StackName', 'Description', 'Parameters', 'CreationTime',
+  'ExecutionStatus', 'Status', 'StatusReason', 'NotificationARNs', 'RollbackConfiguration',
+  'Capabilities', 'Tags', 'Changes', 'IncludeNestedStacks', 'ParentChangeSetId', 'RootChangeSetId',
+  'OnStackFailure', 'ImportExistingResources', 'NextToken',
+  // parameters, tags, rollback
+  'ParameterKey', 'ParameterValue', 'UsePreviousValue', 'ResolvedValue', 'Key', 'Value',
+  'RollbackTriggers', 'MonitoringTimeInMinutes', 'Arn',
+  // change level
+  'Type', 'HookInvocationCount', 'ResourceChange', 'Action', 'LogicalResourceId',
+  'PhysicalResourceId', 'ResourceType', 'Replacement', 'Scope', 'Details', 'ChangeSetIdRef',
+  'ModuleInfo', 'TypeHierarchy', 'LogicalIdHierarchy', 'BeforeContext', 'AfterContext',
+  'PolicyAction', 'Target', 'Evaluation', 'ChangeSource', 'CausingEntity', 'Attribute', 'Name',
+  'RequiresRecreation', 'BeforeValue', 'AfterValue', 'Path',
+  // our own canonical wrapper
+  'stackId', 'stackName', 'changeSetId', 'status', 'executionStatus', 'changes', 'describe',
 ]);
-const RESOURCE_TYPE_EXACT = /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
-const NUMBER_EXACT = /^-?\d+(?:\.\d+)?$/;
-const REGION_EXACT = /^[a-z]{2}-[a-z]+-\d$/;
-/** CloudFormation logical ids and property names: alphanumeric, and only in TYPED positions —
- * this shape is never trusted for a free scalar, where an arbitrary word would also match it. */
+
+/** Closed value vocabularies, per field. A value outside its field's vocabulary is a marker —
+ * the field authorizes the value, never the value's appearance. */
+const FIELD_VOCABULARY = {
+  Action: ['Add', 'Modify', 'Remove', 'Import', 'Dynamic'],
+  Replacement: ['True', 'False', 'Conditional'],
+  RequiresRecreation: ['Never', 'Conditionally', 'Always'],
+  Attribute: ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'],
+  ChangeSource: ['ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic'],
+  Evaluation: ['Static', 'Dynamic'],
+  PolicyAction: ['Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot'],
+  Type: ['Resource'],
+  Scope: ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'],
+  Status: ['CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED', 'NO_CHANGES'],
+  ExecutionStatus: ['UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'],
+  OnStackFailure: ['DO_NOTHING', 'ROLLBACK', 'DELETE'],
+  Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+  IncludeNestedStacks: ['true', 'false'],
+  ImportExistingResources: ['true', 'false'],
+  UsePreviousValue: ['true', 'false'],
+  status: ['CREATE_COMPLETE', 'NO_CHANGES', 'FAILED'],
+  executionStatus: ['UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'],
+};
+
+/** CloudFormation logical ids and property names — validated ONLY in their own schema fields. */
 const IDENTIFIER_EXACT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
-/** Structural map keys. A key carrying a URL or an ARN is classified, never kept by shape. */
-const KEY_SHAPE = /^[A-Za-z][A-Za-z0-9:._-]{0,254}$/;
+/** An ISO instant CloudFormation stamps on a change set: structure, no content. */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** The stack names THIS deploy computes — the validator for every stackName/StackName field.
+ * A name is authorized because the release BUILT it, never because it looks like ours. */
+let REVIEWED_STACK_NAMES = new Set();
+function setReviewedStackNames(names) {
+  REVIEWED_STACK_NAMES = new Set(names);
+}
 
 function renderHost(host) {
   const lower = host.toLowerCase();
@@ -540,13 +605,11 @@ function renderResidual(token) {
     .replace(/(?<![0-9a-fA-F#])\d{12}(?![0-9a-fA-F])/g, (m) => `[acct#${pseudonym(m)}]`);
 }
 
-/** A free-position word: verbatim ONLY for an explicitly reviewed public form. */
+/** A free-position word. ROUND 11: there is no format allowance — a numeric string, a project
+ * prefix and an identifier shape each proved nothing about the content behind them. Free text is
+ * pseudonymized, always; KNOWN FIELDS with VALIDATED values never reach here. (URL and ARN spans
+ * are lifted out before this runs — see sanitizeScalarString.) */
 function renderFreeWord(word) {
-  if (CFN_VOCABULARY.has(word)) return word;
-  if (RESOURCE_TYPE_EXACT.test(word)) return word;
-  if (NUMBER_EXACT.test(word)) return word;
-  if (REGION_EXACT.test(word)) return word;
-  if (PROJECT_TOKEN_EXACT.test(word)) return word;
   return `[value#${pseudonym(word)}]`;
 }
 
@@ -578,71 +641,80 @@ function sanitizeScalarString(text) {
 /** The public name kept for the existing call sites and controls. */
 const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
 
-/** TYPED CloudFormation fields: each key names the anchored grammar its value must match. A value
- * outside its field's grammar is pseudonymized — the field's type is the authorization, never the
- * value's appearance. Keys absent from this map are FREE positions (fail-closed scalars). */
-const FIELD_KIND = {
-  Action: 'vocabulary',
-  Replacement: 'vocabulary',
-  RequiresRecreation: 'vocabulary',
-  Attribute: 'vocabulary',
-  ChangeSource: 'vocabulary',
-  Evaluation: 'vocabulary',
-  PolicyAction: 'vocabulary',
-  Type: 'vocabulary',
-  ChangeType: 'vocabulary',
-  Status: 'vocabulary',
-  ExecutionStatus: 'vocabulary',
-  Scope: 'vocabulary',
-  ResourceType: 'resourceType',
-  LogicalResourceId: 'identifier',
-  Name: 'identifier',
-  stackId: 'identifier',
-  CausingEntity: 'reference',
-  PhysicalResourceId: 'reference',
-  stackName: 'reference',
-  BeforeValue: 'json',
-  AfterValue: 'json',
-  BeforeContext: 'json',
-  AfterContext: 'json',
-};
-
-function renderTypedString(kind, value) {
+function renderTypedString(key, value) {
   const marker = () => `[value#${pseudonym(value)}]`;
-  if (kind === 'vocabulary') return CFN_VOCABULARY.has(value) ? value : marker();
-  if (kind === 'resourceType') return RESOURCE_TYPE_EXACT.test(value) ? value : marker();
-  if (kind === 'identifier') return IDENTIFIER_EXACT.test(value) ? value : sanitizeScalarString(value);
-  if (kind === 'reference') {
-    if (/^arn:/.test(value)) return renderResidual(renderArn(value));
-    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
-    if (PROJECT_TOKEN_EXACT.test(value) || IDENTIFIER_EXACT.test(value)) return renderResidual(value);
-    return marker();
+  const vocabulary = FIELD_VOCABULARY[key];
+  if (vocabulary) return vocabulary.includes(value) ? value : marker();
+  switch (key) {
+    // Resource types are a CLOSED namespace CloudFormation owns; nothing about one is content.
+    case 'ResourceType':
+      return /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/.test(value) ? value : marker();
+    // Logical ids and property names come from OUR template and CloudFormation's own schema.
+    case 'LogicalResourceId':
+    case 'Name':
+    case 'ParameterKey':
+    case 'Key':
+    case 'stackId':
+      return IDENTIFIER_EXACT.test(value) ? value : marker();
+    // Stack names are validated against the names THIS deploy computed — not a name shape.
+    case 'stackName':
+    case 'StackName':
+      return REVIEWED_STACK_NAMES.has(value) ? value : marker();
+    case 'CreationTime':
+      return ISO_INSTANT.test(value) ? value : marker();
+    // Identity-bearing references: the ARN/URL parsers decide, and nothing else passes.
+    case 'CausingEntity':
+    case 'Arn':
+    case 'ChangeSetId':
+    case 'StackId':
+    case 'ParentChangeSetId':
+    case 'RootChangeSetId':
+    case 'changeSetId':
+      if (/^arn:/.test(value)) return renderResidual(renderArn(value));
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
+      return IDENTIFIER_EXACT.test(value) ? value : marker();
+    // ROUND 11: a physical id is generated or operator-chosen, a parameter value and a tag value
+    // are content, a status reason is free prose — no grammar bound to them is worth the
+    // assumption, so each pseudonymizes WHOLE.
+    case 'PhysicalResourceId':
+    case 'ParameterValue':
+    case 'ResolvedValue':
+    case 'Value':
+    case 'StatusReason':
+    case 'Description':
+      return marker();
+    // Serialized structure: parsed and walked, failing closed.
+    case 'BeforeValue':
+    case 'AfterValue':
+    case 'BeforeContext':
+    case 'AfterContext':
+      return sanitizeJsonish(value);
+    default:
+      return sanitizeScalarString(value);
   }
-  return sanitizeScalarString(value);
 }
 
-/** A map key: classified when it carries a URL or an ARN, kept when it is structural, marked
- * otherwise. Round 10: keys were preserved literally, so a URL used as a key rendered whole. */
+/** A map key. ROUND 11: only KNOWN SCHEMA KEYS render — a key from user JSON is content, and
+ * `supersecret` is exactly as structural-looking as `Properties`. */
 function renderKey(key) {
-  if (/^arn:/.test(key) || /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(key)) return sanitizeScalarString(key);
-  if (KEY_SHAPE.test(key)) return renderResidual(key);
-  return `[key#${pseudonym(key)}]`;
+  return CFN_SCHEMA_KEYS.has(key) ? key : `[key#${pseudonym(key)}]`;
 }
 
 /** Sanitize a STRUCTURED value recursively: keys AND values, arrays inheriting their parent
- * field, strings routed through their field's grammar or the fail-closed scalar rules. */
-function sanitizeValueDeep(value, kind = 'free') {
-  if (Array.isArray(value)) return value.map((entry) => sanitizeValueDeep(entry, kind));
+ * field, strings routed through their FIELD'S validator or — under an unknown key — through the
+ * fail-closed free rules. Real JSON numbers, booleans and null carry no identifying material and
+ * pass; a numeric STRING does not, because a numeric string is also an account id. */
+function sanitizeValueDeep(value, key = null) {
+  if (Array.isArray(value)) return value.map((entry) => sanitizeValueDeep(entry, key));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [key, entry] of Object.entries(value)) {
-      out[renderKey(key)] = sanitizeValueDeep(entry, FIELD_KIND[key] ?? 'free');
+    for (const [entryKey, entry] of Object.entries(value)) {
+      out[renderKey(entryKey)] = sanitizeValueDeep(entry, CFN_SCHEMA_KEYS.has(entryKey) ? entryKey : null);
     }
     return out;
   }
   if (typeof value === 'string') {
-    if (kind === 'json') return sanitizeJsonish(value);
-    return renderTypedString(kind, value);
+    return key === null ? sanitizeScalarString(value) : renderTypedString(key, value);
   }
   return value;
 }
@@ -658,30 +730,40 @@ function sanitizeJsonish(value) {
   } catch {
     return sanitizeScalarString(value);
   }
-  if (parsed && typeof parsed === 'object') return JSON.stringify(sanitizeValueDeep(parsed));
+  if (parsed && typeof parsed === 'object') return JSON.stringify(sanitizeValueDeep(parsed, null));
   return sanitizeScalarString(value);
 }
 
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
  *
- * Round 10: presentation carries the COMPLETE change, not a hand-picked subset. A six-field
- * summary hid PolicyAction, Scope, PhysicalResourceId, ChangeSetId, ModuleInfo and every field
- * CloudFormation adds tomorrow — two plans that differed only in `PolicyAction: Retain` versus
- * `Delete` rendered identically, so the gate bound different bytes while the human could not see
- * which destructive policy they were authorizing. Each change now renders as a concise summary
- * line (the fields a reader scans first) FOLLOWED BY the whole sanitized ResourceChange as
- * canonical JSON — so nothing is omitted by selection, and a field added upstream appears
- * without anyone remembering to add it here.
- *
- * Every string in that structure — keys included — passes its field's anchored grammar or the
- * fail-closed scalar rules BEFORE any line exists. There is no final text pass. */
+ * Round 11: the material carries the change set's EXECUTABLE SEMANTICS, not only its resource
+ * changes. `Capabilities` says what IAM the execution may create; `OnStackFailure: DELETE` can
+ * destroy the stack after a failed create; `RollbackConfiguration`, `NotificationARNs`, `Tags`,
+ * `Parameters`, nested-stack and import flags each change what an approval means — and two plans
+ * differing only in those rendered identically before. Each stack now shows them explicitly and
+ * then the WHOLE sanitized DescribeChangeSet response as canonical JSON, so nothing is selected
+ * away and a field CloudFormation adds later arrives on its own. Parameter VALUES stay
+ * pseudonymized: a parameter name is schema, its value is content. */
 function renderPlan(planEntries) {
   const lines = [];
+  const list = (values) => (Array.isArray(values) && values.length > 0 ? values.join(', ') : 'none');
   for (const rawEntry of planEntries) {
-    const stackName = renderTypedString('reference', String(rawEntry.stackName ?? ''));
-    const status = renderTypedString('vocabulary', String(rawEntry.status ?? ''));
-    const changes = (rawEntry.changes || []).map((change) => sanitizeValueDeep(change));
+    const stackName = renderTypedString('stackName', String(rawEntry.stackName ?? ''));
+    const status = renderTypedString('status', String(rawEntry.status ?? ''));
+    const describe = sanitizeValueDeep(rawEntry.describe ?? { Changes: rawEntry.changes ?? [] });
+    const changes = describe.Changes ?? [];
     lines.push(`  ${stackName} — ${status}${status === 'NO_CHANGES' ? '' : ` (${changes.length} change${changes.length === 1 ? '' : 's'})`}`);
+    // The executable semantics, named — never inferred from the resource diff.
+    lines.push(`      execution: ${describe.ExecutionStatus ?? 'unknown'}   on-failure: ${describe.OnStackFailure ?? 'unspecified'}   nested-stacks: ${describe.IncludeNestedStacks ?? 'unspecified'}   import-existing: ${describe.ImportExistingResources ?? 'unspecified'}`);
+    lines.push(`      capabilities: ${list(describe.Capabilities)}`);
+    lines.push(`      notifications: ${list(describe.NotificationARNs)}`);
+    const rollback = describe.RollbackConfiguration ?? {};
+    lines.push(`      rollback: monitoring ${rollback.MonitoringTimeInMinutes ?? 'unspecified'} min, triggers ${list((rollback.RollbackTriggers ?? []).map((t) => `${t.Arn ?? '?'}(${t.Type ?? '?'})`))}`);
+    lines.push(`      tags: ${list((describe.Tags ?? []).map((t) => `${t.Key ?? '?'}=${t.Value ?? '?'}`))}`);
+    lines.push(`      parameters: ${list((describe.Parameters ?? []).map((p) => `${p.ParameterKey ?? '?'}=${p.ParameterValue ?? p.ResolvedValue ?? '(previous)'}`))}`);
+    if (describe.ParentChangeSetId || describe.RootChangeSetId) {
+      lines.push(`      nested lineage: parent ${describe.ParentChangeSetId ?? 'none'}, root ${describe.RootChangeSetId ?? 'none'}`);
+    }
     for (const change of changes) {
       const rc = change.ResourceChange || {};
       const flags = [
@@ -697,10 +779,10 @@ function renderPlan(planEntries) {
         if (target.BeforeValue !== undefined) lines.push(`        before: ${JSON.stringify(target.BeforeValue)}`);
         if (target.AfterValue !== undefined) lines.push(`        after:  ${JSON.stringify(target.AfterValue)}`);
       }
-      // The complete change, canonically ordered — the summary above is a reading aid, this is
-      // the material. Sorting keys keeps two renderings of the same change textually comparable.
-      lines.push(`      full change (sanitized): ${JSON.stringify(deepSortKeys(change))}`);
     }
+    // The complete change set, canonically ordered — the lines above are a reading aid, this is
+    // the material. Sorting keys keeps two renderings of the same plan textually comparable.
+    lines.push(`      full change set (sanitized): ${JSON.stringify(deepSortKeys(describe))}`);
   }
   return lines.join('\n');
 }
@@ -884,6 +966,8 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     // or the full set in steady state. The group was validated against the closed list; the
     // manifest still bounds it: every named stack is inside the closed deployable set.
     const orderedStacks = DEPLOYMENT_EXECUTION_ORDER.filter((id) => gate.stacks.includes(id) && manifest.target.stacks.includes(id));
+    // The ONLY stack names review material may render verbatim: the ones THIS release computed.
+    setReviewedStackNames(manifest.target.stacks.map((id) => stackNameFor(manifest.environment, id)));
     const qualifier = RELEASE_BOOTSTRAP_QUALIFIERS[manifest.environment];
     const changeSetName = `cba-70-${manifest.releaseSha.slice(0, 12)}`;
     const childEnv = {
@@ -905,7 +989,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       if (prepare.status !== 0) {
         failures.push({ check: 'PLAN', code: 'PLAN_PREPARE_FAILED', field: 'plan' });
         const refused = refuse();
-        return { ...refused, output: `${refused.output}\n\n--- prepare output (sanitized) ---\n${sanitizeChildOutput(`${prepare.stdout || ''}\n${prepare.stderr || ''}`).trimEnd()}` };
+        return { ...refused, output: `${refused.output}\n\n--- prepare child evidence ---\n${childEvidence(prepare)}` };
       }
     }
 
@@ -925,6 +1009,10 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       const described = describePlannedChangeSet(run, cfnEnv, stackName, changeSetName);
       if (described.missing) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_MISSING', field: stackId });
+        continue;
+      }
+      if (described.paginationUnconsumed) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_PAGINATION_UNCONSUMED', field: stackId });
         continue;
       }
       if (described.error) {
@@ -1029,7 +1117,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, sanitizeChildOutput, fingerprintSanitize, sanitizeValueDeep, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeValueDeep, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

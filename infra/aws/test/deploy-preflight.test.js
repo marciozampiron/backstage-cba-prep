@@ -749,7 +749,11 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
 const GATE_NOW = Date.parse('2026-08-02T12:00:00Z');
 
 /* ---- round-4 harness: the plan IS the change sets ------------------------------------------- */
-const { sanitizeChildOutput, planDigestOf, canonicalChangeSet } = require('../bin/deploy-release');
+const { planDigestOf, canonicalChangeSet, setReviewedStackNames } = require('../bin/deploy-release');
+
+// Round 11: review material renders a stack name only when THIS deploy computed it, so the
+// direct-call controls declare the same names the entrypoint would.
+setReviewedStackNames(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'].map((id) => `cba-study-coach-pilot-${id.replace(/Stack$/, '').toLowerCase()}`));
 
 /** The reviewed execution order and this (pilot) manifest's CloudFormation stack names. */
 const ORDERED_IDS = ['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'];
@@ -1542,8 +1546,13 @@ test('ROUND-5: property values are RETRIEVED and the semantics render reviewably
       assert.ok(call.args.includes('--include-property-values'), 'property values must be retrieved');
     }
     assert.match(r.output, /Properties\.MemorySize/, 'the changed property is named');
-    assert.match(r.output, /before: "512"/, 'the before value is visible');
-    assert.match(r.output, /after: {2}"1024"/, 'the after value is visible');
+    // Round 11: BeforeValue/AfterValue are STRINGS in the AWS contract, and a numeric string is
+    // also an account id — they render as deterministic markers, so the human sees THAT the
+    // value changed (different markers) without the material asserting the content is public.
+    const before = r.output.match(/before: "(\[value#[0-9a-f]{32}\])"/);
+    const after = r.output.match(/after: {2}"(\[value#[0-9a-f]{32}\])"/);
+    assert.ok(before && after, 'both sides of the change are on the record');
+    assert.notEqual(before[1], after[1], 'a changed value is visibly a change');
   });
 });
 
@@ -1741,13 +1750,15 @@ test('ROUND-10: renderPlan carries the COMPLETE change — destructive policy is
   for (const field of ['PolicyAction', 'Scope', 'PhysicalResourceId', 'ChangeSetId', 'ModuleInfo', 'Evaluation', 'ChangeSource', 'Details', 'LogicalResourceId', 'ResourceType']) {
     assert.ok(del.includes(field), `${field} must appear in the review material`);
   }
-  assert.match(del, /full change \(sanitized\)/);
+  assert.match(del, /full change set \(sanitized\)/);
   // A field nobody enumerated here still reaches the material — that is the point of rendering
   // the whole structure rather than a selection.
   const future = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], {
     Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Add', LogicalResourceId: 'X', ResourceType: 'AWS::DynamoDB::Table', SomeFutureField: 'Retain' } }],
   }))]);
-  assert.ok(future.includes('SomeFutureField'), 'an unenumerated field must still render');
+  // An unenumerated field survives as a MARKED key — its presence reaches the human (the schema
+  // grew) while its content stays unproven. That is completeness without a new assumption.
+  assert.match(future, /\[key#[0-9a-f]{32}\]/, 'an unenumerated field must still reach the material');
 });
 
 test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuation-wrapped values cannot leak', () => {
@@ -1791,8 +1802,18 @@ test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuatio
   assert.match(a, /^\[value#[0-9a-f]{32}\]$/);
   assert.equal(a, fingerprintSanitize('some-unknown-value'), 'markers are deterministic');
   assert.notEqual(a, fingerprintSanitize('other-unknown-value'));
-  // The reviewed public forms still read in clear inside the same material.
-  assert.match(fingerprintSanitize('AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff'), /AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff/);
+  // ROUND 11 retires the round-10 free-form allowance: in a FREE position nothing renders,
+  // because a format proves nothing about content. The very same values read in clear when they
+  // sit in their KNOWN FIELD and pass that field's validator — field, then value, never shape.
+  const free = fingerprintSanitize('AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff');
+  for (const word of ['AWS::Lambda::Function', 'Modify', 'Retain', '512', 'cba-study-coach-dev-bff']) {
+    assert.equal(free.includes(word), false, `"${word}" must not render in a free position`);
+  }
+  const { sanitizeValueDeep: walk } = require('../bin/deploy-release');
+  const typed = walk({ ResourceChange: { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' } });
+  assert.deepEqual(typed.ResourceChange, { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' });
+  // And a value outside its field's vocabulary is a marker even in the right field.
+  assert.match(walk({ ResourceChange: { Action: 'Exfiltrate' } }).ResourceChange.Action, /^\[value#[0-9a-f]{32}\]$/);
 
   // PARSING is what keeps a serialized value REVIEWABLE, not merely safe. JSON legally escapes
   // `/` as `\/`, which hides the URL from any flat text scan: without the walk the approved
@@ -1828,42 +1849,132 @@ test('ROUND-10: the CloudFormation ARN grammar is complete — an extra suffix f
   assert.match(fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stackset/x/y/z`), /\[resource#[0-9a-f]{32}\]/);
 });
 
-test('poisoned child output cannot leak identifiers — redaction is by shape, not by known value', () => {
-  const { sanitizeChildOutput } = require('../bin/deploy-release');
+test('ROUND-11: the change set\'s executable semantics are in the digest AND named in the material', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const base = (over) => describedFor(PILOT_STACK_NAMES[1], {
+    Parameters: [{ ParameterKey: 'AuthDomainPrefix', ParameterValue: 'super-secret-prefix' }],
+    ...over,
+  });
+  // The exact round-11 reproduction: two plans whose ONLY difference lives outside `Changes`.
+  const planA = base({ Capabilities: ['CAPABILITY_NAMED_IAM'], OnStackFailure: 'DELETE', NotificationARNs: [`arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts`], Tags: [{ Key: 'Project', Value: 'CBAStudyCoach' }] });
+  const planB = base({ OnStackFailure: 'ROLLBACK', RollbackConfiguration: { MonitoringTimeInMinutes: 15, RollbackTriggers: [{ Arn: `arn:aws:cloudwatch:us-east-1:${ACCOUNT}:alarm:cba-study-coach-pilot-api-5xx`, Type: 'AWS::CloudWatch::Alarm' }] }, Tags: [{ Key: 'Project', Value: 'Other' }] });
+  const entryA = canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], planA);
+  const entryB = canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], planB);
+  assert.notEqual(planDigestOf([entryA]), planDigestOf([entryB]), 'capabilities, failure behaviour, rollback and tags MUST bind the gate');
+  const renderedA = renderPlan([entryA]);
+  const renderedB = renderPlan([entryB]);
+  assert.notEqual(renderedA, renderedB, 'and they must be visible to the human, not only to the digest');
+  // Named explicitly — a reader must not have to infer DELETE-on-failure from a resource diff.
+  assert.match(renderedA, /on-failure: DELETE/);
+  assert.match(renderedA, /capabilities: CAPABILITY_NAMED_IAM/);
+  assert.match(renderedB, /on-failure: ROLLBACK/);
+  assert.match(renderedB, /rollback: monitoring 15 min/);
+  assert.match(renderedA, /notifications: arn:aws:sns:[^\n]*cba-study-coach-pilot-operational-alerts/);
+  assert.match(renderedB, /triggers .*alarm:cba-study-coach-pilot-api-5xx/);
+  // Parameter NAMES are schema and read in clear; parameter VALUES are content and never do.
+  assert.match(renderedA, /parameters: AuthDomainPrefix=\[value#[0-9a-f]{32}\]/);
+  assert.equal(renderedA.includes('super-secret-prefix'), false);
+  // Tag values are content too — the KEY is schema, the value is not.
+  assert.equal(renderedA.includes('CBAStudyCoach'), false, 'a tag value is content, whatever it says');
+  assert.match(renderedA, /tags: Project=\[value#[0-9a-f]{32}\]/);
+});
+
+test('ROUND-11: DescribeChangeSet pagination is consumed, or the plan refuses', () => {
+  withRelease((p, asm, manifest) => {
+    // A change set whose description spans three pages: every page's changes must reach the
+    // plan, and the assembled body must carry no cursor.
+    const pages = new Map();
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        const token = args.includes('--next-token') ? args[args.indexOf('--next-token') + 1] : null;
+        const seen = (pages.get(stackName) ?? 0) + 1;
+        pages.set(stackName, seen);
+        const body = describedFor(stackName, {
+          Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: `R${seen}`, ResourceType: 'AWS::DynamoDB::Table' } }],
+        });
+        if (token === null) return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page2' }), stderr: '' };
+        if (token === 'page2') return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page3' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify(body), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(run.of('describe-change-set').length, 12, 'three pages per stack, four stacks');
+    assert.match(r.output, /R1/);
+    assert.match(r.output, /R3/, 'the LAST page reaches the material — a partial plan is not the plan');
+    assert.equal(r.output.includes('NextToken'), false, 'no cursor survives into the reviewed body');
+  });
+
+  // A description that never stops paginating authorizes nothing.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), NextToken: 'always-more' }), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_PAGINATION_UNCONSUMED/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-11: the fail-open formats are closed — numbers, keys, identifiers, project prefixes', () => {
+  const { fingerprintSanitize, sanitizeValueDeep: walk } = require('../bin/deploy-release');
+  // The five round-11 reproductions, each verbatim before.
+  assert.match(fingerprintSanitize('111122223333'), /^\[value#[0-9a-f]{32}\]$/, 'an account id is a numeric string');
+  assert.match(fingerprintSanitize('123456'), /^\[value#[0-9a-f]{32}\]$/, 'a numeric string proves nothing');
+  assert.match(Object.keys(walk({ supersecret: 'x' }))[0], /^\[key#[0-9a-f]{32}\]$/, 'a free key is content');
+  assert.match(walk({ ResourceChange: { PhysicalResourceId: 'supersecret' } }).ResourceChange.PhysicalResourceId, /^\[value#[0-9a-f]{32}\]$/, 'a physical id is generated or arbitrary');
+  // A physical id is pseudonymized WHOLE — including when it takes the shape of an ARN, which
+  // the ARN grammar would otherwise render segment by segment. The field decides, not the shape:
+  // CloudFormation fills this from the resource, and no grammar bound to it is worth the
+  // assumption unless it is bound to the ResourceType as well.
+  const arnPhysical = walk({ ResourceChange: { PhysicalResourceId: `arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts` } }).ResourceChange.PhysicalResourceId;
+  assert.match(arnPhysical, /^\[value#[0-9a-f]{32}\]$/, 'an ARN-shaped physical id must not ride the ARN grammar');
+  assert.equal(arnPhysical.includes('operational-alerts'), false);
+  assert.match(fingerprintSanitize('cba-study-coach-supersecret'), /^\[value#[0-9a-f]{32}\]$/, 'our prefix does not bless an arbitrary suffix');
+  // Only REAL JSON numbers stay numbers; the string form does not.
+  const numbers = walk({ Changes: [{ HookInvocationCount: 3 }] });
+  assert.equal(numbers.Changes[0].HookInvocationCount, 3);
+  assert.match(walk({ Changes: [{ HookInvocationCount: '3' }] }).Changes[0].HookInvocationCount, /^\[value#[0-9a-f]{32}\]$/);
+  // A stack name renders only when THIS deploy computed it — not because it looks like ours.
+  assert.equal(walk({ StackName: PILOT_STACK_NAMES[0] }).StackName, PILOT_STACK_NAMES[0]);
+  assert.match(walk({ StackName: 'cba-study-coach-pilot-impostor' }).StackName, /^\[value#[0-9a-f]{32}\]$/);
+});
+
+test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence instead of prose', () => {
+  const { childEvidence } = require('../bin/deploy-release');
   const POISONS = [
-    'arn:aws:cloudformation:us-east-1:111122223333:stack/cba-study-coach-dev-api/deadbeef',
+    'postgres://user:supersecret@db.internal/cba',
     'arn:aws:iam::111122223333:role/cba-study-coach-gha-deploy-dev',
     'https://abc123xyz.execute-api.us-east-1.amazonaws.com/',
     'us-east-1_AbCdEf123',
     '111122223333',
   ];
-  const clean = sanitizeChildOutput(
-    `Outputs:\nApiStack.BffEndpoint = ${POISONS[2]}\nIdentityStack.UserPoolId = ${POISONS[3]}\nStack ARN:\n${POISONS[0]}\nrole ${POISONS[1]}\naccount ${POISONS[4]} done\nprogress-line-stays`,
-  );
-  for (const poison of POISONS) assert.equal(clean.includes(poison), false, poison);
-  assert.match(clean, /\[arn-redacted\]/);
-  assert.match(clean, /\[url-redacted\]/);
-  assert.match(clean, /\[user-pool-redacted\]/);
-  assert.match(clean, /\[account-redacted\]/);
-  assert.match(clean, /progress-line-stays/, 'sanitization redacts identifiers, not the record of what happened');
+  // The evidence is a stable code, a byte count and a digest — correlatable with the runner's own
+  // protected logs, reproducing not one byte of the child's text.
+  const evidence = childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] });
+  for (const poison of POISONS) assert.equal(evidence.includes(poison), false, poison);
+  assert.match(evidence, /child not echoed — exit=1 bytes=\d+ sha256=[0-9a-f]{64}/);
+  // Deterministic: the same bytes always produce the same digest, different bytes do not.
+  assert.equal(evidence, childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] }));
+  assert.notEqual(evidence, childEvidence({ status: 1, stdout: 'other', stderr: '' }));
 
-  // And end to end: describe output carrying identifiers in its change details renders sanitized
-  // — the digest saw the raw bytes, the human-facing record never does.
-  withRelease((p, asm, manifest) => {
-    const describes = fullDescribes({
-      [PILOT_STACK_NAMES[0]]: {
-        Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: `Role ${POISONS[1]}`, ResourceType: `Type ${POISONS[4]}` } }],
-      },
-    });
-    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
-      run: cloudRun({ describes }),
-      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) },
-    }));
-    assert.equal(r.exit, 0, r.output);
-    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, poison);
-  });
-
-  // A failing PREPARE child's output is sanitized too, on the refusal path.
+  // END TO END on the real PLAN_PREPARE_FAILED path: a prepare child that spews credentials
+  // must leave the refusal carrying evidence only — this is the path that reaches CI logs.
   withRelease((p, asm, manifest) => {
     const r = runDeployRelease(releaseArgs(p, asm), {
       run: cloudRun(),
@@ -1872,11 +1983,18 @@ test('poisoned child output cannot leak identifiers — redaction is by shape, n
       env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
       now: () => GATE_NOW,
       sleep: () => {},
-      exec: () => ({ status: 1, stdout: POISONS.join(' '), stderr: POISONS[0] }),
+      exec: () => ({ status: 1, stdout: `deploying...\n${POISONS.join(' ')}`, stderr: POISONS[0] }),
     });
     assert.equal(r.exit, 1);
-    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, poison);
+    assert.match(r.output, /PLAN_PREPARE_FAILED/);
+    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, `${poison} must never reach the refusal output`);
+    assert.match(r.output, /child not echoed — exit=1 bytes=\d+ sha256=[0-9a-f]{64}/);
+    assert.equal(r.output.includes('deploying...'), false, 'not even benign-looking child prose is reproduced');
   });
+
+  // The deploy path has no cdk child at all, so there is nothing else that could echo one.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'bin', 'deploy-release.js'), 'utf8');
+  assert.equal(/stdout \|\| ''}\\n\$\{[a-z]*\.stderr/.test(source), false, 'no path may compose child text into output');
 });
 
 test('deploy-release usage errors are distinguishable and never echo the offending token', () => {

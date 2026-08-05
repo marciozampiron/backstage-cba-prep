@@ -2,6 +2,36 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-05 — Claude — #70 Slice B1 round 11: the whole change set bound, the last formats closed
+
+- Codex's round-11 review of 4dc496b2: "complete change" still meant `Changes` — the change
+  set's executable semantics (Capabilities, OnStackFailure, RollbackConfiguration,
+  NotificationARNs, Tags, Parameters, nested/import) were outside both the digest and the
+  material, so two plans differing only in `OnStackFailure: DELETE` versus `ROLLBACK` produced
+  the same digest and the same rendering; and the sanitizer still preserved text by generic
+  FORMAT — numeric strings (`111122223333`), free map keys (`supersecret`), identifier-shaped
+  values and our own project prefix — while a SECOND scanner echoed the prepare child's
+  stdout/stderr, leaving `postgres://user:supersecret@db.internal/cba` in a persistent CI log.
+  Two HIGHs. Fix-forward, all eleven reviewed commits preserved.
+- The canonical entry carries the complete DescribeChangeSet response, so the gate binds every
+  executable semantic; the rendering NAMES them (on-failure, capabilities, notifications,
+  rollback monitoring and triggers, tags, parameters, nested lineage) before the resource diff,
+  and then dumps the whole sanitized response. Pagination is consumed page by page — proven with
+  a three-page description whose last page must reach the material — and a description that
+  never stops paginating refuses instead of authorizing a partial plan.
+- Text survives only under a KNOWN SCHEMA FIELD with a VALIDATED value. Free positions have no
+  allowance left; only real JSON numbers stay numbers; only schema keys render; PhysicalResourceId
+  and parameter/tag values pseudonymize whole (including an ARN-shaped physical id, which the ARN
+  grammar would otherwise have rendered); stack names are validated against the names THIS
+  release computed. Parameter NAMES stay legible — a name is schema, a value is content.
+- One output policy: the child-output scanner is gone. A failing prepare records
+  `child not echoed — exit=… bytes=… sha256=…` and not one byte of the child's text, proven on
+  the real PLAN_PREPARE_FAILED path with a credential-spewing child.
+- Six protections, six reversions, six failures: the complete-response binding, the numeric-string
+  allowance, the format-based keys, the PhysicalResourceId whole-pseudonym, the format-validated
+  stack name and the pagination refusal each drop their own regression when removed.
+- Nothing was deployed, published or mutated.
+
 ## 2026-08-04 — Claude — #70 Slice B1 round 10: the material completed, the last default inverted
 
 - Codex's round-10 review of 23d77ea2: the presentation rebuilt `ResourceChange` from six

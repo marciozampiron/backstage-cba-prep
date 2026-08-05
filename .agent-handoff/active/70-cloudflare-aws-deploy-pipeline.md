@@ -142,7 +142,23 @@ and the CloudFormation ARN grammar is complete, so a suffix trailing the stack i
 The review material now carries the WHOLE sanitized `ResourceChange` as canonical JSON beside
 the concise summary — `PolicyAction`, `Scope`, `PhysicalResourceId`, `ChangeSetId`, `ModuleInfo`
 and any field CloudFormation adds later reach Zamp without a hand-picked field list to fall
-behind, so a plan that retains and a plan that DELETES a table can never render alike. The expected origin and an attacker origin
+behind, so a plan that retains and a plan that DELETES a table can never render alike.
+
+Round 11 closed the last two gaps. The digest and the material now bind the COMPLETE
+`DescribeChangeSet` response, not only `Changes`: `Capabilities` (what IAM the execution may
+create), `OnStackFailure` (`DELETE` destroys the stack after a failed create),
+`RollbackConfiguration`, `NotificationARNs`, `Tags`, `Parameters`, nested-stack and import flags
+are each bound and NAMED in the rendering — and pagination is consumed page by page or the plan
+refuses as `CHANGE_SET_PAGINATION_UNCONSUMED`, because a partial description describes an effect
+nobody reviewed. And the sanitizer's last format allowances are gone: text survives only where a
+KNOWN SCHEMA FIELD holds a value its own validator accepts — numeric STRINGS, free map keys,
+identifier-shaped values and our own name prefix each proved nothing about content, so
+`111122223333`, `supersecret` and `cba-study-coach-supersecret` are markers now; only real JSON
+numbers stay numbers; `PhysicalResourceId` and parameter/tag VALUES pseudonymize whole; stack
+names are validated against the names THIS release computed, never against a name shape. The two
+outputs were unified into one policy: unstructured child text is never echoed at all — the
+refusal records a stable exit code, a byte count and a digest, so credentials in a failing
+prepare child can no longer reach a persistent CI log. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for
