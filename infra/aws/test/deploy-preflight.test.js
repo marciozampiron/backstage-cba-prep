@@ -1791,7 +1791,9 @@ test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuatio
   const rendered = renderPlan(entries);
   assert.equal(rendered.includes(SECRET), false, 'no secret may survive anywhere in the material');
   assert.equal(rendered.includes('evil.example'), false);
-  assert.match(rendered, /credentialed-url#[0-9a-f]{32}/, 'the credentialed URL is marked, wherever it sat');
+  // Round 12: a content carrier renders as ONE opaque marker — the credentialed URL, the key it
+  // hid behind and the punctuation around it all vanish together, with nothing left to classify.
+  assert.match(rendered, /before: "\[value#[0-9a-f]{32}\]"/, 'the whole carrier is a single marker');
   // Directly, too: as a bare value, as a key, and wrapped in punctuation.
   assert.equal(fingerprintSanitize(`endpoint=(${credentialed})`).includes(SECRET), false, 'punctuation must not hide a URL from the classifier');
   assert.equal(fingerprintSanitize(JSON.stringify({ [credentialed]: 1 })).includes(SECRET), false);
@@ -1809,28 +1811,29 @@ test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuatio
   for (const word of ['AWS::Lambda::Function', 'Modify', 'Retain', '512', 'cba-study-coach-dev-bff']) {
     assert.equal(free.includes(word), false, `"${word}" must not render in a free position`);
   }
-  const { sanitizeValueDeep: walk } = require('../bin/deploy-release');
-  const typed = walk({ ResourceChange: { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' } });
-  assert.deepEqual(typed.ResourceChange, { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' });
-  // And a value outside its field's vocabulary is a marker even in the right field.
-  assert.match(walk({ ResourceChange: { Action: 'Exfiltrate' } }).ResourceChange.Action, /^\[value#[0-9a-f]{32}\]$/);
-
-  // PARSING is what keeps a serialized value REVIEWABLE, not merely safe. JSON legally escapes
-  // `/` as `\/`, which hides the URL from any flat text scan: without the walk the approved
-  // origin collapses into a wall of markers and the round-6..9 classifiability contract dies
-  // inside every serialized value. Parsed and walked, it reads in clear — while a credentialed
-  // URL in the same position stays a marker.
-  const { sanitizeValueDeep } = require('../bin/deploy-release');
-  const escapedApproved = '{"endpoint":"https:\\/\\/cba-study-coach-pilot.workers.dev\\/auth\\/callback"}';
-  assert.match(
-    sanitizeValueDeep({ BeforeValue: escapedApproved }).BeforeValue,
-    /https:\/\/cba-study-coach-pilot\.workers\.dev\/auth\/callback/,
-    'a serialized decision-bearing origin must stay classifiable through the walk',
+  const { sanitizeBySchema: bySchema, CHANGE_SET_SCHEMA } = require('../bin/deploy-release');
+  const change = (rc) => bySchema({ Changes: [{ Type: 'Resource', ResourceChange: rc }] }, CHANGE_SET_SCHEMA).Changes[0].ResourceChange;
+  assert.deepEqual(
+    change({ Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' }),
+    { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' },
   );
+  // And a value outside its position's vocabulary is a marker even in the right position.
+  assert.match(change({ Action: 'Exfiltrate' }).Action, /^\[value#[0-9a-f]{32}\]$/);
+
+  // ROUND 12 retires the round-10 walk: a parsed blob let its own internal NAMES claim schema
+  // trust, so content carriers are opaque now — one deterministic marker for the whole value,
+  // never parsed. Reading callback URLs out of a property value is no longer how origins are
+  // reviewed: PREFLIGHT-1 validates the exact auth URLs and the manifest's contextDigest binds
+  // them to the release, BEFORE any change set exists.
+  const { sanitizeBySchema } = require('../bin/deploy-release');
+  const target = { kind: 'object', fields: { BeforeValue: { kind: 'opaque' }, AfterValue: { kind: 'opaque' } } };
+  const escapedApproved = '{"endpoint":"https:\\/\\/cba-study-coach-pilot.workers.dev\\/auth\\/callback"}';
+  const opaqueApproved = sanitizeBySchema({ BeforeValue: escapedApproved }, target).BeforeValue;
+  assert.match(opaqueApproved, /^\[value#[0-9a-f]{32}\]$/, 'a content carrier renders as one marker, never parsed');
   const escapedCredentialed = `{"endpoint":"https:\\/\\/user:${SECRET}@evil.example\\/x"}`;
-  const walkedSecret = sanitizeValueDeep({ AfterValue: escapedCredentialed }).AfterValue;
-  assert.equal(walkedSecret.includes(SECRET), false);
-  assert.match(walkedSecret, /credentialed-url#[0-9a-f]{32}/);
+  const opaqueSecret = sanitizeBySchema({ AfterValue: escapedCredentialed }, target).AfterValue;
+  assert.equal(opaqueSecret.includes(SECRET), false);
+  assert.notEqual(opaqueApproved, opaqueSecret, 'different values still render differently — a change stays visible');
 });
 
 test('ROUND-10: the CloudFormation ARN grammar is complete — an extra suffix fails closed', () => {
@@ -1932,27 +1935,118 @@ test('ROUND-11: DescribeChangeSet pagination is consumed, or the plan refuses', 
 });
 
 test('ROUND-11: the fail-open formats are closed — numbers, keys, identifiers, project prefixes', () => {
-  const { fingerprintSanitize, sanitizeValueDeep: walk } = require('../bin/deploy-release');
+  const { fingerprintSanitize, sanitizeBySchema, CHANGE_SET_SCHEMA } = require('../bin/deploy-release');
+  const walk = (v) => sanitizeBySchema(v, CHANGE_SET_SCHEMA);
+  const rc = (r) => walk({ Changes: [{ Type: 'Resource', ResourceChange: r }] }).Changes[0].ResourceChange;
   // The five round-11 reproductions, each verbatim before.
   assert.match(fingerprintSanitize('111122223333'), /^\[value#[0-9a-f]{32}\]$/, 'an account id is a numeric string');
   assert.match(fingerprintSanitize('123456'), /^\[value#[0-9a-f]{32}\]$/, 'a numeric string proves nothing');
-  assert.match(Object.keys(walk({ supersecret: 'x' }))[0], /^\[key#[0-9a-f]{32}\]$/, 'a free key is content');
-  assert.match(walk({ ResourceChange: { PhysicalResourceId: 'supersecret' } }).ResourceChange.PhysicalResourceId, /^\[value#[0-9a-f]{32}\]$/, 'a physical id is generated or arbitrary');
+  assert.match(Object.keys(walk({ supersecret: 'x' }))[0], /^\[key#[0-9a-f]{32}\]$/, 'a key outside the position is content');
+  assert.match(rc({ PhysicalResourceId: 'supersecret' }).PhysicalResourceId, /^\[value#[0-9a-f]{32}\]$/, 'a physical id is generated or arbitrary');
   // A physical id is pseudonymized WHOLE — including when it takes the shape of an ARN, which
   // the ARN grammar would otherwise render segment by segment. The field decides, not the shape:
   // CloudFormation fills this from the resource, and no grammar bound to it is worth the
   // assumption unless it is bound to the ResourceType as well.
-  const arnPhysical = walk({ ResourceChange: { PhysicalResourceId: `arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts` } }).ResourceChange.PhysicalResourceId;
+  const arnPhysical = rc({ PhysicalResourceId: `arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts` }).PhysicalResourceId;
   assert.match(arnPhysical, /^\[value#[0-9a-f]{32}\]$/, 'an ARN-shaped physical id must not ride the ARN grammar');
   assert.equal(arnPhysical.includes('operational-alerts'), false);
   assert.match(fingerprintSanitize('cba-study-coach-supersecret'), /^\[value#[0-9a-f]{32}\]$/, 'our prefix does not bless an arbitrary suffix');
   // Only REAL JSON numbers stay numbers; the string form does not.
-  const numbers = walk({ Changes: [{ HookInvocationCount: 3 }] });
-  assert.equal(numbers.Changes[0].HookInvocationCount, 3);
+  assert.equal(walk({ Changes: [{ HookInvocationCount: 3 }] }).Changes[0].HookInvocationCount, 3);
   assert.match(walk({ Changes: [{ HookInvocationCount: '3' }] }).Changes[0].HookInvocationCount, /^\[value#[0-9a-f]{32}\]$/);
   // A stack name renders only when THIS deploy computed it — not because it looks like ours.
   assert.equal(walk({ StackName: PILOT_STACK_NAMES[0] }).StackName, PILOT_STACK_NAMES[0]);
   assert.match(walk({ StackName: 'cba-study-coach-pilot-impostor' }).StackName, /^\[value#[0-9a-f]{32}\]$/);
+});
+
+test('ROUND-12: parsed content cannot claim schema trust by naming itself', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const SECRET = 'supersecret';
+  // The exact round-12 reproduction: content carriers holding the very key names the schema
+  // trusts SOMEWHERE — Key, Name, ParameterKey, LogicalResourceId, Arn. Position decides now,
+  // and inside a content carrier there is no position to claim.
+  const hostile = JSON.stringify({
+    Key: SECRET,
+    Name: SECRET,
+    ParameterKey: SECRET,
+    LogicalResourceId: SECRET,
+    Arn: `arn:aws:iam::${ACCOUNT}:role/covert-admin`,
+    Capabilities: ['CAPABILITY_NAMED_IAM'],
+  });
+  const entry = canonicalChangeSet('ApiStack', PILOT_STACK_NAMES[2], describedFor(PILOT_STACK_NAMES[2], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        LogicalResourceId: 'Fn',
+        ResourceType: 'AWS::Lambda::Function',
+        BeforeContext: hostile,
+        AfterContext: hostile,
+        Details: [{ Target: { Attribute: 'Properties', Name: 'Environment', BeforeValue: hostile, AfterValue: hostile } }],
+      },
+    }],
+  }));
+  const rendered = renderPlan([entry]);
+  assert.equal(rendered.includes(SECRET), false, 'a schema NAME inside content must not render its value');
+  assert.equal(rendered.includes('covert-admin'), false, 'an internal Arn must not reach the ARN grammar');
+  assert.equal(rendered.includes('CAPABILITY_NAMED_IAM'), false, 'nor may content claim the change set\'s own vocabulary');
+  // Each carrier is ONE deterministic marker — no parsing, so no internal name to trust.
+  assert.match(rendered, /before: "\[value#[0-9a-f]{32}\]"/);
+  // The SAME names still read in clear at their real positions, so the material stays reviewable.
+  assert.match(rendered, /Modify {2}AWS::Lambda::Function {2}Fn/);
+  assert.match(rendered, /Properties\.Environment/);
+});
+
+test('ROUND-12: interpretation-changing fields are named — deployment mode and drift', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const withMode = (over) => canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], over));
+  const revert = withMode({ DeploymentMode: 'REVERT_DRIFT', StackDriftStatus: 'DRIFTED' });
+  const standard = withMode({ DeploymentMode: 'STANDARD', StackDriftStatus: 'IN_SYNC' });
+  assert.notEqual(planDigestOf([revert]), planDigestOf([standard]), 'mode and drift bind the gate');
+  const renderedRevert = renderPlan([revert]);
+  assert.match(renderedRevert, /deployment-mode: REVERT_DRIFT/, 'REVERT_DRIFT must be distinguishable at sight');
+  assert.match(renderedRevert, /drift: DRIFTED/);
+  assert.match(renderPlan([standard]), /deployment-mode: STANDARD {3}drift: IN_SYNC/);
+  // A value outside the reviewed vocabulary is a marker even in the right position.
+  assert.match(renderPlan([withMode({ DeploymentMode: 'SOMETHING_NEW' })]), /deployment-mode: \[value#[0-9a-f]{32}\]/);
+});
+
+test('ROUND-12: a field the reviewed schema does not describe REFUSES the plan', () => {
+  withRelease((p, asm, manifest) => {
+    // A service-level field nobody reviewed can change what an approval means. The lane stops
+    // and a human extends the schema — it never becomes an opaque key the material hides.
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[2]] = { ...describes[PILOT_STACK_NAMES[2]], SomeNewSemantic: 'REVERT_EVERYTHING' };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(run.of('execute-change-set').length, 0, 'nothing executes under an unreviewed schema');
+  });
+  // The refusal reaches nested positions too — depth is not a hiding place.
+  const { schemaUnknownPaths } = require('../bin/deploy-release');
+  assert.deepEqual(schemaUnknownPaths(describedFor(PILOT_STACK_NAMES[0])), [], 'the reviewed shape passes');
+  assert.deepEqual(
+    schemaUnknownPaths({ Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', Details: [{ Target: { Attribute: 'Properties', Sneaky: 'x' } }] } }] }),
+    ['$.Changes[0].ResourceChange.Details[0].Target.Sneaky'],
+  );
+});
+
+test('ROUND-12: child evidence FRAMES the streams — concatenation collisions are gone', () => {
+  const { childEvidence } = require('../bin/deploy-release');
+  // The exact reproduction: same concatenation, different streams.
+  const a = childEvidence({ status: 1, stdout: 'ab', stderr: 'c' });
+  const b = childEvidence({ status: 1, stdout: 'a', stderr: 'bc' });
+  assert.notEqual(a, b, 'the stream boundary must be part of the evidence');
+  // The DIGEST itself must carry the framing — not only the byte counts printed beside it, or a
+  // reader comparing digests across runs would still see two different failures as one.
+  const digestOf = (evidence) => evidence.match(/sha256=([0-9a-f]{64})/)[1];
+  assert.notEqual(digestOf(a), digestOf(b), 'the digest must distinguish the streams, not just their sizes');
+  // The framing is visible, not only digested — an operator correlates by stream sizes too.
+  assert.match(a, /stdout=2B stderr=1B/);
+  assert.match(b, /stdout=1B stderr=2B/);
+  // And the exit code is framed as well: same bytes, different status, different digest.
+  assert.notEqual(childEvidence({ status: 1, stdout: 'x', stderr: '' }), childEvidence({ status: 2, stdout: 'x', stderr: '' }));
 });
 
 test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence instead of prose', () => {
@@ -1968,7 +2062,7 @@ test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence
   // protected logs, reproducing not one byte of the child's text.
   const evidence = childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] });
   for (const poison of POISONS) assert.equal(evidence.includes(poison), false, poison);
-  assert.match(evidence, /child not echoed — exit=1 bytes=\d+ sha256=[0-9a-f]{64}/);
+  assert.match(evidence, /child not echoed — exit=1 stdout=\d+B stderr=\d+B sha256=[0-9a-f]{64}/);
   // Deterministic: the same bytes always produce the same digest, different bytes do not.
   assert.equal(evidence, childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] }));
   assert.notEqual(evidence, childEvidence({ status: 1, stdout: 'other', stderr: '' }));
@@ -1988,7 +2082,7 @@ test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence
     assert.equal(r.exit, 1);
     assert.match(r.output, /PLAN_PREPARE_FAILED/);
     for (const poison of POISONS) assert.equal(r.output.includes(poison), false, `${poison} must never reach the refusal output`);
-    assert.match(r.output, /child not echoed — exit=1 bytes=\d+ sha256=[0-9a-f]{64}/);
+    assert.match(r.output, /child not echoed — exit=1 stdout=\d+B stderr=\d+B sha256=[0-9a-f]{64}/);
     assert.equal(r.output.includes('deploying...'), false, 'not even benign-looking child prose is reproduced');
   });
 

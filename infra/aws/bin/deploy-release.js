@@ -132,8 +132,13 @@ function defaultExec(args, env) {
  * without the release lane reproducing a single byte of it.
  */
 function childEvidence(child) {
-  const bytes = `${child.stdout || ''}${child.stderr || ''}`;
-  return `child not echoed — exit=${child.status} bytes=${Buffer.byteLength(bytes, 'utf8')} sha256=${crypto.createHash('sha256').update(bytes, 'utf8').digest('hex')}`;
+  // ROUND 12: the streams are FRAMED, not concatenated — (stdout "ab", stderr "c") and
+  // (stdout "a", stderr "bc") produced the same digest before, so evidence could not be
+  // correlated unambiguously with the runner's own logs. Canonical JSON supplies the framing.
+  const stdout = child.stdout || '';
+  const stderr = child.stderr || '';
+  const digest = crypto.createHash('sha256').update(JSON.stringify({ status: child.status, stdout, stderr }), 'utf8').digest('hex');
+  return `child not echoed — exit=${child.status} stdout=${Buffer.byteLength(stdout, 'utf8')}B stderr=${Buffer.byteLength(stderr, 'utf8')}B sha256=${digest}`;
 }
 
 /** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
@@ -390,81 +395,192 @@ const PROJECT_TOKEN_EXACT = new RegExp(`^${PROJECT_TOKEN}$`);
  * round 9: a secret can live in a path segment as easily as in a query value. */
 const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
 
-/* ===================== ROUND 11: KNOWN FIELD + VALIDATED VALUE ================================
+/* ================= ROUND 12: SANITIZATION BY POSITION, NOT BY KEY NAME =======================
  *
- * Round 10 still preserved text by generic FORM: a numeric string, a structural-looking key, an
- * identifier-shaped value, a project prefix. Each of those is an assumption about content that
- * the content itself never proved — `111122223333` is a numeric string AND an account id,
- * `supersecret` is identifier-shaped, `cba-study-coach-supersecret` carries our prefix.
+ * Round 11 chose a value's treatment from its KEY NAME, at any depth. Parsed content therefore
+ * recovered trust by naming itself: `BeforeValue` holding `{"Key":"supersecret","Arn":"arn:…"}`
+ * rendered `supersecret` and a role path, because `Key` and `Arn` are schema names SOMEWHERE.
  *
- * The rule is now: text survives only where a KNOWN SCHEMA FIELD holds a VALUE ITS OWN VALIDATOR
- * ACCEPTS. There is no free-form allowance left:
- *   - free scalars (unknown keys, nested user JSON, prose) pseudonymize WHOLE;
- *   - only real JSON numbers render as numbers; a numeric STRING is a marker;
- *   - only schema keys render; every other key is a marker;
- *   - PhysicalResourceId pseudonymizes whole — a physical id is generated or arbitrary, and no
- *     grammar bound to it is worth the assumption;
- *   - stackName is validated against the stack names THIS deploy computed, not a name shape.
- * The ONE structural exception is the URL/ARN classifiers, which are not format allowances but
- * field-aware parsers: they preserve only reviewed host families and project-owned segments and
- * pseudonymize everything else, and they are what keeps the approved origin and the expected
- * principal classifiable (rounds 6-9). Removing them would lose that with no containment gained.
+ * A field is now authorized by its POSITION in the DescribeChangeSet schema below — the same
+ * name at a different path is a different field, and a name inside parsed content is not a field
+ * at all. Two consequences, both deliberate:
+ *
+ *   1. `BeforeValue`, `AfterValue`, `BeforeContext`, `AfterContext` and every other content
+ *      carrier are OPAQUE: one deterministic marker for the whole blob, never parsed and never
+ *      walked, so no internal name can reach a validator. Equal blobs render equal markers, so
+ *      "this value changed" stays visible. What is LOST is reading the callback URLs out of a
+ *      property value — and that control was never here: PREFLIGHT-1 validates the exact auth
+ *      URLs (no wildcards, no placeholders) and the manifest's contextDigest binds them to the
+ *      release, so the origins are reviewed BEFORE a change set exists, not read back out of one.
+ *
+ *   2. A field the schema does not describe REFUSES THE PLAN (CHANGE_SET_SCHEMA_UNKNOWN) instead
+ *      of rendering as an opaque key. An unreviewed field can change what an approval means —
+ *      `DeploymentMode: REVERT_DRIFT` is exactly such a field — so the lane stops and a human
+ *      extends this schema through review. Brittle on purpose: the alternative is authorizing
+ *      semantics nobody read.
  */
+const OPAQUE = { kind: 'opaque' };
+const BOOLEAN = { kind: 'boolean' };
+const NUMBER = { kind: 'number' };
+const REFERENCE = { kind: 'reference' };
+const IDENTIFIER = { kind: 'identifier' };
+const RESOURCE_TYPE = { kind: 'resourceType' };
+const vocab = (...values) => ({ kind: 'vocabulary', values });
+const list = (items) => ({ kind: 'list', items });
+const object = (fields) => ({ kind: 'object', fields });
 
-/** The DescribeChangeSet / ResourceChange schema keys. A key outside this set is a marker: an
- * arbitrary map key is content, and content is not proven public. */
-const CFN_SCHEMA_KEYS = new Set([
-  // change-set level
-  'ChangeSetName', 'ChangeSetId', 'StackId', 'StackName', 'Description', 'Parameters', 'CreationTime',
-  'ExecutionStatus', 'Status', 'StatusReason', 'NotificationARNs', 'RollbackConfiguration',
-  'Capabilities', 'Tags', 'Changes', 'IncludeNestedStacks', 'ParentChangeSetId', 'RootChangeSetId',
-  'OnStackFailure', 'ImportExistingResources', 'NextToken',
-  // parameters, tags, rollback
-  'ParameterKey', 'ParameterValue', 'UsePreviousValue', 'ResolvedValue', 'Key', 'Value',
-  'RollbackTriggers', 'MonitoringTimeInMinutes', 'Arn',
-  // change level
-  'Type', 'HookInvocationCount', 'ResourceChange', 'Action', 'LogicalResourceId',
-  'PhysicalResourceId', 'ResourceType', 'Replacement', 'Scope', 'Details', 'ChangeSetIdRef',
-  'ModuleInfo', 'TypeHierarchy', 'LogicalIdHierarchy', 'BeforeContext', 'AfterContext',
-  'PolicyAction', 'Target', 'Evaluation', 'ChangeSource', 'CausingEntity', 'Attribute', 'Name',
-  'RequiresRecreation', 'BeforeValue', 'AfterValue', 'Path',
-  // our own canonical wrapper
-  'stackId', 'stackName', 'changeSetId', 'status', 'executionStatus', 'changes', 'describe',
-]);
+const CHANGE_SET_SCHEMA = object({
+  // ---- identity and lineage -------------------------------------------------------------------
+  ChangeSetName: { kind: 'changeSetName' },
+  ChangeSetId: REFERENCE,
+  StackId: REFERENCE,
+  StackName: { kind: 'stackName' },
+  ParentChangeSetId: REFERENCE,
+  RootChangeSetId: REFERENCE,
+  CreationTime: { kind: 'instant' },
+  Description: OPAQUE,
+  // ---- executable semantics -------------------------------------------------------------------
+  Status: vocab('CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED'),
+  StatusReason: OPAQUE,
+  ExecutionStatus: vocab('UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'),
+  OnStackFailure: vocab('DO_NOTHING', 'ROLLBACK', 'DELETE'),
+  Capabilities: list(vocab('CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND')),
+  IncludeNestedStacks: BOOLEAN,
+  ImportExistingResources: BOOLEAN,
+  // Round 12: both fields decide how CloudFormation INTERPRETS the change set, so both are named
+  // vocabularies — REVERT_DRIFT must be distinguishable from a standard deployment at sight.
+  DeploymentMode: vocab('STANDARD', 'REVERT_DRIFT'),
+  StackDriftStatus: vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED'),
+  NotificationARNs: list(REFERENCE),
+  RollbackConfiguration: object({
+    RollbackTriggers: list(object({ Arn: REFERENCE, Type: RESOURCE_TYPE })),
+    MonitoringTimeInMinutes: NUMBER,
+  }),
+  Parameters: list(object({
+    ParameterKey: IDENTIFIER,
+    ParameterValue: OPAQUE,
+    UsePreviousValue: BOOLEAN,
+    ResolvedValue: OPAQUE,
+  })),
+  Tags: list(object({ Key: IDENTIFIER, Value: OPAQUE })),
+  // ---- the resource changes -------------------------------------------------------------------
+  Changes: list(object({
+    Type: vocab('Resource'),
+    HookInvocationCount: NUMBER,
+    ResourceChange: object({
+      Action: vocab('Add', 'Modify', 'Remove', 'Import', 'Dynamic'),
+      PolicyAction: vocab('Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot'),
+      LogicalResourceId: IDENTIFIER,
+      PhysicalResourceId: OPAQUE,
+      ResourceType: RESOURCE_TYPE,
+      Replacement: vocab('True', 'False', 'Conditional'),
+      Scope: list(vocab('Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags')),
+      ChangeSetId: REFERENCE,
+      ModuleInfo: object({ TypeHierarchy: OPAQUE, LogicalIdHierarchy: OPAQUE }),
+      BeforeContext: OPAQUE,
+      AfterContext: OPAQUE,
+      Details: list(object({
+        Evaluation: vocab('Static', 'Dynamic'),
+        ChangeSource: vocab('ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic'),
+        CausingEntity: REFERENCE,
+        Target: object({
+          Attribute: vocab('Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'),
+          Name: IDENTIFIER,
+          RequiresRecreation: vocab('Never', 'Conditionally', 'Always'),
+          AttributeChangeType: vocab('Add', 'Remove', 'Modify'),
+          Path: OPAQUE,
+          BeforeValue: OPAQUE,
+          AfterValue: OPAQUE,
+        }),
+      })),
+    }),
+  })),
+});
 
-/** Closed value vocabularies, per field. A value outside its field's vocabulary is a marker —
- * the field authorizes the value, never the value's appearance. */
-const FIELD_VOCABULARY = {
-  Action: ['Add', 'Modify', 'Remove', 'Import', 'Dynamic'],
-  Replacement: ['True', 'False', 'Conditional'],
-  RequiresRecreation: ['Never', 'Conditionally', 'Always'],
-  Attribute: ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'],
-  ChangeSource: ['ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic'],
-  Evaluation: ['Static', 'Dynamic'],
-  PolicyAction: ['Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot'],
-  Type: ['Resource'],
-  Scope: ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'],
-  Status: ['CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED', 'NO_CHANGES'],
-  ExecutionStatus: ['UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'],
-  OnStackFailure: ['DO_NOTHING', 'ROLLBACK', 'DELETE'],
-  Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
-  IncludeNestedStacks: ['true', 'false'],
-  ImportExistingResources: ['true', 'false'],
-  UsePreviousValue: ['true', 'false'],
-  status: ['CREATE_COMPLETE', 'NO_CHANGES', 'FAILED'],
-  executionStatus: ['UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'],
-};
-
-/** CloudFormation logical ids and property names — validated ONLY in their own schema fields. */
-const IDENTIFIER_EXACT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
-/** An ISO instant CloudFormation stamps on a change set: structure, no content. */
+/** CloudFormation stamps this; ours is `cba-70-<12 hex of the release>`. */
+const CHANGE_SET_NAME_EXACT = /^cba-70-[0-9a-f]{12}$/;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const IDENTIFIER_EXACT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
+const RESOURCE_TYPE_EXACT = /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
 
-/** The stack names THIS deploy computes — the validator for every stackName/StackName field.
- * A name is authorized because the release BUILT it, never because it looks like ours. */
+/** The stack names THIS deploy computes — the validator for every stack-name position. A name is
+ * authorized because the release BUILT it, never because it looks like ours. */
 let REVIEWED_STACK_NAMES = new Set();
 function setReviewedStackNames(names) {
   REVIEWED_STACK_NAMES = new Set(names);
+}
+
+/** Every path in `value` the schema does not describe. A non-empty result refuses the plan. */
+function schemaUnknownPaths(value, node = CHANGE_SET_SCHEMA, path = '$') {
+  const out = [];
+  if (!node) return [path];
+  if (node.kind === 'object') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+    for (const [key, entry] of Object.entries(value)) {
+      const child = Object.hasOwn(node.fields, key) ? node.fields[key] : null;
+      if (!child) {
+        out.push(`${path}.${key}`);
+        continue;
+      }
+      out.push(...schemaUnknownPaths(entry, child, `${path}.${key}`));
+    }
+    return out;
+  }
+  if (node.kind === 'list') {
+    if (!Array.isArray(value)) return out;
+    value.forEach((entry, i) => out.push(...schemaUnknownPaths(entry, node.items, `${path}[${i}]`)));
+    return out;
+  }
+  return out; // leaf: the value is validated at render time, never trusted by name
+}
+
+/** Render `value` at its schema POSITION. Anything a position marks opaque — or any value its
+ * position's validator rejects — becomes a deterministic marker. */
+function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
+  const marker = () => `[value#${pseudonym(typeof value === 'string' ? value : JSON.stringify(value) ?? String(value))}]`;
+  if (value === null || value === undefined) return value;
+  if (!node) return marker();
+  switch (node.kind) {
+    case 'object': {
+      if (typeof value !== 'object' || Array.isArray(value)) return marker();
+      const out = {};
+      for (const [key, entry] of Object.entries(value)) {
+        // A key the position does not declare cannot render — and the plan already refused.
+        if (!Object.hasOwn(node.fields, key)) {
+          out[`[key#${pseudonym(key)}]`] = marker.call(null);
+          continue;
+        }
+        out[key] = sanitizeBySchema(entry, node.fields[key]);
+      }
+      return out;
+    }
+    case 'list':
+      return Array.isArray(value) ? value.map((entry) => sanitizeBySchema(entry, node.items)) : marker();
+    case 'boolean':
+      return typeof value === 'boolean' ? value : marker();
+    case 'number':
+      return typeof value === 'number' ? value : marker();
+    case 'vocabulary':
+      return typeof value === 'string' && node.values.includes(value) ? value : marker();
+    case 'identifier':
+      return typeof value === 'string' && IDENTIFIER_EXACT.test(value) ? value : marker();
+    case 'resourceType':
+      return typeof value === 'string' && RESOURCE_TYPE_EXACT.test(value) ? value : marker();
+    case 'stackName':
+      return typeof value === 'string' && REVIEWED_STACK_NAMES.has(value) ? value : marker();
+    case 'changeSetName':
+      return typeof value === 'string' && CHANGE_SET_NAME_EXACT.test(value) ? value : marker();
+    case 'instant':
+      return typeof value === 'string' && ISO_INSTANT.test(value) ? value : marker();
+    case 'reference':
+      if (typeof value !== 'string') return marker();
+      if (/^arn:/.test(value)) return renderResidual(renderArn(value));
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
+      return IDENTIFIER_EXACT.test(value) ? value : marker();
+    case 'opaque':
+    default:
+      return marker();
+  }
 }
 
 function renderHost(host) {
@@ -641,99 +757,6 @@ function sanitizeScalarString(text) {
 /** The public name kept for the existing call sites and controls. */
 const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
 
-function renderTypedString(key, value) {
-  const marker = () => `[value#${pseudonym(value)}]`;
-  const vocabulary = FIELD_VOCABULARY[key];
-  if (vocabulary) return vocabulary.includes(value) ? value : marker();
-  switch (key) {
-    // Resource types are a CLOSED namespace CloudFormation owns; nothing about one is content.
-    case 'ResourceType':
-      return /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/.test(value) ? value : marker();
-    // Logical ids and property names come from OUR template and CloudFormation's own schema.
-    case 'LogicalResourceId':
-    case 'Name':
-    case 'ParameterKey':
-    case 'Key':
-    case 'stackId':
-      return IDENTIFIER_EXACT.test(value) ? value : marker();
-    // Stack names are validated against the names THIS deploy computed — not a name shape.
-    case 'stackName':
-    case 'StackName':
-      return REVIEWED_STACK_NAMES.has(value) ? value : marker();
-    case 'CreationTime':
-      return ISO_INSTANT.test(value) ? value : marker();
-    // Identity-bearing references: the ARN/URL parsers decide, and nothing else passes.
-    case 'CausingEntity':
-    case 'Arn':
-    case 'ChangeSetId':
-    case 'StackId':
-    case 'ParentChangeSetId':
-    case 'RootChangeSetId':
-    case 'changeSetId':
-      if (/^arn:/.test(value)) return renderResidual(renderArn(value));
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
-      return IDENTIFIER_EXACT.test(value) ? value : marker();
-    // ROUND 11: a physical id is generated or operator-chosen, a parameter value and a tag value
-    // are content, a status reason is free prose — no grammar bound to them is worth the
-    // assumption, so each pseudonymizes WHOLE.
-    case 'PhysicalResourceId':
-    case 'ParameterValue':
-    case 'ResolvedValue':
-    case 'Value':
-    case 'StatusReason':
-    case 'Description':
-      return marker();
-    // Serialized structure: parsed and walked, failing closed.
-    case 'BeforeValue':
-    case 'AfterValue':
-    case 'BeforeContext':
-    case 'AfterContext':
-      return sanitizeJsonish(value);
-    default:
-      return sanitizeScalarString(value);
-  }
-}
-
-/** A map key. ROUND 11: only KNOWN SCHEMA KEYS render — a key from user JSON is content, and
- * `supersecret` is exactly as structural-looking as `Properties`. */
-function renderKey(key) {
-  return CFN_SCHEMA_KEYS.has(key) ? key : `[key#${pseudonym(key)}]`;
-}
-
-/** Sanitize a STRUCTURED value recursively: keys AND values, arrays inheriting their parent
- * field, strings routed through their FIELD'S validator or — under an unknown key — through the
- * fail-closed free rules. Real JSON numbers, booleans and null carry no identifying material and
- * pass; a numeric STRING does not, because a numeric string is also an account id. */
-function sanitizeValueDeep(value, key = null) {
-  if (Array.isArray(value)) return value.map((entry) => sanitizeValueDeep(entry, key));
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const [entryKey, entry] of Object.entries(value)) {
-      out[renderKey(entryKey)] = sanitizeValueDeep(entry, CFN_SCHEMA_KEYS.has(entryKey) ? entryKey : null);
-    }
-    return out;
-  }
-  if (typeof value === 'string') {
-    return key === null ? sanitizeScalarString(value) : renderTypedString(key, value);
-  }
-  return value;
-}
-
-/** BeforeValue/AfterValue and the context blobs are STRINGS in the CloudFormation contract, so a
- * serialized object hides structure from a value walker. Parse first, walk the structure, and
- * fail CLOSED to a pseudonym when the string is not parseable JSON. */
-function sanitizeJsonish(value) {
-  if (typeof value !== 'string') return sanitizeValueDeep(value);
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return sanitizeScalarString(value);
-  }
-  if (parsed && typeof parsed === 'object') return JSON.stringify(sanitizeValueDeep(parsed, null));
-  return sanitizeScalarString(value);
-}
-
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
  *
  * Round 11: the material carries the change set's EXECUTABLE SEMANTICS, not only its resource
@@ -748,13 +771,15 @@ function renderPlan(planEntries) {
   const lines = [];
   const list = (values) => (Array.isArray(values) && values.length > 0 ? values.join(', ') : 'none');
   for (const rawEntry of planEntries) {
-    const stackName = renderTypedString('stackName', String(rawEntry.stackName ?? ''));
-    const status = renderTypedString('status', String(rawEntry.status ?? ''));
-    const describe = sanitizeValueDeep(rawEntry.describe ?? { Changes: rawEntry.changes ?? [] });
+    const stackName = sanitizeBySchema(String(rawEntry.stackName ?? ''), { kind: 'stackName' });
+    const status = sanitizeBySchema(String(rawEntry.status ?? ''), { kind: 'vocabulary', values: ['CREATE_COMPLETE', 'NO_CHANGES', 'FAILED'] });
+    const describe = sanitizeBySchema(rawEntry.describe ?? { Changes: rawEntry.changes ?? [] });
     const changes = describe.Changes ?? [];
     lines.push(`  ${stackName} — ${status}${status === 'NO_CHANGES' ? '' : ` (${changes.length} change${changes.length === 1 ? '' : 's'})`}`);
     // The executable semantics, named — never inferred from the resource diff.
     lines.push(`      execution: ${describe.ExecutionStatus ?? 'unknown'}   on-failure: ${describe.OnStackFailure ?? 'unspecified'}   nested-stacks: ${describe.IncludeNestedStacks ?? 'unspecified'}   import-existing: ${describe.ImportExistingResources ?? 'unspecified'}`);
+    // Round 12: both decide how CloudFormation INTERPRETS this change set, so both are named.
+    lines.push(`      deployment-mode: ${describe.DeploymentMode ?? 'unspecified'}   drift: ${describe.StackDriftStatus ?? 'unspecified'}`);
     lines.push(`      capabilities: ${list(describe.Capabilities)}`);
     lines.push(`      notifications: ${list(describe.NotificationARNs)}`);
     const rollback = describe.RollbackConfiguration ?? {};
@@ -1019,6 +1044,14 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_UNREADABLE', field: stackId });
         continue;
       }
+      // ROUND 12: a field the reviewed schema does not describe REFUSES the plan. An unreviewed
+      // field can change what an approval means (DeploymentMode: REVERT_DRIFT is exactly that),
+      // so the lane stops and a human extends the schema — never an opaque key nobody reads.
+      const unknown = schemaUnknownPaths(described.described);
+      if (unknown.length > 0) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
+        continue;
+      }
       const entry = canonicalChangeSet(stackId, stackName, described.described);
       if (entry.status !== 'NO_CHANGES' && entry.status !== 'CREATE_COMPLETE') {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_FAILED', field: stackId });
@@ -1117,7 +1150,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeValueDeep, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, schemaUnknownPaths, CHANGE_SET_SCHEMA, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

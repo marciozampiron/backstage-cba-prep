@@ -157,8 +157,19 @@ identifier-shaped values and our own name prefix each proved nothing about conte
 numbers stay numbers; `PhysicalResourceId` and parameter/tag VALUES pseudonymize whole; stack
 names are validated against the names THIS release computed, never against a name shape. The two
 outputs were unified into one policy: unstructured child text is never echoed at all — the
-refusal records a stable exit code, a byte count and a digest, so credentials in a failing
-prepare child can no longer reach a persistent CI log. The expected origin and an attacker origin
+refusal records a stable exit code, per-stream byte counts and a framed digest, so credentials in
+a failing prepare child can no longer reach a persistent CI log.
+
+Round 12 replaced key-name trust with POSITION: a reviewed schema tree describes the whole
+`DescribeChangeSet` response, and a field is authorized by where it sits, so parsed content can
+no longer recover trust by naming itself `Key`, `Name`, `ParameterKey`, `LogicalResourceId` or
+`Arn`. `BeforeValue`, `AfterValue` and the context blobs are OPAQUE — one deterministic marker
+each, never parsed. That deliberately gives up reading callback URLs out of a property value, and
+the control does not move: PREFLIGHT-1 validates the exact auth URLs and the manifest's
+contextDigest binds them to the release BEFORE any change set exists. `DeploymentMode` and
+`StackDriftStatus` are named vocabularies now (`REVERT_DRIFT` is distinguishable at sight), and a
+field the schema does not describe REFUSES the plan as `CHANGE_SET_SCHEMA_UNKNOWN` — brittle on
+purpose, because an unreviewed field can change what an approval means. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for

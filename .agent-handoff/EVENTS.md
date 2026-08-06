@@ -2,6 +2,34 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-05 — Claude — #70 Slice B1 round 12: trust moved from key names to schema positions
+
+- Codex's round-12 review of f430e0bb: the sanitizer still chose a value's treatment from its KEY
+  NAME at any depth, so parsed content recovered trust by naming itself — `BeforeValue` holding
+  `{"Key":"supersecret","Arn":"arn:…:role/covert-admin"}` rendered both; `DeploymentMode` and
+  `StackDriftStatus` (fields that change how CloudFormation INTERPRETS a change set) rendered as
+  opaque keys; and the child-evidence digest concatenated the streams, so (stdout "ab", stderr
+  "c") and (stdout "a", stderr "bc") were indistinguishable. One HIGH, one MEDIUM, one LOW.
+  Fix-forward, all twelve reviewed commits preserved.
+- A reviewed SCHEMA TREE now describes the entire DescribeChangeSet response and every value is
+  rendered by its POSITION. The same name at a different path is a different field, and a name
+  inside a content carrier is not a field at all: BeforeValue, AfterValue, BeforeContext and
+  AfterContext are opaque — one deterministic marker each, never parsed, so no internal name can
+  reach a validator. The trade is stated in the code: reading callback URLs out of a property
+  value is given up, and that control never lived here — PREFLIGHT-1 validates the exact auth
+  URLs and contextDigest binds them to the release before a change set exists.
+- DeploymentMode and StackDriftStatus are named vocabularies, rendered on their own line, so
+  REVERT_DRIFT is distinguishable at sight. A field the schema does not describe REFUSES the plan
+  (CHANGE_SET_SCHEMA_UNKNOWN) instead of becoming an opaque key — brittle on purpose: an
+  unreviewed field can change what an approval means, so a human extends the schema first.
+- Child evidence frames the streams through canonical JSON: exit code, per-stream byte counts and
+  a digest that distinguishes where stdout ends and stderr begins.
+- Four protections, four reversions, four failures — including two mutations that had to be
+  rewritten because the first attempts did not faithfully recreate the vulnerability (an object
+  schema on a string still failed closed; a digest change hidden behind visible byte counts). The
+  regressions were tightened until each reversion was genuinely red. Nothing was deployed,
+  published or mutated.
+
 ## 2026-08-05 — Claude — #70 Slice B1 round 11: the whole change set bound, the last formats closed
 
 - Codex's round-11 review of 4dc496b2: "complete change" still meant `Changes` — the change
