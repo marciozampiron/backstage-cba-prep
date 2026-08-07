@@ -3,24 +3,32 @@
 > **A runbook grants no authority.** It documents HOW an operation is performed, never WHETHER
 > it may be. A runbook that appears to permit something permits nothing (SPEC-RUN-001).
 
-## Two authorizations, never interchangeable
+## Three authorizations, never interchangeable
 
-Design review round 2 found these conflated, and this standard keeps them apart permanently
-(see `spec/spec-anchored-development.md` §8):
+Design rounds 2–3 found these conflated. They are policy DATA in
+[`spec/authority-policy.json`](../../spec/authority-policy.json), summarized here (see
+`spec/spec-anchored-development.md` §8):
 
-- **Publication authorization** — `HUMAN_GATE_GRANTED` per
-  [`.agent-handoff/MESSAGE-PROTOCOL.md`](../../.agent-handoff/MESSAGE-PROTOCOL.md), with its
-  closed nine-key schema. It authorizes exactly branch publication and pull-request creation,
-  and nothing else. It is never reused for cloud effects.
-- **Cloud authorization** — its own closed, effect-bound schema: the per-decision
-  `CBA_CLOUD_GATE` value (SPEC-DEPLOY-002/009/010/011), issued only by Zamp, bounded to at most
-  one hour, bound to the exact release, assembly, plan digest and stack group.
-  **Preparing change sets is already cloud mutation** — `plan_only` creates CloudFormation
-  change sets and publishes assets — so it requires cloud authorization exactly as `deploy`
-  does (SPEC-RUN-002).
+| Instrument | Authorizes | Performed by |
+| --- | --- | --- |
+| publication (`CBA_EXECUTION_GATE`) | branch publication, pull-request creation | Opus |
+| cloud (`CBA_CLOUD_GATE`) | `deploy`, `prepare-change-sets`, `execute-change-sets` | Zamp |
+| spend (out-of-band record) | `invoke-paid-model-audit` | Zamp |
 
-Both instruments are Zamp's alone. A runbook step states WHICH instrument it depends on;
-depending on one never implies the other.
+**Preparing change sets is already cloud mutation** — `plan_only` creates CloudFormation change
+sets and publishes assets — so it depends on a cloud authorization exactly as `deploy` does
+(SPEC-RUN-002).
+
+All three are Zamp's alone. A step states WHICH instrument it depends on; depending on one never
+implies another.
+
+## Every command names its performer
+
+**Each command line states the actor that runs it** (SPEC-RUN-005), and that actor must be
+permitted to perform the effect by `spec/authority-policy.json`. This is not bookkeeping: the
+policy denies Opus `administer-repository` and `perform-cloud-effect`, so "the operator sets the
+Environment variable" or "the operator dispatches the deploy" would contradict the policy while
+reading like an instruction. Where the performer is Zamp, the runbook says Zamp.
 
 ## Frontmatter — required, closed
 
@@ -65,7 +73,7 @@ to Preflight (shared), the linked runbooks in order, and Stop conditions that sp
 | Section | Contents |
 | --- | --- |
 | **Preflight** | Every condition verified BEFORE the first command: reviewed commits, authorizations present, environment state, prior evidence. Each item is checkable; "be careful" is not a preflight. |
-| **Commands** | The exact commands, in order, each with its expected outcome, as copyable templates with `<angle-bracket>` placeholders. A command whose tooling does not exist yet is marked `PLANNED — not executable` and the runbook says so at the top. |
+| **Commands** | The exact commands, in order, each prefixed by its PERFORMER and followed by its expected outcome, as copyable templates with `<angle-bracket>` placeholders. AWS invocations pin `--region`, `--profile` and `--no-cli-pager`, and verify the caller identity before acting. A command whose tooling does not exist yet is marked `PLANNED — not executable` and the runbook says so at the top. |
 | **Evidence** | What is captured, where it is recorded (run summary, `EVENTS.md`, issue), and what it must contain. Evidence follows the redaction discipline: no secrets, no account ids, no value-derived markers. |
 | **Stop conditions** | The exact states that HALT the run. Each names its signal (refusal code, exit status, missing evidence) and the required next action. Continuing past a stop condition is never an operator judgment call. |
 | **Rollback** | How to return to the last known-good state, and what "known-good" means for this operation. If rollback itself mutates cloud state, it depends on its own cloud authorization and says so. |

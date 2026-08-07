@@ -4,62 +4,76 @@ kind: runbook
 version: 0.1.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-003, SPEC-DEPLOY-004, SPEC-DEPLOY-008, SPEC-RUN-002]
-inputs: [the halted run's summary and honest partial record, the prior known-good release SHA for dev, read access for state assessment]
-outputs: [a recorded assessment, a chosen and recorded recovery path, EVENTS.md entries]
-gateRequired: true
-cloudMutation: true
+specs: [SPEC-DEPLOY-018, SPEC-RUN-004, SPEC-RUN-005, SPEC-RUN-007]
+inputs: [the halted run's evidence artifact and honest partial record, the prior known-good release SHA for dev, a reviewed read-only AWS profile]
+outputs: [a recorded assessment and a recorded choice of recovery path]
+gateRequired: false
+cloudMutation: false
 ---
 
 # Runbook — dev release, RECOVERY after a halt
 
 > **Status: DESIGN — `PLANNED — not executable`.** Nothing here runs in the current phase.
-> Assessment steps are read-only; any corrective effect is a NEW release decision through the
-> [plan](aws-dev-release-plan.md) and [deploy](aws-dev-release-deploy.md) runbooks under their
-> own cloud authorizations — there is no side-channel undo, which is why `cloudMutation` is
-> true for the flow this runbook re-enters, not for the assessment itself.
 
-One operation: from a halted wave, produce a RECORDED assessment and a chosen recovery path.
+One operation, and it is READ-ONLY: from a halted wave, produce a recorded assessment and a
+recorded choice of recovery path. Design round 3 corrected the metadata — this document mutates
+nothing and needs no authorization; the corrective effect it points at is a NEW release decision
+owned by [plan](aws-dev-release-plan.md) and [deploy](aws-dev-release-deploy.md), each with its
+own cloud authorization. A document does not inherit `cloudMutation` from the runbooks it links.
 
 ## Preflight
 
-1. The halted run's summary is captured, including the honest partial record — exactly which
-   stacks executed (SPEC-DEPLOY-008) — and the refusal code or failure line that stopped it.
+1. The halted run's COMPLETE evidence artifact is at hand, including the honest partial record —
+   exactly which change sets executed (SPEC-DEPLOY-018) — and the refusal code that stopped it.
 2. The prior known-good state for dev is identified: the previous successfully deployed release
    SHA of the tier — dev rollback targets prior validated dev releases, never pilot tags.
-3. No new dispatch of any kind happens before the assessment is recorded.
+3. A reviewed READ-ONLY AWS profile is available. This operation never uses the deploy identity.
+4. No new dispatch of any kind happens before the assessment is recorded.
 
 ## Commands
 
 `PLANNED — not executable` in this phase. Templates (assessment — read-only):
 
-1. Per stack of the halted wave, current status:
+0. **Opus or Zamp** verifies the acting identity, account and region before reading anything —
+   an unpinned CLI inherits whatever profile the shell happens to carry:
 
    ```text
-   aws cloudformation describe-stacks \
-     --stack-name <cba-study-coach-dev-…> \
+   aws sts get-caller-identity \
+     --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager
+   ```
+
+   Expected outcome: the expected account id and a READ-ONLY role. A mismatch stops here.
+
+1. **Opus or Zamp** reads each stack's current status:
+
+   ```text
+   aws cloudformation describe-stacks --stack-name <cba-study-coach-dev-…> \
+     --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager \
      --query 'Stacks[0].StackStatus'
    ```
 
-   Expected outcome: a terminal status per stack, matched against the run's partial record.
+   Expected outcome: a terminal status per stack, matched against the artifact's partial record.
 
-2. If a stack failed mid-execution, what CloudFormation itself did next is read from its events:
+2. **Opus or Zamp** reads what CloudFormation did after a mid-execution failure:
 
    ```text
-   aws cloudformation describe-stack-events \
-     --stack-name <cba-study-coach-dev-…> --max-items 20
+   aws cloudformation describe-stack-events --stack-name <cba-study-coach-dev-…> \
+     --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager \
+     --max-items 20
    ```
 
    Expected outcome: whether the declared `OnStackFailure`/rollback configuration ran, and to
    what state.
 
-3. The assessment — per stack: executed/not-executed, current status, divergence from both the
-   halted release and the prior known-good — is written down BEFORE any path is chosen.
+3. **Opus** writes the assessment — per stack: executed/not-executed, current status, divergence
+   from both the halted release and the prior known-good — BEFORE any path is chosen. Writing an
+   assessment is not an effect; choosing and performing a path is, and that belongs to Zamp.
 
 ## Evidence
 
-- The assessment document, the halted run's summary, and an `EVENTS.md` entry recording the
-  halt, the assessment and the chosen path — appended through the normal reviewed flow.
+- The assessment document, bound to the halted run's id, `decisionId` and evidence-artifact
+  digest (SPEC-RUN-007), and an `EVENTS.md` entry recording the halt, the assessment and the
+  chosen path — appended through the normal reviewed flow.
 - No secrets, account ids or live ARNs; stack names and statuses only.
 
 ## Stop conditions
@@ -84,4 +98,8 @@ The recovery PATHS, each a new decision by Zamp, each through plan → digest st
 ## Cleanup
 
 - The assessment and decisions are retained as record; temporary query outputs are not.
-- Any `CBA_CLOUD_GATE` value from the halted decision is cleared before the next cycle.
+- **Zamp** clears any `CBA_CLOUD_GATE` value left from the halted decision before the next
+  cycle; this runbook itself sets nothing.
+- If the halted wave left prepared-but-unexecuted change sets that will never run, they are
+  removed by the [abandon runbook](aws-dev-release-abandon.md) under its own authorization —
+  they do not expire on their own (SPEC-RUN-008).

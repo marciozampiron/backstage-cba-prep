@@ -4,9 +4,9 @@ kind: runbook
 version: 0.1.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002]
+specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007]
 inputs: [the release SHA, the wave's stack group, the reviewed PLAN_DIGEST from the plan runbook, a fresh decisionId, Zamp's deploy cloud authorization value]
-outputs: [executed change sets for the wave, per-stack results, the run summary]
+outputs: [executed change sets for the wave, per-stack results, the complete evidence artifact bound to run id and decision]
 gateRequired: true
 cloudMutation: true
 ---
@@ -34,7 +34,7 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
 
 `PLANNED — not executable` in this phase. Templates:
 
-1. Zamp sets the deploy value:
+1. **Zamp** sets the deploy value (repository administration plus the cloud instrument):
 
    ```text
    gh api -X PATCH repos/<owner>/<repo>/environments/dev/variables/CBA_CLOUD_GATE \
@@ -42,29 +42,48 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
      -f value='<the deploy JSON for this decision, planDigest included>'
    ```
 
-2. The operator dispatches the lane, same inputs as the plan run:
+2. **Zamp** records the dispatch instant and dispatches the lane — `execute-change-sets` is a
+   cloud effect, performed by Zamp:
 
    ```text
+   date -u +%Y-%m-%dT%H:%M:%SZ            # recorded BEFORE dispatching
    gh workflow run "Release Pilot" --ref main \
      -f release_sha=<full 40-character release SHA> \
      -f mode=dev_only
    ```
 
    Expected outcome: the entrypoint re-describes the exact change sets, requires the digest to
-   match (`PLAN_CHANGED` otherwise, SPEC-DEPLOY-003), revalidates window and account before
-   EACH execution (SPEC-DEPLOY-008), executes the wave in dependency order and reports
-   per-stack results; child text is never echoed (SPEC-DEPLOY-007).
+   match (`PLAN_CHANGED` otherwise, SPEC-DEPLOY-016), revalidates the account and then the
+   window as the last operation before EACH execution (SPEC-DEPLOY-008/017), executes the wave
+   in dependency order and reports per-stack results; child text is never echoed
+   (SPEC-DEPLOY-007).
 
-3. The operator captures the result:
+3. **Zamp** resolves the run id, requiring exactly one match (SPEC-RUN-007):
 
    ```text
-   gh run view <run-id> --log | grep -B 2 -A 40 'PLAN_DIGEST'
+   gh run list --workflow "Release Pilot" --branch main \
+     --json databaseId,headSha,createdAt,event \
+     --jq '[.[] | select(.event=="workflow_dispatch" and .createdAt >= "<dispatch instant>")]'
    ```
+
+4. **Zamp** captures the COMPLETE evidence artifact and digests it:
+
+   ```text
+   gh run view <run-id> --log > <evidence-dir>/deploy-<run-id>.log
+   sha256sum <evidence-dir>/deploy-<run-id>.log
+   ```
+
+5. **Zamp** writes the binding record: run id, `decisionId`, release SHA, stack group, the
+   `PLAN_DIGEST` this decision authorized, the change sets executed, and the artifact digest.
 
 ## Evidence
 
-- The run summary: digest match line with `decisionId`, per-stack execution results, and — on
-  any failure — the child-evidence line (exit, per-stream bytes, framed digest).
+- The COMPLETE run log artifact and its digest — never an excerpt (SPEC-RUN-007).
+- The binding record: run id, `decisionId`, release SHA, stack group, authorized `PLAN_DIGEST`,
+  change sets executed, artifact digest.
+- Within the artifact: the digest-match line, per-stack results, and — on any failure — the
+  child-evidence line (exit, per-stream bytes, framed digest) and the honest partial record of
+  which change sets executed (SPEC-DEPLOY-018).
 - An `EVENTS.md` entry per decision, appended through the normal reviewed flow.
 - No secrets, account ids or live ARNs anywhere.
 
@@ -80,6 +99,8 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    The output records exactly which stacks executed. Stop; continue in the
    [recovery runbook](aws-dev-release-recovery.md).
 5. Any GitHub-side failure before the entrypoint — stop; nothing mutated, by construction.
+6. The run id does not resolve to exactly one entry, or its `headSha` is not the release SHA —
+   stop; evidence bound to the wrong run cannot show what executed.
 
 ## Rollback
 

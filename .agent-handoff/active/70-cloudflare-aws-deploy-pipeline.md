@@ -268,6 +268,29 @@ runbook moved its recording into a separately owned reconciliation step so "read
 true. Everything remains design: `PLANNED — not executable` throughout, the lane untouched, the
 entrypoint untouched.
 
+Design round 3 (Codex, eight findings) closed the last gaps that would have made the flow
+unrunnable or the policy decorative. The plan authorization could not be authored at all — it
+must name an assembly digest that only a run produces — so a read-only BINDING operation now
+precedes it. Evidence stopped being a `grep` window: every cloud effect produces a complete
+artifact bound to run id, decision, release SHA, stack group and plan digest, with the run id
+resolved deterministically and exactly one match required. A declined plan no longer "expires":
+AWS retains change sets until deleted, so an authorized ABANDON operation deletes them by id,
+resolves any `REVIEW_IN_PROGRESS` stack record and states what bootstrap material is retained.
+Performers are named on every command, and the three authorization kinds — publication, cloud,
+spend — are now POLICY DATA validated by the closed-schema validator, with `prepare-change-sets`
+and `invoke-paid-model-audit` as first-class effects and Opus explicitly denied both
+`author-cloud-authorization` and `perform-cloud-effect`. The registry became atomic (thirty-one
+ids, exact normative text instead of summaries) and the redaction contradiction was scoped: the
+child-evidence digest is the named exception to the no-derivation rule, because it covers whole
+streams that are never published rather than a value in the rendering. Audit digests gained a
+reviewed base with an ancestor check and the framed canonical serialization the #70 collision
+lesson demands; ACTIVE immutability is checked against activation history rather than a
+self-declared hash; mutation evidence became a closed record. The recovery assessment is
+read-only again — `gateRequired:false`, `cloudMutation:false` — with identity, account, region
+and pager pinned on every AWS call. And the governed vocabulary now collects cloud, spend,
+approver and persona claims, so the previously empty allowlists hold fifty-two explicitly
+permitted sentences instead of nothing.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

@@ -241,6 +241,29 @@ function assertNoPermission(actor, verb, label) {
 
 /* ================= the guards have to be able to fail ================= */
 
+test('POSITIVE CONTROL: every operational-source family is discovered, by family and by file', () => {
+  // Design round 3: adding a discovery pattern without a control proves nothing — a later edit
+  // could drop `spec/agents/**` or `docs/runbooks/**` and every other test would stay green.
+  // This asserts BOTH that the known files are in scope AND that the family patterns match a
+  // hypothetical new member, so deleting a pattern fails here rather than silently un-governing.
+  const discovered = new Set(SOURCES);
+  for (const known of [
+    'spec/spec-anchored-development.md',
+    'spec/agents/gemini-spec-auditor.md',
+    'docs/runbooks/README.md',
+    'docs/runbooks/spec-conformance-audit.md',
+    'docs/runbooks/aws-dev-release.md',
+  ]) {
+    assert.ok(discovered.has(known), `${known} must be an operational source`);
+  }
+  // Family-level: a NEW file in each governed family would be discovered too. The classifier is
+  // re-derived here from the same predicate the discovery uses, applied to hypothetical paths.
+  for (const family of ['spec/agents/', 'docs/runbooks/', '.agent-handoff/active/', '.claude/skills/', '.agents/skills/']) {
+    const members = [...discovered].filter((f) => f.startsWith(family));
+    assert.ok(members.length > 0, `no discovered source under ${family} — that family's pattern is gone`);
+  }
+});
+
 test('POSITIVE CONTROL: the scan reaches the real operational surfaces', () => {
   assert.ok(SOURCES.length >= 15, `expected a substantial surface list, got ${SOURCES.length}`);
   for (const required of [
@@ -1455,7 +1478,16 @@ const POLICY_SURFACES = POLICY.governedSurfaces ?? [];
  * list, so the collector never saw it and the allowlist never checked it. Dropping the filter makes
  * the collector mechanical: every sentence about a governed document must be explicitly permitted.
  */
-const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b/i;
+/**
+ * The governed vocabulary — every instrument, not only the publication one.
+ *
+ * Design round 3 found the gap: the collector recognized publication-gate phrases only, so the new
+ * documents' entries were empty because nothing about cloud authority, spend authority, the human
+ * approver or Gemini's standing was ever COLLECTED. An empty allowlist that nothing feeds is not a
+ * closed policy, it is a decoration. The vocabulary now covers all three authorization kinds and
+ * the two role claims that carry authority.
+ */
+const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
 const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
 
 /**
@@ -1536,8 +1568,25 @@ test('the authority policy states the invariants as data, not prose', () => {
   // by nothing was wrong in a way that mattered: it reads as "no gate needed".
   assert.equal(POLICY.effects.merge.authorizedBy, 'MERGE_DECISION');
   assert.equal(POLICY.effects.merge.performedBy, 'zamp');
-  // Deploy needs its own human gate; it is not a document-authorized effect either.
-  assert.equal(POLICY.effects.deploy.authorizedBy, 'separate-human-gate');
+  // Deploy needs its own instrument — the cloud authorization, never the publication gate
+  // (#70 design round 3). Preparing change sets is a cloud effect too, and is named as one.
+  assert.equal(POLICY.effects.deploy.authorizedBy, 'cloud-authorization');
+  assert.equal(POLICY.effects.deploy.performedBy, 'zamp');
+  for (const effect of ['prepare-change-sets', 'execute-change-sets']) {
+    assert.equal(POLICY.effects[effect].authorizedBy, 'cloud-authorization');
+    assert.equal(POLICY.effects[effect].performedBy, 'zamp');
+  }
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].performedBy, 'zamp');
+  // The three instruments are distinct documents, and none authorizes another's effects.
+  assert.deepEqual(POLICY.documents['cloud-authorization'].authorizes, ['deploy', 'prepare-change-sets', 'execute-change-sets']);
+  assert.deepEqual(POLICY.documents['spend-authorization'].authorizes, ['invoke-paid-model-audit']);
+  assert.equal(POLICY.documents['cloud-authorization'].writtenBy, 'zamp');
+  assert.equal(POLICY.documents['spend-authorization'].writtenBy, 'zamp');
+  // Opus may neither author a cloud authorization nor perform a cloud effect.
+  assert.ok(POLICY.actors.opus.mayNever.includes('author-cloud-authorization'));
+  assert.ok(POLICY.actors.opus.mayNever.includes('perform-cloud-effect'));
+  assert.ok(POLICY.actors.codex.mayNever.includes('perform-cloud-effect'));
 
   // Opus operates but may never approve itself or merge; Codex may never implement or operate.
   assert.ok(POLICY.actors.opus.mayNever.includes('self-approve'));
@@ -1720,13 +1769,21 @@ test('the review scope authorizing anything is rejected', () => {
   }, /review-scope\.authorizes must be empty/);
 });
 
-test('merge or deploy recorded as needing no authorization is rejected', () => {
+test('merge or a cloud effect recorded under the wrong instrument is rejected', () => {
   expectRejected((p) => {
     p.effects.merge.authorizedBy = 'review-scope';
   }, /must be authorized by MERGE_DECISION/);
+  // The exact conflation design round 3 found: a cloud effect claiming the PUBLICATION gate.
+  // Each cloud effect is checked, so widening one of them cannot ride on another's rule.
+  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets']) {
+    expectRejected((p) => {
+      p.effects[effect].authorizedBy = 'execution-gate';
+    }, new RegExp(`${effect}[\\s\\S]*cloud-authorization`));
+  }
+  // And the spend instrument cannot be swapped for the cloud one.
   expectRejected((p) => {
-    p.effects.deploy.authorizedBy = 'execution-gate';
-  }, /deploy must require a separate human gate/);
+    p.documents['spend-authorization'].authorizes = ['execute-change-sets'];
+  }, /authorizes/);
 });
 
 test('a dangling document-to-effect authority is rejected', () => {

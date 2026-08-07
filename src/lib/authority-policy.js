@@ -34,6 +34,8 @@ export const CAPABILITIES = [
   'grant-execution-gate',
   'accept-risk',
   'authorize-spend',
+  'author-cloud-authorization',
+  'perform-cloud-effect',
   'merge',
   // things that appear only as prohibitions
   'self-review',
@@ -91,16 +93,16 @@ const EXPECTED_ACTORS = {
   opus: {
     role: 'implementation executor and publication operator',
     may: ['commit-on-task-branch', 'validate', 'prepare-artifact', 'operate-artifact-under-execution-gate'],
-    mayNever: ['self-review', 'self-approve', 'merge', 'deploy', 'push-integration-branch', 'force-push', 'administer-repository', 'rewrite-reviewed-history', 'access-secrets', 'invoke-paid-service'],
+    mayNever: ['self-review', 'self-approve', 'merge', 'deploy', 'push-integration-branch', 'force-push', 'administer-repository', 'rewrite-reviewed-history', 'access-secrets', 'invoke-paid-service', 'author-cloud-authorization', 'perform-cloud-effect'],
   },
   codex: {
     role: 'architect and independent technical/security reviewer',
     may: ['review-read-only', 'report-findings', 'recommend-gate'],
-    mayNever: ['implement', 'prepare-artifact', 'operate-artifact', 'push', 'merge', 'deploy', 'grant-human-gate', 'access-secrets', 'invoke-paid-service'],
+    mayNever: ['implement', 'prepare-artifact', 'operate-artifact', 'push', 'merge', 'deploy', 'grant-human-gate', 'access-secrets', 'invoke-paid-service', 'author-cloud-authorization', 'perform-cloud-effect'],
   },
   zamp: {
     role: 'approval, risk acceptance and merge authority',
-    may: ['author-review-scope', 'grant-execution-gate', 'accept-risk', 'authorize-spend', 'merge'],
+    may: ['author-review-scope', 'grant-execution-gate', 'accept-risk', 'authorize-spend', 'author-cloud-authorization', 'perform-cloud-effect', 'merge'],
     mayNever: ['delegate-approval', 'delegate-merge'],
   },
   gemini: {
@@ -129,6 +131,23 @@ const EXPECTED_DOCUMENTS = {
     boundTo: 'artifactDigest',
     authorizes: ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request'],
   },
+  // #70 design round 3: publication authority, cloud authority and spend authority are THREE
+  // instruments, not one. Conflating them let a runbook read the publication gate as permission
+  // to mutate an account. Each is Zamp's, each names its own effects, none substitutes another.
+  'cloud-authorization': {
+    writtenBy: 'zamp',
+    writtenWhen: 'per decision, before each cloud effect',
+    suppliedAs: 'CBA_CLOUD_GATE',
+    boundTo: 'releaseSha+assemblyDigest+planDigest',
+    authorizes: ['deploy', 'prepare-change-sets', 'execute-change-sets'],
+  },
+  'spend-authorization': {
+    writtenBy: 'zamp',
+    writtenWhen: 'per paid run',
+    suppliedAs: 'out-of-band record',
+    boundTo: 'model+ceilings',
+    authorizes: ['invoke-paid-model-audit'],
+  },
 };
 
 /** The EXACT effect matrix — who authorizes it and who performs it. */
@@ -136,19 +155,30 @@ const EXPECTED_EFFECTS = {
   'push-reviewed-commit-to-task-branch': { authorizedBy: 'execution-gate', performedBy: 'opus' },
   'create-or-reuse-one-pull-request': { authorizedBy: 'execution-gate', performedBy: 'opus' },
   merge: { authorizedBy: 'MERGE_DECISION', performedBy: 'zamp' },
-  deploy: { authorizedBy: 'separate-human-gate', performedBy: 'zamp' },
+  deploy: { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
+  // Preparing a change set IS a cloud effect: it creates CloudFormation resources and publishes
+  // assets. It is named separately from execution so an authorization can cover one and not the
+  // other, and so neither can be read as covered by the publication instrument.
+  'prepare-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
+  'execute-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
+  'invoke-paid-model-audit': { authorizedBy: 'spend-authorization', performedBy: 'zamp' },
 };
 
 /** Exact document set and keys. */
-const DOCUMENTS = ['review-scope', 'execution-gate'];
+const DOCUMENTS = ['review-scope', 'execution-gate', 'cloud-authorization', 'spend-authorization'];
 const DOCUMENT_KEYS = {
   'review-scope': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'bounds', 'authorizes'],
   'execution-gate': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'messageType', 'boundTo', 'authorizes'],
+  'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
+  'spend-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
 };
 
 /** Exact effect set and keys. */
-const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy'];
+const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'invoke-paid-model-audit'];
 const EFFECT_KEYS = ['authorizedBy', 'performedBy'];
+/** Effects that change cloud state. Each is authorized by the cloud instrument and performed by
+ * Zamp — preparing a change set is here because it creates resources and publishes assets. */
+const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets'];
 const EFFECT_OPTIONAL_KEYS = ['note'];
 
 /**
@@ -157,8 +187,12 @@ const EFFECT_OPTIONAL_KEYS = ['note'];
  * `"none"` is deliberately NOT here. It was in an earlier draft for merge and deploy, and it was
  * wrong in a way that mattered: merge is authorized by Zamp's `MERGE_DECISION`, and deploy requires
  * its own human gate. Recording either as unauthorized-by-anything would read as "no gate needed".
+ *
+ * `"separate-human-gate"` is gone too, and for the same reason one level up: it was a placeholder
+ * for an instrument that now exists. Deploy is authorized by the `cloud-authorization` document
+ * (#70 design round 3), which is named, bound and Zamp's — a placeholder cannot be validated.
  */
-const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION', 'separate-human-gate'];
+const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
 
 /** Surfaces whose statements the policy governs. Every cold-start document, template and skill. */
 export const REQUIRED_SURFACES = [
@@ -329,8 +363,11 @@ export function validateAuthorityPolicy(policy) {
     if (name === 'merge' && effect.authorizedBy !== 'MERGE_DECISION') {
       fail("policy.effects.merge must be authorized by MERGE_DECISION — recording it otherwise reads as no gate needed.");
     }
-    if (name === 'deploy' && effect.authorizedBy !== 'separate-human-gate') {
-      fail('policy.effects.deploy must require a separate human gate.');
+    // #70 design round 3: the placeholder became a named instrument. Deploy — and every other
+    // cloud effect — must be authorized by the cloud-authorization document, never by the
+    // publication gate and never by a word that validates nothing.
+    if (CLOUD_EFFECTS.includes(name) && effect.authorizedBy !== 'cloud-authorization') {
+      fail(`policy.effects.${name} must be authorized by the cloud-authorization document.`);
     }
     if (effect.authorizedBy !== expected.authorizedBy) {
       fail(`policy.effects.${name}.authorizedBy must be exactly "${expected.authorizedBy}".`);
