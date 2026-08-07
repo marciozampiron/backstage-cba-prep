@@ -211,6 +211,42 @@ literal `Fn::ImportValue` (recursively, with a positive control the CDK metadata
 resolving each export to its producer, which must sit in an earlier wave — or in the
 SecurityStack foundation, which pre-exists every wave.
 
+### Spec-Anchored Design — decision recorded, design under independent review (2026-08-07)
+
+The Codex confirmation of round 15 closed the technical findings; publication stays blocked
+because the contract the sixteen rounds hardened still lives only inside code and tests. Zamp
+directed the adoption of **Spec-Anchored Development**: the spec is the authority, code conforms
+to it, and a future mechanical conformance auditor in CI fails the build (exit 1) on any
+divergence — the spec is never updated automatically to accommodate code. The semantic layer is
+the **Gemini Spec Auditor** persona, which reads and reports only: it holds no authority of any
+kind, never approves anything, never accepts risk, never touches code or spec, and never runs
+any effect. Its report is one more input to the unchanged flow — Codex reviews independently,
+and the decision belongs to Zamp alone through `HUMAN_GATE_GRANTED`, exactly as the protocol
+states today. The persona takes effect only after the protocol and the authority policy are
+amended through their own reviewed commits; nothing is seated by this design.
+
+This phase delivered DESIGN DOCUMENTS ONLY, in one fix-forward commit on top of
+`346fe2dcd79654f3e4c3a145899b2e52a34034a9`, with the release entrypoint, the lane and the
+infrastructure untouched:
+
+- `spec/spec-anchored-development.md` — principles, spec authority and evolution rule,
+  SPEC-ID → code → test traceability, divergence semantics, and a seed registry binding
+  fourteen SPEC-IDs to invariants that already survived the #70 rounds;
+- `spec/agents/gemini-spec-auditor.md` — the persona: inputs, procedure, the SPEC_AUDIT_REPORT
+  document format with PASS/FINDINGS and evidence, and its closed list of non-powers;
+- `docs/runbooks/README.md` — the mandatory runbook standard (closed frontmatter, required
+  sections, the rule that a runbook confers nothing);
+- `docs/runbooks/spec-conformance-audit.md` — the audit flow: mechanical first, semantic
+  interpretation second, independent review third, human decision last; every command marked
+  `PLANNED — not executable`;
+- `docs/runbooks/aws-dev-release.md` — the planned #70 dev release flow only (waves, plan_only,
+  digest study, the second dispatch, evidence, stop conditions, rollback), with nothing to be
+  run in this phase.
+
+The next phase — JSON Schema tooling, the conformance checker, `[SPEC-ID]` annotations and the
+protocol amendments — starts only after this design passes the independent review and Zamp's
+decision.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
