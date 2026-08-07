@@ -155,7 +155,15 @@
     "src/commands/agent-publish.js",
     "src/commands/agent-refresh.js",
     "src/lib/human-publish-script.js",
-    "src/lib/publish-gate.js"
+    "src/lib/publish-gate.js",
+    "spec/spec-anchored-development.md",
+    "spec/agents/gemini-spec-auditor.md",
+    "docs/runbooks/README.md",
+    "docs/runbooks/spec-conformance-audit.md",
+    "docs/runbooks/aws-dev-release.md",
+    "docs/runbooks/aws-dev-release-plan.md",
+    "docs/runbooks/aws-dev-release-deploy.md",
+    "docs/runbooks/aws-dev-release-recovery.md"
   ],
   "surfaceClassification": {
     "canonical-authority": [
@@ -190,7 +198,15 @@
       "src/commands/agent-publish.js",
       "src/commands/agent-refresh.js",
       "src/lib/human-publish-script.js",
-      "src/lib/publish-gate.js"
+      "src/lib/publish-gate.js",
+      "spec/spec-anchored-development.md",
+      "spec/agents/gemini-spec-auditor.md",
+      "docs/runbooks/README.md",
+      "docs/runbooks/spec-conformance-audit.md",
+      "docs/runbooks/aws-dev-release.md",
+      "docs/runbooks/aws-dev-release-plan.md",
+      "docs/runbooks/aws-dev-release-deploy.md",
+      "docs/runbooks/aws-dev-release-recovery.md"
     ],
     "link-only": [
       "CLAUDE.md",
@@ -409,6 +425,14 @@
       "Ask the human owner for a new gate.'); if (nowMs < approvedAt) fail('GATE_NOT_YET_VALID', 'The publish gate is not valid yet.');",
       "A gate is not transferable.); }",
       "// --- replay: NOT prevented by Stage A --- advisories.push('Stage A does not consume a gate: the same file validates again."
-    ]
+    ],
+    "spec/spec-anchored-development.md": [],
+    "spec/agents/gemini-spec-auditor.md": [],
+    "docs/runbooks/README.md": [],
+    "docs/runbooks/spec-conformance-audit.md": [],
+    "docs/runbooks/aws-dev-release.md": [],
+    "docs/runbooks/aws-dev-release-plan.md": [],
+    "docs/runbooks/aws-dev-release-deploy.md": [],
+    "docs/runbooks/aws-dev-release-recovery.md": []
   }
 }

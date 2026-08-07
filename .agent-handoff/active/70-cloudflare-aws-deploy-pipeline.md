@@ -247,6 +247,27 @@ The next phase — JSON Schema tooling, the conformance checker, `[SPEC-ID]` ann
 protocol amendments — starts only after this design passes the independent review and Zamp's
 decision.
 
+Design round 2 (Codex, six findings) reshaped the contract before any tooling exists, which is
+what a design review is for. The lifecycle now has three states — PROPOSED, ACTIVE, RETIRED —
+with CI enforcing ACTIVE ids only, activation atomic with conformance in the same tree, ACTIVE
+text immutable, and successors retiring predecessors by name: the "spec first" rule and the
+fail-closed CI no longer deadlock. The mechanical layer was renamed to what it honestly proves —
+a traceability LINTER plus registry-driven CONFORMANCE CHECKS with executable predicates — and
+the unprovable residue is named and assigned to the semantic stage. The spec system now governs
+itself: nine SPEC-GOV/AUDIT/RUN ids (PROPOSED — their tooling does not exist yet), the compound
+seed ids split into atomic ones (SPEC-DEPLOY-001…014), and the eight new documents were added to
+the fail-closed discovery and the closed surface policy, so their sentences are scanned like
+every other canonical surface. Publication authorization and cloud authorization are now two
+named instruments, both Zamp's, never interchangeable — and preparing change sets is classified
+as cloud mutation. The audit became reproducibly bound (report v1: commit, base, diff, spec,
+bundle and persona digests; pinned model and ceilings; INCOMPLETE is never a weaker PASS) and
+honestly priced: the semantic stage is a paid call and each run needs Zamp's separate spend
+authorization. The release flow was split to obey its own standard — an index plus three
+one-operation runbooks (plan, deploy, recovery) with copyable planned templates — and the audit
+runbook moved its recording into a separately owned reconciliation step so "read-only" stays
+true. Everything remains design: `PLANNED — not executable` throughout, the lane untouched, the
+entrypoint untouched.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

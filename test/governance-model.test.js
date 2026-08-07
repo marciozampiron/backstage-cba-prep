@@ -55,6 +55,11 @@ function operationalSources() {
     /^\.agent-handoff\/[^/]+\.md$/,
     /^\.agent-handoff\/(active|inbox|templates|decisions|publish-gates)\//,
     /^spec\/security-rules\.md$/,
+    // Spec-Anchored Development surfaces (#70 design round 2): authority-bearing documents must
+    // sit inside fail-closed discovery BEFORE they become effective, not after.
+    /^spec\/spec-anchored-development\.md$/,
+    /^spec\/agents\//,
+    /^docs\/runbooks\//,
     /^docs\/architecture\/agent-publication-runbook\.md$/,
     /^\.claude\/(skills|commands)\//,
     /^\.agents\/skills\//,
