@@ -190,20 +190,33 @@ Two rules the #70 rounds already paid for, applied to this system's own artifact
    therefore has its own framing, and every digest is taken over
 
    ```jsonc
-   { "digestKind": "text" | "snapshot" | "diff", "version": 1, "records": [ … ] }
+   { "digestKind": "text" | "snapshot" | "diff" | "bundle", "version": 1, /* kind-specific
+      binding fields, see below */ "records": [ … ] }
    ```
 
-   so that the kind is *inside* the digested bytes: a snapshot digest and a diff digest over the
-   same tree cannot collide, and a digest cannot be quoted as evidence of a kind it does not
-   describe.
+   so that the kind AND what it is taken over are *inside* the digested bytes: a snapshot digest
+   and a diff digest over the same tree cannot collide, and a digest cannot be quoted as evidence
+   of a kind — or of a commit range — it does not describe.
 
-   | Kind | Digests | Record shape (sorted by) |
-   | --- | --- | --- |
-   | `text` | a single normative string (`normativeSha256`) | exactly one `{ "specId": "<SPEC-ID>", "encoding": "utf-8", "bytes": <number>, "text": "<the exact normative sentence>" }` — the text is IN the digested document, so the digest cannot drift from what it claims to cover |
-   | `snapshot` | a set of files at ONE commit (the audit input bundle, §5a) | `{ "path": "<repo-relative>", "type": "regular"\|"executable"\|"symlink", "mode": "<git mode string>", "bytes": <number>, "sha256": "<hex>" }`, sorted by `path` |
-   | `diff` | the change between two commits (`patchSha256`, §6c, and change evidence) | `{ "status": "added"\|"modified"\|"deleted"\|"typechanged", "path": "<path>", "oldType"/"newType": "regular"\|"executable"\|"symlink"\|"absent", "oldMode"/"newMode": "<git mode string>"\|null, "oldBytes"/"newBytes": <number>\|null, "oldSha256"/"newSha256": "<hex>"\|null }`, sorted by `path` |
+   | Kind | Digests | Binding fields | Record shape (sorted by) |
+   | --- | --- | --- | --- |
+   | `text` | a single normative string (`normativeSha256`) | — | exactly one `{ "specId": "<SPEC-ID>", "encoding": "utf-8", "bytes": <number>, "text": "<the exact normative sentence>" }` — the text is IN the digested document, so the digest cannot drift from what it claims to cover |
+   | `snapshot` | a set of files **tracked in the repository at ONE commit** | `"commit": "<full 40-character SHA>"` | `{ "path": "<repo-relative>", "type": "regular"\|"executable"\|"symlink", "mode": "<git mode string>", "bytes": <number>, "sha256": "<hex>" }`, sorted by `path` |
+   | `diff` | the change between two commits (`patchSha256`, §6c, and change evidence) | `"baseSha"`, `"headSha"` — both full 40-character SHAs | `{ "status": "added"\|"modified"\|"deleted"\|"typechanged", "path": "<path>", "oldType"/"newType": "regular"\|"executable"\|"symlink"\|"absent", "oldMode"/"newMode": "<git mode string>"\|null, "oldBytes"/"newBytes": <number>\|null, "oldSha256"/"newSha256": "<hex>"\|null }`, sorted by `path` |
+   | `bundle` | **generated** byte streams that are not repository files — tool reports, the prompt as invoked, the input bundle actually handed to a model | `"producer": "<tool identity + version, or the invoking runbook id>"` | `{ "name": "<stable name within the bundle>", "mediaType": "<IANA type>", "bytes": <number>, "sha256": "<hex>" }`, sorted by `name` |
 
    The digest is the SHA-256 of the document's `JSON.stringify` with keys in the order above.
+
+   **`bundle` exists because round 6 found `snapshot` doing two jobs.** A snapshot is defined by a
+   commit — that is what makes it independently recomputable by anyone with the repository — and a
+   linter report or a prompt as invoked has no commit. Digesting them under a kind whose binding
+   field is a commit either forces a false commit or leaves the field meaningless, and in both
+   cases one artifact's digest could be presented as another's. Generated streams get their own
+   kind, bound to what actually determines them: who produced them.
+
+   **Every digest a document in this system names must state its kind.** A digest with no kind is
+   not evidence of anything; §5a of the auditor persona maps each of its digests to one of these
+   four, and a future digest that fits none of them is a finding, not a fifth improvisation.
 
    **`renamed` is gone from the diff status enum, deliberately.** Git does not record renames;
    rename detection is a *similarity heuristic* whose output depends on a threshold and on what
@@ -330,11 +343,12 @@ carry — recorded now, claimed as enforcement never.
 | SPEC-DEPLOY-015 | PROPOSED | Every stack the app constructs appears in exactly one of the deployable or excluded lists, and an unclassified stack fails synthesis-time discovery. | `infra/aws/lib/context.js` (`DEPLOYABLE_STACK_IDS`, `EXCLUDED_STACK_IDS`) | `infra/aws/test/app.test.js` | code + tests reviewed, reversion proven |
 | SPEC-DEPLOY-016 | PROPOSED | A plan recomputed at execution time that differs from the digest the authorization names refuses as `PLAN_CHANGED`, and no change set executes. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-DEPLOY-017 | PROPOSED | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
-| SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) | The cloud authorization value satisfies a closed key set — no key absent, none unknown — with `issue` pinned to 70, a `decisionId` matching its documented shape, a `mode` in {plan_only, deploy, abandon}, a validity window per SPEC-DEPLOY-009/010, the authorized stack group per SPEC-DEPLOY-011, and a digest of the COMPLETE closed manifest (release, environment, region, account, bound context, stack set) rather than a release SHA plus an assembly digest. The `mode` fixes the permitted effects exactly, as partitioned in `spec/authority-policy.json`: `plan_only` prepares only, `deploy` executes only, `abandon` deletes prepared change sets only. Any other shape, or any effect outside the value's mode, refuses. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
+| SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) | The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
 | SPEC-DEPLOY-020 | RETIRED (never ACTIVE; `supersededBy` SPEC-DEPLOY-019) | The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none. | — | — | none — absorbed into SPEC-DEPLOY-019 before activation (§4) |
-| SPEC-DEPLOY-021 | PROPOSED | Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision. | `spec/authority-policy.json` (`delete-review-in-progress-stack-record`) | `test/governance-model.test.js` | policy data + test reviewed in this commit; no lane may perform it |
+| SPEC-DEPLOY-021 | PROPOSED | Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision. | `spec/authority-policy.json` (`delete-review-in-progress-stack-record`) | `test/governance-model.test.js` | policy data + test reviewed in this commit; no lane may perform it |
 | SPEC-LANE-005 | PROPOSED | A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run. | not yet implemented | not yet implemented | none — awaiting the workflow path |
-| SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id; the run publishes it in its own run NAME, so the run is identifiable from run metadata alone, and inside a structured uploaded artifact, so evidence is bound to the requested decision rather than to a timestamp window. The artifact also carries the release SHA it acted on, which is what a reviewer compares against the request — a run's `headSha` is the dispatch ref's tip and is never that comparison. | not yet implemented | not yet implemented | none — awaiting the workflow input, run name and artifact |
+| SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id matching exactly `^cba-70-[0-9a-f]{32}$`; a dispatch whose id does not match is refused in the preflight, before any credentialed stage. The run's NAME is exactly `cba-release <mode> <correlationId>` and nothing else, so a run is selected by EQUALITY on its complete name — never by substring — and is identifiable from run metadata alone, before any artifact exists. The same id appears inside the structured uploaded artifact, together with the release SHA the run acted on, which is what a reviewer compares against the request; a run's `headSha` is the dispatch ref's tip and is never that comparison. | not yet implemented | not yet implemented | none — awaiting the workflow input, run name and artifact |
+| SPEC-LANE-007 | PROPOSED | Run resolution is bounded and unambiguous: the query pins workflow, `--branch main` and `--event workflow_dispatch`, matches the complete run name by equality, and polls at most a stated number of attempts at a stated interval. Zero matches after the bound is a stop, not a longer wait; two or more matches is a stop in every case, because a correlation id is used once and a second run bearing it means reuse, a re-dispatch nobody recorded, or forgery. | not yet implemented | not yet implemented | none — awaiting the workflow run name |
 | SPEC-RUN-009 | PROPOSED | Evidence is accepted only from a run that reached a terminal conclusion, identified by the correlation id it published in run metadata, whose artifact repeats that correlation id and names the release SHA the request dispatched, and whose provenance (run id, conclusion) is verified. The run's `headSha` is never used to identify the release. | `docs/runbooks/aws-dev-release-bind.md`, `-plan.md`, `-deploy.md` | not yet implemented | none — awaiting SPEC-LANE-006 |
 | SPEC-DEPLOY-018 | PROPOSED | When a sequence halts, the output names exactly which change sets executed and states that the remaining ones did not. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-LANE-001 | PROPOSED | In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step only the reviewed entrypoints execute — no action step and no package-manager command. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
@@ -346,9 +360,10 @@ carry — recorded now, claimed as enforcement never.
 | SPEC-IAM-003 | PROPOSED | Removing or replacing the `Project` or `Environment` tag is explicitly denied on every tag-scoped family. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
 | SPEC-IAM-004 | PROPOSED | Every `Resource: "*"` in the release execution policy is its own named statement whose action set is pinned, and no wildcard action appears outside an explicit Deny. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
 
-## 8. Three authorizations, all Zamp's, never interchangeable
+## 8. Four authorizations, all Zamp's, never interchangeable
 
-Design rounds 2–3 found the conflation. All three are now POLICY DATA in
+Design rounds 2–3 found the conflation; round 6 added the fourth (§8b). All of them are POLICY
+DATA in
 [`spec/authority-policy.json`](authority-policy.json), validated by the closed-schema validator —
 not prose that a document could reinterpret:
 
@@ -357,6 +372,7 @@ not prose that a document could reinterpret:
 | **publication** (`execution-gate`, `CBA_EXECUTION_GATE`) | `push-reviewed-commit-to-task-branch`, `create-or-reuse-one-pull-request` | Opus |
 | **cloud** (`cloud-authorization`, `CBA_CLOUD_GATE`) | `deploy`, `prepare-change-sets`, `execute-change-sets`, `abandon-change-sets` | Zamp |
 | **spend** (`spend-authorization`, out-of-band record) | `invoke-paid-model-audit` | Zamp |
+| **stack-record cleanup** (`stack-record-authorization`, out-of-band record) | `delete-review-in-progress-stack-record` | Zamp, by hand (§8b) |
 
 **One instrument, one mode, one set of effects.** Round 5 of this design's review found that a
 single document listing four effects proved nothing about what any particular value permits: a
@@ -376,9 +392,10 @@ The instrument's `boundTo` is correspondingly complete —
 effect, under WHICH decision, over WHICH manifest and stacks, against WHICH reviewed plan, and
 for HOW LONG. A value missing any of those binds nothing.
 
-**One effect is deliberately unautomatable.**
+**One effect is deliberately unautomatable, under an instrument no lane can read.**
 `delete-review-in-progress-stack-record` — removing the empty stack record a CREATE change set
-leaves behind — is a separate effect from deleting a change set, and the policy marks it
+leaves behind — is a separate effect from deleting a change set, authorized by its own out-of-band
+instrument (§8b), and the policy marks it
 `human-performed only; no automated lane may perform it`. The reason is stated in §7b under
 SPEC-DEPLOY-021: `DeleteStack` accepts no expected-status precondition, and the release
 concurrency lock constrains only this repository's lanes, not an external CloudFormation actor.
@@ -396,8 +413,47 @@ automating it is the honest resolution.
 - **The paid model call is Zamp's too.** Gemini is the model being invoked, not an actor that
   spends: `invoke-paid-service` remains in Opus's and Codex's `mayNever`.
 
-Neither instrument substitutes another, none is issued by anyone but Zamp, and a runbook
-mentioning any of them grants nothing (SPEC-RUN-001).
+No instrument substitutes another, none is issued by anyone but Zamp, and a runbook mentioning
+any of them grants nothing (SPEC-RUN-001).
+
+### 8a. The cloud authorization value, key by key (SPEC-DEPLOY-019)
+
+Round 6 found -019 claiming a "closed key set" without saying what it closes over, and requiring
+no `planDigest` even though the instrument's `boundTo` names one. A schema that a reader must
+reconstruct is not closed. The successor's value is exactly these ten keys:
+
+| Key | Constraint | `plan_only` | `deploy` | `abandon` |
+| --- | --- | --- | --- | --- |
+| `issue` | the integer `70` | required | required | required |
+| `mode` | one of `plan_only`, `deploy`, `abandon` — nothing else, and the mode fixes the permitted effects exactly as partitioned in [`authority-policy.json`](authority-policy.json) | required | required | required |
+| `decisionId` | matches the documented shape; FRESH per decision, never reused across modes or retries | required | required | required |
+| `releaseSha` | the full 40-character release SHA the decision covers | required | required | required |
+| `environment` | the tier the decision covers (`dev`) | required | required | required |
+| `manifestDigest` | digest of the COMPLETE closed manifest — release, environment, region, account, bound context, stack set — per §6b's `snapshot` framing; a release SHA plus an assembly digest is NOT this | required | required, equal to the plan decision's | required, equal to the plan decision's |
+| `stacks` | equal, in content AND order, to one reviewed plan group (SPEC-DEPLOY-011) | required | required, equal to the plan decision's | required, equal to the plan decision's |
+| `planDigest` | the reviewed `PLAN_DIGEST` (SPEC-DEPLOY-016) | **`null`** — no plan exists yet, and a non-null value here authorizes a plan nobody reviewed | **required, non-null** — this is the plan being executed | **required, non-null** — the digest of the DECLINED plan whose change sets are being deleted |
+| `approvedAt` | strict RFC3339 UTC that round-trips through the calendar (SPEC-DEPLOY-009) | required | required | required |
+| `expiresAt` | same format; `expiresAt − approvedAt` ≤ 1h, re-checked before EACH effect (SPEC-DEPLOY-010/017) | required | required | required |
+
+Per-mode effects are not restated here as prose: they are the partition in the policy file, and a
+value whose mode does not cover the effect being attempted refuses. There is **no cleanup mode**.
+Removing a stack record is authorized by a different instrument entirely (§8b), which is why the
+mode enum stops at three.
+
+### 8b. The stack-record cleanup instrument
+
+Round 6 found `delete-review-in-progress-stack-record` naming the cloud instrument while that
+instrument neither authorized it nor gave it a mode — an effect that read as authorized and could
+be authorized by no value. Folding it into `CBA_CLOUD_GATE` would have been worse: that variable
+is read by a LANE, and the one property this effect must keep is that no automation can consume a
+value permitting it.
+
+It therefore has its own closed instrument, `stack-record-authorization`: written by Zamp, per
+stack record, AFTER observing that record's status; supplied the way the spend instrument is — an
+**out-of-band record with nothing to read it**; and bound to
+`stack+observedStatus+observedAt+decisionId`, because the hazard being managed is a stale
+observation. It authorizes exactly one effect, and that effect is performed by a human
+(SPEC-DEPLOY-021).
 
 ## 9. Relationship to existing mechanisms
 
@@ -421,10 +477,10 @@ runbook above is marked blocked rather than runnable:
 | Prerequisite | Why | SPEC-ID |
 | --- | --- | --- |
 | A `bind_only` dispatch path that terminates after the preflight and cannot enter a preparing or executing stage | A pre-dispatch check on a mutable Environment variable constrains nothing; the guarantee must be the DAG | SPEC-LANE-005 |
-| A `correlation_id` dispatch input, published BOTH in the run's own name and inside structured uploaded artifacts | Evidence must bind to the request, not to a timestamp window; and an id that exists only inside an artifact cannot identify the run you must find in order to download it | SPEC-LANE-006, SPEC-RUN-009 |
+| A `correlation_id` dispatch input of closed format, refused in the preflight when malformed, published BOTH in a canonical run NAME and inside structured uploaded artifacts | Evidence must bind to the request, not to a timestamp window; an id that exists only inside an artifact cannot identify the run you must find in order to download it; and a run selected by substring is not identified at all | SPEC-LANE-006, SPEC-LANE-007, SPEC-RUN-009 |
 | A complete successor authorization schema: closed key set, `issue` pin, `decisionId`, the `plan_only`/`deploy`/`abandon` mode enum, the window, the stack group, and a digest of the complete closed manifest | Release SHA plus assembly digest leaves environment, region, account, context and stack set unauthorized; and an instrument that does not name its mode cannot distinguish a plan from an execution | SPEC-DEPLOY-019 |
 | An abandon lane under the release lock that deletes CHANGE SETS only | Declined plans leave executable change sets, and cleanup cannot be raw CLI calls outside the lock without gate or window revalidation | SPEC-DEPLOY-019, SPEC-RUN-008 |
-| No lane capable of deleting a stack record, and an execution policy that does not grant `cloudformation:DeleteStack` to a lane | `DeleteStack` takes no expected-status precondition and the release lock binds only this repository's lanes, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it | SPEC-DEPLOY-021 |
+| An out-of-band `stack-record-authorization` record, never an Environment variable, plus no lane capable of deleting a stack record and an execution policy that does not grant `cloudformation:DeleteStack` to a lane | `DeleteStack` takes no expected-status precondition and the release lock binds only this repository's lanes, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it | SPEC-DEPLOY-021 |
 
 **Activation, once each tool exists.** The PROPOSED ids in §7 become ACTIVE one at a time, each
 in an implementation commit whose tree already satisfies its predicates and carries its mutation

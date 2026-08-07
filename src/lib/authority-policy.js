@@ -159,6 +159,20 @@ const EXPECTED_DOCUMENTS = {
     boundTo: 'model+ceilings',
     authorizes: ['invoke-paid-model-audit'],
   },
+  // Round 6: the stack-record cleanup effect named the cloud instrument, which did not authorize
+  // it and gave it no mode — a dangling reverse reference that left the effect unauthorizable.
+  // Folding it into the cloud instrument would have been worse: `CBA_CLOUD_GATE` is an
+  // Environment variable a LANE reads, and the one thing this effect must never be is
+  // machine-consumable. It gets its own instrument, supplied the way the spend one is — an
+  // out-of-band human record with nothing to read it — bound to the exact stack, the status
+  // observed and the instant of that observation, because the whole hazard is a stale reading.
+  'stack-record-authorization': {
+    writtenBy: 'zamp',
+    writtenWhen: 'per stack record, after observing its status',
+    suppliedAs: 'out-of-band record',
+    boundTo: 'stack+observedStatus+observedAt+decisionId',
+    authorizes: ['delete-review-in-progress-stack-record'],
+  },
 };
 
 /** The EXACT effect matrix — who authorizes it and who performs it. */
@@ -181,28 +195,79 @@ const EXPECTED_EFFECTS = {
   // CloudFormation actor, so a stale observation could authorize deleting a stack that acquired
   // resources meanwhile. It is modelled here so the matrix can express it, and performed by a
   // human under its own decision, never by a lane.
-  'delete-review-in-progress-stack-record': { authorizedBy: 'cloud-authorization', performedBy: 'zamp', note: 'human-performed only; no automated lane may perform it' },
+  'delete-review-in-progress-stack-record': { authorizedBy: 'stack-record-authorization', performedBy: 'zamp', note: 'human-performed only; no automated lane may perform it' },
   'invoke-paid-model-audit': { authorizedBy: 'spend-authorization', performedBy: 'zamp' },
 };
 
 /** Exact document set and keys. */
-const DOCUMENTS = ['review-scope', 'execution-gate', 'cloud-authorization', 'spend-authorization'];
+const DOCUMENTS = ['review-scope', 'execution-gate', 'cloud-authorization', 'spend-authorization', 'stack-record-authorization'];
 const DOCUMENT_KEYS = {
   'review-scope': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'bounds', 'authorizes'],
   'execution-gate': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'messageType', 'boundTo', 'authorizes'],
   'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes', 'modes'],
   'spend-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
+  'stack-record-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
 };
 
 /** Exact effect set and keys. */
 const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'invoke-paid-model-audit'];
 const EFFECT_KEYS = ['authorizedBy', 'performedBy'];
-/** Effects that change cloud state. Each is authorized by the cloud instrument and performed by
+/** Effects that change cloud state. Each is authorized by a CLOUD INSTRUMENT and performed by
  * Zamp — preparing a change set is here because it creates resources and publishes assets. */
 const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record'];
+/**
+ * The closed set of instruments that may authorize a cloud effect. Two, not one, and the split is
+ * the point: the lane-readable instrument covers what a lane performs, and the out-of-band one
+ * covers the effect no lane may perform. The publication gate is in neither.
+ */
+const CLOUD_INSTRUMENTS = ['cloud-authorization', 'stack-record-authorization'];
 /** The closed mode vocabulary of the cloud instrument. A value outside it authorizes nothing. */
-const CLOUD_MODES = ['plan_only', 'deploy', 'abandon', 'stack-record-cleanup'];
+const CLOUD_MODES = ['plan_only', 'deploy', 'abandon'];
 const EFFECT_OPTIONAL_KEYS = ['note'];
+
+/**
+ * The instrument/effect relation, in BOTH directions, as one law over two matrices.
+ *
+ * Round 6 found `delete-review-in-progress-stack-record` naming the cloud instrument while that
+ * instrument neither authorized it nor gave it a mode: an effect that read as authorized and could
+ * not be authorized by any value. Three things had to be true at once for that to survive — the
+ * forward check only walked documents' `authorizes` lists, so an effect in NO list was never
+ * visited; the reverse direction was unchecked; and the pinned literals in this file agreed with
+ * the defect, so no data comparison could contradict it.
+ *
+ * The fix is a law that takes its two matrices as ARGUMENTS. It runs over the loaded policy inside
+ * `validate`, and over this file's own literals at import time — a pin that contradicts itself
+ * cannot even load — and a test can call it directly with a deliberately dangling pair, which is
+ * the only way to prove a rule whose production inputs are supposed to be correct.
+ *
+ * @param {Record<string, {authorizedBy: string}>} effects
+ * @param {Record<string, {authorizes: string[], modes?: Record<string, string[]>}>} documents
+ * @param {string} label - what to call these matrices in a failure message
+ */
+export function assertAuthorityAgreement(effects, documents, label) {
+  for (const [name, effect] of Object.entries(effects)) {
+    const source = effect.authorizedBy;
+    if (!DOCUMENTS.includes(source)) continue; // MERGE_DECISION is a message, not a document
+    const doc = documents[source];
+    if (!doc) fail(`${label}.effects.${name}.authorizedBy names "${source}", which is not a declared document.`);
+    if (!doc.authorizes.includes(name)) {
+      fail(`${label}.effects.${name}.authorizedBy is "${source}", but that document does not authorize ${name}.`);
+    }
+    // An instrument that distinguishes modes must place every effect it authorizes in one of them,
+    // or the effect is authorized by the document and by no value the document can take.
+    if (doc.modes && !Object.values(doc.modes).some((list) => list.includes(name))) {
+      fail(`${label}.effects.${name} is authorized by "${source}", whose modes place it in none of them.`);
+    }
+  }
+  for (const [source, doc] of Object.entries(documents)) {
+    for (const name of doc.authorizes) {
+      if (!effects[name]) fail(`${label}.documents.${source}.authorizes references unknown effect "${name}".`);
+      if (effects[name].authorizedBy !== source) {
+        fail(`${label}.effects.${name}.authorizedBy must be "${source}" because that document authorizes it.`);
+      }
+    }
+  }
+}
 
 /**
  * What may appear in `effects[*].authorizedBy`.
@@ -216,6 +281,10 @@ const EFFECT_OPTIONAL_KEYS = ['note'];
  * (#70 design round 3), which is named, bound and Zamp's — a placeholder cannot be validated.
  */
 const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
+
+// The pinned matrices are held to the same law as the data they validate. A literal that names an
+// instrument which does not name it back stops this module from loading at all.
+assertAuthorityAgreement(EXPECTED_EFFECTS, EXPECTED_DOCUMENTS, 'EXPECTED');
 
 /** Surfaces whose statements the policy governs. Every cold-start document, template and skill. */
 export const REQUIRED_SURFACES = [
@@ -380,10 +449,6 @@ export function validateAuthorityPolicy(policy) {
     // A document may only authorize an effect that names it back — checked before exact comparison so
     // a dangling authority is reported as dangling.
     for (const effect of doc.authorizes) {
-      const declared = policy.effects?.[effect]?.authorizedBy;
-      if (declared !== undefined && declared !== name) {
-        fail(`policy.effects.${effect}.authorizedBy must be "${name}" because that document authorizes it.`);
-      }
     }
     for (const [field, want] of Object.entries(expected)) {
       const got = doc[field];
@@ -415,8 +480,8 @@ export function validateAuthorityPolicy(policy) {
     // #70 design round 3: the placeholder became a named instrument. Deploy — and every other
     // cloud effect — must be authorized by the cloud-authorization document, never by the
     // publication gate and never by a word that validates nothing.
-    if (CLOUD_EFFECTS.includes(name) && effect.authorizedBy !== 'cloud-authorization') {
-      fail(`policy.effects.${name} must be authorized by the cloud-authorization document.`);
+    if (CLOUD_EFFECTS.includes(name) && !CLOUD_INSTRUMENTS.includes(effect.authorizedBy)) {
+      fail(`policy.effects.${name} must be authorized by a cloud instrument (${CLOUD_INSTRUMENTS.join(' or ')}).`);
     }
     if (effect.authorizedBy !== expected.authorizedBy) {
       fail(`policy.effects.${name}.authorizedBy must be exactly "${expected.authorizedBy}".`);
@@ -429,14 +494,8 @@ export function validateAuthorityPolicy(policy) {
       fail(`policy.effects.${name}.performedBy is "${effect.performedBy}", which may never ${name}.`);
     }
   }
-  // Every effect a document authorizes must name that document back — no dangling authority.
-  for (const name of DOCUMENTS) {
-    for (const effect of policy.documents[name].authorizes) {
-      if (policy.effects[effect].authorizedBy !== name) {
-        fail(`policy.effects.${effect}.authorizedBy must be "${name}" because that document authorizes it.`);
-      }
-    }
-  }
+  // Both directions of the instrument/effect relation, as ONE law (see assertAuthorityAgreement).
+  assertAuthorityAgreement(policy.effects, policy.documents, 'policy');
 
   // --- governed surfaces and their classification ----------------------------------------------
   assertStringArray('policy.governedSurfaces', policy.governedSurfaces);

@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.3.0
+version: 0.4.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006]
+specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
 inputs: [the declined plan's binding record, a caller-generated correlation id, Zamp's abandon-mode cloud authorization]
 outputs: [the change sets deleted, any leftover REVIEW_IN_PROGRESS stack record REPORTED, a structured abandon artifact]
 gateRequired: true
@@ -39,7 +39,11 @@ cloudMutation: true
 > record is REPORTED, never deleted here — resolving it is a separate human decision under its
 > own effect, `delete-review-in-progress-stack-record`, which
 > [`spec/authority-policy.json`](../../spec/authority-policy.json) marks human-performed and no
-> automated lane may perform (SPEC-DEPLOY-021).
+> automated lane may perform (SPEC-DEPLOY-021). **Round 6 gave that effect its own instrument**:
+> it named `cloud-authorization`, which did not authorize it and gave it no mode, so it read as
+> authorized and no value could authorize it. It is now `stack-record-authorization` — an
+> out-of-band human record, deliberately not an Environment variable, so no lane can consume a
+> value permitting it (spec §8b).
 >
 > The remaining implementation-phase prerequisites:
 >
@@ -84,9 +88,11 @@ and not by a lane (SPEC-DEPLOY-021).
    them this operation does not run.
 2. Zamp decided this plan will NOT execute. An abandoned plan cannot be un-abandoned; a new
    binding and plan cycle is what follows.
-3. The declined plan's binding record is at hand — run id, correlation id, `decisionId`, release
-   SHA, stack group, `PLAN_DIGEST` (SPEC-RUN-007). The lane re-derives the change-set names from
-   the release; the record is what ties this abandon to that decision.
+3. A correlation id is generated for THIS decision, matching `^cba-70-[0-9a-f]{32}$`, and
+   recorded before dispatch (SPEC-LANE-006). The declined plan's binding record is at hand — run
+   id, correlation id, `decisionId`, release SHA, stack group, `PLAN_DIGEST` (SPEC-RUN-007). The
+   lane re-derives the change-set names from the release; the record is what ties this abandon to
+   that decision.
 4. Zamp has issued an `abandon`-mode cloud authorization for THIS decision, bound to the same
    manifest digest and stack group, with a fresh `decisionId` and a ≤1h window. That mode
    authorizes `abandon-change-sets` and nothing else — it can neither prepare nor execute
@@ -126,14 +132,14 @@ and not by a lane (SPEC-DEPLOY-021).
    deletes those change sets. Nothing is prepared, nothing is executed, and no stack is deleted.
    Any stack left in `REVIEW_IN_PROGRESS` is recorded in the artifact as a reported condition.
 
-3. **Zamp** resolves the run by correlation id — `headSha` is main's tip, not the release SHA,
-   and selects nothing (SPEC-LANE-006) — waits for a terminal conclusion, and downloads the
-   artifact:
+3. **Zamp** resolves the run by the complete run name — matched by EQUALITY, bounded at ten
+   attempts 30s apart; `headSha` is main's tip, not the release SHA, and selects nothing
+   (SPEC-LANE-006/007) — waits for a terminal conclusion, and downloads the artifact:
 
    ```text
-   gh run list --workflow "Release Pilot" --event workflow_dispatch \
-     --json databaseId,name,displayTitle,headSha,status,conclusion,event \
-     --jq '[.[] | select(.displayTitle | contains("<correlation-id>"))]'
+   gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
+     --json databaseId,displayTitle,headSha,status,conclusion,event \
+     --jq '[.[] | select(.displayTitle == "cba-release abandon <correlation-id>")]'
    gh run watch <run-id> --exit-status
    gh run download <run-id> --name abandon --dir <evidence-dir>/abandon-<run-id>
    sha256sum <evidence-dir>/abandon-<run-id>/abandon.json
@@ -145,8 +151,10 @@ and not by a lane (SPEC-DEPLOY-021).
 
 4. **Zamp** decides, separately, what to do with any reported `REVIEW_IN_PROGRESS` record. That
    decision is out of scope for this runbook and for every lane: the effect is
-   `delete-review-in-progress-stack-record`, it is human-performed by policy, and it needs its
-   own record stating the stack observed, the status observed, and the instant of observation.
+   `delete-review-in-progress-stack-record`, authorized only by a `stack-record-authorization`
+   record bound to `stack+observedStatus+observedAt+decisionId` (spec §8b), performed by hand.
+   The binding is the point — the hazard is acting on a stale observation, so the instrument
+   names the observation it rests on.
 
 ## Evidence
 
@@ -173,6 +181,9 @@ and not by a lane (SPEC-DEPLOY-021).
    entrypoint no longer matches this contract.
 4. The artifact's correlation id or release SHA does not match the request — stop; evidence that
    cannot be tied to THIS decision does not close it.
+5. Run resolution returns zero matches after the tenth attempt, or more than one at any point —
+   stop (SPEC-LANE-007). A second run bearing this correlation id is never disambiguated by
+   choosing the newer one.
 
 ## Rollback
 

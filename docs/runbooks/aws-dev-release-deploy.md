@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.4.0
+version: 0.5.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006]
+specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
 inputs: [the release SHA, the wave's stack group, the reviewed PLAN_DIGEST from the plan runbook, a fresh decisionId, Zamp's deploy cloud authorization value]
 outputs: [executed change sets for the wave, per-stack results, the complete evidence artifact bound to run id and decision]
 gateRequired: true
@@ -33,7 +33,9 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    them — creating a change set with an existing name fails, so a second plan for the same
    release either failed to prepare or the earlier sets were abandoned. Either way, if another
    plan run happened, restart at [bind](aws-dev-release-bind.md) rather than assume.
-4. A correlation id is generated for THIS dispatch and recorded before it (SPEC-LANE-006).
+4. A correlation id is generated for THIS dispatch, matching exactly `^cba-70-[0-9a-f]{32}$`,
+   and recorded before it; the run name that carries it is `cba-release <mode> <correlationId>`
+   (SPEC-LANE-006).
 
 ## Commands
 
@@ -66,17 +68,20 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
 3. **Zamp** resolves the run and waits for a terminal conclusion (SPEC-RUN-009):
 
    ```text
-   gh run list --workflow "Release Pilot" --event workflow_dispatch \
-     --json databaseId,name,displayTitle,headSha,status,conclusion,event \
-     --jq '[.[] | select(.displayTitle | contains("<correlation-id>"))]'
+   # at most 10 attempts, 30s apart; the complete run name is matched by EQUALITY
+   gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
+     --json databaseId,displayTitle,headSha,status,conclusion,event \
+     --jq '[.[] | select(.displayTitle == "cba-release dev_only <correlation-id>")]'
    gh run watch <run-id> --exit-status
    ```
 
-   Expected outcome: exactly ONE candidate, selected by the correlation id the run publishes in
-   its own NAME (SPEC-LANE-006), and a terminal `conclusion` of `success`. **`headSha` is not a
-   selector here**: the dispatch targets `--ref main`, so `headSha` is main's tip, which for any
-   release older than the tip is not the release SHA. Round 5 of the design review found the
-   earlier instruction rejected valid releases for exactly that reason. The release SHA is
+   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. Round 6
+   replaced a `contains()` match with equality on the complete name: a substring match over an
+   attacker- or accident-controlled title is not identification, and the run name is a closed
+   string (`cba-release <mode> <correlationId>`, SPEC-LANE-006). Zero matches after the tenth
+   attempt is a STOP, not a longer wait; two or more is a STOP in every case (SPEC-LANE-007).
+   **`headSha` is not a selector here**: the dispatch targets `--ref main`, so `headSha` is main's
+   tip, which for any release older than the tip is not the release SHA. The release SHA is
    verified separately, from the artifact, in the next step.
 
 4. **Zamp** downloads the structured deploy ARTIFACT and digests it:
@@ -119,6 +124,9 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    the dispatched release SHA, or the run has no terminal conclusion — stop; evidence that
    cannot be tied to THIS decision cannot show what executed. A `headSha` differing from the
    release SHA is expected whenever the release is not main's tip, and is not a stop.
+7. Run resolution returns zero matches after the tenth attempt, or more than one at any point —
+   stop (SPEC-LANE-007). A duplicate correlation id means reuse, an unrecorded re-dispatch or
+   forgery; none of those is resolved by picking a run.
 
 ## Rollback
 

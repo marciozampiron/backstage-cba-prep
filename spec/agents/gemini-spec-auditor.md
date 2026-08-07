@@ -60,10 +60,18 @@ Round 5 of this design's review found this file still specifying the superseded
 `{path, bytes, sha256}` shape for all of them, which is a snapshot record and cannot describe a
 range:
 
-| Digest here | §6b kind |
-| --- | --- |
-| `SPEC_SHA256`, `MECHANICAL_REPORT_SHA256`, `INPUT_BUNDLE_SHA256` | `snapshot` — files at one commit |
-| `DIFF_SHA256` (the `base..commit` range) | `diff` — change between two commits, renames recorded as delete + add |
+| Digest here | §6b kind | Bound to, inside the digested bytes |
+| --- | --- | --- |
+| `SPEC_SHA256` | `snapshot` — repository files at one commit | `commit` = the audited SHA |
+| `PERSONA_SHA256` | `bundle` — this persona file as sent, plus the prompt as invoked, which is generated and exists at no commit | `producer` = the invoking runbook id + persona version |
+| `MECHANICAL_REPORT_SHA256` | `bundle` — tool output, not repository content | `producer` = linter/conformance tool identity + version |
+| `INPUT_BUNDLE_SHA256` | `bundle` — the exact stream handed to the model | `producer` = the invoking runbook id |
+| `DIFF_SHA256` (the `base..commit` range) | `diff` — renames recorded as delete + add | `baseSha` and `headSha` |
+
+Round 6 found two gaps this table closes: `snapshot` was being applied to generated reports and
+bundles, which have no commit to be bound to and so could not be recomputed from the repository
+by anyone; and `PERSONA_SHA256` had no kind at all, which made the one digest describing WHAT WAS
+ASKED the least specified thing in the report.
 
 Round 6 of #70 reproduced a collision between two file sets whose concatenations were identical;
 "in a recorded order" inherits that defect, and an audit whose inputs can collide proves nothing
@@ -86,8 +94,9 @@ The persona runs on a model service, and that is stated, not hidden:
   mutation, no repository write. Network is the model endpoint and nothing else.
 - **No secrets in the bundle.** The bundle is built from the repository's already-reviewed
   content only; no environment values, no gate values, no credentials of any kind.
-- **Pinned execution**: exact model and profile recorded; the persona/prompt text digested
-  (`PERSONA_SHA256`); timeout, token and cost ceilings set in advance and recorded. A run that
+- **Pinned execution**: exact model and profile recorded; the persona/prompt text digested as a
+  `bundle` (`PERSONA_SHA256`, §6b — it is generated at invocation, not a file at a
+  commit); timeout, token and cost ceilings set in advance and recorded. A run that
   hits a ceiling reports `INCOMPLETE`, never a silent partial PASS.
 
 ## 5. Procedure
@@ -117,15 +126,15 @@ the protocol amendment lands. Format:
 [SPEC_AUDIT_REPORT v1]
 AUDITOR: Gemini Spec Auditor (persona)
 MODEL: <exact model id / profile>
-PERSONA_SHA256: <digest of this persona file + the prompt as invoked>
+PERSONA_SHA256: <bundle digest (§6b) of this persona file + the prompt as invoked>
 COMMIT: <full 40-character SHA>
 BASE: <full 40-character SHA of the last independently reviewed commit of this slice>
 BASE_IS_ANCESTOR: <verified | REFUSED>
-DIFF_SHA256: <digest of the base..commit diff>
-SPEC_SHA256: <digest of the spec registry file set at COMMIT>
+DIFF_SHA256: <diff digest (§6b), with baseSha and headSha inside the digested bytes>
+SPEC_SHA256: <snapshot digest (§6b) of the spec registry file set, bound to COMMIT>
 MECHANICAL: <pass | fail | not yet implemented>
-MECHANICAL_REPORT_SHA256: <digest, or n/a>
-INPUT_BUNDLE_SHA256: <digest of the exact bundle handed to the model>
+MECHANICAL_REPORT_SHA256: <bundle digest (§6b), or n/a>
+INPUT_BUNDLE_SHA256: <bundle digest (§6b) of the exact stream handed to the model>
 LIMITS: <timeout / token ceiling / cost ceiling, as configured>
 SCOPE: <issue / slice / SPEC-IDs covered>
 VERDICT: PASS | FINDINGS | INCOMPLETE

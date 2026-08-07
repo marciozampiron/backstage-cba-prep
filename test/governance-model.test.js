@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES } from '../src/lib/authority-policy.js';
+import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement } from '../src/lib/authority-policy.js';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1572,7 +1572,7 @@ test('the authority policy states the invariants as data, not prose', () => {
   // (#70 design round 3). Preparing change sets is a cloud effect too, and is named as one.
   assert.equal(POLICY.effects.deploy.authorizedBy, 'cloud-authorization');
   assert.equal(POLICY.effects.deploy.performedBy, 'zamp');
-  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record']) {
+  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
     assert.equal(POLICY.effects[effect].authorizedBy, 'cloud-authorization');
     assert.equal(POLICY.effects[effect].performedBy, 'zamp');
   }
@@ -1789,11 +1789,25 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   }, /must be authorized by MERGE_DECISION/);
   // The exact conflation design round 3 found: a cloud effect claiming the PUBLICATION gate.
   // Each cloud effect is checked, so widening one of them cannot ride on another's rule.
-  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
+  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record']) {
     expectRejected((p) => {
       p.effects[effect].authorizedBy = 'execution-gate';
-    }, new RegExp(`${effect}[\\s\\S]*cloud-authorization`));
+    }, new RegExp(`${effect}[\\s\\S]*(cloud instrument|must be exactly)`));
   }
+  // ROUND 6: an effect may not name a document that does not authorize it. This is the exact
+  // dangling reverse reference the validator accepted — the stack-record effect pointed at the
+  // cloud instrument, which listed it nowhere and gave it no mode, so it read as authorized and
+  // could not be authorized by any value.
+  expectRejected((p) => {
+    p.effects['delete-review-in-progress-stack-record'].authorizedBy = 'cloud-authorization';
+  }, /does not authorize delete-review-in-progress-stack-record|must be exactly "stack-record-authorization"/);
+  expectRejected((p) => {
+    p.effects['invoke-paid-model-audit'].authorizedBy = 'review-scope';
+  }, /does not authorize invoke-paid-model-audit|must be exactly "spend-authorization"/);
+  // And the out-of-band cleanup instrument cannot be widened to cover what a lane performs.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].authorizes.push('execute-change-sets');
+  }, /must be exactly|authorizedBy/);
   // And the spend instrument cannot be swapped for the cloud one.
   expectRejected((p) => {
     p.documents['spend-authorization'].authorizes = ['execute-change-sets'];
@@ -1821,8 +1835,13 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   }, modeRejection);
   // And a mode cannot name an effect the instrument does not authorize at all.
   expectRejected((p) => {
-    p.documents['cloud-authorization'].modes['stack-record-cleanup'] = ['delete-review-in-progress-stack-record'];
+    p.documents['cloud-authorization'].modes.abandon = ['delete-review-in-progress-stack-record'];
   }, /does not authorize/);
+  // ROUND 6: the lane-readable instrument cannot acquire a cleanup mode either — that is the
+  // fold-in this round rejected, and `stack-record-cleanup` is no longer in the mode vocabulary.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes['stack-record-cleanup'] = ['delete-review-in-progress-stack-record'];
+  }, /unknown mode/);
   // The map is not merely present: a mode whose value is not a list of effect names is refused.
   expectRejected((p) => {
     p.documents['cloud-authorization'].modes = 'plan_only';
@@ -1832,11 +1851,64 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   }, /modes\.plan_only/);
 });
 
+test('ROUND 6: the instrument/effect relation is a law over both matrices, proven directly', () => {
+  // The pinned literals in src/lib/authority-policy.js are correct, so no mutation of the DATA can
+  // reach this law first — a pin always speaks before it. That is precisely why the law takes its
+  // matrices as arguments: called with a deliberately broken pair, it is provable, and the module
+  // calls it on its own literals at import so a self-contradicting pin cannot load.
+  const ok = () =>
+    assertAuthorityAgreement(
+      { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+      { 'cloud-authorization': { authorizes: ['do-thing'], modes: { only: ['do-thing'] } } },
+      'T',
+    );
+  assert.doesNotThrow(ok);
+
+  // THE ROUND 6 DEFECT, exactly: the effect names an instrument that does not list it.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+        { 'cloud-authorization': { authorizes: [], modes: {} } },
+        'T',
+      ),
+    /does not authorize do-thing/,
+  );
+  // The other half: an instrument that lists the effect but whose MODES place it in none of them —
+  // authorized by the document and by no value the document can take.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+        { 'cloud-authorization': { authorizes: ['do-thing'], modes: { other: [] } } },
+        'T',
+      ),
+    /modes place it in none of them/,
+  );
+  // And the forward direction: the document claims an effect that names someone else.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'spend-authorization' } },
+        { 'cloud-authorization': { authorizes: ['do-thing'] }, 'spend-authorization': { authorizes: [] } },
+        'T',
+      ),
+    /must be "cloud-authorization" because that document authorizes it|does not authorize do-thing/,
+  );
+  // A document claiming an effect that does not exist at all.
+  assert.throws(
+    () => assertAuthorityAgreement({}, { 'cloud-authorization': { authorizes: ['ghost'] } }, 'T'),
+    /unknown effect "ghost"/,
+  );
+  // The real matrices satisfy it — the same call the module makes at import.
+  assert.doesNotThrow(() => assertAuthorityAgreement(POLICY.effects, POLICY.documents, 'live'));
+});
+
 test('a dangling document-to-effect authority is rejected', () => {
   expectRejected((p) => {
     // the document claims the effect, but the effect names a different authorizer
     p.documents['execution-gate'].authorizes.push('merge');
-  }, /policy\.effects\.merge\.authorizedBy must be "execution-gate"/);
+  }, /policy\.effects\.merge\.authorizedBy must be "execution-gate"|policy\.documents\.execution-gate\.authorizes must be exactly/);
 });
 
 test('an incomplete governed-surface list is rejected', () => {

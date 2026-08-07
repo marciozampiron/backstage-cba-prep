@@ -349,6 +349,36 @@ by an independent verifier. SPEC-DEPLOY-021 records the unautomatable effect. Te
 reconciled: the plan operation downloads one named artifact (not a "run log"), and evidence
 records change-set NAMES, because a change-set id is an ARN and evidence carries no live ARNs.
 
+Design round 6 (Codex, four findings) closed the gap between what the policy said and what it
+could express. **The stack-record cleanup effect had no authorization anyone could issue**: it
+named the cloud instrument, which neither listed it nor gave it a mode, so it read as authorized
+and no value could authorize it. Three things had to be true at once for that to survive — the
+forward check only walked documents' effect lists, so an effect in no list was never visited; the
+reverse direction was unchecked; and the pinned literals agreed with the defect. The relation is
+now ONE law taking both matrices as arguments, applied to the loaded policy inside `validate` and
+to this file's own literals at import, so a self-contradicting pin cannot load. Because correct
+pins mean no data mutation can reach it first, the law is proven by calling it directly with a
+deliberately dangling pair — the same call the module makes on itself. The effect got its own
+instrument, `stack-record-authorization`: out-of-band like the spend one, never an Environment
+variable, bound to `stack+observedStatus+observedAt+decisionId`, because the hazard being managed
+is acting on a stale observation.
+
+Run selection became identification rather than a guess: the correlation id has a closed format
+(`^cba-70-[0-9a-f]{32}$`, refused in the preflight when malformed), the run NAME is exactly
+`cba-release <mode> <correlationId>`, and the runbooks match the COMPLETE name by equality —
+`contains()` over a title is not identification — with the query pinned to workflow, branch and
+dispatch event, bounded at ten attempts. Zero matches after the bound is a stop; two or more is a
+stop in every case (SPEC-LANE-007).
+
+SPEC-DEPLOY-019 now enumerates its schema instead of claiming one: §8a lists all ten keys with
+per-key and per-mode constraints, including the `planDigest` the instrument's own binding
+required — `null` under `plan_only`, non-null under `deploy` and `abandon`. And the digest
+taxonomy gained a fourth kind: `snapshot` is defined by a commit, which a linter report or a
+prompt-as-invoked does not have, so generated streams are `bundle`, bound to their producer;
+`snapshot` binds its commit and `diff` binds `baseSha`/`headSha` inside the digested bytes; and
+every digest the auditor persona names — `PERSONA_SHA256` included, which previously had no kind
+at all — is mapped to exactly one.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

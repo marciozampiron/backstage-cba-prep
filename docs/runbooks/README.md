@@ -3,7 +3,7 @@
 > **A runbook grants no authority.** It documents HOW an operation is performed, never WHETHER
 > it may be. A runbook that appears to permit something permits nothing (SPEC-RUN-001).
 
-## Three authorizations, never interchangeable
+## Four authorizations, never interchangeable
 
 Design rounds 2–3 found these conflated. They are policy DATA in
 [`spec/authority-policy.json`](../../spec/authority-policy.json), summarized here (see
@@ -14,10 +14,15 @@ Design rounds 2–3 found these conflated. They are policy DATA in
 | publication (`CBA_EXECUTION_GATE`) | branch publication, pull-request creation | Opus |
 | cloud (`CBA_CLOUD_GATE`) | `deploy`, `prepare-change-sets`, `execute-change-sets`, `abandon-change-sets` | Zamp |
 | spend (out-of-band record) | `invoke-paid-model-audit` | Zamp |
+| stack-record cleanup (out-of-band record) | `delete-review-in-progress-stack-record` | Zamp, by hand |
 
 **Preparing change sets is already cloud mutation** — `plan_only` creates CloudFormation change
 sets and publishes assets — so it depends on a cloud authorization exactly as `deploy` does
 (SPEC-RUN-002).
+
+The fourth instrument exists because round 6 found the cleanup effect naming the cloud one,
+which did not authorize it and gave it no mode. It is supplied out of band — never an Environment
+variable — precisely so that no lane can read a value permitting it.
 
 **A cloud authorization also names its MODE**, and the mode fixes the effects exactly — round 5
 of the design review found that one instrument covering four effects could not distinguish a

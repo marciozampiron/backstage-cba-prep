@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-bind
 kind: runbook
-version: 0.3.0
+version: 0.4.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006]
+specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007]
 inputs: [the release SHA, a caller-generated correlation id, the dev Environment configuration]
 outputs: [the structured binding artifact carrying the exact manifest and its digest, the terminal run record]
 gateRequired: false
@@ -50,8 +50,10 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
 1. The `bind_only` path and the binding artifact exist in the reviewed workflow (SPEC-LANE-005,
    SPEC-LANE-006). Without them this operation does not run at all.
 2. The release SHA is a full 40-character ancestor of `main`.
-3. A correlation id is generated for THIS request and recorded before dispatch — it is what ties
-   the eventual artifact to this decision rather than to a timestamp window (SPEC-RUN-009).
+3. A correlation id is generated for THIS request, matching exactly
+   `^cba-70-[0-9a-f]{32}$`, and recorded before dispatch — it is what ties the eventual artifact
+   to this decision rather than to a timestamp window, and its closed format is what allows the
+   run to be selected by equality on its complete name (SPEC-RUN-009, SPEC-LANE-006).
 4. No other run of this release is in flight (`release-dev` serializes, SPEC-LANE-002).
 
 ## Commands
@@ -74,17 +76,20 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
    partial file that hashes just as happily as a complete one (SPEC-RUN-009):
 
    ```text
-   gh run list --workflow "Release Pilot" --event workflow_dispatch \
-     --json databaseId,name,displayTitle,headSha,status,conclusion,event \
-     --jq '[.[] | select(.displayTitle | contains("<correlation-id>"))]'
+   # at most 10 attempts, 30s apart; the complete run name is matched by EQUALITY
+   gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
+     --json databaseId,displayTitle,headSha,status,conclusion,event \
+     --jq '[.[] | select(.displayTitle == "cba-release bind_only <correlation-id>")]'
    gh run watch <run-id> --exit-status
    ```
 
-   Expected outcome: exactly ONE candidate, selected by the correlation id the run publishes in
-   its own NAME (SPEC-LANE-006), and a terminal `conclusion` of `success`. **`headSha` is not a
-   selector here**: the dispatch targets `--ref main`, so `headSha` is main's tip, which for any
-   release older than the tip is not the release SHA. Round 5 of the design review found the
-   earlier instruction rejected valid releases for exactly that reason. The release SHA is
+   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. Round 6
+   replaced a `contains()` match with equality on the complete name: a substring match over an
+   attacker- or accident-controlled title is not identification, and the run name is a closed
+   string (`cba-release <mode> <correlationId>`, SPEC-LANE-006). Zero matches after the tenth
+   attempt is a STOP, not a longer wait; two or more is a STOP in every case (SPEC-LANE-007).
+   **`headSha` is not a selector here**: the dispatch targets `--ref main`, so `headSha` is main's
+   tip, which for any release older than the tip is not the release SHA. The release SHA is
    verified separately, from the artifact, in the next step.
 
 3. **Zamp** downloads the structured binding ARTIFACT — not the log — and digests it:
@@ -126,6 +131,9 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
    release is not main's tip.
 3. The run has no terminal conclusion yet — wait; never hash an in-flight log or a partial
    artifact.
+3a. Run resolution returns zero matches after the tenth attempt, or more than one at any point —
+   stop (SPEC-LANE-007); a duplicate correlation id is never disambiguated by taking the newer
+   run.
 4. The artifact is absent or its manifest is incomplete — stop; there is no manifest to bind.
 
 ## Rollback
