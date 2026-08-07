@@ -2,6 +2,32 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-07 — Claude — #70 Slice B1 round 13: structural validation, documented schema, constant redaction
+
+- Codex's round-13 review of db1872ac: the closed schema validated NAMES only — `Changes:
+  "not-an-array"` and `Action: "SOMETHING_NEW"` both passed and became opaque text that could
+  still collect a human gate; the schema was not drift-aware (it lacked SyncWithActual,
+  PreviousDeploymentContext, ResourceDriftStatus, ResourceDriftIgnoredAttributes,
+  ChangeSource: NoModification, BeforeValueFrom/AfterValueFrom and Target.Drift, and it invented
+  `DeploymentMode: STANDARD`, which AWS does not document); and the opaque markers were a
+  published oracle — sha256("cba-pseudonym:" + value) reproduced `supersecret` offline. One HIGH,
+  two MEDIUMs. Fix-forward, all thirteen reviewed commits preserved.
+- Validation is one structural pass now: unknown key, wrong type and out-of-contract enum each
+  refuse BEFORE a digest exists, at every depth, and renderPlan runs the same validator itself
+  instead of trusting a caller to have remembered — a violating response is not rendered at all,
+  only its offending PATHS (never their values).
+- The schema was transcribed from the CloudFormation API reference (DescribeChangeSet, Change,
+  ResourceChange, ResourceChangeDetail, ResourceTargetDefinition, LiveResourceDrift,
+  ResourceDriftIgnoredAttribute, RollbackConfiguration, Parameter, Tag, ModuleInfo) with every
+  drift-aware member, and a full documented response is a permanent fixture that fails if the
+  schema drifts from the API. REVERT_DRIFT is the only documented DeploymentMode.
+- Every redaction is a CONSTANT class label. Determinism bought correlation and sold an offline
+  guessing oracle over parameter values, tag values and property blobs; no derivation of an
+  observed value is published anywhere. Where the delta matters, renderPlan compares the RAW
+  values in memory and prints changed/unchanged, and the drift-aware provenance
+  (ACTUAL_STATE/TEMPLATE) reads in clear because it is contract vocabulary.
+- Six protections, six reversions, six failures. Nothing was deployed, published or mutated.
+
 ## 2026-08-05 — Claude — #70 Slice B1 round 12: trust moved from key names to schema positions
 
 - Codex's round-12 review of f430e0bb: the sanitizer still chose a value's treatment from its KEY

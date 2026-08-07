@@ -350,74 +350,215 @@ function waitForStack(run, credEnv, stackName, { attempts = 120, sleep }) {
   return false;
 }
 
-/** STRUCTURED PSEUDONYMIZATION for review material (rounds 5-6). Pure redaction made two
- * principals indistinguishable, and an 8-hex fingerprint made them distinguishable but not
- * CLASSIFIABLE — Zamp could see that two hashes differed, never that one was the expected deploy
- * role and the other an attacker's. Review material now preserves the SAFE STRUCTURE — service,
- * region, resource type and resource path stay verbatim (role names in this project are public
- * repository content; the path is exactly what a human classifies by) — and pseudonymizes only
- * the ACCOUNT-identifying material, at 128 bits (32 hex — no feasible collision surface).
- * Stated limit: a 12-digit account space is enumerable offline against any unkeyed derivation;
- * this pseudonym prevents disclosure in logs (the same posture as mask-aws-account-id), it is
- * not cryptographic secrecy for the account id. */
-function pseudonym(value) {
-  return crypto.createHash('sha256').update(`cba-pseudonym:${value}`, 'utf8').digest('hex').slice(0, 32);
-}
-
-/** TYPE-AWARE rendering rules (round 7). A generic first-label rule reproduced the round-5
- * defect for ENDPOINTS: `cba-study-coach-pilot.workers.dev` and `evil.workers.dev` both became
- * opaque hashes, when the first label IS the identity Zamp reviews for the approved workers.dev
- * origin, the Cognito callbacks and CORS. And a generic "paths are public structure" rule leaked
- * the other way: KMS key UUIDs, API Gateway api ids, stack ids and URL query values are NOT
- * repository-public. So the renderer decides BY TYPE:
- *   - DECISION-BEARING hostnames render VERBATIM, from a reviewed suffix list (workers.dev — the
- *     approved pilot origin family; amazoncognito.com — the project-chosen auth domain;
- *     localhost). An UNKNOWN hostname renders as [unexpected-host#…] — visibly classifiable as
- *     something no reviewed decision produced.
- *   - GENERATED labels are pseudonymized inside known service domains (execute-api api ids).
- *   - URL query strings and fragments are stripped to [query-redacted] — tokens live there.
- *   - ARN resource parts are public for the services whose names THIS PROJECT chooses (iam,
- *     lambda, dynamodb, sns, logs, cloudwatch, s3, kms aliases, cloudformation stack NAMES) and
- *     pseudonymized where AWS generates them (kms key UUIDs, apigateway ids, cognito pool ids,
- *     cloudformation stack/changeset UUIDs). An UNKNOWN service's resource is pseudonymized
- *     whole — unknown is not proven public.
+/* ================= ROUND 13: CONSTANT REDACTION, VALIDATED STRUCTURE ==========================
+ *
+ * Two things changed here, both because the previous design leaked by construction.
+ *
+ * THE MARKERS WERE AN ORACLE. `[value#<sha256("cba-pseudonym:"+v)>]` is a published, deterministic
+ * derivation of the very value it hides: anyone holding the log tests candidates offline, and the
+ * review reproduced `supersecret` exactly that way. Determinism bought correlation; correlation
+ * was not worth an offline guessing oracle over parameter values, tag values and property blobs.
+ * Every redaction is now a CONSTANT class label — no hash of any observed value is published,
+ * ever. Where the human genuinely needs to know whether a value moved, `renderPlan` compares the
+ * RAW values in memory and prints `changed` / `unchanged`; the values themselves never appear.
+ *
+ * THE SCHEMA VALIDATED NAMES ONLY. `Changes: "not-an-array"` and `Action: "SOMETHING_NEW"` both
+ * passed the unknown-key walk and were quietly turned into markers at render time — so a new
+ * action, a new enum member or a changed type could reach a human gate as opaque text. Validation
+ * is now structural: unknown key, wrong type AND out-of-contract enum each REFUSE the plan before
+ * the digest exists, and `renderPlan` runs the same validator itself rather than trusting its
+ * caller to have remembered.
  */
+const REDACT = Object.freeze({
+  value: '[redacted]',
+  key: '[key-redacted]',
+  account: '[account-redacted]',
+  apiId: '[api-id-redacted]',
+  poolId: '[pool-id-redacted]',
+  keyId: '[key-id-redacted]',
+  id: '[id-redacted]',
+  name: '[name-redacted]',
+  bucket: '[bucket-redacted]',
+  objectKey: '[object-key-redacted]',
+  session: '[session-redacted]',
+  alias: '[alias-redacted]',
+  qualifier: '[qualifier-redacted]',
+  stream: '[stream-redacted]',
+  resource: '[resource-redacted]',
+  arn: '[arn-redacted]',
+  host: '[unexpected-host-redacted]',
+  credentialedUrl: '[credentialed-url-redacted]',
+  unparseableUrl: '[unparseable-url-redacted]',
+  url: '[url-redacted]',
+  path: '[path-redacted]',
+  query: '[query-redacted]',
+});
+
 const DECISION_BEARING_HOST_SUFFIXES = ['.workers.dev', '.amazoncognito.com'];
 const UUID_SHAPE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
-const UUID_EXACT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The names THIS PROJECT chose, as ANCHORED grammars — a whole segment, never a substring. */
 const PROJECT_TOKEN = '(?:cba-study-coach|cdk-cbardev|cdk-cbarpil)-[A-Za-z0-9-]+';
 const PROJECT_TOKEN_EXACT = new RegExp(`^${PROJECT_TOKEN}$`);
 
-/** URL paths a reviewed decision produces: the committed auth callback/logout shapes, the Cognito
- * hosted-UI endpoints and the API stage roots. Any OTHER path is data, not reviewed structure —
- * round 9: a secret can live in a path segment as easily as in a query value. */
+/** URL paths a reviewed decision produces. Any OTHER path is data: a secret rides a path segment
+ * as easily as a query value. */
 const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
 
-/* ================= ROUND 12: SANITIZATION BY POSITION, NOT BY KEY NAME =======================
+function renderHost(host) {
+  const lower = host.toLowerCase();
+  if (lower === 'localhost' || lower === '127.0.0.1') return host;
+  if (DECISION_BEARING_HOST_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return host;
+  // Exact family, explicit parts: the generated api id is redacted, the service suffix stays.
+  const generated = lower.match(/^([a-z0-9-]+)\.(execute-api\.[a-z0-9-]+\.amazonaws\.com)$/);
+  if (generated) return `${REDACT.apiId}.${generated[2]}`;
+  // No blanket for *.amazonaws.com — a bucket-style or ELB-style name is not proven public.
+  return REDACT.host;
+}
+
+/** URLs are FIELDS, not text: any scheme reaches this classifier, credentials never render, an
+ * unparseable candidate never falls back to raw text, and a path renders only when a reviewed
+ * decision produces that exact shape. */
+function renderUrl(candidate) {
+  let url;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return REDACT.unparseableUrl;
+  }
+  if (url.username || url.password) return REDACT.credentialedUrl;
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return REDACT.url;
+  const port = url.port ? `:${url.port}` : '';
+  const path = REVIEWED_URL_PATHS.has(url.pathname) ? url.pathname : `/${REDACT.path}`;
+  const suffix = url.search || url.hash ? `?${REDACT.query}` : '';
+  return `${url.protocol}//${renderHost(url.hostname)}${port}${path}${suffix}`;
+}
+
+/** Per-service ARN grammars, ANCHORED: only the exact project-owned identity segment renders, and
+ * a resource whose COMPLETE shape a branch does not recognize fails CLOSED. */
+function renderArnResource(service, resource) {
+  const whole = () => REDACT.resource;
+  if (service === 'iam') {
+    return /^(role|policy|user|group|instance-profile|oidc-provider|saml-provider|server-certificate)\/[!-~]+$/.test(resource) ? resource : whole();
+  }
+  if (service === 'sts') {
+    const assumed = resource.match(/^(assumed-role\/[^/]+)\/([^/]+)$/);
+    return assumed ? `${assumed[1]}/${REDACT.session}` : whole();
+  }
+  if (service === 'kms') {
+    if (new RegExp(`^alias/${PROJECT_TOKEN}$`).test(resource)) return resource;
+    if (/^alias\/[^/]+$/.test(resource)) return `alias/${REDACT.alias}`;
+    if (/^key\/[^/]+$/.test(resource)) return `key/${REDACT.keyId}`;
+    return whole();
+  }
+  if (service === 'cognito-idp') {
+    const pool = resource.match(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)(\/.+)?$/);
+    if (!pool) return whole();
+    return `userpool/${pool[1]}_${REDACT.poolId}${pool[3] ? `/${REDACT.path}` : ''}`;
+  }
+  if (service === 'cloudformation') {
+    const withId = resource.match(/^(stack|changeSet)\/([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+    const nameOnly = resource.match(/^(stack|changeSet)\/([^/]+)$/);
+    const m = withId || nameOnly;
+    if (!m) return whole();
+    const reviewedName = PROJECT_TOKEN_EXACT.test(m[2]) || /^cba-70-[0-9a-f]{12}$/.test(m[2]);
+    const name = reviewedName ? m[2] : REDACT.name;
+    return withId ? `${m[1]}/${name}/${REDACT.id}` : `${m[1]}/${name}`;
+  }
+  if (service === 'apigateway') {
+    if (resource === '/apis' || resource === '/tags/*') return resource;
+    if (/^\/tags\/.+$/.test(resource)) return `/tags/${REDACT.arn}`;
+    const m = resource.match(/^\/apis\/([^/]+)(?:\/(routes|integrations|authorizers|deployments|models|stages|cors)(?:\/([^/]+))?)?$/);
+    if (!m) return whole();
+    const apiId = m[1] === '*' ? '*' : REDACT.apiId;
+    if (!m[2]) return `/apis/${apiId}`;
+    if (!m[3]) return `/apis/${apiId}/${m[2]}`;
+    return `/apis/${apiId}/${m[2]}/${m[3] === '*' ? '*' : REDACT.id}`;
+  }
+  if (service === 's3') {
+    const slash = resource.indexOf('/');
+    const bucket = slash === -1 ? resource : resource.slice(0, slash);
+    const bucketOk = /^(cdk-cbardev-assets|cdk-cbarpil-assets|cba-study-coach)-[a-z0-9.-]+$/.test(bucket);
+    const renderedBucket = bucketOk ? bucket : REDACT.bucket;
+    return slash === -1 ? renderedBucket : `${renderedBucket}/${REDACT.objectKey}`;
+  }
+  if (service === 'ssm') {
+    return /^parameter\/cdk-bootstrap\/(cbardev|cbarpil)\/version$/.test(resource) ? resource : whole();
+  }
+  if (service === 'lambda') {
+    const m = resource.match(new RegExp(`^function:(${PROJECT_TOKEN})(?::(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `function:${m[1]}:${REDACT.qualifier}`;
+  }
+  if (service === 'dynamodb') {
+    const m = resource.match(new RegExp(`^table/(${PROJECT_TOKEN})(?:/(index|stream)/(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `table/${m[1]}/${m[2]}/${REDACT.id}`;
+  }
+  if (service === 'sns') {
+    return PROJECT_TOKEN_EXACT.test(resource) ? resource : whole();
+  }
+  if (service === 'logs') {
+    const m = resource.match(new RegExp(`^log-group:((?:/aws/[a-z0-9-]+/)?${PROJECT_TOKEN})(?::\\*)?(?::log-stream:(.+))?$`));
+    if (!m) return whole();
+    return m[2] === undefined ? resource : `log-group:${m[1]}:log-stream:${REDACT.stream}`;
+  }
+  if (service === 'cloudwatch') {
+    return new RegExp(`^(alarm:|dashboard/)${PROJECT_TOKEN}$`).test(resource) ? resource : whole();
+  }
+  return whole(); // an unknown service is not proven public
+}
+
+/** An exact ARN token, parsed by FIELDS. A token that does not parse never falls back to text. */
+function renderArn(token) {
+  const m = token.match(/^(arn):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}|):(.+)$/);
+  if (!m) return REDACT.arn;
+  const acct = m[5] === '' ? '' : REDACT.account;
+  return `${m[1]}:${m[2]}:${m[3]}:${m[4]}:${acct}:${renderArnResource(m[3], m[6])}`;
+}
+
+/** Identifying material embedded INSIDE classifier output — an account id inside a kept bucket
+ * name, a UUID inside a kept path. Constant labels: nothing derived from the value is published. */
+function renderResidual(token) {
+  return token
+    .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region) => `${region}_${REDACT.poolId}`)
+    .replace(UUID_SHAPE, () => REDACT.id)
+    // No hex fence is needed any more: every emitted label is a constant with no digits in it,
+    // so this pass can never rewrite the inside of a redaction it just produced.
+    .replace(/(?<!\d)\d{12}(?!\d)/g, () => REDACT.account);
+}
+
+/** URL and ARN spans, recognized ANYWHERE in a string, including behind punctuation. */
+const URL_OR_ARN_SPAN = /(?:[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:\[[0-9a-fA-F:.]+\])?[^\s"'`\\<>()[\]{},;]*)|(?:arn:[^\s"'`\\<>()[\]{},;]+)/g;
+/** A word run inside free text. `:` stays INSIDE a run so a colon-joined value is one unit. */
+const FREE_WORD_RUN = /[^\s"'`\\<>()[\]{},;=|]+/g;
+
+/** An arbitrary string: classify every URL/ARN span wherever it sits, redact every other word.
+ * There is no format allowance — a numeric string is also an account id, an identifier shape is
+ * also a secret, and neither proves anything about content. */
+function sanitizeScalarString(text) {
+  const source = String(text);
+  let out = '';
+  let last = 0;
+  for (const match of source.matchAll(URL_OR_ARN_SPAN)) {
+    out += source.slice(last, match.index).replace(FREE_WORD_RUN, () => REDACT.value);
+    const token = match[0];
+    out += renderResidual(token.startsWith('arn:') ? renderArn(token) : renderUrl(token));
+    last = match.index + token.length;
+  }
+  out += source.slice(last).replace(FREE_WORD_RUN, () => REDACT.value);
+  return out;
+}
+
+const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
+
+/* ---------------------------- the reviewed DescribeChangeSet schema ---------------------------
  *
- * Round 11 chose a value's treatment from its KEY NAME, at any depth. Parsed content therefore
- * recovered trust by naming itself: `BeforeValue` holding `{"Key":"supersecret","Arn":"arn:…"}`
- * rendered `supersecret` and a role path, because `Key` and `Arn` are schema names SOMEWHERE.
- *
- * A field is now authorized by its POSITION in the DescribeChangeSet schema below — the same
- * name at a different path is a different field, and a name inside parsed content is not a field
- * at all. Two consequences, both deliberate:
- *
- *   1. `BeforeValue`, `AfterValue`, `BeforeContext`, `AfterContext` and every other content
- *      carrier are OPAQUE: one deterministic marker for the whole blob, never parsed and never
- *      walked, so no internal name can reach a validator. Equal blobs render equal markers, so
- *      "this value changed" stays visible. What is LOST is reading the callback URLs out of a
- *      property value — and that control was never here: PREFLIGHT-1 validates the exact auth
- *      URLs (no wildcards, no placeholders) and the manifest's contextDigest binds them to the
- *      release, so the origins are reviewed BEFORE a change set exists, not read back out of one.
- *
- *   2. A field the schema does not describe REFUSES THE PLAN (CHANGE_SET_SCHEMA_UNKNOWN) instead
- *      of rendering as an opaque key. An unreviewed field can change what an approval means —
- *      `DeploymentMode: REVERT_DRIFT` is exactly such a field — so the lane stops and a human
- *      extends this schema through review. Brittle on purpose: the alternative is authorizing
- *      semantics nobody read.
+ * Transcribed from the CloudFormation API reference (DescribeChangeSet, Change, ResourceChange,
+ * ResourceChangeDetail, ResourceTargetDefinition, LiveResourceDrift, ResourceDriftIgnoredAttribute,
+ * RollbackConfiguration, RollbackTrigger, Parameter, Tag, ModuleInfo), drift-aware members
+ * included. A field is authorized by its POSITION here — the same name at another path is another
+ * field, and a name inside a content carrier is not a field at all.
  */
 const OPAQUE = { kind: 'opaque' };
 const BOOLEAN = { kind: 'boolean' };
@@ -425,9 +566,13 @@ const NUMBER = { kind: 'number' };
 const REFERENCE = { kind: 'reference' };
 const IDENTIFIER = { kind: 'identifier' };
 const RESOURCE_TYPE = { kind: 'resourceType' };
+const INSTANT = { kind: 'instant' };
+const TAG_KEY = { kind: 'tagKey' };
 const vocab = (...values) => ({ kind: 'vocabulary', values });
 const list = (items) => ({ kind: 'list', items });
 const object = (fields) => ({ kind: 'object', fields });
+
+const RESOURCE_ATTRIBUTES = ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'];
 
 const CHANGE_SET_SCHEMA = object({
   // ---- identity and lineage -------------------------------------------------------------------
@@ -437,7 +582,7 @@ const CHANGE_SET_SCHEMA = object({
   StackName: { kind: 'stackName' },
   ParentChangeSetId: REFERENCE,
   RootChangeSetId: REFERENCE,
-  CreationTime: { kind: 'instant' },
+  CreationTime: INSTANT,
   Description: OPAQUE,
   // ---- executable semantics -------------------------------------------------------------------
   Status: vocab('CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED'),
@@ -447,9 +592,9 @@ const CHANGE_SET_SCHEMA = object({
   Capabilities: list(vocab('CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND')),
   IncludeNestedStacks: BOOLEAN,
   ImportExistingResources: BOOLEAN,
-  // Round 12: both fields decide how CloudFormation INTERPRETS the change set, so both are named
-  // vocabularies — REVERT_DRIFT must be distinguishable from a standard deployment at sight.
-  DeploymentMode: vocab('STANDARD', 'REVERT_DRIFT'),
+  // Drift-aware members. `REVERT_DRIFT` is the ONLY documented DeploymentMode value — the round-12
+  // schema invented `STANDARD`, which would have accepted a mode AWS never sends.
+  DeploymentMode: vocab('REVERT_DRIFT'),
   StackDriftStatus: vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED'),
   NotificationARNs: list(REFERENCE),
   RollbackConfiguration: object({
@@ -462,92 +607,128 @@ const CHANGE_SET_SCHEMA = object({
     UsePreviousValue: BOOLEAN,
     ResolvedValue: OPAQUE,
   })),
-  Tags: list(object({ Key: IDENTIFIER, Value: OPAQUE })),
+  Tags: list(object({ Key: TAG_KEY, Value: OPAQUE })),
   // ---- the resource changes -------------------------------------------------------------------
   Changes: list(object({
     Type: vocab('Resource'),
     HookInvocationCount: NUMBER,
     ResourceChange: object({
-      Action: vocab('Add', 'Modify', 'Remove', 'Import', 'Dynamic'),
+      Action: vocab('Add', 'Modify', 'Remove', 'Import', 'Dynamic', 'SyncWithActual'),
       PolicyAction: vocab('Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot'),
       LogicalResourceId: IDENTIFIER,
       PhysicalResourceId: OPAQUE,
       ResourceType: RESOURCE_TYPE,
       Replacement: vocab('True', 'False', 'Conditional'),
-      Scope: list(vocab('Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags')),
+      Scope: list(vocab(...RESOURCE_ATTRIBUTES)),
       ChangeSetId: REFERENCE,
       ModuleInfo: object({ TypeHierarchy: OPAQUE, LogicalIdHierarchy: OPAQUE }),
       BeforeContext: OPAQUE,
       AfterContext: OPAQUE,
+      PreviousDeploymentContext: OPAQUE,
+      ResourceDriftStatus: vocab('IN_SYNC', 'MODIFIED', 'DELETED', 'NOT_CHECKED', 'UNKNOWN', 'UNSUPPORTED'),
+      ResourceDriftIgnoredAttributes: list(object({
+        Path: OPAQUE,
+        Reason: vocab('MANAGED_BY_AWS', 'WRITE_ONLY_PROPERTY'),
+      })),
       Details: list(object({
         Evaluation: vocab('Static', 'Dynamic'),
-        ChangeSource: vocab('ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic'),
+        ChangeSource: vocab('ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic', 'NoModification'),
         CausingEntity: REFERENCE,
         Target: object({
-          Attribute: vocab('Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'),
+          Attribute: vocab(...RESOURCE_ATTRIBUTES),
           Name: IDENTIFIER,
           RequiresRecreation: vocab('Never', 'Conditionally', 'Always'),
-          AttributeChangeType: vocab('Add', 'Remove', 'Modify'),
+          AttributeChangeType: vocab('Add', 'Remove', 'Modify', 'SyncWithActual'),
           Path: OPAQUE,
           BeforeValue: OPAQUE,
           AfterValue: OPAQUE,
+          BeforeValueFrom: vocab('PREVIOUS_DEPLOYMENT_STATE', 'ACTUAL_STATE'),
+          AfterValueFrom: vocab('TEMPLATE'),
+          Drift: object({
+            ActualValue: OPAQUE,
+            PreviousValue: OPAQUE,
+            DriftDetectionTimestamp: INSTANT,
+          }),
         }),
       })),
     }),
   })),
 });
 
-/** CloudFormation stamps this; ours is `cba-70-<12 hex of the release>`. */
 const CHANGE_SET_NAME_EXACT = /^cba-70-[0-9a-f]{12}$/;
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const IDENTIFIER_EXACT = /^[A-Za-z][A-Za-z0-9]{0,254}$/;
 const RESOURCE_TYPE_EXACT = /^[A-Za-z0-9]+::[A-Za-z0-9]+::[A-Za-z0-9]+$/;
+/** The AWS tag-key charset. A tag KEY is a label the operator chose; its VALUE stays opaque. */
+const TAG_KEY_EXACT = /^[A-Za-z][A-Za-z0-9:._/+ -]{0,127}$/;
 
-/** The stack names THIS deploy computes — the validator for every stack-name position. A name is
- * authorized because the release BUILT it, never because it looks like ours. */
+/** The stack names THIS deploy computes — the validator for every stack-name position. */
 let REVIEWED_STACK_NAMES = new Set();
 function setReviewedStackNames(names) {
   REVIEWED_STACK_NAMES = new Set(names);
 }
 
-/** Every path in `value` the schema does not describe. A non-empty result refuses the plan. */
-function schemaUnknownPaths(value, node = CHANGE_SET_SCHEMA, path = '$') {
+/** Does `value` satisfy the contract at this leaf position? Never reports the value itself. */
+function leafSatisfies(value, node) {
+  switch (node.kind) {
+    case 'boolean': return typeof value === 'boolean';
+    case 'number': return typeof value === 'number' && Number.isFinite(value);
+    case 'vocabulary': return typeof value === 'string' && node.values.includes(value);
+    case 'identifier': return typeof value === 'string' && IDENTIFIER_EXACT.test(value);
+    case 'tagKey': return typeof value === 'string' && TAG_KEY_EXACT.test(value);
+    case 'resourceType': return typeof value === 'string' && RESOURCE_TYPE_EXACT.test(value);
+    case 'stackName': return typeof value === 'string' && REVIEWED_STACK_NAMES.has(value);
+    case 'changeSetName': return typeof value === 'string' && CHANGE_SET_NAME_EXACT.test(value);
+    case 'instant': return typeof value === 'string' && ISO_INSTANT.test(value);
+    case 'reference': return typeof value === 'string';
+    case 'opaque': return true; // content: any scalar, never rendered
+    default: return false;
+  }
+}
+
+/**
+ * THE single structural validation: unknown keys, wrong types and out-of-contract enums, at every
+ * depth. Violations name the PATH and the reason — never the value, which is not proven public.
+ */
+function validateChangeSet(value, node = CHANGE_SET_SCHEMA, path = '$') {
   const out = [];
-  if (!node) return [path];
+  if (value === null || value === undefined) return out; // absent optional member
   if (node.kind === 'object') {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+    if (typeof value !== 'object' || Array.isArray(value)) return [`${path}: expected an object`];
     for (const [key, entry] of Object.entries(value)) {
-      const child = Object.hasOwn(node.fields, key) ? node.fields[key] : null;
-      if (!child) {
-        out.push(`${path}.${key}`);
+      if (!Object.hasOwn(node.fields, key)) {
+        out.push(`${path}.${key}: field is not in the reviewed schema`);
         continue;
       }
-      out.push(...schemaUnknownPaths(entry, child, `${path}.${key}`));
+      out.push(...validateChangeSet(entry, node.fields[key], `${path}.${key}`));
     }
     return out;
   }
   if (node.kind === 'list') {
-    if (!Array.isArray(value)) return out;
-    value.forEach((entry, i) => out.push(...schemaUnknownPaths(entry, node.items, `${path}[${i}]`)));
+    if (!Array.isArray(value)) return [`${path}: expected a list`];
+    value.forEach((entry, i) => out.push(...validateChangeSet(entry, node.items, `${path}[${i}]`)));
     return out;
   }
-  return out; // leaf: the value is validated at render time, never trusted by name
+  if (node.kind === 'opaque') return out;
+  if (typeof value === 'object') return [`${path}: expected a scalar`];
+  if (!leafSatisfies(value, node)) {
+    out.push(node.kind === 'vocabulary' ? `${path}: value is outside the reviewed contract` : `${path}: value does not satisfy the ${node.kind} contract`);
+  }
+  return out;
 }
 
-/** Render `value` at its schema POSITION. Anything a position marks opaque — or any value its
- * position's validator rejects — becomes a deterministic marker. */
+/** Render `value` at its schema POSITION. Content positions — and any value its position rejects
+ * — become the CONSTANT redaction for their class. */
 function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
-  const marker = () => `[value#${pseudonym(typeof value === 'string' ? value : JSON.stringify(value) ?? String(value))}]`;
   if (value === null || value === undefined) return value;
-  if (!node) return marker();
+  if (!node) return REDACT.value;
   switch (node.kind) {
     case 'object': {
-      if (typeof value !== 'object' || Array.isArray(value)) return marker();
+      if (typeof value !== 'object' || Array.isArray(value)) return REDACT.value;
       const out = {};
       for (const [key, entry] of Object.entries(value)) {
-        // A key the position does not declare cannot render — and the plan already refused.
         if (!Object.hasOwn(node.fields, key)) {
-          out[`[key#${pseudonym(key)}]`] = marker.call(null);
+          out[REDACT.key] = REDACT.value;
           continue;
         }
         out[key] = sanitizeBySchema(entry, node.fields[key]);
@@ -555,230 +736,46 @@ function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
       return out;
     }
     case 'list':
-      return Array.isArray(value) ? value.map((entry) => sanitizeBySchema(entry, node.items)) : marker();
-    case 'boolean':
-      return typeof value === 'boolean' ? value : marker();
-    case 'number':
-      return typeof value === 'number' ? value : marker();
-    case 'vocabulary':
-      return typeof value === 'string' && node.values.includes(value) ? value : marker();
-    case 'identifier':
-      return typeof value === 'string' && IDENTIFIER_EXACT.test(value) ? value : marker();
-    case 'resourceType':
-      return typeof value === 'string' && RESOURCE_TYPE_EXACT.test(value) ? value : marker();
-    case 'stackName':
-      return typeof value === 'string' && REVIEWED_STACK_NAMES.has(value) ? value : marker();
-    case 'changeSetName':
-      return typeof value === 'string' && CHANGE_SET_NAME_EXACT.test(value) ? value : marker();
-    case 'instant':
-      return typeof value === 'string' && ISO_INSTANT.test(value) ? value : marker();
+      return Array.isArray(value) ? value.map((entry) => sanitizeBySchema(entry, node.items)) : REDACT.value;
     case 'reference':
-      if (typeof value !== 'string') return marker();
+      if (typeof value !== 'string') return REDACT.value;
       if (/^arn:/.test(value)) return renderResidual(renderArn(value));
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
-      return IDENTIFIER_EXACT.test(value) ? value : marker();
+      return IDENTIFIER_EXACT.test(value) ? value : REDACT.value;
     case 'opaque':
+      return REDACT.value;
     default:
-      return marker();
+      return leafSatisfies(value, node) ? value : REDACT.value;
   }
 }
-
-function renderHost(host) {
-  const lower = host.toLowerCase();
-  if (lower === 'localhost' || lower === '127.0.0.1') return host;
-  if (DECISION_BEARING_HOST_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return host;
-  // Exact family, explicit parts: the generated api id pseudonymizes, the service suffix stays.
-  const generated = lower.match(/^([a-z0-9-]+)\.(execute-api\.[a-z0-9-]+\.amazonaws\.com)$/);
-  if (generated) return `[api#${pseudonym(generated[1])}].${generated[2]}`;
-  // Round 8: NO blanket for *.amazonaws.com — a bucket-style or ELB-style host name is not
-  // proven public by its suffix. Anything outside the exact families above is unexpected.
-  return `[unexpected-host#${pseudonym(lower)}]`;
-}
-
-/** Round 9: URLs are FIELDS, not text. Any scheme reaches this classifier; only http(s) with a
- * reviewed host renders structurally; paths render ONLY when a reviewed decision produces that
- * exact shape; credentials never render; an unparseable candidate never falls back to raw text. */
-function renderUrl(candidate) {
-  let url;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return `[unparseable-url#${pseudonym(candidate)}]`;
-  }
-  if (url.username || url.password) {
-    return `[credentialed-url#${pseudonym(candidate)}]`;
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    return `[url#${pseudonym(candidate)}]`; // an unknown scheme is not proven public
-  }
-  const port = url.port ? `:${url.port}` : '';
-  const path = REVIEWED_URL_PATHS.has(url.pathname) ? url.pathname : `/[path#${pseudonym(url.pathname)}]`;
-  const suffix = url.search || url.hash ? '?[query-redacted]' : '';
-  return `${url.protocol}//${renderHost(url.hostname)}${port}${path}${suffix}`;
-}
-
-/** Round 9: per-service resource grammars, ANCHORED — the grammar names exactly which segment is
- * project-owned identity and pseudonymizes every other segment (aliases, streams, sessions,
- * groups, generated ids). A resource whose COMPLETE shape a branch does not recognize fails
- * CLOSED to a whole-resource pseudonym — including inside known services. */
-function renderArnResource(service, resource) {
-  const whole = () => `[resource#${pseudonym(resource)}]`;
-  if (service === 'iam') {
-    // Principal material stays classifiable (the round-6 contract) — but only in its exact shape.
-    return /^(role|policy|user|group|instance-profile|oidc-provider|saml-provider|server-certificate)\/[!-~]+$/.test(resource) ? resource : whole();
-  }
-  if (service === 'sts') {
-    const assumed = resource.match(/^(assumed-role\/[^/]+)\/([^/]+)$/);
-    return assumed ? `${assumed[1]}/[session#${pseudonym(assumed[2])}]` : whole();
-  }
-  if (service === 'kms') {
-    if (new RegExp(`^alias/${PROJECT_TOKEN}$`).test(resource)) return resource;
-    if (/^alias\/[^/]+$/.test(resource)) return `alias/[alias#${pseudonym(resource.slice(6))}]`;
-    if (/^key\/[^/]+$/.test(resource)) return `key/[key#${pseudonym(resource.slice(4))}]`;
-    return whole();
-  }
-  if (service === 'cognito-idp') {
-    const pool = resource.match(/^userpool\/([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]+)(\/.+)?$/);
-    if (!pool) return whole();
-    const trailing = pool[3] ? `/[path#${pseudonym(pool[3].slice(1))}]` : '';
-    return `userpool/${pool[1]}_[pool#${pseudonym(pool[2])}]${trailing}`;
-  }
-  if (service === 'cloudformation') {
-    // ROUND 10: the COMPLETE grammar, anchored end to end. The round-9 form pseudonymized the
-    // UUID and then accepted whatever trailed it, so `stack/name/<uuid>/extra` leaked `extra`.
-    const withId = resource.match(/^(stack|changeSet)\/([^/]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
-    const nameOnly = resource.match(/^(stack|changeSet)\/([^/]+)$/);
-    const m = withId || nameOnly;
-    if (!m) return whole();
-    const reviewedName = PROJECT_TOKEN_EXACT.test(m[2]) || /^cba-70-[0-9a-f]{12}$/.test(m[2]);
-    const name = reviewedName ? m[2] : `[name#${pseudonym(m[2])}]`;
-    return withId ? `${m[1]}/${name}/[id#${pseudonym(m[3])}]` : `${m[1]}/${name}`;
-  }
-  if (service === 'apigateway') {
-    // The COMPLETE v2 grammar or nothing: /apis[/{id}[/{collection}[/{id}]]] with the reviewed
-    // collections, or /tags/{arn}. A v1 path (restapis/…) or any unrecognized shape fails closed.
-    if (resource === '/apis' || resource === '/tags/*') return resource;
-    const tags = resource.match(/^\/tags\/(.+)$/);
-    if (tags) return `/tags/[arn#${pseudonym(tags[1])}]`;
-    const m = resource.match(/^\/apis\/([^/]+)(?:\/(routes|integrations|authorizers|deployments|models|stages|cors)(?:\/([^/]+))?)?$/);
-    if (!m) return whole();
-    const apiId = m[1] === '*' ? '*' : `[id#${pseudonym(m[1])}]`;
-    if (!m[2]) return `/apis/${apiId}`;
-    if (!m[3]) return `/apis/${apiId}/${m[2]}`;
-    const childId = m[3] === '*' ? '*' : `[id#${pseudonym(m[3])}]`;
-    return `/apis/${apiId}/${m[2]}/${childId}`;
-  }
-  if (service === 's3') {
-    const slash = resource.indexOf('/');
-    const bucket = slash === -1 ? resource : resource.slice(0, slash);
-    const bucketOk = /^(cdk-cbardev-assets|cdk-cbarpil-assets|cba-study-coach)-[a-z0-9.-]+$/.test(bucket);
-    const renderedBucket = bucketOk ? bucket : `[bucket#${pseudonym(bucket)}]`;
-    return slash === -1 ? renderedBucket : `${renderedBucket}/[key#${pseudonym(resource.slice(slash + 1))}]`;
-  }
-  if (service === 'ssm') {
-    return /^parameter\/cdk-bootstrap\/(cbardev|cbarpil)\/version$/.test(resource) ? resource : whole();
-  }
-  if (service === 'lambda') {
-    const m = resource.match(new RegExp(`^function:(${PROJECT_TOKEN})(?::(.+))?$`));
-    if (!m) return whole();
-    return m[2] === undefined ? resource : `function:${m[1]}:[qualifier#${pseudonym(m[2])}]`;
-  }
-  if (service === 'dynamodb') {
-    const m = resource.match(new RegExp(`^table/(${PROJECT_TOKEN})(?:/(index|stream)/(.+))?$`));
-    if (!m) return whole();
-    return m[2] === undefined ? resource : `table/${m[1]}/${m[2]}/[id#${pseudonym(m[3])}]`;
-  }
-  if (service === 'sns') {
-    return PROJECT_TOKEN_EXACT.test(resource) ? resource : whole();
-  }
-  if (service === 'logs') {
-    const m = resource.match(new RegExp(`^log-group:((?:/aws/[a-z0-9-]+/)?${PROJECT_TOKEN})(?::\\*)?(?::log-stream:(.+))?$`));
-    if (!m) return whole();
-    return m[2] === undefined ? resource : `log-group:${m[1]}:log-stream:[stream#${pseudonym(m[2])}]`;
-  }
-  if (service === 'cloudwatch') {
-    return new RegExp(`^(alarm:|dashboard/)${PROJECT_TOKEN}$`).test(resource) ? resource : whole();
-  }
-  return whole(); // an unknown service is not proven public
-}
-
-/** An exact ARN token, parsed by FIELDS: arn:partition:service:region:account:resource. A token
- * that does not parse as an ARN never falls back to raw text. */
-function renderArn(token) {
-  const m = token.match(/^(arn):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):([a-zA-Z0-9-]*):(\d{12}|):(.+)$/);
-  if (!m) return `[arn#${pseudonym(token)}]`;
-  const acct = m[5] === '' ? '' : `[acct#${pseudonym(m[5])}]`;
-  return `${m[1]}:${m[2]}:${m[3]}:${m[4]}:${acct}:${renderArnResource(m[3], m[6])}`;
-}
-
-/** Residual passes for identifying material embedded INSIDE classifier output — an account id
- * inside a kept bucket name, a UUID inside a kept path. The digit pass is hex-fenced so it can
- * never rewrite the inside of an already-emitted pseudonym. */
-function renderResidual(token) {
-  return token
-    .replace(/\b([a-z]{2}-[a-z]+-\d)_([A-Za-z0-9]{5,})\b/g, (m, region, id) => `${region}_[pool#${pseudonym(id)}]`)
-    .replace(UUID_SHAPE, (m) => `[id#${pseudonym(m)}]`)
-    .replace(/(?<![0-9a-fA-F#])\d{12}(?![0-9a-fA-F])/g, (m) => `[acct#${pseudonym(m)}]`);
-}
-
-/** A free-position word. ROUND 11: there is no format allowance — a numeric string, a project
- * prefix and an identifier shape each proved nothing about the content behind them. Free text is
- * pseudonymized, always; KNOWN FIELDS with VALIDATED values never reach here. (URL and ARN spans
- * are lifted out before this runs — see sanitizeScalarString.) */
-function renderFreeWord(word) {
-  return `[value#${pseudonym(word)}]`;
-}
-
-/** URL and ARN spans, recognized ANYWHERE in a string — round 10: the round-9 classifier split on
- * whitespace and matched only at a token's start, so `endpoint=(https://user:secret@host/p)`
- * never reached the URL parser. Terminators exclude the punctuation that wraps values. */
-const URL_OR_ARN_SPAN = /(?:[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:\[[0-9a-fA-F:.]+\])?[^\s"'`\\<>()[\]{},;]*)|(?:arn:[^\s"'`\\<>()[\]{},;]+)/g;
-/** A word run inside free text: everything between structural punctuation and whitespace. `:`
- * stays INSIDE a run so `AWS::Lambda::Function` is one recognizable form — a colon-joined run
- * that is not a reviewed form (`key:secret`) becomes a single marker, which is the safe side. */
-const FREE_WORD_RUN = /[^\s"'`\\<>()[\]{},;=|]+/g;
-
-/** Sanitize an arbitrary string: classify every URL/ARN span wherever it sits, fail-close every
- * remaining word run. Structural punctuation survives so the material stays readable. */
-function sanitizeScalarString(text) {
-  const source = String(text);
-  let out = '';
-  let last = 0;
-  for (const match of source.matchAll(URL_OR_ARN_SPAN)) {
-    out += source.slice(last, match.index).replace(FREE_WORD_RUN, renderFreeWord);
-    const token = match[0];
-    out += renderResidual(token.startsWith('arn:') ? renderArn(token) : renderUrl(token));
-    last = match.index + token.length;
-  }
-  out += source.slice(last).replace(FREE_WORD_RUN, renderFreeWord);
-  return out;
-}
-
-/** The public name kept for the existing call sites and controls. */
-const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
 
 /** The sanitized, presentation-only rendering of a plan. Nothing here is ever digested.
  *
- * Round 11: the material carries the change set's EXECUTABLE SEMANTICS, not only its resource
- * changes. `Capabilities` says what IAM the execution may create; `OnStackFailure: DELETE` can
- * destroy the stack after a failed create; `RollbackConfiguration`, `NotificationARNs`, `Tags`,
- * `Parameters`, nested-stack and import flags each change what an approval means — and two plans
- * differing only in those rendered identically before. Each stack now shows them explicitly and
- * then the WHOLE sanitized DescribeChangeSet response as canonical JSON, so nothing is selected
- * away and a field CloudFormation adds later arrives on its own. Parameter VALUES stay
- * pseudonymized: a parameter name is schema, its value is content. */
+ * Round 13: this function VALIDATES what it is handed — it does not trust a caller to have
+ * remembered — and it prints `changed` / `unchanged` computed from the RAW values in memory
+ * instead of publishing a derivation of them. A response that violates the reviewed schema is
+ * not rendered at all: the material says so and names the offending PATHS, never their values. */
 function renderPlan(planEntries) {
   const lines = [];
   const list = (values) => (Array.isArray(values) && values.length > 0 ? values.join(', ') : 'none');
   for (const rawEntry of planEntries) {
     const stackName = sanitizeBySchema(String(rawEntry.stackName ?? ''), { kind: 'stackName' });
     const status = sanitizeBySchema(String(rawEntry.status ?? ''), { kind: 'vocabulary', values: ['CREATE_COMPLETE', 'NO_CHANGES', 'FAILED'] });
-    const describe = sanitizeBySchema(rawEntry.describe ?? { Changes: rawEntry.changes ?? [] });
+    const raw = rawEntry.describe ?? { Changes: rawEntry.changes ?? [] };
+    const violations = validateChangeSet(raw);
+    if (violations.length > 0) {
+      lines.push(`  ${stackName} — ${status}`);
+      lines.push('      NOT RENDERED — the response violates the reviewed schema, so it describes semantics nobody reviewed:');
+      for (const violation of violations.slice(0, 20)) lines.push(`        ${violation}`);
+      if (violations.length > 20) lines.push(`        …and ${violations.length - 20} more`);
+      continue;
+    }
+    const describe = sanitizeBySchema(raw);
     const changes = describe.Changes ?? [];
+    const rawChanges = raw.Changes ?? [];
     lines.push(`  ${stackName} — ${status}${status === 'NO_CHANGES' ? '' : ` (${changes.length} change${changes.length === 1 ? '' : 's'})`}`);
     // The executable semantics, named — never inferred from the resource diff.
     lines.push(`      execution: ${describe.ExecutionStatus ?? 'unknown'}   on-failure: ${describe.OnStackFailure ?? 'unspecified'}   nested-stacks: ${describe.IncludeNestedStacks ?? 'unspecified'}   import-existing: ${describe.ImportExistingResources ?? 'unspecified'}`);
-    // Round 12: both decide how CloudFormation INTERPRETS this change set, so both are named.
     lines.push(`      deployment-mode: ${describe.DeploymentMode ?? 'unspecified'}   drift: ${describe.StackDriftStatus ?? 'unspecified'}`);
     lines.push(`      capabilities: ${list(describe.Capabilities)}`);
     lines.push(`      notifications: ${list(describe.NotificationARNs)}`);
@@ -789,22 +786,40 @@ function renderPlan(planEntries) {
     if (describe.ParentChangeSetId || describe.RootChangeSetId) {
       lines.push(`      nested lineage: parent ${describe.ParentChangeSetId ?? 'none'}, root ${describe.RootChangeSetId ?? 'none'}`);
     }
-    for (const change of changes) {
+    changes.forEach((change, changeIndex) => {
       const rc = change.ResourceChange || {};
+      const rawRc = rawChanges[changeIndex]?.ResourceChange || {};
       const flags = [
         rc.Replacement === 'True' ? '[REPLACEMENT]' : '',
         rc.PolicyAction ? `[policy: ${rc.PolicyAction}]` : '',
         Array.isArray(rc.Scope) && rc.Scope.length > 0 ? `[scope: ${rc.Scope.join(',')}]` : '',
+        rc.ResourceDriftStatus ? `[resource-drift: ${rc.ResourceDriftStatus}]` : '',
       ].filter(Boolean).join('  ');
       lines.push(`    ${rc.Action || '?'}  ${rc.ResourceType || '?'}  ${rc.LogicalResourceId || '?'}${flags ? `  ${flags}` : ''}`);
-      for (const detail of rc.Details || []) {
+      (rc.Details || []).forEach((detail, detailIndex) => {
         const target = detail.Target || {};
+        const rawTarget = rawRc.Details?.[detailIndex]?.Target || {};
         const attr = target.Attribute === 'Properties' && target.Name ? `Properties.${target.Name}` : (target.Attribute || '?');
-        lines.push(`      ~ ${attr}${detail.CausingEntity ? `  (caused by ${detail.CausingEntity})` : ''}${target.RequiresRecreation && target.RequiresRecreation !== 'Never' ? `  [recreation: ${target.RequiresRecreation}]` : ''}`);
-        if (target.BeforeValue !== undefined) lines.push(`        before: ${JSON.stringify(target.BeforeValue)}`);
-        if (target.AfterValue !== undefined) lines.push(`        after:  ${JSON.stringify(target.AfterValue)}`);
+        lines.push(`      ~ ${attr}${detail.CausingEntity ? `  (caused by ${detail.CausingEntity})` : ''}${target.RequiresRecreation && target.RequiresRecreation !== 'Never' ? `  [recreation: ${target.RequiresRecreation}]` : ''}${target.AttributeChangeType ? `  [${target.AttributeChangeType}]` : ''}`);
+        // ROUND 13: the DELTA is computed in memory from the raw values and stated as a flag;
+        // the values themselves are redacted with a constant, so nothing derived from them is
+        // published. Where the values came from (drift-aware) is contract vocabulary and shows.
+        if (rawTarget.BeforeValue !== undefined || rawTarget.AfterValue !== undefined) {
+          const changed = rawTarget.BeforeValue !== rawTarget.AfterValue;
+          const from = target.BeforeValueFrom ? ` (before from ${target.BeforeValueFrom}` : '';
+          const to = target.AfterValueFrom ? `${from ? ', ' : ' ('}after from ${target.AfterValueFrom}` : '';
+          const provenance = from || to ? `${from}${to})` : '';
+          lines.push(`        value: ${changed ? 'changed' : 'unchanged'} (before ${target.BeforeValue ?? 'absent'}, after ${target.AfterValue ?? 'absent'})${provenance}`);
+        }
+        if (target.Drift) {
+          const drifted = rawTarget.Drift?.ActualValue !== rawTarget.Drift?.PreviousValue;
+          lines.push(`        drift: ${drifted ? 'actual differs from previous deployment' : 'actual matches previous deployment'} (detected ${target.Drift.DriftDetectionTimestamp ?? 'unknown'})`);
+        }
+      });
+      for (const ignored of rc.ResourceDriftIgnoredAttributes ?? []) {
+        lines.push(`      drift ignored: ${ignored.Path ?? '?'} (${ignored.Reason ?? '?'})`);
       }
-    }
+    });
     // The complete change set, canonically ordered — the lines above are a reading aid, this is
     // the material. Sorting keys keeps two renderings of the same plan textually comparable.
     lines.push(`      full change set (sanitized): ${JSON.stringify(deepSortKeys(describe))}`);
@@ -1047,8 +1062,10 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       // ROUND 12: a field the reviewed schema does not describe REFUSES the plan. An unreviewed
       // field can change what an approval means (DeploymentMode: REVERT_DRIFT is exactly that),
       // so the lane stops and a human extends the schema — never an opaque key nobody reads.
-      const unknown = schemaUnknownPaths(described.described);
-      if (unknown.length > 0) {
+      // ROUND 13: ONE structural validation — unknown key, wrong type, out-of-contract enum —
+      // before any digest exists. A new action, a new enum member or a changed type stops the
+      // lane; it can no longer arrive as opaque text and still collect a human gate.
+      if (validateChangeSet(described.described).length > 0) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
@@ -1150,7 +1167,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, schemaUnknownPaths, CHANGE_SET_SCHEMA, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

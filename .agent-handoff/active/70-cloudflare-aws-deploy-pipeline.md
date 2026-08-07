@@ -169,7 +169,22 @@ the control does not move: PREFLIGHT-1 validates the exact auth URLs and the man
 contextDigest binds them to the release BEFORE any change set exists. `DeploymentMode` and
 `StackDriftStatus` are named vocabularies now (`REVERT_DRIFT` is distinguishable at sight), and a
 field the schema does not describe REFUSES the plan as `CHANGE_SET_SCHEMA_UNKNOWN` — brittle on
-purpose, because an unreviewed field can change what an approval means. The expected origin and an attacker origin
+purpose, because an unreviewed field can change what an approval means.
+
+Round 13 closed the last two. Validation is STRUCTURAL: unknown key, wrong type AND
+out-of-contract enum each refuse before a digest exists (`Changes: "not-an-array"` and
+`Action: "SOMETHING_NEW"` used to pass the name-only walk and arrive as opaque text), and
+`renderPlan` runs the same validator itself rather than trusting its caller. The schema was
+transcribed from the CloudFormation API reference including every drift-aware member —
+`SyncWithActual`, `PreviousDeploymentContext`, `ResourceDriftStatus`,
+`ResourceDriftIgnoredAttributes`, `ChangeSource: NoModification`, `BeforeValueFrom`/
+`AfterValueFrom`, `Target.Drift` — and `DeploymentMode`'s only documented value is `REVERT_DRIFT`
+(the invented `STANDARD` is gone); a full documented response is a permanent fixture. And every
+redaction is now a CONSTANT class label: the old `[value#sha256(prefix+value)]` markers were a
+published derivation of the very values they hid — the review reproduced `supersecret` offline —
+so nothing derived from an observed value is published at all. Where the human needs to know
+whether a value moved, `renderPlan` compares the raw values IN MEMORY and prints
+`changed`/`unchanged`. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for
