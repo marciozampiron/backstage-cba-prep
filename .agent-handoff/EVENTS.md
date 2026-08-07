@@ -2,6 +2,28 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-07 — Claude — #70 Slice B1 round 14: the validator's generic escapes closed
+
+- Codex's round-14 review of 11ef9846: the structural validation still had general bypasses —
+  every explicit `null` read as an absent member (`Changes: null`, `Action: null` passed, and
+  the pagination merge normalized `Changes: null` into `[]` BEFORE validation, erasing the
+  evidence); `OPAQUE` accepted any shape (an object rode where the contract says string);
+  numbers accepted any finite value (`MonitoringTimeInMinutes: -1.5`, `HookInvocationCount:
+  0.5`); and the ARN-only fields shared `CausingEntity`'s permissive string type, so
+  `ChangeSetId: "supersecret"` validated AND published in the human material. One HIGH, one
+  MEDIUM. Fix-forward, all fourteen reviewed commits preserved.
+- `null` is a value now: only `HookInvocationCount` — the one position AWS documents as nullable
+  — accepts it; everywhere else an explicit null refuses by path. OPAQUE means opaque STRING.
+  Integers enforce integrality and the documented ranges. The RAW pages are preserved and
+  validated before any normalization touches them, end-to-end proven: a `Changes: null` page
+  refuses as CHANGE_SET_SCHEMA_UNKNOWN with no digest ever produced.
+- ARN_REFERENCE (strict ARN parse) now types ChangeSetId, StackId, ParentChangeSetId,
+  RootChangeSetId, NotificationARNs, RollbackTrigger.Arn and the nested change-set id;
+  ENTITY_REFERENCE survives only at CausingEntity, whose documented semantics genuinely admit a
+  parameter or logical name. The round-14 reproduction refuses before any digest, and the value
+  never surfaces anywhere in the refusal.
+- Five protections, five reversions, five failures. Nothing was deployed, published or mutated.
+
 ## 2026-08-07 — Claude — #70 Slice B1 round 13: structural validation, documented schema, constant redaction
 
 - Codex's round-13 review of db1872ac: the closed schema validated NAMES only — `Changes:

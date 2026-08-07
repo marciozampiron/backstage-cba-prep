@@ -184,7 +184,18 @@ redaction is now a CONSTANT class label: the old `[value#sha256(prefix+value)]` 
 published derivation of the very values they hid — the review reproduced `supersecret` offline —
 so nothing derived from an observed value is published at all. Where the human needs to know
 whether a value moved, `renderPlan` compares the raw values IN MEMORY and prints
-`changed`/`unchanged`. The expected origin and an attacker origin
+`changed`/`unchanged`.
+
+Round 14 removed the validator's own generic escapes: an explicit `null` is a STATE, accepted
+only where the contract documents it (`HookInvocationCount`), never read as absence; `OPAQUE`
+positions are opaque STRINGS (an object smuggled where the contract says string is a malformed
+response, not deeper content); integers carry their documented integrality and bounds
+(`MonitoringTimeInMinutes` 0–180, `HookInvocationCount` 1–100); every RAW page is validated
+BEFORE the pagination merge, so `Changes: null` can no longer be normalized into an empty list
+and digested as if the service had sent it; and the ARN-typed fields (`ChangeSetId`, `StackId`,
+lineage, `NotificationARNs`, trigger and nested-change-set ARNs) demand a strict ARN parse —
+`ENTITY_REFERENCE`, with its documented latitude for parameter and logical names, survives only
+at `CausingEntity`. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for

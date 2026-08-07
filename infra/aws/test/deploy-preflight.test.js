@@ -2158,7 +2158,7 @@ test('ROUND-13: validation is structural — wrong types and out-of-contract enu
   );
   // Types are checked at every kind of position.
   assert.deepEqual(validateChangeSet({ IncludeNestedStacks: 'true' }), ['$.IncludeNestedStacks: value does not satisfy the boolean contract']);
-  assert.deepEqual(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: '15' } }), ['$.RollbackConfiguration.MonitoringTimeInMinutes: value does not satisfy the number contract']);
+  assert.deepEqual(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: '15' } }), ['$.RollbackConfiguration.MonitoringTimeInMinutes: value does not satisfy the integer contract']);
   assert.deepEqual(validateChangeSet({ RollbackConfiguration: [] }), ['$.RollbackConfiguration: expected an object']);
   assert.deepEqual(validateChangeSet({ CreationTime: 'yesterday' }), ['$.CreationTime: value does not satisfy the instant contract']);
   // A violation NEVER reports the value — only the path and the reason.
@@ -2200,6 +2200,89 @@ test('ROUND-13: redaction is CONSTANT — no published derivation of any observe
   }
   // Two different secrets render identically — that IS the property: no candidate test exists.
   assert.equal(fingerprintSanitize('supersecret'), fingerprintSanitize('anothersecret'));
+});
+
+test('ROUND-14: null is a state, opaque is a string, integers carry their documented bounds', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The exact round-14 reproductions — every one produced `violations: []` before.
+  assert.deepEqual(validateChangeSet({ Changes: null }), ['$.Changes: null is not a documented state for this field']);
+  assert.deepEqual(
+    validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Action: null, Details: null } }] }),
+    ['$.Changes[0].ResourceChange.Action: null is not a documented state for this field', '$.Changes[0].ResourceChange.Details: null is not a documented state for this field'],
+  );
+  assert.deepEqual(
+    validateChangeSet({ Parameters: [{ ParameterKey: 'X', ParameterValue: { secret: 'x' } }] }),
+    ['$.Parameters[0].ParameterValue: expected a scalar'],
+    'an object smuggled where the contract says string is malformed, not deeper content',
+  );
+  assert.deepEqual(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: -1.5 } }), ['$.RollbackConfiguration.MonitoringTimeInMinutes: value does not satisfy the integer contract']);
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 0.5 }] }), ['$.Changes[0].HookInvocationCount: value does not satisfy the integer contract']);
+  // The documented bounds, exactly: 0..180 and 1..100; and non-string opaque forms all refuse.
+  assert.equal(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: 181 } }).length, 1);
+  assert.equal(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: 0 } }).length, 0);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 0 }] }).length, 1);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 100 }] }).length, 0);
+  for (const bad of [42, true, ['x']]) {
+    assert.equal(validateChangeSet({ Description: bad }).length, 1, `opaque must be a string, got ${JSON.stringify(bad)}`);
+  }
+  // The ONE documented nullable: HookInvocationCount ("is either null … or contains the number").
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: null }] }), []);
+
+  // END TO END: a page whose Changes is null must refuse BEFORE the digest — the pagination
+  // merge normalizes null into [], so the raw page is what carries the evidence.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), Changes: null }), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('PLAN_DIGEST'), false, 'no digest may exist for a malformed response');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-14: ARN-typed fields demand strict ARNs — the permissive reference is only CausingEntity', () => {
+  const { validateChangeSet, renderPlan } = require('../bin/deploy-release');
+  // The exact round-14 reproduction: it validated AND published `supersecret` before.
+  const repro = {
+    Status: 'CREATE_COMPLETE',
+    ExecutionStatus: 'AVAILABLE',
+    Changes: [],
+    ChangeSetId: 'supersecret',
+    StackId: 'supersecret',
+    NotificationARNs: ['supersecret'],
+  };
+  assert.deepEqual(validateChangeSet(repro), [
+    '$.ChangeSetId: value does not satisfy the arnReference contract',
+    '$.StackId: value does not satisfy the arnReference contract',
+    '$.NotificationARNs[0]: value does not satisfy the arnReference contract',
+  ]);
+  // renderPlan refuses it on its own — the value never reaches the material.
+  const rendered = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], repro)]);
+  assert.match(rendered, /NOT RENDERED/);
+  assert.equal(rendered.includes('supersecret'), false);
+  // Lineage and trigger ARNs are ARN-typed too.
+  assert.equal(validateChangeSet({ ParentChangeSetId: 'not-an-arn' }).length, 1);
+  assert.equal(validateChangeSet({ RollbackConfiguration: { RollbackTriggers: [{ Arn: 'not-an-arn', Type: 'AWS::CloudWatch::Alarm' }] } }).length, 1);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { ChangeSetId: 'not-an-arn' } }] }).length, 1);
+  // CausingEntity keeps its documented latitude: a parameter or logical name is legitimate.
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Details: [{ CausingEntity: 'KeyPairName' }] } }] }), []);
+  // END TO END: the repro refuses before any digest or execution.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[0]] = { ...describes[PILOT_STACK_NAMES[0]], ChangeSetId: 'supersecret' };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('supersecret'), false, 'the value must never surface anywhere in the refusal');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
 });
 
 test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence instead of prose', () => {

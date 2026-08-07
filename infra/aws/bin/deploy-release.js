@@ -304,6 +304,7 @@ function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
   // part of the plan, and digesting or reviewing that part would authorize an effect nobody saw.
   // Every page is consumed here and the assembled body carries NO cursor — or the run refuses.
   let base = null;
+  const pages = [];
   const changes = [];
   let token = null;
   for (let page = 0; page < CHANGE_SET_PAGE_LIMIT; page += 1) {
@@ -320,13 +321,17 @@ function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
     } catch {
       return { error: true };
     }
+    // ROUND 14: the RAW page is preserved for validation BEFORE any normalization — merging
+    // `body.Changes || []` below would otherwise erase the evidence of `Changes: null` and hand
+    // the digest a body the service never sent.
+    pages.push(body);
     if (!base) base = body;
     changes.push(...(body.Changes || []));
     token = typeof body.NextToken === 'string' && body.NextToken !== '' ? body.NextToken : null;
     if (!token) {
       // The assembled description: every page's changes, no cursor left to follow.
       const { NextToken: _consumed, ...rest } = base;
-      return { described: { ...rest, Changes: changes } };
+      return { described: { ...rest, Changes: changes }, pages };
     }
   }
   return { paginationUnconsumed: true };
@@ -560,30 +565,48 @@ const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
  * included. A field is authorized by its POSITION here — the same name at another path is another
  * field, and a name inside a content carrier is not a field at all.
  */
+/* ROUND 14: the leaf types carry their documented constraints — nothing is generic.
+ *   - OPAQUE is an opaque STRING: the content fields are strings in the AWS contract, and an
+ *     object smuggled where a string belongs is a malformed response, not deeper content.
+ *   - integer(min, max) enforces integrality AND the documented range (MonitoringTimeInMinutes
+ *     is 0..180, HookInvocationCount is 1..100 — a 0.5 or a -1.5 is not a number "of that field").
+ *   - ARN_REFERENCE is a STRICT ARN: ChangeSetId, StackId, lineage, notification and trigger
+ *     ARNs are ARNs in the contract, and a bare string there is malformed. ENTITY_REFERENCE is
+ *     only CausingEntity, whose documented semantics genuinely admit a parameter or logical name.
+ *   - `null` is NOT an absent member. A field must declare `nullable` to accept it, and the one
+ *     position documented as nullable is HookInvocationCount ("is either null, if no Hooks
+ *     invoke, or contains the number"). Everywhere else an explicit null is a malformed response.
+ */
 const OPAQUE = { kind: 'opaque' };
 const BOOLEAN = { kind: 'boolean' };
-const NUMBER = { kind: 'number' };
-const REFERENCE = { kind: 'reference' };
+const ARN_REFERENCE = { kind: 'arnReference' };
+const ENTITY_REFERENCE = { kind: 'entityReference' };
 const IDENTIFIER = { kind: 'identifier' };
 const RESOURCE_TYPE = { kind: 'resourceType' };
 const INSTANT = { kind: 'instant' };
 const TAG_KEY = { kind: 'tagKey' };
+const integer = (min, max) => ({ kind: 'integer', min, max });
+const nullable = (node) => ({ ...node, nullable: true });
 const vocab = (...values) => ({ kind: 'vocabulary', values });
 const list = (items) => ({ kind: 'list', items });
 const object = (fields) => ({ kind: 'object', fields });
+
+/** The strict ARN shape every ARN-typed field must satisfy — the same grammar renderArn parses. */
+const ARN_EXACT = /^arn:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:(\d{12}|):.+$/;
 
 const RESOURCE_ATTRIBUTES = ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'];
 
 const CHANGE_SET_SCHEMA = object({
   // ---- identity and lineage -------------------------------------------------------------------
   ChangeSetName: { kind: 'changeSetName' },
-  ChangeSetId: REFERENCE,
-  StackId: REFERENCE,
+  ChangeSetId: ARN_REFERENCE,
+  StackId: ARN_REFERENCE,
   StackName: { kind: 'stackName' },
-  ParentChangeSetId: REFERENCE,
-  RootChangeSetId: REFERENCE,
+  ParentChangeSetId: ARN_REFERENCE,
+  RootChangeSetId: ARN_REFERENCE,
   CreationTime: INSTANT,
   Description: OPAQUE,
+  NextToken: { kind: 'pageToken' },
   // ---- executable semantics -------------------------------------------------------------------
   Status: vocab('CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED'),
   StatusReason: OPAQUE,
@@ -596,10 +619,10 @@ const CHANGE_SET_SCHEMA = object({
   // schema invented `STANDARD`, which would have accepted a mode AWS never sends.
   DeploymentMode: vocab('REVERT_DRIFT'),
   StackDriftStatus: vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED'),
-  NotificationARNs: list(REFERENCE),
+  NotificationARNs: list(ARN_REFERENCE),
   RollbackConfiguration: object({
-    RollbackTriggers: list(object({ Arn: REFERENCE, Type: RESOURCE_TYPE })),
-    MonitoringTimeInMinutes: NUMBER,
+    RollbackTriggers: list(object({ Arn: ARN_REFERENCE, Type: RESOURCE_TYPE })),
+    MonitoringTimeInMinutes: integer(0, 180),
   }),
   Parameters: list(object({
     ParameterKey: IDENTIFIER,
@@ -611,7 +634,7 @@ const CHANGE_SET_SCHEMA = object({
   // ---- the resource changes -------------------------------------------------------------------
   Changes: list(object({
     Type: vocab('Resource'),
-    HookInvocationCount: NUMBER,
+    HookInvocationCount: nullable(integer(1, 100)),
     ResourceChange: object({
       Action: vocab('Add', 'Modify', 'Remove', 'Import', 'Dynamic', 'SyncWithActual'),
       PolicyAction: vocab('Delete', 'Retain', 'Snapshot', 'ReplaceAndDelete', 'ReplaceAndRetain', 'ReplaceAndSnapshot'),
@@ -620,7 +643,7 @@ const CHANGE_SET_SCHEMA = object({
       ResourceType: RESOURCE_TYPE,
       Replacement: vocab('True', 'False', 'Conditional'),
       Scope: list(vocab(...RESOURCE_ATTRIBUTES)),
-      ChangeSetId: REFERENCE,
+      ChangeSetId: ARN_REFERENCE,
       ModuleInfo: object({ TypeHierarchy: OPAQUE, LogicalIdHierarchy: OPAQUE }),
       BeforeContext: OPAQUE,
       AfterContext: OPAQUE,
@@ -633,7 +656,7 @@ const CHANGE_SET_SCHEMA = object({
       Details: list(object({
         Evaluation: vocab('Static', 'Dynamic'),
         ChangeSource: vocab('ResourceReference', 'ParameterReference', 'ResourceAttribute', 'DirectModification', 'Automatic', 'NoModification'),
-        CausingEntity: REFERENCE,
+        CausingEntity: ENTITY_REFERENCE,
         Target: object({
           Attribute: vocab(...RESOURCE_ATTRIBUTES),
           Name: IDENTIFIER,
@@ -672,7 +695,7 @@ function setReviewedStackNames(names) {
 function leafSatisfies(value, node) {
   switch (node.kind) {
     case 'boolean': return typeof value === 'boolean';
-    case 'number': return typeof value === 'number' && Number.isFinite(value);
+    case 'integer': return typeof value === 'number' && Number.isInteger(value) && value >= node.min && value <= node.max;
     case 'vocabulary': return typeof value === 'string' && node.values.includes(value);
     case 'identifier': return typeof value === 'string' && IDENTIFIER_EXACT.test(value);
     case 'tagKey': return typeof value === 'string' && TAG_KEY_EXACT.test(value);
@@ -680,8 +703,10 @@ function leafSatisfies(value, node) {
     case 'stackName': return typeof value === 'string' && REVIEWED_STACK_NAMES.has(value);
     case 'changeSetName': return typeof value === 'string' && CHANGE_SET_NAME_EXACT.test(value);
     case 'instant': return typeof value === 'string' && ISO_INSTANT.test(value);
-    case 'reference': return typeof value === 'string';
-    case 'opaque': return true; // content: any scalar, never rendered
+    case 'pageToken': return typeof value === 'string' && value.length >= 1 && value.length <= 1024;
+    case 'arnReference': return typeof value === 'string' && ARN_EXACT.test(value);
+    case 'entityReference': return typeof value === 'string';
+    case 'opaque': return typeof value === 'string'; // content is a STRING in the contract
     default: return false;
   }
 }
@@ -692,7 +717,12 @@ function leafSatisfies(value, node) {
  */
 function validateChangeSet(value, node = CHANGE_SET_SCHEMA, path = '$') {
   const out = [];
-  if (value === null || value === undefined) return out; // absent optional member
+  if (value === undefined) return out; // an absent optional member
+  if (value === null) {
+    // ROUND 14: null is a VALUE, not absence. Only a position the contract documents as
+    // nullable may carry it; anywhere else an explicit null is a malformed response.
+    return node && node.nullable ? out : [`${path}: null is not a documented state for this field`];
+  }
   if (node.kind === 'object') {
     if (typeof value !== 'object' || Array.isArray(value)) return [`${path}: expected an object`];
     for (const [key, entry] of Object.entries(value)) {
@@ -709,7 +739,6 @@ function validateChangeSet(value, node = CHANGE_SET_SCHEMA, path = '$') {
     value.forEach((entry, i) => out.push(...validateChangeSet(entry, node.items, `${path}[${i}]`)));
     return out;
   }
-  if (node.kind === 'opaque') return out;
   if (typeof value === 'object') return [`${path}: expected a scalar`];
   if (!leafSatisfies(value, node)) {
     out.push(node.kind === 'vocabulary' ? `${path}: value is outside the reviewed contract` : `${path}: value does not satisfy the ${node.kind} contract`);
@@ -737,7 +766,10 @@ function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
     }
     case 'list':
       return Array.isArray(value) ? value.map((entry) => sanitizeBySchema(entry, node.items)) : REDACT.value;
-    case 'reference':
+    case 'arnReference':
+      // Validation already required a strict ARN here; render it through the ARN grammar.
+      return typeof value === 'string' && ARN_EXACT.test(value) ? renderResidual(renderArn(value)) : REDACT.value;
+    case 'entityReference':
       if (typeof value !== 'string') return REDACT.value;
       if (/^arn:/.test(value)) return renderResidual(renderArn(value));
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value)) return renderResidual(renderUrl(value));
@@ -1062,10 +1094,12 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       // ROUND 12: a field the reviewed schema does not describe REFUSES the plan. An unreviewed
       // field can change what an approval means (DeploymentMode: REVERT_DRIFT is exactly that),
       // so the lane stops and a human extends the schema — never an opaque key nobody reads.
-      // ROUND 13: ONE structural validation — unknown key, wrong type, out-of-contract enum —
-      // before any digest exists. A new action, a new enum member or a changed type stops the
-      // lane; it can no longer arrive as opaque text and still collect a human gate.
-      if (validateChangeSet(described.described).length > 0) {
+      // ROUNDS 13-14: ONE structural validation — unknown key, wrong type, undeclared null,
+      // out-of-contract enum — on every RAW page BEFORE any normalization, then on the assembled
+      // body, before any digest exists. A malformed response stops the lane; it can no longer
+      // arrive as opaque text (or be normalized into innocence) and still collect a human gate.
+      const rawViolations = (described.pages ?? []).flatMap((page) => validateChangeSet(page));
+      if (rawViolations.length > 0 || validateChangeSet(described.described).length > 0) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
