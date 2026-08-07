@@ -138,12 +138,19 @@ const EXPECTED_DOCUMENTS = {
     writtenBy: 'zamp',
     writtenWhen: 'per decision, before each cloud effect',
     suppliedAs: 'CBA_CLOUD_GATE',
-    // Round 4: binding the release SHA and the assembly digest left the rest of the manifest —
-    // environment, region, account, bound context and stack set — outside the authorization.
-    // The instrument binds a digest of the COMPLETE closed manifest, plus the wave it covers
-    // and, for an execution, the plan it authorizes.
-    boundTo: 'manifestDigest+stacks+planDigest',
+    // Rounds 4-5: binding the release SHA and the assembly digest left the rest of the manifest
+    // outside the authorization — and one document holding four effects could not prove that a
+    // plan_only value cannot execute or abandon. The instrument binds its MODE, its decision,
+    // its window and a digest of the COMPLETE closed manifest; `modes` says, as data, exactly
+    // which effect each mode authorizes.
+    boundTo: 'mode+decisionId+manifestDigest+stacks+planDigest+window',
     authorizes: ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'],
+    // `modes` is deliberately NOT pinned to a literal here. Round 5's reversion proof showed why:
+    // with an identical literal in this file, every mode mutation was refused by the literal
+    // comparison, so the partition law below could be deleted with the whole suite still green —
+    // a control nothing can make fire. The two layers are now distinct and each is provable:
+    // this file enforces the LAW (closed vocabulary, partition, membership), and the reviewed
+    // VALUE is pinned in test/governance-model.test.js against the real file.
   },
   'spend-authorization': {
     writtenBy: 'zamp',
@@ -168,6 +175,13 @@ const EXPECTED_EFFECTS = {
   // Deleting a prepared change set is a cloud mutation with its own decision: a declined plan
   // stays EXECUTABLE until it is deleted, so cleanup cannot ride on the decision that declined.
   'abandon-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
+  // Round 5: removing the empty stack RECORD a CREATE change set leaves behind is a DIFFERENT
+  // effect from deleting a change set, and it is deliberately not automated — DeleteStack has
+  // no expected-status precondition, and the release lock does not constrain an external
+  // CloudFormation actor, so a stale observation could authorize deleting a stack that acquired
+  // resources meanwhile. It is modelled here so the matrix can express it, and performed by a
+  // human under its own decision, never by a lane.
+  'delete-review-in-progress-stack-record': { authorizedBy: 'cloud-authorization', performedBy: 'zamp', note: 'human-performed only; no automated lane may perform it' },
   'invoke-paid-model-audit': { authorizedBy: 'spend-authorization', performedBy: 'zamp' },
 };
 
@@ -176,16 +190,18 @@ const DOCUMENTS = ['review-scope', 'execution-gate', 'cloud-authorization', 'spe
 const DOCUMENT_KEYS = {
   'review-scope': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'bounds', 'authorizes'],
   'execution-gate': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'messageType', 'boundTo', 'authorizes'],
-  'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
+  'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes', 'modes'],
   'spend-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
 };
 
 /** Exact effect set and keys. */
-const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'invoke-paid-model-audit'];
+const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'invoke-paid-model-audit'];
 const EFFECT_KEYS = ['authorizedBy', 'performedBy'];
 /** Effects that change cloud state. Each is authorized by the cloud instrument and performed by
  * Zamp — preparing a change set is here because it creates resources and publishes assets. */
-const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'];
+const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record'];
+/** The closed mode vocabulary of the cloud instrument. A value outside it authorizes nothing. */
+const CLOUD_MODES = ['plan_only', 'deploy', 'abandon', 'stack-record-cleanup'];
 const EFFECT_OPTIONAL_KEYS = ['note'];
 
 /**
@@ -331,6 +347,32 @@ export function validateAuthorityPolicy(policy) {
     // Unknown references first, so an unknown effect is reported as unknown rather than as a mismatch.
     for (const effect of doc.authorizes) {
       if (!EFFECTS.includes(effect)) fail(`policy.documents.${name}.authorizes references unknown effect "${effect}".`);
+    }
+    // Round 5: the mode map must PARTITION the document's effects — every mode's effects are
+    // authorized effects, every authorized effect belongs to exactly one mode, and no mode is
+    // outside the closed vocabulary. Without this, one instrument holding four effects proves
+    // nothing about what a plan_only value may do.
+    if (name === 'cloud-authorization') {
+      const modes = doc.modes;
+      if (!isPlainObject(modes)) fail('policy.documents.cloud-authorization.modes must be an object.');
+      const seen = new Map();
+      for (const [mode, effects] of Object.entries(modes)) {
+        if (!CLOUD_MODES.includes(mode)) fail(`policy.documents.cloud-authorization.modes has unknown mode "${mode}".`);
+        assertStringArray(`policy.documents.cloud-authorization.modes.${mode}`, effects);
+        for (const effect of effects) {
+          if (!doc.authorizes.includes(effect)) {
+            fail(`policy.documents.cloud-authorization.modes.${mode} references "${effect}", which the document does not authorize.`);
+          }
+          if (seen.has(effect)) {
+            fail(`policy.documents.cloud-authorization.modes lists "${effect}" under both ${seen.get(effect)} and ${mode}; an effect belongs to exactly one mode.`);
+          }
+          seen.set(effect, mode);
+        }
+      }
+      const unmapped = doc.authorizes.filter((effect) => !seen.has(effect));
+      if (unmapped.length) {
+        fail(`policy.documents.cloud-authorization.modes does not cover ${unmapped.join(', ')}; every authorized effect must name the mode that authorizes it.`);
+      }
     }
     if (name === 'review-scope' && doc.authorizes.length !== 0) {
       fail('policy.documents.review-scope.authorizes must be empty: the review scope authorizes nothing.');

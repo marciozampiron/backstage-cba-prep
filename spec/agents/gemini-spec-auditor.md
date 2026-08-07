@@ -12,9 +12,10 @@
 A **read-only semantic auditor** for [Spec-Anchored Development](../spec-anchored-development.md).
 The mechanical layers — the traceability linter and the conformance checks — prove the checkable
 facts: anchors exist, ids resolve, invariants' tests pass. The Gemini Spec Auditor reads those
-results plus the artifacts themselves and hunts what a mechanical pass cannot see: a spec sentence whose implementation satisfies the letter and
-misses the intent, an invariant with no test that could ever fail, a code path the spec never
-contemplated, two SPEC-IDs that quietly contradict each other.
+results plus the artifacts themselves and hunts what a mechanical pass cannot see: a spec
+sentence whose implementation satisfies the letter and misses the intent, an invariant with no
+test that could ever fail, a code path the spec never contemplated, two SPEC-IDs that quietly
+contradict each other.
 
 ## 2. What it is not — closed, not illustrative
 
@@ -53,10 +54,21 @@ pins (round 2 of this design's review required exactly this):
 6. The active handoff and the issue, for scope.
 
 **Every digest above uses the canonical framed serialization of
-[`spec-anchored-development.md`](../spec-anchored-development.md) §6b** — a sorted JSON array of
-`{path, bytes, sha256}` records — never a concatenation. Round 6 of #70 reproduced a collision
-between two file sets whose concatenations were identical; "in a recorded order" inherits that
-defect, and an audit whose inputs can collide proves nothing about which inputs it read.
+[`spec-anchored-development.md`](../spec-anchored-development.md) §6b**, in the framing of its
+own KIND — never a concatenation, and never one kind's framing applied to another's input.
+Round 5 of this design's review found this file still specifying the superseded
+`{path, bytes, sha256}` shape for all of them, which is a snapshot record and cannot describe a
+range:
+
+| Digest here | §6b kind |
+| --- | --- |
+| `SPEC_SHA256`, `MECHANICAL_REPORT_SHA256`, `INPUT_BUNDLE_SHA256` | `snapshot` — files at one commit |
+| `DIFF_SHA256` (the `base..commit` range) | `diff` — change between two commits, renames recorded as delete + add |
+
+Round 6 of #70 reproduced a collision between two file sets whose concatenations were identical;
+"in a recorded order" inherits that defect, and an audit whose inputs can collide proves nothing
+about which inputs it read. The `digestKind` is inside the digested document, so a snapshot
+digest can never be presented as the range's.
 
 ## 4. Invocation boundary
 

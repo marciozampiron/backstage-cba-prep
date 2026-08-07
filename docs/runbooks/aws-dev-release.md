@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release
 kind: index
-version: 0.3.0
+version: 0.4.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-004, SPEC-LANE-002, SPEC-LANE-004, SPEC-RUN-004, SPEC-RUN-006, SPEC-RUN-008]
+specs: [SPEC-DEPLOY-004, SPEC-DEPLOY-021, SPEC-LANE-002, SPEC-LANE-004, SPEC-RUN-004, SPEC-RUN-006, SPEC-RUN-008]
 inputs: [the release commit's full SHA (an ancestor of main), the dev Environment configuration, the activation prerequisites from the workflow header]
 outputs: [a fully released dev tier, one EVENTS.md record per decision]
 gateRequired: true
@@ -52,12 +52,16 @@ is mechanically blocked (SPEC-LANE-004).
 
 If Zamp declines a plan at step 2: **[Abandon](aws-dev-release-abandon.md)** — the prepared
 change sets remain EXECUTABLE until deleted, so declining is not the end of the cycle
-(SPEC-RUN-008).
+(SPEC-RUN-008). That operation deletes change sets only. A CREATE plan also leaves an empty stack
+record in `REVIEW_IN_PROGRESS`; abandon REPORTS it and no lane deletes it, because `DeleteStack`
+accepts no expected-status precondition and the release lock binds only this repository's lanes
+(SPEC-DEPLOY-021). Resolving such a record is a separate human decision, outside this flow.
 
 **Every runbook under this index is blocked on implementation-phase prerequisites** — the
-`bind_only` and abandon lanes, the correlation-id input, the structured artifacts and the
-`abandon` authorization mode (SPEC-LANE-005/006, SPEC-DEPLOY-019/020). They specify operations;
-they are not yet instructions.
+`bind_only` and abandon lanes, the correlation-id input published in both run name and artifact,
+the structured artifacts, and the complete successor authorization schema carrying the `abandon`
+mode (SPEC-LANE-005/006, SPEC-DEPLOY-019). They specify operations; they are not yet
+instructions.
 
 On any halt during step 3: **[Recovery](aws-dev-release-recovery.md)** (read-only assessment).
 

@@ -12,12 +12,26 @@ Design rounds 2–3 found these conflated. They are policy DATA in
 | Instrument | Authorizes | Performed by |
 | --- | --- | --- |
 | publication (`CBA_EXECUTION_GATE`) | branch publication, pull-request creation | Opus |
-| cloud (`CBA_CLOUD_GATE`) | `deploy`, `prepare-change-sets`, `execute-change-sets` | Zamp |
+| cloud (`CBA_CLOUD_GATE`) | `deploy`, `prepare-change-sets`, `execute-change-sets`, `abandon-change-sets` | Zamp |
 | spend (out-of-band record) | `invoke-paid-model-audit` | Zamp |
 
 **Preparing change sets is already cloud mutation** — `plan_only` creates CloudFormation change
 sets and publishes assets — so it depends on a cloud authorization exactly as `deploy` does
 (SPEC-RUN-002).
+
+**A cloud authorization also names its MODE**, and the mode fixes the effects exactly — round 5
+of the design review found that one instrument covering four effects could not distinguish a
+plan from an execution:
+
+| Mode | Authorizes exactly |
+| --- | --- |
+| `plan_only` | `prepare-change-sets` |
+| `deploy` | `deploy`, `execute-change-sets` |
+| `abandon` | `abandon-change-sets` |
+
+A step therefore names the instrument AND the mode it depends on. The policy also carries
+`delete-review-in-progress-stack-record` as a distinct effect that **no lane performs** — it is
+human-only by policy, and no runbook here automates it.
 
 All three are Zamp's alone. A step states WHICH instrument it depends on; depending on one never
 implies another.

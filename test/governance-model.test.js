@@ -1572,7 +1572,7 @@ test('the authority policy states the invariants as data, not prose', () => {
   // (#70 design round 3). Preparing change sets is a cloud effect too, and is named as one.
   assert.equal(POLICY.effects.deploy.authorizedBy, 'cloud-authorization');
   assert.equal(POLICY.effects.deploy.performedBy, 'zamp');
-  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
+  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record']) {
     assert.equal(POLICY.effects[effect].authorizedBy, 'cloud-authorization');
     assert.equal(POLICY.effects[effect].performedBy, 'zamp');
   }
@@ -1581,7 +1581,19 @@ test('the authority policy states the invariants as data, not prose', () => {
   // The three instruments are distinct documents, and none authorizes another's effects.
   assert.deepEqual(POLICY.documents['cloud-authorization'].authorizes, ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']);
   // Round 4: the instrument binds the COMPLETE manifest, not a release SHA plus one digest.
-  assert.equal(POLICY.documents['cloud-authorization'].boundTo, 'manifestDigest+stacks+planDigest');
+  // Round 5: it also binds its MODE, its decision and its window, and the mode map proves — as
+  // data — that a plan_only value cannot execute or abandon anything.
+  assert.equal(POLICY.documents['cloud-authorization'].boundTo, 'mode+decisionId+manifestDigest+stacks+planDigest+window');
+  assert.deepEqual(POLICY.documents['cloud-authorization'].modes, {
+    plan_only: ['prepare-change-sets'],
+    deploy: ['deploy', 'execute-change-sets'],
+    abandon: ['abandon-change-sets'],
+  });
+  // Removing the empty stack RECORD is a DISTINCT effect, and no lane performs it.
+  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].performedBy, 'zamp');
+  assert.match(POLICY.effects['delete-review-in-progress-stack-record'].note, /human-performed only/);
+  const modeEffects = Object.values(POLICY.documents['cloud-authorization'].modes).flat();
+  assert.equal(new Set(modeEffects).size, modeEffects.length, 'an effect belongs to exactly one mode');
   assert.deepEqual(POLICY.documents['spend-authorization'].authorizes, ['invoke-paid-model-audit']);
   assert.equal(POLICY.documents['cloud-authorization'].writtenBy, 'zamp');
   assert.equal(POLICY.documents['spend-authorization'].writtenBy, 'zamp');
@@ -1786,6 +1798,38 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   expectRejected((p) => {
     p.documents['spend-authorization'].authorizes = ['execute-change-sets'];
   }, /authorizes/);
+  // ROUND 5: a mode may not silently acquire another mode's effect — the exact widening that
+  // would let a plan_only authorization execute or abandon. Two independent rules can catch it
+  // (the structural partition, or the pinned literal), and either refusal is a refusal.
+  // These are refused by the PARTITION LAW in src/lib/authority-policy.js — not by a literal
+  // comparison. The reviewed VALUE is pinned separately, against the real file, in
+  // "the authority policy states the invariants as data, not prose".
+  const modeRejection = /exactly one mode|does not cover|unknown mode|must be an object/;
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes.plan_only.push('execute-change-sets');
+  }, modeRejection);
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes.abandon.push('deploy');
+  }, modeRejection);
+  // A mode that drops effects leaves them authorized by nothing — also rejected.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { plan_only: ['prepare-change-sets'] };
+  }, modeRejection);
+  // A mode name outside the closed vocabulary cannot be introduced by the policy file.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { anything_goes: ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'] };
+  }, modeRejection);
+  // And a mode cannot name an effect the instrument does not authorize at all.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes['stack-record-cleanup'] = ['delete-review-in-progress-stack-record'];
+  }, /does not authorize/);
+  // The map is not merely present: a mode whose value is not a list of effect names is refused.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = 'plan_only';
+  }, /must be an object/);
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { plan_only: 'prepare-change-sets', deploy: ['deploy', 'execute-change-sets'], abandon: ['abandon-change-sets'] };
+  }, /modes\.plan_only/);
 });
 
 test('a dangling document-to-effect authority is rejected', () => {

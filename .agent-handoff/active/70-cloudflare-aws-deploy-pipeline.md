@@ -313,6 +313,42 @@ cannot tell a deletion from an absence or a mode change from none. And the runbo
 violating their own standard: versions bumped, the false "a later plan replaces them by name"
 claim removed from deploy, and the spend rule attributed to the id that actually carries it.
 
+Design round 5 (Codex, six findings) removed the last places where a document promised more
+control than the mechanism provides. **Two operations were found unsafe as specified.** Run
+correlation could not work: with `--ref main`, a run's `headSha` is main's tip, so comparing it
+to the release SHA rejects every release older than the tip, and a correlation id living only
+inside an artifact cannot identify the run you must find in order to download that artifact. The
+id is now published in the run's own NAME — run metadata, readable before any download — and the
+release SHA is verified separately, from the artifact, never from `headSha`. And the abandon
+operation no longer deletes stack records at all: `DeleteStack` accepts no expected-status
+precondition and the release lock binds only this repository's lanes, so "delete only what was
+re-observed in the expected state" was the race restated as care. A leftover
+`REVIEW_IN_PROGRESS` record is REPORTED; resolving it is a distinct effect
+(`delete-review-in-progress-stack-record`) that policy marks human-performed and no lane may
+perform.
+
+**The cloud instrument now binds its mode, as data.** One document holding four effects could not
+distinguish a plan from an execution, so `spec/authority-policy.json` carries a `modes` map
+validated as a PARTITION — `plan_only` prepares only, `deploy` executes only, `abandon` deletes
+prepared change sets only — and `boundTo` became
+`mode+decisionId+manifestDigest+stacks+planDigest+window`. The reversion proof for this control
+came back GREEN on the first attempt, because the validator carried a literal identical to the
+data: the partition law could be deleted with the suite still passing. The two layers are now
+separate and each is provable — the library enforces the LAW, the governance test pins the
+reviewed VALUE — and all ten reversions are red.
+
+SPEC-DEPLOY-019 became a COMPLETE successor (closed key set, `issue` pin, `decisionId`, the
+three-mode enum, window, stack group and the complete-manifest digest) rather than a partial one
+that would have silently dropped -002's obligations on activation; -002 stays registered until
+that activation retires it, and SPEC-DEPLOY-020 was absorbed and RETIRED under a new §4 rule for
+retiring a PROPOSED id that was never enforced. Digest framing split into three KINDS — `text`,
+`snapshot`, `diff`, with `digestKind` inside the digested bytes — because one shape was being
+applied to a string, a snapshot and a range alike; `renamed` left the diff enum because rename
+detection is a similarity heuristic and a digest that depends on a threshold is not reproducible
+by an independent verifier. SPEC-DEPLOY-021 records the unautomatable effect. Terminology was
+reconciled: the plan operation downloads one named artifact (not a "run log"), and evidence
+records change-set NAMES, because a change-set id is an ARN and evidence carries no live ARNs.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
