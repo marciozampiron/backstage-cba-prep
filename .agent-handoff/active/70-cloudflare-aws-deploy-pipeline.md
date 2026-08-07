@@ -195,7 +195,15 @@ BEFORE the pagination merge, so `Changes: null` can no longer be normalized into
 and digested as if the service had sent it; and the ARN-typed fields (`ChangeSetId`, `StackId`,
 lineage, `NotificationARNs`, trigger and nested-change-set ARNs) demand a strict ARN parse —
 `ENTITY_REFERENCE`, with its documented latitude for parameter and logical names, survives only
-at `CausingEntity`. The expected origin and an attacker origin
+at `CausingEntity`.
+
+Round 15 finished both edges: every page is validated IMMEDIATELY after `JSON.parse` — before it
+is stored, before its `Changes` are spread, before its token is read — so `Changes: {}` (or a
+number, or a boolean) produces the structured `CHANGE_SET_SCHEMA_UNKNOWN` refusal instead of an
+uncaught TypeError that killed the lane outside the fail-closed contract; and the ARN contracts
+are POSITIONAL — a change-set ARN (`cloudformation`, `changeSet/<name>/<uuid>`), a stack ARN, an
+SNS topic ARN and a CloudWatch alarm ARN are distinct types with mandatory non-empty components,
+so `arn:::::x` and an IAM-role ARN sitting where a topic belongs each refuse before any digest. The expected origin and an attacker origin
 read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
 against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
 `mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for

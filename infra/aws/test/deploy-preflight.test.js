@@ -759,9 +759,13 @@ setReviewedStackNames(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityS
 const ORDERED_IDS = ['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'];
 const PILOT_STACK_NAMES = ORDERED_IDS.map((id) => `cba-study-coach-pilot-${id.replace(/Stack$/, '').toLowerCase()}`);
 
-/** One fake describe-change-set body per stack — poisonable and overridable per test. */
+/** One fake describe-change-set body per stack — poisonable and overridable per test. The
+ * change-set ARN carries a compliant per-stack UUID (round 15: the positional contract demands
+ * changeSet/<name>/<uuid>, so the stack identity lives in the uuid's final group). */
+const CS_UUID = (stackName) => `00000000-0000-0000-0000-${String(PILOT_STACK_NAMES.indexOf(stackName) + 1).padStart(12, '0')}`;
+const CS_ARN = (stackName) => `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/${CS_UUID(stackName)}`;
 const describedFor = (stackName, over = {}) => ({
-  ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70/${stackName}`,
+  ChangeSetId: CS_ARN(stackName),
   Status: 'CREATE_COMPLETE',
   ExecutionStatus: 'AVAILABLE',
   Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'BffFunction', ResourceType: 'AWS::Lambda::Function' } }],
@@ -895,7 +899,7 @@ test('plan_only PREPARES the closed change sets from the SNAPSHOT; deploy EXECUT
     const executes = run.of('execute-change-set');
     assert.deepEqual(
       executes.map((c) => c.args[c.args.indexOf('--change-set-name') + 1]),
-      PILOT_STACK_NAMES.map((n) => `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70/${n}`),
+      PILOT_STACK_NAMES.map(CS_ARN),
       'exactly the reviewed change-set ids, in the reviewed order',
     );
     for (const call of [...executes, ...run.of('describe-change-set')]) {
@@ -1296,7 +1300,7 @@ test('ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names —
     // Run 2 — deploy naming that digest, but the change sets were RECREATED (new immutable ids):
     // same shapes, different world. Nothing executes.
     const describesB = fullDescribes();
-    for (const name of PILOT_STACK_NAMES) describesB[name].ChangeSetId = `${describesB[name].ChangeSetId}/recreated`;
+    for (const name of PILOT_STACK_NAMES) describesB[name].ChangeSetId = describesB[name].ChangeSetId.replace(/[0-9a-f]{12}$/, 'aaaaaaaaaaaa');
     const run = cloudRun({ describes: describesB });
     const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: namedDigest }) } }));
     assert.equal(r.exit, 1);
@@ -1402,7 +1406,7 @@ test('the plan is EMITTED before the effect, the account is re-resolved at the m
           stsCalls += 1;
           return { status: 0, stdout: JSON.stringify({ Account: ACCOUNT }), stderr: '' };
         }
-        if (args[1] === 'execute-change-set') order.push(`execute:${args[args.indexOf('--change-set-name') + 1].split('/').pop()}`);
+        if (args[1] === 'execute-change-set') order.push(`execute:${args[args.indexOf('--change-set-name') + 1]}`);
         return null;
       },
     });
@@ -1413,7 +1417,7 @@ test('the plan is EMITTED before the effect, the account is re-resolved at the m
     }));
     assert.equal(r.exit, 0, r.output);
     // Review material exists BEFORE the mutation it authorizes; the NO_CHANGES stack never executes.
-    assert.deepEqual(order, ['print', 'execute:cba-study-coach-pilot-identity', 'execute:cba-study-coach-pilot-api', 'execute:cba-study-coach-pilot-observability']);
+    assert.deepEqual(order, ['print', `execute:${CS_ARN('cba-study-coach-pilot-identity')}`, `execute:${CS_ARN('cba-study-coach-pilot-api')}`, `execute:${CS_ARN('cba-study-coach-pilot-observability')}`]);
     assert.equal(stsCalls, 3, 'identity at verification, immediately after, and at the mutation boundary — account FIRST, clock LAST');
   });
 });
@@ -1462,8 +1466,8 @@ test('ROUND-5: the gate names a REVIEWED plan group — waves for a fresh tier, 
     }));
     assert.equal(r2.exit, 0, r2.output);
     assert.deepEqual(
-      run2.of('execute-change-set').map((c) => c.args[c.args.indexOf('--change-set-name') + 1].split('/').pop()),
-      wave1Names,
+      run2.of('execute-change-set').map((c) => c.args[c.args.indexOf('--change-set-name') + 1]),
+      wave1Names.map(CS_ARN),
     );
 
     // Anything outside the closed group list authorizes nothing: a lone consumer stack, a
@@ -2281,6 +2285,65 @@ test('ROUND-14: ARN-typed fields demand strict ARNs — the permissive reference
     assert.equal(r.exit, 1);
     assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
     assert.equal(r.output.includes('supersecret'), false, 'the value must never surface anywhere in the refusal');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-15: a page is validated BEFORE any transformation — non-iterable Changes refuse, never throw', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The exact reproduction: Changes: {} passed the null mask and THREW at the spread, killing
+  // the lane outside the fail-closed contract with no structured evidence at all.
+  for (const [label, changes] of [['an object', {}], ['a number', 42], ['a boolean', true]]) {
+    assert.deepEqual(validateChangeSet({ Changes: changes }), ['$.Changes: expected a list'], label);
+    withRelease((p, asm, manifest) => {
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] !== 'describe-change-set') return null;
+          const stackName = args[args.indexOf('--stack-name') + 1];
+          return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), Changes: changes }), stderr: '' };
+        },
+      });
+      // A malformed child must produce the STRUCTURED refusal — an uncaught TypeError is a
+      // crash, not a refusal, and it leaves no CHANGE_SET_SCHEMA_UNKNOWN evidence behind.
+      const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/, label);
+      assert.equal(r.output.includes('PLAN_DIGEST'), false, 'no digest may exist');
+      assert.equal(run.of('execute-change-set').length, 0);
+    });
+  }
+});
+
+test('ROUND-15: ARN contracts are POSITIONAL — the right service and resource shape, or refusal', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The five reproductions — every one returned zero violations before.
+  for (const [label, body] of [
+    ['empty mandatory components', { ChangeSetId: 'arn:::::supersecret' }],
+    ['an SNS topic where a change set belongs', { ChangeSetId: `arn:aws:sns:us-east-1:${ACCOUNT}:not-a-change-set` }],
+    ['an IAM role where a stack belongs', { StackId: `arn:aws:iam::${ACCOUNT}:role/not-a-stack` }],
+    ['an IAM role where an SNS topic belongs', { NotificationARNs: [`arn:aws:iam::${ACCOUNT}:role/not-a-topic`] }],
+    ['an S3 bucket where an alarm belongs', { RollbackConfiguration: { RollbackTriggers: [{ Arn: 'arn:aws:s3:::not-an-alarm', Type: 'AWS::CloudWatch::Alarm' }] } }],
+  ]) {
+    assert.equal(validateChangeSet(body).length, 1, label);
+  }
+  // The compliant shapes still validate — this contract refuses semantics, not the API.
+  assert.deepEqual(validateChangeSet({
+    ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/11111111-2222-3333-4444-555555555555`,
+    StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-pilot-api/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+    NotificationARNs: [`arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts`],
+    RollbackConfiguration: { RollbackTriggers: [{ Arn: `arn:aws:cloudwatch:us-east-1:${ACCOUNT}:alarm:cba-study-coach-pilot-api-5xx`, Type: 'AWS::CloudWatch::Alarm' }] },
+  }), []);
+  // ENTITY_REFERENCE keeps its latitude ONLY at CausingEntity.
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Details: [{ CausingEntity: 'KeyPairName' }] } }] }), []);
+  // END TO END: a wrong-service change-set id refuses before any digest, value surfacing nowhere.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[0]] = { ...describes[PILOT_STACK_NAMES[0]], ChangeSetId: `arn:aws:sns:us-east-1:${ACCOUNT}:supersecret-topic` };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('supersecret-topic'), false);
     assert.equal(run.of('execute-change-set').length, 0);
   });
 });

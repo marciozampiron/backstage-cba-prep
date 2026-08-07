@@ -2,6 +2,25 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-07 — Claude — #70 Slice B1 round 15: pages validated before transformation, ARNs positional
+
+- Codex's round-15 review of 49731da4: the raw page was still transformed before validation —
+  `Changes: null` was masked by `|| []`, but `Changes: {}` reached the spread and THREW,
+  killing the lane outside the fail-closed contract with no CHANGE_SET_SCHEMA_UNKNOWN evidence;
+  and ARN_REFERENCE recognized only the prefix shape, so `arn:::::supersecret`, an SNS topic
+  where a change set belongs and an IAM role where a topic belongs all validated. Two MEDIUMs.
+  Fix-forward, all fifteen reviewed commits preserved.
+- Every page is validated immediately after JSON.parse — before pages.push, before the spread,
+  before the token read. Non-iterable Changes (object, number, boolean) refuse structurally,
+  end-to-end proven: exit 1, CHANGE_SET_SCHEMA_UNKNOWN, no digest, nothing executed, no crash.
+- The ARN contracts are positional: CHANGE_SET_ARN (cloudformation, changeSet/<name>/<uuid>),
+  STACK_ARN, SNS_TOPIC_ARN and CLOUDWATCH_ALARM_ARN each demand their service and resource
+  shape plus mandatory non-empty partition/region and 12-digit account. The five reproductions
+  refuse by path; the compliant documented shapes still validate; ENTITY_REFERENCE keeps its
+  documented latitude only at CausingEntity. The test harness's change-set ARNs were made
+  contract-compliant (per-stack UUIDs), which the suite now enforces everywhere.
+- Two protections, two reversions, two failures. Nothing was deployed, published or mutated.
+
 ## 2026-08-07 — Claude — #70 Slice B1 round 14: the validator's generic escapes closed
 
 - Codex's round-14 review of 11ef9846: the structural validation still had general bypasses —

@@ -321,9 +321,13 @@ function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
     } catch {
       return { error: true };
     }
-    // ROUND 14: the RAW page is preserved for validation BEFORE any normalization — merging
-    // `body.Changes || []` below would otherwise erase the evidence of `Changes: null` and hand
-    // the digest a body the service never sent.
+    // ROUNDS 14-15: the page is validated IMMEDIATELY after parsing — before it is stored,
+    // before its Changes are spread, before its token is read. Round 15 proved the gap: with
+    // the spread first, `Changes: {}` threw a TypeError and killed the lane OUTSIDE the
+    // fail-closed contract, producing no CHANGE_SET_SCHEMA_UNKNOWN evidence at all. Only a page
+    // the reviewed schema accepts is ever transformed.
+    const pageViolations = validateChangeSet(body);
+    if (pageViolations.length > 0) return { schemaViolations: pageViolations };
     pages.push(body);
     if (!base) base = body;
     changes.push(...(body.Changes || []));
@@ -579,7 +583,17 @@ const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
  */
 const OPAQUE = { kind: 'opaque' };
 const BOOLEAN = { kind: 'boolean' };
-const ARN_REFERENCE = { kind: 'arnReference' };
+/** A POSITIONAL ARN contract (round 15): the field names WHICH service and WHICH resource shape
+ * its ARN must carry — a change-set id is not a stack id is not an SNS topic, and an ARN-shaped
+ * string with the wrong semantics is a malformed response, not a reference. Mandatory
+ * components are enforced: non-empty partition, the exact service, a non-empty region and a
+ * 12-digit account — `arn:::::x` satisfies nothing. */
+const arnRef = (service, resource) => ({ kind: 'arnReference', service, resource });
+const UUID_TEXT = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const CHANGE_SET_ARN = arnRef('cloudformation', new RegExp(`^changeSet/[a-zA-Z][-a-zA-Z0-9]*/${UUID_TEXT}$`));
+const STACK_ARN = arnRef('cloudformation', new RegExp(`^stack/[a-zA-Z][-a-zA-Z0-9]*/${UUID_TEXT}$`));
+const SNS_TOPIC_ARN = arnRef('sns', /^[a-zA-Z0-9_-]{1,256}$/);
+const CLOUDWATCH_ALARM_ARN = arnRef('cloudwatch', /^alarm:.+$/);
 const ENTITY_REFERENCE = { kind: 'entityReference' };
 const IDENTIFIER = { kind: 'identifier' };
 const RESOURCE_TYPE = { kind: 'resourceType' };
@@ -591,19 +605,16 @@ const vocab = (...values) => ({ kind: 'vocabulary', values });
 const list = (items) => ({ kind: 'list', items });
 const object = (fields) => ({ kind: 'object', fields });
 
-/** The strict ARN shape every ARN-typed field must satisfy — the same grammar renderArn parses. */
-const ARN_EXACT = /^arn:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:[a-zA-Z0-9-]*:(\d{12}|):.+$/;
-
 const RESOURCE_ATTRIBUTES = ['Properties', 'Metadata', 'CreationPolicy', 'UpdatePolicy', 'DeletionPolicy', 'UpdateReplacePolicy', 'Tags'];
 
 const CHANGE_SET_SCHEMA = object({
   // ---- identity and lineage -------------------------------------------------------------------
   ChangeSetName: { kind: 'changeSetName' },
-  ChangeSetId: ARN_REFERENCE,
-  StackId: ARN_REFERENCE,
+  ChangeSetId: CHANGE_SET_ARN,
+  StackId: STACK_ARN,
   StackName: { kind: 'stackName' },
-  ParentChangeSetId: ARN_REFERENCE,
-  RootChangeSetId: ARN_REFERENCE,
+  ParentChangeSetId: CHANGE_SET_ARN,
+  RootChangeSetId: CHANGE_SET_ARN,
   CreationTime: INSTANT,
   Description: OPAQUE,
   NextToken: { kind: 'pageToken' },
@@ -619,9 +630,9 @@ const CHANGE_SET_SCHEMA = object({
   // schema invented `STANDARD`, which would have accepted a mode AWS never sends.
   DeploymentMode: vocab('REVERT_DRIFT'),
   StackDriftStatus: vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED'),
-  NotificationARNs: list(ARN_REFERENCE),
+  NotificationARNs: list(SNS_TOPIC_ARN),
   RollbackConfiguration: object({
-    RollbackTriggers: list(object({ Arn: ARN_REFERENCE, Type: RESOURCE_TYPE })),
+    RollbackTriggers: list(object({ Arn: CLOUDWATCH_ALARM_ARN, Type: RESOURCE_TYPE })),
     MonitoringTimeInMinutes: integer(0, 180),
   }),
   Parameters: list(object({
@@ -643,7 +654,7 @@ const CHANGE_SET_SCHEMA = object({
       ResourceType: RESOURCE_TYPE,
       Replacement: vocab('True', 'False', 'Conditional'),
       Scope: list(vocab(...RESOURCE_ATTRIBUTES)),
-      ChangeSetId: ARN_REFERENCE,
+      ChangeSetId: CHANGE_SET_ARN,
       ModuleInfo: object({ TypeHierarchy: OPAQUE, LogicalIdHierarchy: OPAQUE }),
       BeforeContext: OPAQUE,
       AfterContext: OPAQUE,
@@ -704,7 +715,11 @@ function leafSatisfies(value, node) {
     case 'changeSetName': return typeof value === 'string' && CHANGE_SET_NAME_EXACT.test(value);
     case 'instant': return typeof value === 'string' && ISO_INSTANT.test(value);
     case 'pageToken': return typeof value === 'string' && value.length >= 1 && value.length <= 1024;
-    case 'arnReference': return typeof value === 'string' && ARN_EXACT.test(value);
+    case 'arnReference': {
+      if (typeof value !== 'string') return false;
+      const m = value.match(/^arn:([a-z][a-z0-9-]*):([a-z0-9-]+):([a-z0-9-]+):(\d{12}):(.+)$/);
+      return m !== null && m[2] === node.service && node.resource.test(m[5]);
+    }
     case 'entityReference': return typeof value === 'string';
     case 'opaque': return typeof value === 'string'; // content is a STRING in the contract
     default: return false;
@@ -767,8 +782,8 @@ function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
     case 'list':
       return Array.isArray(value) ? value.map((entry) => sanitizeBySchema(entry, node.items)) : REDACT.value;
     case 'arnReference':
-      // Validation already required a strict ARN here; render it through the ARN grammar.
-      return typeof value === 'string' && ARN_EXACT.test(value) ? renderResidual(renderArn(value)) : REDACT.value;
+      // Validation already required THIS position's service and resource shape.
+      return leafSatisfies(value, node) ? renderResidual(renderArn(value)) : REDACT.value;
     case 'entityReference':
       if (typeof value !== 'string') return REDACT.value;
       if (/^arn:/.test(value)) return renderResidual(renderArn(value));
@@ -1081,6 +1096,10 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       const described = describePlannedChangeSet(run, cfnEnv, stackName, changeSetName);
       if (described.missing) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_MISSING', field: stackId });
+        continue;
+      }
+      if (described.schemaViolations) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
       if (described.paginationUnconsumed) {
