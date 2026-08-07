@@ -288,8 +288,30 @@ lesson demands; ACTIVE immutability is checked against activation history rather
 self-declared hash; mutation evidence became a closed record. The recovery assessment is
 read-only again — `gateRequired:false`, `cloudMutation:false` — with identity, account, region
 and pager pinned on every AWS call. And the governed vocabulary now collects cloud, spend,
-approver and persona claims, so the previously empty allowlists hold fifty-two explicitly
-permitted sentences instead of nothing.
+approver and persona claims, so the previously empty allowlists hold explicitly permitted
+sentences instead of nothing.
+
+Design round 4 (Codex, seven findings) corrected what the previous round had claimed too
+confidently. The registry's release ids are **PROPOSED again**: ACTIVE means CI enforces an id,
+the linter and conformance checks do not exist, and a design-only commit cannot be an activation
+commit — the evidence that today's tree conforms is recorded in its own column instead of being
+dressed as enforcement. The cloud instrument now binds a digest of the COMPLETE closed manifest
+rather than a release SHA plus an assembly digest, and `abandon-change-sets` joined the closed
+effect matrix; both arrived as policy data with successors registered PROPOSED, which is the
+lifecycle exercising itself for the first time. The binding and evidence operations were found
+unrunnable and unsafe as written — the manifest never reaches the log, a pre-dispatch check
+cannot constrain a variable another actor changes mid-run, and a timestamp window does not prove
+which request produced a run — so the runbooks now declare themselves BLOCKED on four
+implementation-phase prerequisites (a `bind_only` path that cannot enter a preparing stage, a
+correlation-id input, structured uploaded artifacts, and the abandon lane with its authorization
+mode), each registered as a SPEC id and tabulated in the spec's §10. The abandon operation was
+rewritten around a reviewed lane under the release lock with mutation-boundary revalidation, and
+its residual race is stated rather than papered over: CloudFormation offers no atomic
+compare-and-delete, so the entrypoint refuses on surprise instead of retrying. Digest framing
+became typed — status, paths, modes, object types, sizes and hashes — because a content record
+cannot tell a deletion from an absence or a mode change from none. And the runbooks stopped
+violating their own standard: versions bumped, the false "a later plan replaces them by name"
+claim removed from deploy, and the spend rule attributed to the id that actually carries it.
 
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):

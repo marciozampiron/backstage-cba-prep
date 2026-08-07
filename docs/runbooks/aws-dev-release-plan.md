@@ -1,11 +1,11 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.1.0
+version: 0.3.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007]
-inputs: [the release SHA, the binding run's manifest digests, the wave's stack group, a fresh decisionId, Zamp's plan_only cloud authorization value]
+specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006]
+inputs: [the release SHA, the binding artifact's manifest digest, the wave's stack group, a fresh decisionId, a caller-generated correlation id, Zamp's plan_only cloud authorization value]
 outputs: [prepared change sets for the wave, the PLAN_DIGEST, the complete evidence artifact bound to run id and decision]
 gateRequired: true
 cloudMutation: true
@@ -23,12 +23,13 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
 ## Preflight
 
 1. The shared preflight of the [index](aws-dev-release.md) holds.
-2. The [binding runbook](aws-dev-release-bind.md) has produced this release's manifest digests
-   (SPEC-RUN-006). The authorization cannot be authored before them: `assemblyDigest` is emitted
-   by `dev-preflight`, not known at dispatch time.
-3. Zamp has issued the `plan_only` value for THIS decision — release SHA, the bound assembly
-   digest, the wave's stack group, fresh `decisionId`, `planDigest: null`, `approvedAt`/
-   `expiresAt` window of at most one hour (SPEC-DEPLOY-002/009/010/011).
+2. The [binding runbook](aws-dev-release-bind.md) has produced this release's binding artifact
+   and its MANIFEST DIGEST (SPEC-RUN-006). The authorization cannot be authored before it: the
+   digest covers the complete closed manifest, which only a run produces (SPEC-DEPLOY-019).
+3. Zamp has issued the `plan_only` value for THIS decision — the manifest digest, the wave's
+   stack group, fresh `decisionId`, `planDigest: null`, `approvedAt`/`expiresAt` window of at
+   most one hour (SPEC-DEPLOY-002/009/010/011/019).
+3a. A correlation id is generated for THIS dispatch and recorded before it (SPEC-LANE-006).
 4. No value from a previous decision is still set on the Environment (that decision's Cleanup
    completed).
 
@@ -51,10 +52,10 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    cloud effect, performed by Zamp:
 
    ```text
-   date -u +%Y-%m-%dT%H:%M:%SZ            # recorded BEFORE dispatching
    gh workflow run "Release Pilot" --ref main \
      -f release_sha=<full 40-character release SHA> \
-     -f mode=dev_only
+     -f mode=dev_only \
+     -f correlation_id=<caller-generated id for this decision>
    ```
 
    Expected outcome: the run is queued. Synthesis runs credential-free first (SPEC-LANE-001);
@@ -62,31 +63,34 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    (SPEC-DEPLOY-005/012/013) and emits `PLAN_DIGEST` with the redacted rendering
    (SPEC-DEPLOY-003/006/014). Nothing executes.
 
-3. **Zamp** resolves the run id, requiring exactly one match — dispatch returns no id, and a
-   concurrent run must never be mistaken for this one (SPEC-RUN-007):
+3. **Zamp** resolves the run and WAITS for a terminal conclusion — a timestamp window selects a
+   run, it does not prove which request produced it, and an in-flight log hashes as happily as a
+   complete one (SPEC-RUN-009):
 
    ```text
    gh run list --workflow "Release Pilot" --branch main \
-     --json databaseId,headSha,createdAt,event \
-     --jq '[.[] | select(.event=="workflow_dispatch" and .createdAt >= "<dispatch instant>")]'
+     --json databaseId,headSha,status,conclusion,event
+   gh run watch <run-id> --exit-status
    ```
 
-   Expected outcome: exactly one entry, whose `headSha` is the release SHA.
+   Expected outcome: a terminal conclusion, and a run whose `headSha` is the release SHA.
 
-4. **Zamp** captures the COMPLETE evidence artifact and digests it — never an excerpt, because a
-   larger plan would be silently truncated and a truncated plan is not what was reviewed:
+4. **Zamp** downloads the structured plan ARTIFACT and digests it — never a `grep` window over a
+   log, because a larger plan would be silently truncated and a truncated plan is not what was
+   reviewed (SPEC-RUN-007, SPEC-LANE-006):
 
    ```text
-   gh run view <run-id> --log > <evidence-dir>/plan-<run-id>.log
-   sha256sum <evidence-dir>/plan-<run-id>.log
+   gh run download <run-id> --name plan --dir <evidence-dir>/plan-<run-id>
+   sha256sum <evidence-dir>/plan-<run-id>/plan.json
    ```
 
-   Expected outcome: the full log plus its digest.
+   Expected outcome: an artifact carrying the correlation id, the `PLAN_DIGEST`, the rendering
+   and the prepared change-set names.
 
-5. **Zamp** writes the binding record for this artifact: run id, `decisionId`, release SHA, the
-   wave's stack group, the `PLAN_DIGEST` read from the artifact, the change-set ids prepared,
-   and the artifact digest. This record is what the deploy decision and any abandon decision
-   refer to.
+5. **Zamp** verifies before accepting: the artifact's `correlationId` and `releaseSha` match the
+   request, the run id matches, the conclusion is `success`. Then records the binding — run id,
+   correlation id, `decisionId`, release SHA, stack group, `PLAN_DIGEST`, artifact digest. This
+   record is what the deploy decision and any abandon decision refer to.
 
 ## Evidence
 
@@ -108,8 +112,11 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    by construction (SPEC-LANE-001).
 3. The window lapsed before dispatch — stop; a fresh decision value is required; windows are
    never widened to "make it fit".
-4. The run id does not resolve to exactly one entry, or its `headSha` is not the release SHA —
-   stop; evidence bound to the wrong run describes a plan nobody produced.
+4. The artifact's correlation id, release SHA or run id does not match the request, or the run
+   has no `success` conclusion — stop; evidence that cannot be tied to THIS decision, from a run
+   that finished, describes a plan nobody authorized.
+5. The plan artifact does not exist in the run — stop; scraping the log instead is exactly the
+   truncation defect this operation removed.
 
 ## Rollback
 

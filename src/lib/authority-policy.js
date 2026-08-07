@@ -138,8 +138,12 @@ const EXPECTED_DOCUMENTS = {
     writtenBy: 'zamp',
     writtenWhen: 'per decision, before each cloud effect',
     suppliedAs: 'CBA_CLOUD_GATE',
-    boundTo: 'releaseSha+assemblyDigest+planDigest',
-    authorizes: ['deploy', 'prepare-change-sets', 'execute-change-sets'],
+    // Round 4: binding the release SHA and the assembly digest left the rest of the manifest —
+    // environment, region, account, bound context and stack set — outside the authorization.
+    // The instrument binds a digest of the COMPLETE closed manifest, plus the wave it covers
+    // and, for an execution, the plan it authorizes.
+    boundTo: 'manifestDigest+stacks+planDigest',
+    authorizes: ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'],
   },
   'spend-authorization': {
     writtenBy: 'zamp',
@@ -161,6 +165,9 @@ const EXPECTED_EFFECTS = {
   // other, and so neither can be read as covered by the publication instrument.
   'prepare-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
   'execute-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
+  // Deleting a prepared change set is a cloud mutation with its own decision: a declined plan
+  // stays EXECUTABLE until it is deleted, so cleanup cannot ride on the decision that declined.
+  'abandon-change-sets': { authorizedBy: 'cloud-authorization', performedBy: 'zamp' },
   'invoke-paid-model-audit': { authorizedBy: 'spend-authorization', performedBy: 'zamp' },
 };
 
@@ -174,11 +181,11 @@ const DOCUMENT_KEYS = {
 };
 
 /** Exact effect set and keys. */
-const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'invoke-paid-model-audit'];
+const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'invoke-paid-model-audit'];
 const EFFECT_KEYS = ['authorizedBy', 'performedBy'];
 /** Effects that change cloud state. Each is authorized by the cloud instrument and performed by
  * Zamp — preparing a change set is here because it creates resources and publishes assets. */
-const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets'];
+const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'];
 const EFFECT_OPTIONAL_KEYS = ['note'];
 
 /**

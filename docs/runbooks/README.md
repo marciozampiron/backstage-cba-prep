@@ -53,6 +53,9 @@ Rules:
 
 - `humanApprover` is always `Zamp`. A runbook cannot delegate that, and a value naming anyone
   else is invalid.
+- `version` is bumped in the SAME commit that changes any other part of the document. Round 4 of
+  the design review caught three runbooks edited without a bump: a version that does not move is
+  a version nobody can cite.
 - `cloudMutation: true` implies `gateRequired: true` — there is no such thing as an unauthorized
   mutation runbook — and the Commands section must say WHICH authorization instrument each
   mutating step depends on.

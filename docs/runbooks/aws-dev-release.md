@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release
 kind: index
-version: 0.2.0
+version: 0.3.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-004, SPEC-LANE-002, SPEC-LANE-004, SPEC-RUN-004, SPEC-RUN-006, SPEC-RUN-008]
@@ -37,9 +37,9 @@ is mechanically blocked (SPEC-LANE-004).
 
 ## The flow, per wave
 
-0. **[Bind](aws-dev-release-bind.md)** — read-only: obtain the release's manifest and its
-   `assemblyDigest`, which the plan authorization must name and which does not exist before a
-   run produces it (SPEC-RUN-006). No authorization, no cloud mutation.
+0. **[Bind](aws-dev-release-bind.md)** — read-only: obtain the release's binding artifact and
+   its MANIFEST DIGEST, which the plan authorization must name and which does not exist before a
+   run produces it (SPEC-RUN-006, SPEC-DEPLOY-019). No authorization, no cloud mutation.
 1. **[Plan](aws-dev-release-plan.md)** — prepare the wave's change sets under a `plan_only`
    cloud authorization; obtain `PLAN_DIGEST` and the complete evidence artifact. Cloud
    mutation: change sets are created (SPEC-RUN-002).
@@ -53,6 +53,11 @@ is mechanically blocked (SPEC-LANE-004).
 If Zamp declines a plan at step 2: **[Abandon](aws-dev-release-abandon.md)** — the prepared
 change sets remain EXECUTABLE until deleted, so declining is not the end of the cycle
 (SPEC-RUN-008).
+
+**Every runbook under this index is blocked on implementation-phase prerequisites** — the
+`bind_only` and abandon lanes, the correlation-id input, the structured artifacts and the
+`abandon` authorization mode (SPEC-LANE-005/006, SPEC-DEPLOY-019/020). They specify operations;
+they are not yet instructions.
 
 On any halt during step 3: **[Recovery](aws-dev-release-recovery.md)** (read-only assessment).
 

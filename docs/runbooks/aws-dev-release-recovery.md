@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-recovery
 kind: runbook
-version: 0.1.0
+version: 0.2.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-018, SPEC-RUN-004, SPEC-RUN-005, SPEC-RUN-007]

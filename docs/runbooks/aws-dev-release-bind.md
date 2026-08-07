@@ -1,104 +1,119 @@
 ---
 id: aws-dev-release-bind
 kind: runbook
-version: 0.1.0
+version: 0.2.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001]
-inputs: [the release SHA, the dev Environment configuration, the assurance that no cloud authorization is set]
-outputs: [the release's manifest with its contextDigest and assemblyDigest, the run id and its evidence artifact]
+specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006]
+inputs: [the release SHA, a caller-generated correlation id, the dev Environment configuration]
+outputs: [the structured binding artifact carrying the exact manifest and its digest, the terminal run record]
 gateRequired: false
 cloudMutation: false
 ---
 
 # Runbook — dev release, BIND the release to its manifest and digests
 
-> **Status: DESIGN — `PLANNED — not executable`.** Nothing here runs in the current phase.
+> **Status: DESIGN — BLOCKED ON AN IMPLEMENTATION-PHASE PREREQUISITE.** This runbook cannot be
+> executed until the workflow gains the `bind_only` path described below. Round 4 of this
+> design's review proved the earlier version could not work and was not safe:
+>
+> 1. **It could not produce its output.** The manifest is written to `$GITHUB_OUTPUT`, which is
+>    neither logged nor uploaded — reading it "from the run log" was impossible.
+> 2. **It was not mechanically read-only.** Checking that `CBA_CLOUD_GATE` is absent BEFORE
+>    dispatch binds nothing: `dev-stage` reads that mutable Environment variable later, so a
+>    value planted during the run would let it prepare change sets. An operator's check cannot
+>    constrain a value another actor can change mid-run.
+>
+> The fix is structural, not procedural, and belongs to the implementation phase:
+>
+> - **A distinct `bind_only` dispatch path** that terminates after the preflight and is
+>   structurally unable to enter any stage that prepares or executes change sets — whatever the
+>   Environment holds at any instant of the run (SPEC-LANE-005). The guarantee is the DAG, not a
+>   pre-dispatch observation.
+> - **A structured uploaded artifact** carrying the exact manifest (release, environment, region,
+>   bound context, context digest, assembly digest, stack set) plus the caller's correlation id
+>   (SPEC-LANE-006), so evidence is read from an artifact rather than scraped from a log.
+>
+> Until both exist, this document is a specification of the operation, not an instruction.
 
-Design round 3 found the ordering defect this runbook fixes: a `plan_only` cloud authorization
-must name the `assemblyDigest`, but that digest is produced **inside** `dev-preflight`, after
+Design round 3 found the ordering defect this operation fixes: a `plan_only` cloud authorization
+must name the manifest digest, but that digest is produced **inside** the preflight, after
 dispatch. Authoring the authorization first was therefore impossible. This read-only operation
-produces the digest FIRST, so Zamp can author an authorization that names it (SPEC-RUN-006).
-
-**Why it mutates nothing.** The run is dispatched with NO cloud authorization set. Synthesis is
-credential-free (SPEC-LANE-001); `dev-preflight` performs read-only AWS calls and emits the
-manifest; `dev-stage` assumes the deploy role and then **refuses at the authorization check**,
-which happens before any child process exists — no change set is created, no asset is published.
-The refusal is the expected outcome, not a failure.
+produces the manifest FIRST, so Zamp can author an authorization that names its digest
+(SPEC-RUN-006, SPEC-DEPLOY-019).
 
 ## Preflight
 
-1. The release SHA is a full 40-character ancestor of `main`.
-2. The dev Environment's `CBA_CLOUD_GATE` variable is **absent or empty**. If a value from an
-   earlier decision is still set, this operation is not run — clear it first (that is the prior
-   decision's Cleanup step, performed by Zamp).
-3. No other run of this release is in flight (`release-dev` serializes, SPEC-LANE-002).
+1. The `bind_only` path and the binding artifact exist in the reviewed workflow (SPEC-LANE-005,
+   SPEC-LANE-006). Without them this operation does not run at all.
+2. The release SHA is a full 40-character ancestor of `main`.
+3. A correlation id is generated for THIS request and recorded before dispatch — it is what ties
+   the eventual artifact to this decision rather than to a timestamp window (SPEC-RUN-009).
+4. No other run of this release is in flight (`release-dev` serializes, SPEC-LANE-002).
 
 ## Commands
 
 `PLANNED — not executable` in this phase. Templates:
 
-1. **Zamp** confirms no cloud authorization is set:
+1. **Zamp** dispatches the binding run, passing the correlation id:
 
    ```text
-   gh api repos/<owner>/<repo>/environments/dev/variables/CBA_CLOUD_GATE
-   ```
-
-   Expected outcome: HTTP 404, or a variable whose value is empty. Anything else stops here.
-
-2. **Zamp** dispatches the binding run and records the dispatch instant:
-
-   ```text
-   date -u +%Y-%m-%dT%H:%M:%SZ            # the dispatch instant, recorded before dispatching
    gh workflow run "Release Pilot" --ref main \
      -f release_sha=<full 40-character release SHA> \
-     -f mode=dev_only
+     -f mode=bind_only \
+     -f correlation_id=<caller-generated id for this request>
    ```
 
-   Expected outcome: the run is queued. Dispatch does not return a run id, which is why the
-   instant is recorded — step 3 resolves the id deterministically from it.
+   Expected outcome: the run is queued on the `bind_only` path. No stage that prepares or
+   executes change sets exists on that path, so no Environment value can enable one.
 
-3. **Zamp** resolves the run id, requiring exactly one match (SPEC-RUN-007):
+2. **Zamp** resolves the run and WAITS for a terminal conclusion — an in-flight run's log is a
+   partial file that hashes just as happily as a complete one (SPEC-RUN-009):
 
    ```text
    gh run list --workflow "Release Pilot" --branch main \
-     --json databaseId,headSha,createdAt,event \
-     --jq '[.[] | select(.event=="workflow_dispatch" and .createdAt >= "<dispatch instant>")]'
+     --json databaseId,headSha,status,conclusion,event \
+     --jq '[.[] | select(.event=="workflow_dispatch")]'
+   gh run watch <run-id> --exit-status
    ```
 
-   Expected outcome: exactly one entry. Zero or more than one stops the operation
-   (Stop condition 2) — a misattributed run id would bind the wrong evidence.
+   Expected outcome: exactly one candidate whose `headSha` is the release SHA, and a terminal
+   `conclusion` of `success`.
 
-4. **Zamp** captures the COMPLETE run log as the evidence artifact and digests it:
+3. **Zamp** downloads the structured binding ARTIFACT — not the log — and digests it:
 
    ```text
-   gh run view <run-id> --log > <evidence-dir>/bind-<run-id>.log
-   sha256sum <evidence-dir>/bind-<run-id>.log
+   gh run download <run-id> --name binding --dir <evidence-dir>/bind-<run-id>
+   sha256sum <evidence-dir>/bind-<run-id>/binding.json
    ```
 
-   Expected outcome: the full log — never an excerpt — plus its digest.
+   Expected outcome: a JSON artifact whose `correlationId` equals the one dispatched, whose
+   `releaseSha` equals the request's, and which carries the complete manifest.
 
-5. **Zamp** reads the manifest from the `dev-preflight` job output in that artifact, and records
-   `contextDigest`, `assemblyDigest` and the resolved release OID. Expected outcome: the values
-   the plan authorization will name.
+4. **Zamp** verifies provenance and correlation BEFORE accepting the artifact as evidence:
+   `correlationId` matches, `releaseSha` matches, the run id matches the artifact's, and the run
+   conclusion was `success`. Any mismatch stops the operation (Stop condition 2).
+
+5. **Zamp** records the manifest digest the authorization will name, together with the artifact
+   digest and the run id.
 
 ## Evidence
 
-- The complete run log artifact and its digest, bound to: run id, release SHA, and the manifest's
-  `contextDigest` and `assemblyDigest`.
-- An `EVENTS.md` entry recording the binding — release SHA, run id, digests — appended through
-  the normal reviewed flow.
+- The structured binding artifact and its digest, bound to run id, correlation id, release SHA
+  and the manifest digest the authorization will name (SPEC-RUN-007, SPEC-RUN-009).
+- An `EVENTS.md` entry recording the binding, appended through the normal reviewed flow.
 - No secrets, account ids or live ARNs; the manifest carries digests, not raw values.
 
 ## Stop conditions
 
-1. A `CBA_CLOUD_GATE` value is set — stop; this operation must run with no cloud authorization
-   in place, or it is no longer read-only in intent.
-2. The run id does not resolve to exactly one entry — stop; evidence that cannot be bound to one
-   run is not evidence.
-3. `dev-stage` refuses with anything other than the missing-authorization code — stop; a
-   different refusal means the release does not bind, and the cause is investigated first.
-4. Any run-level failure before `dev-preflight` completes — stop; there is no manifest to bind.
+1. The `bind_only` path does not exist in the reviewed workflow — stop; this operation has no
+   safe execution without it, and no procedure substitutes a structural guarantee.
+2. The correlation id, release SHA or run id in the artifact does not match the request, or the
+   run's conclusion is not `success` — stop; evidence that cannot be tied to THIS request, from
+   a run that finished, is not evidence.
+3. The run has no terminal conclusion yet — wait; never hash an in-flight log or a partial
+   artifact.
+4. The artifact is absent or its manifest is incomplete — stop; there is no manifest to bind.
 
 ## Rollback
 

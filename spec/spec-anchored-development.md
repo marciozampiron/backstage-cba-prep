@@ -144,7 +144,7 @@ id:
 ```jsonc
 {
   "id": "SPEC-DEPLOY-001",
-  "status": "ACTIVE",                    // PROPOSED | ACTIVE | RETIRED
+  "status": "PROPOSED",                  // PROPOSED | ACTIVE | RETIRED
   "title": "closed deployable stack set",
   "normativeText": "…the exact sentence(s)…",
   "normativeSha256": "<digest of normativeText — immutability check for ACTIVE>",
@@ -165,13 +165,34 @@ Until `spec/registry.json` exists, this document is the registry of record.
 
 Two rules the #70 rounds already paid for, applied to this system's own artifacts:
 
-1. **Canonical framed serialization.** Every digest in this system — `normativeSha256`, the
-   audit's input-bundle digest, evidence digests — is computed over a JSON array of
-   length-explicit records, never over a concatenation. Round 6 of #70 reproduced a collision
-   where one file's content contained the delimiter sequence two files induced; "concatenated in
-   a recorded order" carries exactly that defect. The canonical form is
-   `[{"path": <string>, "bytes": <number>, "sha256": <hex>}, …]`, sorted by `path`, and the
-   digest is the SHA-256 of its `JSON.stringify`.
+1. **Canonical framed serialization, typed.** Every digest in this system — `normativeSha256`,
+   the audit's input-bundle digest, evidence digests — is computed over a JSON array of
+   length-explicit TYPED records, never over a concatenation. Round 6 of #70 reproduced a
+   collision where one file's content contained the delimiter sequence two files induced;
+   "concatenated in a recorded order" carries exactly that defect. Round 4 of this design's
+   review found the second half: a `{path, bytes, sha256}` record cannot tell a deletion from an
+   absence, a mode change from none, a symlink from a regular file, or a rename from an
+   unrelated add+delete — and every one of those changes execution while the content record
+   stays identical. The canonical form is therefore a sorted array of:
+
+   ```jsonc
+   {
+     "status": "added" | "modified" | "deleted" | "renamed" | "typechanged",
+     "path": "<new path, or the path for non-renames>",
+     "oldPath": "<previous path for renames, else null>",
+     "oldType": "regular" | "executable" | "symlink" | "absent",
+     "newType": "regular" | "executable" | "symlink" | "absent",
+     "oldMode": "<git mode string, or null>",
+     "newMode": "<git mode string, or null>",
+     "oldBytes": <number|null>, "newBytes": <number|null>,
+     "oldSha256": "<hex|null>", "newSha256": "<hex|null>"
+   }
+   ```
+
+   sorted by `path` then `oldPath`; the digest is the SHA-256 of its `JSON.stringify`. A
+   symlink's `sha256` is taken over its target string, never over the file it points at — the
+   #70 assembly digest refuses symlinks outright for the same reason, and here they must be
+   distinguishable rather than silently followed.
 2. **ACTIVE immutability is proven against history, not against a self-declared field.** A
    commit can change `normativeText` and `normativeSha256` together and satisfy any check that
    compares them to each other. The linter therefore compares an ACTIVE id's normative text to
@@ -199,11 +220,14 @@ pass.
 
 ## 7. Seed registry
 
-Statuses are real: ids whose anchors and failing tests already exist are **ACTIVE** (their
-conformance is the current reviewed tree at `346fe2dcd79654f3e4c3a145899b2e52a34034a9` and, for
-this document's own commit, its descendants); the governance/audit/runbook ids are **PROPOSED**
-— their enforcement tooling does not exist yet, and activating them before it does would claim
-a check nobody runs.
+**Every id below is PROPOSED, including the ones whose code and tests already exist.** Round 4 of
+this design's review caught the contradiction: ACTIVE means *CI enforces this id*, and no id can
+be enforced before the linter and the conformance checks exist. A design-only commit is also not
+an activation commit — §4 requires an activation to contain the conformance it claims.
+
+The registry therefore records two different things, and keeps them apart: the invariant's text
+and anchors, and — where it is already true — the evidence that the current tree conforms. The
+first activation commit is the one that turns evidence into enforcement, id by id.
 
 ### 7a. Self-governance — the spec system under its own rules
 
@@ -235,39 +259,57 @@ runs would claim a guarantee nobody performs.
 | SPEC-RUN-007 | PROPOSED | The evidence of a cloud effect is a complete artifact bound to run id, decisionId, release SHA, stack group and plan digest; a truncated excerpt is not evidence. | `docs/runbooks/aws-dev-release-plan.md`, `-deploy.md` |
 | SPEC-RUN-008 | PROPOSED | Change sets prepared for a plan that will not execute are deleted under their own authorization; they are never left to expire. | `docs/runbooks/aws-dev-release-abandon.md` |
 
-### 7b. Release-lane invariants (already reviewed; ACTIVE)
+### 7b. Release-lane invariants — PROPOSED, with conformance evidence that already exists
 
-Anchors current as of `346fe2dcd79654f3e4c3a145899b2e52a34034a9`. Design rounds 2–3 split the
-compound seeds; each split id is the first registration of that invariant and supersedes nothing.
+Two rows are SUCCESSORS rather than descriptions of today: SPEC-DEPLOY-019 supersedes -002 when
+it activates, and SPEC-DEPLOY-020 extends the same schema. Registering a successor as PROPOSED
+beside the invariant it will replace is exactly the mechanism §4 describes, exercised here for
+the first time.
 
-| SPEC-ID | Status | Normative text | Code anchor | Test anchor |
-| --- | --- | --- | --- | --- |
-| SPEC-DEPLOY-001 | ACTIVE | The deploy child receives exactly the stack ids the manifest names, passed with `--exclusively`; `--all` never appears in a child's arguments. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-002 | ACTIVE | The cloud authorization value satisfies a closed ten-key schema with `issue` pinned to 70, `mode` in {plan_only, deploy} and a `decisionId` matching its documented shape; any other shape refuses. | `infra/aws/bin/deploy-release.js` (`checkCloudGate`, `CLOUD_GATE_KEYS`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-003 | ACTIVE | The plan is a set of named CloudFormation change sets: `plan_only` prepares them and `deploy` executes exactly those, addressed by their immutable change-set ids. | `infra/aws/bin/deploy-release.js` (`canonicalChangeSet`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-004 | ACTIVE | A deploy executes only a stack group the reviewed plan-group list contains, and every cross-stack import in the synthesized templates resolves to a producer in an earlier group. | `infra/aws/lib/context.js` (`DEPLOYMENT_PLAN_GROUPS`) | `infra/aws/test/release-bootstrap.test.js` |
-| SPEC-DEPLOY-005 | ACTIVE | Every DescribeChangeSet response is validated against the reviewed schema — key names, types, documented enums and documented nullability — and any violation refuses the plan before a digest exists. | `infra/aws/bin/deploy-release.js` (`validateChangeSet`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-006 | ACTIVE | In the plan rendering, no value observed in a change set is published either verbatim or as any derivation of itself; each is replaced by a constant class label. | `infra/aws/bin/deploy-release.js` (`REDACT`, `renderPlan`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-007 | ACTIVE | Child stdout and stderr are never reproduced; a failure records the exit code, per-stream byte counts and one digest over the framed streams. This digest is the named exception to SPEC-DEPLOY-006: it covers whole streams that are never published, not a value in the rendering, so it offers no per-value oracle. | `infra/aws/bin/deploy-release.js` (`childEvidence`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-008 | ACTIVE | The target account is resolved again immediately before the effect and, if it differs from the account the verification bound, the run refuses. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-009 | ACTIVE | An authorization instant is accepted only as strict RFC3339 UTC that round-trips through the calendar; a normalized or offset instant refuses. | `infra/aws/bin/deploy-release.js` (`strictUtcInstant`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-010 | ACTIVE | An authorization is valid only while `approvedAt` ≤ now < `expiresAt`, with `expiresAt − approvedAt` at most one hour. | `infra/aws/bin/deploy-release.js` (`CLOUD_GATE_MAX_TTL_MS`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-011 | ACTIVE | The authorized stack group must equal one of the reviewed plan groups exactly, in content and order. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-012 | ACTIVE | Each service response page is validated immediately after parsing and before it is stored, merged or read for a cursor; pagination is fully consumed or the plan refuses. | `infra/aws/bin/deploy-release.js` (`describePlannedChangeSet`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-013 | ACTIVE | Each ARN-typed field is validated against its position's service and resource shape with all mandatory components present; only `CausingEntity` accepts a non-ARN reference. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-014 | ACTIVE | Identities a reviewed decision produced — the approved host families, IAM principal paths and project-chosen resource names — render verbatim; AWS-generated identifiers never do. | `infra/aws/bin/deploy-release.js` (`renderHost`, `renderArnResource`) | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-015 | ACTIVE | Every stack the app constructs appears in exactly one of the deployable or excluded lists, and an unclassified stack fails synthesis-time discovery. | `infra/aws/lib/context.js` (`DEPLOYABLE_STACK_IDS`, `EXCLUDED_STACK_IDS`) | `infra/aws/test/app.test.js` |
-| SPEC-DEPLOY-016 | ACTIVE | A plan recomputed at execution time that differs from the digest the authorization names refuses as `PLAN_CHANGED`, and no change set executes. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-017 | ACTIVE | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-DEPLOY-018 | ACTIVE | When a sequence halts, the output names exactly which change sets executed and states that the remaining ones did not. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` |
-| SPEC-LANE-001 | ACTIVE | In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step only the reviewed entrypoints execute — no action step and no package-manager command. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` |
-| SPEC-LANE-002 | ACTIVE | The lane's concurrency group is the literal per-environment string with `cancel-in-progress: false`; a group derived from an input refuses. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` |
-| SPEC-LANE-003 | ACTIVE | Every job declares `timeout-minutes` equal to its reviewed bound. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` |
-| SPEC-LANE-004 | ACTIVE | The dispatch input `mode` offers only `dev_only`, so the pilot jobs' success expressions are unreachable. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` |
-| SPEC-IAM-001 | ACTIVE | Each tier's deploy role may assume only its own release bootstrap's roles; no tier's role can reach another tier's bootstrap or the foundation bootstrap. | `infra/aws/lib/security-stack.js`, `infra/aws/bootstrap/policies/` | `infra/aws/test/security-stack.test.js`, `release-bootstrap.test.js` |
-| SPEC-IAM-002 | ACTIVE | Where AWS generates the resource identifier, the release execution policy conditions the action on the project and environment tags — request tags on creation, resource tags on lifecycle. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` |
-| SPEC-IAM-003 | ACTIVE | Removing or replacing the `Project` or `Environment` tag is explicitly denied on every tag-scoped family. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` |
-| SPEC-IAM-004 | ACTIVE | Every `Resource: "*"` in the release execution policy is its own named statement whose action set is pinned, and no wildcard action appears outside an explicit Deny. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` |
+**Round 4 corrected these to PROPOSED.** They were marked ACTIVE, which contradicted this
+document's own lifecycle in the same commit: ACTIVE means *CI enforces this id*, and the linter,
+the conformance checks, the registry file and the annotations do not exist. An id cannot be
+enforced by tooling nobody built, and a design-only commit cannot be an activation commit — an
+activation must contain the conformance it claims (§4).
+
+Nothing is lost by saying so. The **Conformance today** column records what is already true at
+`346fe2dcd79654f3e4c3a145899b2e52a34034a9`: reviewed code, reviewed tests, and reversion proofs
+performed during #70's fifteen rounds. That is the evidence a future activation commit will
+carry — recorded now, claimed as enforcement never.
+
+| SPEC-ID | Status | Normative text | Code anchor | Test anchor | Conformance today |
+| --- | --- | --- | --- | --- | --- |
+| SPEC-DEPLOY-001 | PROPOSED | The deploy child receives exactly the stack ids the manifest names, passed with `--exclusively`; `--all` never appears in a child's arguments. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-002 | PROPOSED | The cloud authorization value satisfies a closed ten-key schema with `issue` pinned to 70, `mode` in {plan_only, deploy} and a `decisionId` matching its documented shape; any other shape refuses. | `infra/aws/bin/deploy-release.js` (`checkCloudGate`, `CLOUD_GATE_KEYS`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-003 | PROPOSED | The plan is a set of named CloudFormation change sets: `plan_only` prepares them and `deploy` executes exactly those, addressed by their immutable change-set ids. | `infra/aws/bin/deploy-release.js` (`canonicalChangeSet`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-004 | PROPOSED | A deploy executes only a stack group the reviewed plan-group list contains, and every cross-stack import in the synthesized templates resolves to a producer in an earlier group. | `infra/aws/lib/context.js` (`DEPLOYMENT_PLAN_GROUPS`) | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-005 | PROPOSED | Every DescribeChangeSet response is validated against the reviewed schema — key names, types, documented enums and documented nullability — and any violation refuses the plan before a digest exists. | `infra/aws/bin/deploy-release.js` (`validateChangeSet`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-006 | PROPOSED | In the plan rendering, no value observed in a change set is published either verbatim or as any derivation of itself; each is replaced by a constant class label. | `infra/aws/bin/deploy-release.js` (`REDACT`, `renderPlan`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-007 | PROPOSED | Child stdout and stderr are never reproduced; a failure records the exit code, per-stream byte counts and one digest over the framed streams. This digest is the named exception to SPEC-DEPLOY-006: it covers whole streams that are never published, not a value in the rendering, so it offers no per-value oracle. | `infra/aws/bin/deploy-release.js` (`childEvidence`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-008 | PROPOSED | The target account is resolved again immediately before the effect and, if it differs from the account the verification bound, the run refuses. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-009 | PROPOSED | An authorization instant is accepted only as strict RFC3339 UTC that round-trips through the calendar; a normalized or offset instant refuses. | `infra/aws/bin/deploy-release.js` (`strictUtcInstant`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-010 | PROPOSED | An authorization is valid only while `approvedAt` ≤ now < `expiresAt`, with `expiresAt − approvedAt` at most one hour. | `infra/aws/bin/deploy-release.js` (`CLOUD_GATE_MAX_TTL_MS`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-011 | PROPOSED | The authorized stack group must equal one of the reviewed plan groups exactly, in content and order. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-012 | PROPOSED | Each service response page is validated immediately after parsing and before it is stored, merged or read for a cursor; pagination is fully consumed or the plan refuses. | `infra/aws/bin/deploy-release.js` (`describePlannedChangeSet`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-013 | PROPOSED | Each ARN-typed field is validated against its position's service and resource shape with all mandatory components present; only `CausingEntity` accepts a non-ARN reference. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-014 | PROPOSED | Identities a reviewed decision produced — the approved host families, IAM principal paths and project-chosen resource names — render verbatim; AWS-generated identifiers never do. | `infra/aws/bin/deploy-release.js` (`renderHost`, `renderArnResource`) | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-015 | PROPOSED | Every stack the app constructs appears in exactly one of the deployable or excluded lists, and an unclassified stack fails synthesis-time discovery. | `infra/aws/lib/context.js` (`DEPLOYABLE_STACK_IDS`, `EXCLUDED_STACK_IDS`) | `infra/aws/test/app.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-016 | PROPOSED | A plan recomputed at execution time that differs from the digest the authorization names refuses as `PLAN_CHANGED`, and no change set executes. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-017 | PROPOSED | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-DEPLOY-019 | PROPOSED | The cloud authorization names a digest of the COMPLETE closed manifest — release, environment, region, account, bound context and stack set — not a release SHA plus an assembly digest; on activation this supersedes SPEC-DEPLOY-002. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
+| SPEC-DEPLOY-020 | PROPOSED | The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none. | not yet implemented | not yet implemented | none — awaiting the abandon lane |
+| SPEC-LANE-005 | PROPOSED | A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run. | not yet implemented | not yet implemented | none — awaiting the workflow path |
+| SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id, and the run publishes it inside a structured uploaded artifact so evidence is bound to the requested decision rather than to a timestamp window. | not yet implemented | not yet implemented | none — awaiting the workflow input and artifact |
+| SPEC-RUN-009 | PROPOSED | Evidence is accepted only from a run that reached a terminal conclusion, whose correlation id, release SHA and inputs match the request, and whose artifact provenance is verified. | `docs/runbooks/aws-dev-release-bind.md`, `-plan.md`, `-deploy.md` | not yet implemented | none — awaiting SPEC-LANE-006 |
+| SPEC-DEPLOY-018 | PROPOSED | When a sequence halts, the output names exactly which change sets executed and states that the remaining ones did not. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
+| SPEC-LANE-001 | PROPOSED | In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step only the reviewed entrypoints execute — no action step and no package-manager command. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
+| SPEC-LANE-002 | PROPOSED | The lane's concurrency group is the literal per-environment string with `cancel-in-progress: false`; a group derived from an input refuses. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
+| SPEC-LANE-003 | PROPOSED | Every job declares `timeout-minutes` equal to its reviewed bound. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
+| SPEC-LANE-004 | PROPOSED | The dispatch input `mode` offers only `dev_only`, so the pilot jobs' success expressions are unreachable. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
+| SPEC-IAM-001 | PROPOSED | Each tier's deploy role may assume only its own release bootstrap's roles; no tier's role can reach another tier's bootstrap or the foundation bootstrap. | `infra/aws/lib/security-stack.js`, `infra/aws/bootstrap/policies/` | `infra/aws/test/security-stack.test.js`, `release-bootstrap.test.js` | code + tests reviewed, reversion proven |
+| SPEC-IAM-002 | PROPOSED | Where AWS generates the resource identifier, the release execution policy conditions the action on the project and environment tags — request tags on creation, resource tags on lifecycle. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
+| SPEC-IAM-003 | PROPOSED | Removing or replacing the `Project` or `Environment` tag is explicitly denied on every tag-scoped family. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
+| SPEC-IAM-004 | PROPOSED | Every `Resource: "*"` in the release execution policy is its own named statement whose action set is pinned, and no wildcard action appears outside an explicit Deny. | `infra/aws/bootstrap/policies/cfn-exec-release.template.json` | `infra/aws/test/release-bootstrap.test.js` | code + tests reviewed, reversion proven |
 
 ## 8. Three authorizations, all Zamp's, never interchangeable
 
@@ -305,9 +347,23 @@ in-code copy is demoted to a mirror.
 
 ## 10. What the next phase must deliver (and this phase must not)
 
-Only after this design passes independent review and Zamp's decision: `spec/registry.json` and
-its closed schema, the traceability linter and conformance checks wired into CI with exit 1
-semantics, the `[SPEC-ID]` annotations, activation of the PROPOSED ids as their tooling lands,
-and the protocol/authority-policy amendments that formally seat the auditor persona. None of
-that exists in this commit, and this document grants no authority to build it without that
-review.
+Only after this design passes independent review and Zamp's decision:
+
+**The spec system itself** — `spec/registry.json` and its closed schema, the traceability linter
+and the conformance checks wired into CI with exit 1 semantics, the `[SPEC-ID]` annotations, and
+the protocol/authority-policy amendments that formally seat the auditor persona.
+
+**The lane changes design rounds 3–4 specified but this phase must not build** — each is why a
+runbook above is marked blocked rather than runnable:
+
+| Prerequisite | Why | SPEC-ID |
+| --- | --- | --- |
+| A `bind_only` dispatch path that terminates after the preflight and cannot enter a preparing or executing stage | A pre-dispatch check on a mutable Environment variable constrains nothing; the guarantee must be the DAG | SPEC-LANE-005 |
+| A `correlation_id` dispatch input, published inside structured uploaded artifacts | Evidence must bind to the request, not to a timestamp window; and a log excerpt is not evidence | SPEC-LANE-006, SPEC-RUN-009 |
+| The authorization schema binding a digest of the complete closed manifest | Release SHA plus assembly digest leaves environment, region, account, context and stack set unauthorized | SPEC-DEPLOY-019 |
+| An `abandon` authorization mode and an abandon lane under the release lock | Declined plans leave executable change sets, and cleanup cannot be raw CLI calls outside the lock without gate or window revalidation | SPEC-DEPLOY-020, SPEC-RUN-008 |
+
+**Activation, once each tool exists.** The PROPOSED ids in §7 become ACTIVE one at a time, each
+in an implementation commit whose tree already satisfies its predicates and carries its mutation
+evidence (§4, §6c). None of that exists in this commit, and this document grants no authority to
+build it without that review.

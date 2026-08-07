@@ -1,10 +1,10 @@
 ---
 id: spec-conformance-audit
 kind: runbook
-version: 0.2.0
+version: 0.3.0
 owner: Opus
 humanApprover: Zamp
-specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-RUN-001]
+specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005, SPEC-GOV-006, SPEC-GOV-007, SPEC-GOV-008, SPEC-GOV-009, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005, SPEC-RUN-001]
 inputs: [the audited commit's full SHA, the spec registry at that SHA, the mechanical reports for that SHA, Zamp's per-run spend authorization for the semantic stage]
 outputs: [a SPEC_AUDIT_REPORT v1 document bound to the audited SHA]
 gateRequired: true
@@ -26,7 +26,8 @@ design review round 2 caught exactly that contradiction.
 
 `gateRequired: true` refers to one dependency only: the semantic stage invokes a model service,
 which is a paid call, and each run needs Zamp's explicit spend authorization
-(SPEC-AUDIT-003). No publication and no cloud effect occurs anywhere in this runbook.
+(SPEC-AUDIT-005 — the registry assigns the spend rule to that id; SPEC-AUDIT-003 is the
+input-binding rule). No publication and no cloud effect occurs anywhere in this runbook.
 
 ## Preflight
 
@@ -36,7 +37,7 @@ which is a paid call, and each run needs Zamp's explicit spend authorization
    (SPEC-GOV-002/004).
 3. The mechanical layers' versions are recorded, so two audits of the same SHA are comparable.
 4. Zamp's spend authorization for THIS run exists, with the model, profile and cost ceiling it
-   covers.
+   covers (SPEC-AUDIT-004/005).
 5. The input bundle for the semantic stage is assembled from repository content only and its
    digest computed BEFORE invocation (SPEC-AUDIT-003).
 

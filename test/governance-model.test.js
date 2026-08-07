@@ -1572,14 +1572,16 @@ test('the authority policy states the invariants as data, not prose', () => {
   // (#70 design round 3). Preparing change sets is a cloud effect too, and is named as one.
   assert.equal(POLICY.effects.deploy.authorizedBy, 'cloud-authorization');
   assert.equal(POLICY.effects.deploy.performedBy, 'zamp');
-  for (const effect of ['prepare-change-sets', 'execute-change-sets']) {
+  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
     assert.equal(POLICY.effects[effect].authorizedBy, 'cloud-authorization');
     assert.equal(POLICY.effects[effect].performedBy, 'zamp');
   }
   assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
   assert.equal(POLICY.effects['invoke-paid-model-audit'].performedBy, 'zamp');
   // The three instruments are distinct documents, and none authorizes another's effects.
-  assert.deepEqual(POLICY.documents['cloud-authorization'].authorizes, ['deploy', 'prepare-change-sets', 'execute-change-sets']);
+  assert.deepEqual(POLICY.documents['cloud-authorization'].authorizes, ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']);
+  // Round 4: the instrument binds the COMPLETE manifest, not a release SHA plus one digest.
+  assert.equal(POLICY.documents['cloud-authorization'].boundTo, 'manifestDigest+stacks+planDigest');
   assert.deepEqual(POLICY.documents['spend-authorization'].authorizes, ['invoke-paid-model-audit']);
   assert.equal(POLICY.documents['cloud-authorization'].writtenBy, 'zamp');
   assert.equal(POLICY.documents['spend-authorization'].writtenBy, 'zamp');
@@ -1775,7 +1777,7 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   }, /must be authorized by MERGE_DECISION/);
   // The exact conflation design round 3 found: a cloud effect claiming the PUBLICATION gate.
   // Each cloud effect is checked, so widening one of them cannot ride on another's rule.
-  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets']) {
+  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
     expectRejected((p) => {
       p.effects[effect].authorizedBy = 'execution-gate';
     }, new RegExp(`${effect}[\\s\\S]*cloud-authorization`));

@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.1.0
+version: 0.3.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007]
+specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006]
 inputs: [the release SHA, the wave's stack group, the reviewed PLAN_DIGEST from the plan runbook, a fresh decisionId, Zamp's deploy cloud authorization value]
 outputs: [executed change sets for the wave, per-stack results, the complete evidence artifact bound to run id and decision]
 gateRequired: true
@@ -24,11 +24,14 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
 1. The [plan runbook](aws-dev-release-plan.md) completed for this wave and Zamp studied the
    rendering — semantics first, then the resource changes — and decided this exact plan may
    execute.
-2. Zamp has issued the `deploy` value for THIS decision: the SAME release SHA, assembly digest
-   and stack group, the reviewed `planDigest`, a FRESH `decisionId` and a fresh ≤1h window
-   (SPEC-DEPLOY-002/009/010/011). A digest from any other decision is never reused.
-3. The plan's change sets still exist and were not superseded (a later plan run replaces them by
-   name — if one ran, restart at plan).
+2. Zamp has issued the `deploy` value for THIS decision: the SAME manifest digest and stack
+   group, the reviewed `planDigest`, a FRESH `decisionId` and a fresh ≤1h window
+   (SPEC-DEPLOY-002/009/010/011/019). A digest from any other decision is never reused.
+3. The plan's change sets still exist. They do NOT expire, and a later plan run does not replace
+   them — creating a change set with an existing name fails, so a second plan for the same
+   release either failed to prepare or the earlier sets were abandoned. Either way, if another
+   plan run happened, restart at [bind](aws-dev-release-bind.md) rather than assume.
+4. A correlation id is generated for THIS dispatch and recorded before it (SPEC-LANE-006).
 
 ## Commands
 
@@ -46,10 +49,10 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    cloud effect, performed by Zamp:
 
    ```text
-   date -u +%Y-%m-%dT%H:%M:%SZ            # recorded BEFORE dispatching
    gh workflow run "Release Pilot" --ref main \
      -f release_sha=<full 40-character release SHA> \
-     -f mode=dev_only
+     -f mode=dev_only \
+     -f correlation_id=<caller-generated id for this decision>
    ```
 
    Expected outcome: the entrypoint re-describes the exact change sets, requires the digest to
@@ -58,27 +61,28 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    in dependency order and reports per-stack results; child text is never echoed
    (SPEC-DEPLOY-007).
 
-3. **Zamp** resolves the run id, requiring exactly one match (SPEC-RUN-007):
+3. **Zamp** resolves the run and waits for a terminal conclusion (SPEC-RUN-009):
 
    ```text
    gh run list --workflow "Release Pilot" --branch main \
-     --json databaseId,headSha,createdAt,event \
-     --jq '[.[] | select(.event=="workflow_dispatch" and .createdAt >= "<dispatch instant>")]'
+     --json databaseId,headSha,status,conclusion,event
+   gh run watch <run-id> --exit-status
    ```
 
-4. **Zamp** captures the COMPLETE evidence artifact and digests it:
+4. **Zamp** downloads the structured deploy ARTIFACT and digests it:
 
    ```text
-   gh run view <run-id> --log > <evidence-dir>/deploy-<run-id>.log
-   sha256sum <evidence-dir>/deploy-<run-id>.log
+   gh run download <run-id> --name deploy --dir <evidence-dir>/deploy-<run-id>
+   sha256sum <evidence-dir>/deploy-<run-id>/deploy.json
    ```
 
-5. **Zamp** writes the binding record: run id, `decisionId`, release SHA, stack group, the
-   `PLAN_DIGEST` this decision authorized, the change sets executed, and the artifact digest.
+5. **Zamp** verifies correlation id, release SHA, run id and conclusion, then writes the binding
+   record: run id, correlation id, `decisionId`, release SHA, stack group, the `PLAN_DIGEST` this
+   decision authorized, the change sets executed, and the artifact digest.
 
 ## Evidence
 
-- The COMPLETE run log artifact and its digest — never an excerpt (SPEC-RUN-007).
+- The structured deploy artifact and its digest — never a log excerpt (SPEC-RUN-007).
 - The binding record: run id, `decisionId`, release SHA, stack group, authorized `PLAN_DIGEST`,
   change sets executed, artifact digest.
 - Within the artifact: the digest-match line, per-stack results, and — on any failure — the
@@ -99,8 +103,9 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    The output records exactly which stacks executed. Stop; continue in the
    [recovery runbook](aws-dev-release-recovery.md).
 5. Any GitHub-side failure before the entrypoint — stop; nothing mutated, by construction.
-6. The run id does not resolve to exactly one entry, or its `headSha` is not the release SHA —
-   stop; evidence bound to the wrong run cannot show what executed.
+6. The artifact's correlation id, release SHA or run id does not match the request, or the run
+   has no terminal conclusion — stop; evidence that cannot be tied to THIS decision cannot show
+   what executed.
 
 ## Rollback
 
