@@ -200,7 +200,7 @@ Two rules the #70 rounds already paid for, applied to this system's own artifact
 
    | Kind | Digests | Binding fields | Record shape (sorted by) |
    | --- | --- | --- | --- |
-   | `text` | a single normative string (`normativeSha256`) | — | exactly one `{ "specId": "<SPEC-ID>", "encoding": "utf-8", "bytes": <number>, "text": "<the exact normative sentence>" }` — the text is IN the digested document, so the digest cannot drift from what it claims to cover |
+   | `text` | a single governed string (`normativeSha256`; the policy's `residualRiskSha256`) | — | exactly one `{ "subject": "<what this string is: a SPEC-ID for registry rows, the canonical field path for any other governed string>", "encoding": "utf-8", "bytes": <number>, "text": "<the exact string>" }` — the text AND its subject are IN the digested document, so the digest cannot drift from what it claims to cover, and the same characters under another subject are a different document (round 10 renamed the field from `specId` to `subject` for exactly that generality) |
    | `snapshot` | a set of files **tracked in the repository at ONE commit** | `"commit": "<full 40-character SHA>"` | `{ "path": "<repo-relative>", "type": "regular"\|"executable"\|"symlink", "mode": "<git mode string>", "bytes": <number>, "sha256": "<hex>" }`, sorted by `path` |
    | `diff` | the change between two commits (`patchSha256`, §6c, and change evidence) | `"baseSha"`, `"headSha"` — both full 40-character SHAs | `{ "status": "added"\|"modified"\|"deleted"\|"typechanged", "path": "<path>", "oldType"/"newType": "regular"\|"executable"\|"symlink"\|"absent", "oldMode"/"newMode": "<git mode string>"\|null, "oldBytes"/"newBytes": <number>\|null, "oldSha256"/"newSha256": "<hex>"\|null }`, sorted by `path` |
    | `bundle` | **generated** byte streams that are not repository files — tool reports, the prompt as invoked, the input bundle actually handed to a model | `"producer": "<tool identity + version, or the invoking runbook id>"` | `{ "name": "<stable name within the bundle>", "mediaType": "<IANA type>", "bytes": <number>, "sha256": "<hex>" }`, sorted by `name` |
@@ -355,7 +355,7 @@ carry — recorded now, claimed as enforcement never.
 | SPEC-DEPLOY-017 | PROPOSED | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) | The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
 | SPEC-DEPLOY-020 | RETIRED (never ACTIVE; `supersededBy` SPEC-DEPLOY-019) | The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none. | — | — | none — absorbed into SPEC-DEPLOY-019 before activation (§4) |
-| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b): each key holds its exact grammar, `stackId` is a positionally validated CloudFormation stack ARN whose embedded region, account and name EQUAL the record's `region`, `account` and `stackName`, and the decision is valid only while `observedAt <= now < observedAt + 15 minutes`, a future instant refusing. The performer re-observes the same identity, status and window immediately before deleting. The activation commit must contain the instance parser and its adversarial tests, and that parser must re-check — immediately before the effect — that the acceptance is unexpired at that moment and that its `coversStackId`/`coversCleanupDecisionId` equal the value's own. The residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records acceptance as the closed `riskAcceptance` record — a boolean is not a decision, and a free-text record is not an enforceable one. | `spec/authority-policy.json` (`stack-record-authorization`) | `test/governance-model.test.js` | policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists |
+| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b): each key holds its exact grammar, `stackId` is a positionally validated CloudFormation stack ARN whose embedded region, account and name EQUAL the record's `region`, `account` and `stackName`, and the decision is valid only while `observedAt <= now < observedAt + 15 minutes`, a future instant refusing. The performer re-observes the same identity, status and window immediately before deleting. The activation commit must contain the instance parser and its adversarial tests, and that parser must re-check — immediately before the effect — that the acceptance is unexpired at that moment, that the §6b bundle digest it recomputes over the presented cleanup value equals `coversCleanupAuthorizationSha256`, and that the value's `decisionId` equals `coversCleanupDecisionId`. The residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records acceptance as the closed `riskAcceptance` record — a boolean is not a decision, and a free-text record is not an enforceable one. | `spec/authority-policy.json` (`stack-record-authorization`) | `test/governance-model.test.js` | policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists |
 | SPEC-DEPLOY-021 | PROPOSED | Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision. | `spec/authority-policy.json` (`delete-review-in-progress-stack-record`) | `test/governance-model.test.js` | policy data + test reviewed in this commit; no lane may perform it |
 | SPEC-LANE-005 | PROPOSED | A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run. | not yet implemented | not yet implemented | none — awaiting the workflow path |
 | SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id matching exactly `^cba-70-[0-9a-f]{32}$`; a dispatch whose id does not match is refused in the preflight, before any credentialed stage. The run's NAME is exactly `cba-release <mode> <correlationId>` and nothing else, so a run is selected by EQUALITY on its complete name — never by substring — and is identifiable from run metadata alone, before any artifact exists. The same id appears inside the structured uploaded artifact, together with the release SHA the run acted on, which is what a reviewer compares against the request; a run's `headSha` is the dispatch ref's tip and is never that comparison. | not yet implemented | not yet implemented | none — awaiting the workflow input, run name and artifact |
@@ -512,17 +512,27 @@ expiry that existed only as prose. The policy carries `riskAcceptance: null`, an
 refuses any non-null value that is not a CLOSED record with exactly these thirteen keys:
 
 - `acceptedBy` — must be `zamp`, the only actor holding `accept-risk`;
-- `zampStatementSha256` — SHA-256 of **Zamp's verbatim written decision**. `acceptedBy: "zamp"`
-  typed by an executor proves nothing; this digest names the statement, Zamp writes that
-  statement in Zamp's own message on the record, and independent review verifies the transcribed
-  record against it. That message is the decision channel; the policy entry is its transcript;
+- `zampStatement` — a CLOSED pointer to **Zamp's verbatim written decision**: `source` (literally
+  `zamp-verbatim-message` — Zamp's own message on the record, never a paraphrase), `sentAt`,
+  `encoding` (literally `utf-8`), `bytes` (the canonical length) and `sha256` — the §6b `bundle`
+  digest of those exact bytes, `producer: "zamp"`. Round 10: a bare 64-hex string fixed neither
+  where the statement lives nor which bytes it digests; `acceptedBy: "zamp"` typed by an executor
+  proves nothing. Independent review recomputes the digest from the actual message; the policy
+  entry is its transcript;
 - `decisionId`, `finding`, `justification`, `compensatingControls` (non-empty) — round 8's core;
-- `residualRiskSha256` — SHA-256 of THIS instrument's exact `residualRisk` text, recomputed by
-  the validator. An acceptance of some other finding accepts nothing here, and editing the
-  finding detaches every prior acceptance, structurally;
-- `coversStackId` (one positionally valid stack ARN) and `coversCleanupDecisionId` (the cleanup
-  decision's id, never the acceptance's own) — an acceptance covers ONE stack record under ONE
-  cleanup decision. It is never a class-wide waiver;
+- `residualRiskSha256` — the §6b `text`-framed digest of THIS instrument's exact `residualRisk`
+  (subject: the field's canonical path), recomputed by the validator. Round 10: a raw
+  `sha256(text)` violated this project's own digest law — kind, version and subject live INSIDE
+  the digested bytes, so a kind swap, another subject or a stray newline all detach. An
+  acceptance of some other finding accepts nothing here, and editing the finding detaches every
+  prior acceptance, structurally;
+- `coversCleanupAuthorizationSha256` and `coversCleanupDecisionId` — an acceptance covers ONE
+  stack record under ONE cleanup decision, and the stack is bound by the §6b `bundle` digest of
+  the OUT-OF-BAND cleanup authorization value (the nine keys of the table above, canonical JSON
+  in table order, `producer: "zamp"`), which contains the `stackId` and `decisionId`. Round 10:
+  the previous field copied the live stack ARN — account id included — into the tracked policy,
+  which this repository forbids; the digest binds the same identity while the ARN never enters
+  Git. It is never a class-wide waiver;
 - `acceptedAt`, `reviewBy`, `expiresAt` — strict UTC instants, ordered
   `acceptedAt < reviewBy <= expiresAt`, **and evaluated against the clock**: the validator takes
   the current time, so a tree holding an expired acceptance — or one dated in the future — fails
@@ -531,11 +541,12 @@ refuses any non-null value that is not a CLOSED record with exactly these thirte
 
 `executableProcedure: true` over `riskAcceptance: null` refuses. **The runtime consumer inherits
 the clock duty**: the instance parser (SPEC-DEPLOY-022's activation) must re-check, immediately
-before the effect, that the acceptance is unexpired NOW, that the cleanup value's `stackId`
-equals `coversStackId`, that its `decisionId` equals `coversCleanupDecisionId`, and that
-`residualRiskSha256` still digests the instrument's text — the validator proves the tree, the
-consumer proves the moment. The acceptance reaches the policy only through a reviewed commit of
-Zamp's own decision; Opus may transcribe it, never originate it.
+before the effect, that the acceptance is unexpired NOW, that the §6b bundle digest it recomputes
+over the presented cleanup value equals `coversCleanupAuthorizationSha256`, that the value's
+`decisionId` equals `coversCleanupDecisionId`, and that `residualRiskSha256` still matches the
+framed digest of the instrument's text — the validator proves the tree, the consumer proves the
+moment. The acceptance reaches the policy only through a reviewed commit of Zamp's own decision;
+Opus may transcribe it, never originate it.
 
 **And that is still not enough, which is the point.** CloudFormation offers no compare-and-delete:
 between the final re-observation and `DeleteStack`, the stack can acquire resources. Every field

@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveRun, ATTEMPTS, INTERVAL_MS, TITLE_RE, StopError,
-  WORKFLOW_FILE, QUERY_LIMIT, LIST_TIMEOUT_MS, WATCH_TIMEOUT_MS,
+  WORKFLOW_FILE, QUERY_LIMIT, LIST_TIMEOUT_MS, WATCH_TIMEOUT_MS, CANONICAL_REPO,
 } from '../bin/resolve-run.mjs';
 
 const ID = 'cba-70-0123456789abcdef0123456789abcdef';
@@ -27,11 +27,14 @@ function fakeGh({ lists, watch = () => '' }) {
     if (args[0] === 'run' && args[1] === 'list') {
       calls.list += 1;
       calls.listOpts.push(opts);
-      // The query must stay pinned: the workflow FILE (an identity, not a display name), branch,
-      // dispatch event, the exhaustive-or-stop window, closed fields.
+      // The query must stay pinned: the CANONICAL repository (round 10 — without --repo, gh
+      // resolves the ambient clone, so a fork with the same workflow file satisfies every other
+      // rule), the workflow FILE (an identity, not a display name), branch, dispatch event, the
+      // exhaustive-or-stop window, closed fields.
       assert.deepEqual(args.slice(2), [
-        '--workflow', WORKFLOW_FILE, '--branch', 'main', '--event', 'workflow_dispatch',
-        '--limit', String(QUERY_LIMIT), '--json', 'databaseId,displayTitle',
+        '--repo', CANONICAL_REPO, '--workflow', WORKFLOW_FILE, '--branch', 'main',
+        '--event', 'workflow_dispatch', '--limit', String(QUERY_LIMIT),
+        '--json', 'databaseId,displayTitle',
       ]);
       const next = listQueue.length > 1 ? listQueue.shift() : listQueue[0];
       if (typeof next === 'function') return next();
@@ -41,7 +44,8 @@ function fakeGh({ lists, watch = () => '' }) {
       calls.watch += 1;
       calls.watchedIds.push(args[2]);
       calls.watchOpts.push(opts);
-      assert.equal(args[3], '--exit-status');
+      // The watch is repo-pinned too — downloading is done by the caller with the same pin.
+      assert.deepEqual(args.slice(3), ['--repo', CANONICAL_REPO, '--exit-status']);
       return watch();
     }
     throw new Error(`unexpected gh invocation: ${args.join(' ')}`);
@@ -72,18 +76,22 @@ test('the bounds are pinned to the reviewed values', () => {
   // Round 9: the workflow is pinned by FILE identity, the window is exhaustive-or-stop, and every
   // external call carries a wall-clock deadline (the lane's own jobs sum to 35 minutes).
   assert.equal(WORKFLOW_FILE, 'release-pilot.yml');
+  assert.equal(CANONICAL_REPO, 'marciozampiron/backstage-cba-prep');
   assert.equal(QUERY_LIMIT, 1000);
   assert.equal(LIST_TIMEOUT_MS, 60_000);
   assert.equal(WATCH_TIMEOUT_MS, 45 * 60_000);
 });
 
-test('the workflow cannot be supplied by the caller — the query stays pinned to the file', async () => {
-  // Round 9: the helper used to forward ANY workflow string to gh. resolveRun no longer takes
-  // one; a caller passing it anyway changes nothing, and the fake asserts every query names
-  // WORKFLOW_FILE (a foreign workflow would fail the deepEqual inside the fake).
+test('neither the workflow nor the repository can be supplied by the caller', async () => {
+  // Round 9: the helper used to forward ANY workflow string to gh. Round 10: without --repo it
+  // observed the AMBIENT clone. resolveRun takes neither; a caller passing them anyway changes
+  // nothing, and the fake asserts every query names CANONICAL_REPO and WORKFLOW_FILE (a foreign
+  // value would fail the deepEqual inside the fake).
   const { exec, calls } = fakeGh({ lists: [rows([42, TITLE])] });
   const { sleep } = sleepRecorder();
-  const runId = await resolveRun({ workflow: 'Attacker Workflow', title: TITLE, exec, sleep });
+  const runId = await resolveRun({
+    workflow: 'Attacker Workflow', repo: 'attacker/fork', title: TITLE, exec, sleep,
+  });
   assert.equal(runId, 42);
   assert.ok(calls.list >= 1);
 });

@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.8.0
+version: 0.9.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -55,7 +55,7 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    cloud effect, performed by Zamp:
 
    ```text
-   gh workflow run "Release Pilot" --ref main \
+   gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main \
      -f release_sha=<full 40-character release SHA> \
      -f mode=dev_only \
      -f correlation_id=<caller-generated id for this decision>
@@ -88,7 +88,7 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    reviewed (SPEC-RUN-007, SPEC-LANE-006):
 
    ```text
-   gh run download "$RUN_ID" --name plan --dir <evidence-dir>/plan-"$RUN_ID"
+   gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name plan --dir <evidence-dir>/plan-"$RUN_ID"
    sha256sum <evidence-dir>/plan-"$RUN_ID"/plan.json
    ```
 

@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement } from '../src/lib/authority-policy.js';
+import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement, framedTextDigest } from '../src/lib/authority-policy.js';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1943,12 +1943,15 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   // ROUND 8: acceptance is a RECORD, not a boolean — a flag could be flipped together with
   // executableProcedure in one edit, and nothing in the data said what an acceptance contains.
   // Each defect of the record is refused by name, BEFORE the pinned-literal comparison.
-  // Round 9 fixture: shape-complete, correctly digested, scoped to one stack and one cleanup
-  // decision. Dates are far-future so the CLOCK law (evaluated against real time by default)
-  // does not rot these tests; the clock law itself is proven below with an injected `now`.
-  const RISK_SHA = createHash('sha256')
-    .update(POLICY.documents['stack-record-authorization'].residualRisk, 'utf8')
-    .digest('hex');
+  // Rounds 9-10 fixture: shape-complete, digested under the §6b framings, scoped by digest to
+  // one out-of-band cleanup authorization. Dates are far-future so the CLOCK law (evaluated
+  // against real time by default) does not rot these tests; the clock law itself is proven below
+  // with an injected `now`. No ARN appears here: round 10 removed the only field that carried
+  // one, because a live ARN never enters the tracked policy.
+  const RISK_SHA = framedTextDigest(
+    'policy.documents.stack-record-authorization.residualRisk',
+    POLICY.documents['stack-record-authorization'].residualRisk,
+  );
   const record = () => ({
     acceptedBy: 'zamp',
     decisionId: 'risk-70-stack-record-cleanup',
@@ -1960,9 +1963,15 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     expiresAt: '2035-02-03T12:00:00Z',
     boundToEffect: 'delete-review-in-progress-stack-record',
     residualRiskSha256: RISK_SHA,
-    coversStackId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/CbaStudyCoach-dev-Identity/12345678-1234-1234-1234-123456789012',
+    coversCleanupAuthorizationSha256: 'c'.repeat(64),
     coversCleanupDecisionId: 'cleanup-70-example-0001',
-    zampStatementSha256: 'a'.repeat(64),
+    zampStatement: {
+      source: 'zamp-verbatim-message',
+      sentAt: '2026-08-07T11:00:00Z',
+      encoding: 'utf-8',
+      bytes: 512,
+      sha256: 'a'.repeat(64),
+    },
   });
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = true;
@@ -1989,27 +1998,58 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedAt: '2026-02-30T12:00:00Z' };
   }, /strict RFC3339 UTC instant/);
-  // ROUND 9: an acceptance of some OTHER finding accepts nothing here — the record digests THIS
-  // instrument's exact residualRisk text, so editing the finding detaches every prior acceptance.
+  // ROUNDS 9-10: an acceptance of some OTHER finding accepts nothing here — the record carries
+  // the §6b TEXT-FRAMED digest of THIS instrument's residualRisk, recomputed by the validator.
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = { ...record(), residualRiskSha256: 'b'.repeat(64) };
-  }, /does not digest this instrument's exact residualRisk text/);
+  }, /does not match the §6b text-framed digest/);
   expectRejected((p) => {
     const r = record();
     p.documents['stack-record-authorization'].residualRisk = 'a different finding entirely';
     p.documents['stack-record-authorization'].riskAcceptance = r;
-  }, /does not digest this instrument's exact residualRisk text|must be exactly/);
-  // ROUND 9: one acceptance covers ONE stack record — a wildcard or partial ARN is a class waiver.
+  }, /does not match the §6b text-framed digest|must be exactly/);
+  // ROUND 10 adversarials on the framing itself: the raw-text digest (the round-9 defect), a
+  // different subject, a KIND swap and a stray newline each produce a DIFFERENT digest.
+  {
+    const text = POLICY.documents['stack-record-authorization'].residualRisk;
+    const subject = 'policy.documents.stack-record-authorization.residualRisk';
+    const raw = createHash('sha256').update(text, 'utf8').digest('hex');
+    const wrongSubject = framedTextDigest('policy.documents.spend-authorization.residualRisk', text);
+    const kindSwap = createHash('sha256').update(JSON.stringify({
+      digestKind: 'bundle', version: 1,
+      records: [{ subject, encoding: 'utf-8', bytes: Buffer.byteLength(text, 'utf8'), text }],
+    }), 'utf8').digest('hex');
+    const newline = framedTextDigest(subject, `${text}\n`);
+    for (const bad of [raw, wrongSubject, kindSwap, newline]) {
+      assert.notEqual(bad, RISK_SHA);
+      expectRejected((p) => {
+        p.documents['stack-record-authorization'].riskAcceptance = { ...record(), residualRiskSha256: bad };
+      }, /does not match the §6b text-framed digest/);
+    }
+  }
+  // ROUND 10: the stack is bound by DIGEST of the out-of-band cleanup authorization — never by
+  // an ARN in the tracked policy — and the digest must at least be one.
   expectRejected((p) => {
-    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversStackId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/*' };
-  }, /one stack record, never a class/);
+    // The probe ARN is assembled at runtime so this file itself stays clean under the scan below.
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversCleanupAuthorizationSha256: ['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/x/1'].join(':') };
+  }, /never by copying its ARN/);
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversCleanupDecisionId: 'risk-70-stack-record-cleanup' };
   }, /cannot name the acceptance itself/);
-  // ROUND 9: the declared owner is not the decision — the digest of Zamp's verbatim statement is.
+  // ROUNDS 9-10: the declared owner is not the decision — the statement POINTER is closed:
+  // source, normalization, canonical bytes, §6b bundle digest.
   expectRejected((p) => {
-    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatementSha256: 'not-a-digest' };
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: 'a'.repeat(64) };
   }, /proves nothing/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, source: 'meeting-notes' } };
+  }, /not a paraphrase/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, encoding: 'utf-16' } };
+  }, /without a fixed normalization/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, bytes: 0 } };
+  }, /positive integer/);
   // ROUND 9: the validator evaluates the CLOCK. An expired acceptance in the tree fails closed…
   {
     const expired = clonePolicy();
@@ -2048,6 +2088,26 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
       `${rel} carries a delete-stack command while stack-record-authorization.executableProcedure is false`,
     );
   }
+});
+
+test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {
+  // The acceptance binds its stack by DIGEST of an out-of-band value precisely so that no live
+  // ARN — account id included — ever enters the tracked policy or its documents. This scan keeps
+  // that true against regression: a stack ARN in any governance surface is a finding, whatever
+  // account it names.
+  const surfaces = [
+    'src/lib/authority-policy.js',
+    'spec/authority-policy.json',
+    ...fs.readdirSync(path.join(ROOT, 'spec')).filter((f) => f.endsWith('.md')).map((f) => `spec/${f}`),
+    ...fs.readdirSync(path.join(ROOT, 'spec/agents')).filter((f) => f.endsWith('.md')).map((f) => `spec/agents/${f}`),
+    ...fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md')).map((f) => `docs/runbooks/${f}`),
+    'test/governance-model.test.js',
+  ];
+  const offending = surfaces.filter((rel) => /arn:aws[a-z-]*:cloudformation:[a-z0-9-]*:[0-9]{12}:/.test(read(rel)));
+  assert.deepEqual(offending, [], `stack ARNs with account ids in governance surfaces: ${offending.join(', ')}`);
+  // POSITIVE CONTROL: the scanner sees the shape it guards against (probe assembled at runtime
+  // so this file itself stays clean).
+  assert.ok(/arn:aws[a-z-]*:cloudformation:[a-z0-9-]*:[0-9]{12}:/.test(['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/x/1'].join(':')));
 });
 
 test('a dangling document-to-effect authority is rejected', () => {

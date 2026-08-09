@@ -317,10 +317,26 @@ const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
  *    typed by an executor proves nothing; independent review verifies the transcript against the
  *    statement the digest names.
  */
-const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect', 'residualRiskSha256', 'coversStackId', 'coversCleanupDecisionId', 'zampStatementSha256'];
+const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect', 'residualRiskSha256', 'coversCleanupAuthorizationSha256', 'coversCleanupDecisionId', 'zampStatement'];
+/** The closed shape of the statement pointer: source, normalization and canonical bytes — round
+ * 10: a bare 64-hex string fixed neither where the statement lives nor what bytes it digests. */
+const ZAMP_STATEMENT_KEYS = ['source', 'sentAt', 'encoding', 'bytes', 'sha256'];
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
-/** §8b's positional stack-ARN grammar: partition and service literal, each component to its own shape. */
-const STACK_ARN_RE = /^arn:aws:cloudformation:[a-z]{2}(?:-[a-z]+)+-[0-9]:[0-9]{12}:stack\/[A-Za-z][A-Za-z0-9-]{0,127}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * §6b `text` framing, as ONE function both the validator and any future tooling share. Round 10:
+ * `sha256(raw text)` violated the project's own digest law — every digest carries its kind,
+ * version and subject INSIDE the digested bytes, so a text digest can never be confused with a
+ * bundle digest over the same characters, and a trailing newline is a different document.
+ */
+export function framedTextDigest(subject, text) {
+  const doc = {
+    digestKind: 'text',
+    version: 1,
+    records: [{ subject, encoding: 'utf-8', bytes: Buffer.byteLength(text, 'utf8'), text }],
+  };
+  return createHash('sha256').update(JSON.stringify(doc), 'utf8').digest('hex');
+}
 const DECISION_ID_RE = /^[A-Za-z0-9._-]{8,64}$/;
 /** Strict RFC3339 UTC to whole seconds, calendar round-trip — the deploy lane's rule, applied to
  * governance instants for the same reason: Date.parse alone normalizes 2026-02-30 into March. */
@@ -518,10 +534,29 @@ export function validateAuthorityPolicy(policy, { now = Date.now() } = {}) {
         if (acc.acceptedBy !== 'zamp' || !policy.actors?.[acc.acceptedBy]?.may?.includes('accept-risk')) {
           fail(`policy.documents.${name}.riskAcceptance.acceptedBy must be "zamp": accept-risk is Zamp's capability alone.`);
         }
-        // Round 9: the declared owner is not the decision. The record digests Zamp's VERBATIM
-        // written statement; review verifies the transcript against the statement it names.
-        if (typeof acc.zampStatementSha256 !== 'string' || !SHA256_HEX_RE.test(acc.zampStatementSha256)) {
-          fail(`policy.documents.${name}.riskAcceptance.zampStatementSha256 must digest Zamp's verbatim written decision; "acceptedBy: zamp" typed by an executor proves nothing.`);
+        // Rounds 9-10: the declared owner is not the decision, and a bare hex is not a
+        // statement. The pointer names the SOURCE, the normalization and the canonical bytes of
+        // Zamp's verbatim written decision, digested under the §6b `bundle` framing; independent
+        // review recomputes it from the actual message.
+        const stmt = acc.zampStatement;
+        if (!isPlainObject(stmt)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement must be a closed statement pointer; "acceptedBy: zamp" typed by an executor proves nothing.`);
+        }
+        assertKeys(`policy.documents.${name}.riskAcceptance.zampStatement`, stmt, ZAMP_STATEMENT_KEYS);
+        if (stmt.source !== 'zamp-verbatim-message') {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.source must be "zamp-verbatim-message": the statement is Zamp's own message on the record, not a paraphrase.`);
+        }
+        if (!strictUtcInstant(stmt.sentAt)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.sentAt must be a strict RFC3339 UTC instant.`);
+        }
+        if (stmt.encoding !== 'utf-8') {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.encoding must be "utf-8": without a fixed normalization, two byte streams can claim the same statement.`);
+        }
+        if (!Number.isInteger(stmt.bytes) || stmt.bytes <= 0) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.bytes must be a positive integer — the exact length of the canonical bytes.`);
+        }
+        if (typeof stmt.sha256 !== 'string' || !SHA256_HEX_RE.test(stmt.sha256)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.sha256 must be the §6b bundle digest of the statement's canonical bytes.`);
         }
         if (typeof acc.decisionId !== 'string' || !DECISION_ID_RE.test(acc.decisionId)) {
           fail(`policy.documents.${name}.riskAcceptance.decisionId must match ${DECISION_ID_RE}.`);
@@ -531,15 +566,19 @@ export function validateAuthorityPolicy(policy, { now = Date.now() } = {}) {
             fail(`policy.documents.${name}.riskAcceptance.${key} must be a non-empty string.`);
           }
         }
-        // Round 9: the acceptance is bound to the EXACT residual it accepts. Editing the
+        // Rounds 9-10: the acceptance is bound to the EXACT residual it accepts, under the §6b
+        // `text` framing — kind, version and subject INSIDE the digested bytes, so a raw-text
+        // digest, another framing, another subject or a stray newline all detach. Editing the
         // instrument's residualRisk detaches every prior acceptance, structurally.
-        const riskDigest = createHash('sha256').update(doc.residualRisk, 'utf8').digest('hex');
-        if (acc.residualRiskSha256 !== riskDigest) {
-          fail(`policy.documents.${name}.riskAcceptance.residualRiskSha256 does not digest this instrument's exact residualRisk text — an acceptance of some other finding accepts nothing here.`);
+        if (acc.residualRiskSha256 !== framedTextDigest(`policy.documents.${name}.residualRisk`, doc.residualRisk)) {
+          fail(`policy.documents.${name}.riskAcceptance.residualRiskSha256 does not match the §6b text-framed digest of this instrument's exact residualRisk — an acceptance of some other finding, framing or byte stream accepts nothing here.`);
         }
-        // Round 9: an acceptance covers ONE stack record and ONE cleanup decision, never a class.
-        if (typeof acc.coversStackId !== 'string' || !STACK_ARN_RE.test(acc.coversStackId)) {
-          fail(`policy.documents.${name}.riskAcceptance.coversStackId must be one positionally valid CloudFormation stack ARN — an acceptance covers one stack record, never a class.`);
+        // Rounds 9-10: an acceptance covers ONE stack record under ONE cleanup decision, never a
+        // class — and the stack is bound by the DIGEST of the out-of-band cleanup authorization
+        // (which contains stackId and decisionId), because a live ARN never enters the tracked
+        // policy. The runtime consumer recomputes this digest from the value it is handed.
+        if (typeof acc.coversCleanupAuthorizationSha256 !== 'string' || !SHA256_HEX_RE.test(acc.coversCleanupAuthorizationSha256)) {
+          fail(`policy.documents.${name}.riskAcceptance.coversCleanupAuthorizationSha256 must be the §6b bundle digest of the out-of-band cleanup authorization value — the stack is bound by digest, never by copying its ARN into the tracked policy.`);
         }
         if (typeof acc.coversCleanupDecisionId !== 'string' || !DECISION_ID_RE.test(acc.coversCleanupDecisionId) || acc.coversCleanupDecisionId === acc.decisionId) {
           fail(`policy.documents.${name}.riskAcceptance.coversCleanupDecisionId must name the cleanup decision it covers, and cannot name the acceptance itself.`);

@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-bind
 kind: runbook
-version: 0.7.0
+version: 0.8.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007]
@@ -64,7 +64,7 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
 1. **Zamp** dispatches the binding run, passing the correlation id:
 
    ```text
-   gh workflow run "Release Pilot" --ref main \
+   gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main \
      -f release_sha=<full 40-character release SHA> \
      -f mode=bind_only \
      -f correlation_id=<caller-generated id for this request>
@@ -92,7 +92,7 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
 3. **Zamp** downloads the structured binding ARTIFACT — not the log — and digests it:
 
    ```text
-   gh run download "$RUN_ID" --name binding --dir <evidence-dir>/bind-"$RUN_ID"
+   gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name binding --dir <evidence-dir>/bind-"$RUN_ID"
    sha256sum <evidence-dir>/bind-"$RUN_ID"/binding.json
    ```
 

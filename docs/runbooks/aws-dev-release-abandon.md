@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.7.0
+version: 0.8.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -122,7 +122,7 @@ and not by a lane (SPEC-DEPLOY-021).
 2. **Zamp** dispatches the abandon lane with the correlation id:
 
    ```text
-   gh workflow run "Release Pilot" --ref main \
+   gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main \
      -f release_sha=<full 40-character release SHA> \
      -f mode=abandon \
      -f correlation_id=<caller-generated id for this decision>
@@ -139,7 +139,7 @@ and not by a lane (SPEC-DEPLOY-021).
 
    ```bash
    RUN_ID=$(node bin/resolve-run.mjs --title "cba-release abandon ${CORRELATION_ID}")
-   gh run download "$RUN_ID" --name abandon --dir <evidence-dir>/abandon-"$RUN_ID"
+   gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name abandon --dir <evidence-dir>/abandon-"$RUN_ID"
    sha256sum <evidence-dir>/abandon-"$RUN_ID"/abandon.json
    ```
 

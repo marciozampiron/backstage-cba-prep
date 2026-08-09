@@ -13,6 +13,9 @@
  * "ten attempts" bound nothing.
  *
  * Guarantees, each proven by mutation in test/resolve-run.test.js:
+ *  - the REPOSITORY IS PINNED (`marciozampiron/backstage-cba-prep`) on every gh call — without
+ *    `--repo`, gh resolves the ambient clone, and a fork with the same workflow file and title
+ *    would satisfy every other rule while handing back a foreign run;
  *  - the WORKFLOW IS PINNED by file identity (`release-pilot.yml`) inside this file — a name
  *    string can collide or be renamed, the file is the identity; callers cannot supply another;
  *  - the title is matched by EQUALITY against the complete run name; substrings never match;
@@ -43,6 +46,14 @@ export const INTERVAL_MS = 30_000;
  * attacker-named workflow; and a display NAME is not an identity — names can collide.
  */
 export const WORKFLOW_FILE = 'release-pilot.yml';
+
+/**
+ * The ONE repository this helper observes, pinned. Round 10: without `--repo`, gh resolves the
+ * repository from the AMBIENT working directory — run from another clone or a fork, the whole
+ * contract (pinned workflow file, equality on the run name, duplicate stops) would be faithfully
+ * enforced against a foreign repository's runs and hand back a foreign artifact id.
+ */
+export const CANONICAL_REPO = 'marciozampiron/backstage-cba-prep';
 
 /**
  * Exhaustive-or-stop window: the query asks for up to this many runs, and a page that comes back
@@ -86,6 +97,7 @@ export async function resolveRun({ title, exec, sleep }) {
     try {
       raw = exec('gh', [
         'run', 'list',
+        '--repo', CANONICAL_REPO,
         '--workflow', WORKFLOW_FILE,
         '--branch', 'main',
         '--event', 'workflow_dispatch',
@@ -132,7 +144,7 @@ export async function resolveRun({ title, exec, sleep }) {
   }
 
   try {
-    exec('gh', ['run', 'watch', String(runId), '--exit-status'], { timeoutMs: WATCH_TIMEOUT_MS });
+    exec('gh', ['run', 'watch', String(runId), '--repo', CANONICAL_REPO, '--exit-status'], { timeoutMs: WATCH_TIMEOUT_MS });
   } catch (err) {
     throw new StopError(
       err && err.timedOut ? 'RESOLVE_WATCH_TIMEOUT' : 'RESOLVE_RUN_FAILED',

@@ -457,6 +457,26 @@ the duplicate beyond row 60. Every external call now carries a reviewed wall-clo
 per query, 45 minutes for the watch — the lane's jobs sum to 35), surfacing as named timeout
 stops, because ten attempts bound nothing when one call can stall forever.
 
+Design round 10 (Codex, two findings) held the new machinery to the project's own laws. **The
+acceptance's digests now obey §6b**: `residualRiskSha256` is the `text`-framed digest — kind,
+version and subject inside the digested bytes, recomputed by the validator, with adversarials for
+the raw-text digest (the round-9 shape itself), a kind swap, a foreign subject and a stray
+newline; the statement pointer became a closed object (`source: zamp-verbatim-message`, `sentAt`,
+`encoding: utf-8`, `bytes`, §6b bundle `sha256`) because a bare 64-hex fixed neither where the
+statement lives nor which bytes it digests. And the live stack ARN LEFT the tracked policy:
+`coversStackId` was itself a violation of the no-ARN rule, so the stack is now bound by
+`coversCleanupAuthorizationSha256` — the §6b bundle digest of the out-of-band cleanup value that
+contains `stackId` and `decisionId` — and a new governance scan asserts no governance surface
+carries a CloudFormation stack ARN, with its probes assembled at runtime so the test file passes
+its own scan.
+
+**The helper and the runbooks now name their repository.** `CANONICAL_REPO
+(marciozampiron/backstage-cba-prep)` is pinned in `bin/resolve-run.mjs` and passed as `--repo` on
+every `gh` call — without it, `gh` resolves the ambient clone, and a fork carrying the same
+workflow file and title would satisfy every other rule while handing back a foreign artifact id.
+The runbooks dispatch by workflow FILE with the same `--repo`, and every `gh run download`
+carries it too. A test passes `repo: 'attacker/fork'` and proves the queries stay pinned.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

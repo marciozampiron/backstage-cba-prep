@@ -108,6 +108,11 @@ RUN_ID=$(node bin/resolve-run.mjs --title "cba-release <mode> ${CORRELATION_ID}"
 
 What the helper enforces — each rule proven by mutation in its tests, none of them optional:
 
+- **The repository is pinned inside the helper** (`marciozampiron/backstage-cba-prep`), passed as
+  `--repo` on every `gh` call. Round 10: without it, `gh` resolves the AMBIENT clone — run from a
+  fork carrying the same workflow file and title, every other rule would be faithfully enforced
+  against foreign runs and hand back a foreign artifact id. The same pin appears in every
+  runbook's `gh workflow run` (by workflow FILE, not display name) and `gh run download`.
 - **The workflow is pinned by FILE identity inside the helper** (`release-pilot.yml`). Round 9
   found the helper forwarding any caller-supplied workflow name to `gh`; there is no workflow
   argument anymore — a display name is not an identity, and a caller cannot aim the contract at
