@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement } from '../src/lib/authority-policy.js';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
@@ -1942,6 +1943,12 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   // ROUND 8: acceptance is a RECORD, not a boolean — a flag could be flipped together with
   // executableProcedure in one edit, and nothing in the data said what an acceptance contains.
   // Each defect of the record is refused by name, BEFORE the pinned-literal comparison.
+  // Round 9 fixture: shape-complete, correctly digested, scoped to one stack and one cleanup
+  // decision. Dates are far-future so the CLOCK law (evaluated against real time by default)
+  // does not rot these tests; the clock law itself is proven below with an injected `now`.
+  const RISK_SHA = createHash('sha256')
+    .update(POLICY.documents['stack-record-authorization'].residualRisk, 'utf8')
+    .digest('hex');
   const record = () => ({
     acceptedBy: 'zamp',
     decisionId: 'risk-70-stack-record-cleanup',
@@ -1949,9 +1956,13 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     justification: 'example under test',
     compensatingControls: ['re-observation within the 15-minute window immediately before acting'],
     acceptedAt: '2026-08-07T12:00:00Z',
-    reviewBy: '2026-11-05T12:00:00Z',
-    expiresAt: '2027-02-03T12:00:00Z',
+    reviewBy: '2033-11-05T12:00:00Z',
+    expiresAt: '2035-02-03T12:00:00Z',
     boundToEffect: 'delete-review-in-progress-stack-record',
+    residualRiskSha256: RISK_SHA,
+    coversStackId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/CbaStudyCoach-dev-Identity/12345678-1234-1234-1234-123456789012',
+    coversCleanupDecisionId: 'cleanup-70-example-0001',
+    zampStatementSha256: 'a'.repeat(64),
   });
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = true;
@@ -1978,8 +1989,47 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedAt: '2026-02-30T12:00:00Z' };
   }, /strict RFC3339 UTC instant/);
-  // Even a COMPLETE, well-shaped record cannot slip in silently: the pinned literal is null, so
-  // accepting the risk is a reviewed change to the policy itself, never a runtime state.
+  // ROUND 9: an acceptance of some OTHER finding accepts nothing here — the record digests THIS
+  // instrument's exact residualRisk text, so editing the finding detaches every prior acceptance.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), residualRiskSha256: 'b'.repeat(64) };
+  }, /does not digest this instrument's exact residualRisk text/);
+  expectRejected((p) => {
+    const r = record();
+    p.documents['stack-record-authorization'].residualRisk = 'a different finding entirely';
+    p.documents['stack-record-authorization'].riskAcceptance = r;
+  }, /does not digest this instrument's exact residualRisk text|must be exactly/);
+  // ROUND 9: one acceptance covers ONE stack record — a wildcard or partial ARN is a class waiver.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversStackId: 'arn:aws:cloudformation:us-east-1:111122223333:stack/*' };
+  }, /one stack record, never a class/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversCleanupDecisionId: 'risk-70-stack-record-cleanup' };
+  }, /cannot name the acceptance itself/);
+  // ROUND 9: the declared owner is not the decision — the digest of Zamp's verbatim statement is.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatementSha256: 'not-a-digest' };
+  }, /proves nothing/);
+  // ROUND 9: the validator evaluates the CLOCK. An expired acceptance in the tree fails closed…
+  {
+    const expired = clonePolicy();
+    expired.documents['stack-record-authorization'].riskAcceptance = {
+      ...record(), acceptedAt: '2026-01-01T00:00:00Z', reviewBy: '2026-02-01T00:00:00Z', expiresAt: '2026-03-01T00:00:00Z',
+    };
+    assert.throws(
+      () => validateAuthorityPolicy(expired, { now: Date.parse('2026-06-01T00:00:00Z') }),
+      /expired acceptance authorizes nothing/,
+    );
+    // …and one dated in the future was not decided yet.
+    const future = clonePolicy();
+    future.documents['stack-record-authorization'].riskAcceptance = record();
+    assert.throws(
+      () => validateAuthorityPolicy(future, { now: Date.parse('2026-01-01T00:00:00Z') }),
+      /dated in the future/,
+    );
+  }
+  // Even a COMPLETE, well-shaped, unexpired record cannot slip in silently: the pinned literal is
+  // null, so accepting the risk is a reviewed change to the policy itself, never a runtime state.
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = record();
   }, /must be exactly/);

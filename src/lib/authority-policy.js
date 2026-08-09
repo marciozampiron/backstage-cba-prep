@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 // Closed-schema validator for `spec/authority-policy.json` (#93) — PURE logic, no I/O.
 //
 // WHY THIS IS CODE AND NOT A LIST OF TEST ASSERTIONS. The policy is the authoritative statement of who
@@ -302,8 +304,23 @@ export function assertAuthorityAgreement(effects, documents, label) {
  */
 const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
 
-/** The closed shape of a risk acceptance. A boolean is not a decision (design round 8). */
-const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect'];
+/**
+ * The closed shape of a risk acceptance. A boolean is not a decision (round 8), and a free-text
+ * record is not an ENFORCEABLE one (round 9): without digests and coverage fields, a future
+ * activation could ride on an unrelated finding, a different stack's decision, or an acceptance
+ * whose expiry only ever existed as prose. The four round-9 keys bind it:
+ *  - `residualRiskSha256` digests THIS instrument's exact residualRisk text — edit the finding
+ *    and the acceptance detaches, structurally;
+ *  - `coversStackId` and `coversCleanupDecisionId` scope the acceptance to ONE stack record and
+ *    ONE cleanup decision — an acceptance is never a class-wide waiver;
+ *  - `zampStatementSha256` digests Zamp's VERBATIM written decision, because `acceptedBy: "zamp"`
+ *    typed by an executor proves nothing; independent review verifies the transcript against the
+ *    statement the digest names.
+ */
+const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect', 'residualRiskSha256', 'coversStackId', 'coversCleanupDecisionId', 'zampStatementSha256'];
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+/** §8b's positional stack-ARN grammar: partition and service literal, each component to its own shape. */
+const STACK_ARN_RE = /^arn:aws:cloudformation:[a-z]{2}(?:-[a-z]+)+-[0-9]:[0-9]{12}:stack\/[A-Za-z][A-Za-z0-9-]{0,127}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const DECISION_ID_RE = /^[A-Za-z0-9._-]{8,64}$/;
 /** Strict RFC3339 UTC to whole seconds, calendar round-trip — the deploy lane's rule, applied to
  * governance instants for the same reason: Date.parse alone normalizes 2026-02-30 into March. */
@@ -400,7 +417,7 @@ function assertStringArray(label, value) {
  * @param {unknown} policy parsed JSON
  * @returns {object} the same policy, once it has been proven well-formed
  */
-export function validateAuthorityPolicy(policy) {
+export function validateAuthorityPolicy(policy, { now = Date.now() } = {}) {
   assertKeys('policy', policy, TOP_LEVEL);
 
   if (!SUPPORTED_VERSIONS.includes(policy.version)) {
@@ -501,6 +518,11 @@ export function validateAuthorityPolicy(policy) {
         if (acc.acceptedBy !== 'zamp' || !policy.actors?.[acc.acceptedBy]?.may?.includes('accept-risk')) {
           fail(`policy.documents.${name}.riskAcceptance.acceptedBy must be "zamp": accept-risk is Zamp's capability alone.`);
         }
+        // Round 9: the declared owner is not the decision. The record digests Zamp's VERBATIM
+        // written statement; review verifies the transcript against the statement it names.
+        if (typeof acc.zampStatementSha256 !== 'string' || !SHA256_HEX_RE.test(acc.zampStatementSha256)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatementSha256 must digest Zamp's verbatim written decision; "acceptedBy: zamp" typed by an executor proves nothing.`);
+        }
         if (typeof acc.decisionId !== 'string' || !DECISION_ID_RE.test(acc.decisionId)) {
           fail(`policy.documents.${name}.riskAcceptance.decisionId must match ${DECISION_ID_RE}.`);
         }
@@ -508,6 +530,19 @@ export function validateAuthorityPolicy(policy) {
           if (typeof acc[key] !== 'string' || acc[key].trim() === '') {
             fail(`policy.documents.${name}.riskAcceptance.${key} must be a non-empty string.`);
           }
+        }
+        // Round 9: the acceptance is bound to the EXACT residual it accepts. Editing the
+        // instrument's residualRisk detaches every prior acceptance, structurally.
+        const riskDigest = createHash('sha256').update(doc.residualRisk, 'utf8').digest('hex');
+        if (acc.residualRiskSha256 !== riskDigest) {
+          fail(`policy.documents.${name}.riskAcceptance.residualRiskSha256 does not digest this instrument's exact residualRisk text — an acceptance of some other finding accepts nothing here.`);
+        }
+        // Round 9: an acceptance covers ONE stack record and ONE cleanup decision, never a class.
+        if (typeof acc.coversStackId !== 'string' || !STACK_ARN_RE.test(acc.coversStackId)) {
+          fail(`policy.documents.${name}.riskAcceptance.coversStackId must be one positionally valid CloudFormation stack ARN — an acceptance covers one stack record, never a class.`);
+        }
+        if (typeof acc.coversCleanupDecisionId !== 'string' || !DECISION_ID_RE.test(acc.coversCleanupDecisionId) || acc.coversCleanupDecisionId === acc.decisionId) {
+          fail(`policy.documents.${name}.riskAcceptance.coversCleanupDecisionId must name the cleanup decision it covers, and cannot name the acceptance itself.`);
         }
         if (!Array.isArray(acc.compensatingControls) || acc.compensatingControls.length === 0
           || acc.compensatingControls.some((c) => typeof c !== 'string' || c.trim() === '')) {
@@ -520,6 +555,15 @@ export function validateAuthorityPolicy(policy) {
         }
         if (!(acc.acceptedAt < acc.reviewBy && acc.reviewBy <= acc.expiresAt)) {
           fail(`policy.documents.${name}.riskAcceptance must be ordered acceptedAt < reviewBy <= expiresAt; an acceptance whose review or expiry precedes it was written backwards, and one with no expiry is not an acceptance.`);
+        }
+        // Round 9: ordering is not validity. The validator evaluates the CLOCK, so a tree holding
+        // an expired (or not-yet-made) acceptance fails closed until Zamp renews or the procedure
+        // reverts; and the runtime consumer must re-check expiry immediately before the effect.
+        if (Date.parse(acc.acceptedAt) > now) {
+          fail(`policy.documents.${name}.riskAcceptance is dated in the future; a decision that has not been made yet authorizes nothing.`);
+        }
+        if (now >= Date.parse(acc.expiresAt)) {
+          fail(`policy.documents.${name}.riskAcceptance has expired; an expired acceptance authorizes nothing and the procedure reverts to non-executable.`);
         }
         if (!doc.authorizes.includes(acc.boundToEffect)) {
           fail(`policy.documents.${name}.riskAcceptance.boundToEffect must be an effect this document authorizes.`);

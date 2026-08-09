@@ -435,6 +435,28 @@ vanished run, an identity change, `gh` failure, unparseable output, substring ti
 no-sleep-after-last-attempt bound are each proven by a scripted sequence. The runbooks now invoke
 the helper; the loop nobody could test is gone.
 
+Design round 9 (Codex, three findings) made the acceptance enforceable and the helper honest
+about its own bounds. **The risk-acceptance record gained the bindings that make it a decision
+about THIS risk**: `residualRiskSha256` digests the instrument's exact residual text and the
+validator recomputes it, so editing the finding detaches every prior acceptance structurally;
+`coversStackId` and `coversCleanupDecisionId` scope the acceptance to one stack record under one
+cleanup decision — never a class-wide waiver; and `zampStatementSha256` digests Zamp's verbatim
+written statement, because `acceptedBy: "zamp"` typed by an executor proves nothing — the
+statement is the decision channel, the policy entry its reviewed transcript. The validator now
+also evaluates the CLOCK: a tree holding an expired acceptance, or one dated in the future, fails
+closed; and the runtime consumer (the SPEC-DEPLOY-022 activation parser) must re-check expiry and
+coverage immediately before the effect — the validator proves the tree, the consumer proves the
+moment.
+
+**The helper stopped trusting its caller and its window.** The workflow is pinned by FILE
+identity inside `bin/resolve-run.mjs` (`release-pilot.yml`); the workflow argument is gone, and a
+test passes an attacker-named workflow to prove the query stays pinned. The window became
+exhaustive-or-stop: the query asks for 1000 rows and a full page refuses as truncated — round 9
+demonstrated a duplicate at row 51 was invisible under `--limit 50` — and a scripted test plants
+the duplicate beyond row 60. Every external call now carries a reviewed wall-clock deadline (60s
+per query, 45 minutes for the watch — the lane's jobs sum to 35), surfacing as named timeout
+stops, because ten attempts bound nothing when one call can stall forever.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

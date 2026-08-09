@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.6.0
+version: 0.7.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -138,8 +138,7 @@ and not by a lane (SPEC-DEPLOY-021).
    (SPEC-LANE-007) — and downloads the artifact:
 
    ```bash
-   RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
-     --title "cba-release abandon ${CORRELATION_ID}")
+   RUN_ID=$(node bin/resolve-run.mjs --title "cba-release abandon ${CORRELATION_ID}")
    gh run download "$RUN_ID" --name abandon --dir <evidence-dir>/abandon-"$RUN_ID"
    sha256sum <evidence-dir>/abandon-"$RUN_ID"/abandon.json
    ```

@@ -6,19 +6,26 @@
  * Design round 8 found two defects in the pasted loop this file replaces: it stopped watching for
  * duplicates the moment it found one run, so a second run bearing the same correlation id that
  * appeared DURING `gh run watch` was never seen although the rule says duplicates always stop;
- * and nothing executed the procedure, so nothing could prove it. This helper implements the whole
- * SPEC-LANE-007 contract, and test/resolve-run.test.js drives it with a simulated `gh` through
- * zero-then-found, immediate duplication, late duplication, a vanished run, an identity change,
- * `gh` failure and unparseable output.
+ * and nothing executed the procedure, so nothing could prove it. Round 9 closed three more holes:
+ * the helper accepted ANY workflow name from its caller while the contract says the workflow is
+ * pinned; `--limit 50` silently truncated the window a duplicate could hide beyond; and no
+ * external call carried a wall-clock deadline, so a stalled `gh` or an endlessly queued run made
+ * "ten attempts" bound nothing.
  *
- * Guarantees, each proven by mutation in the tests:
+ * Guarantees, each proven by mutation in test/resolve-run.test.js:
+ *  - the WORKFLOW IS PINNED by file identity (`release-pilot.yml`) inside this file — a name
+ *    string can collide or be renamed, the file is the identity; callers cannot supply another;
  *  - the title is matched by EQUALITY against the complete run name; substrings never match;
+ *  - the query window is EXHAUSTIVE OR THE RUN STOPS: the list is requested with a large pinned
+ *    limit, and a page that comes back full refuses as truncated — a window that might have cut
+ *    off an older duplicate proves nothing about uniqueness;
  *  - at most ATTEMPTS queries, INTERVAL_MS between them, and NO wait after the last;
- *  - more than one match at ANY query stops immediately — a duplicate correlation id means reuse,
- *    an unrecorded re-dispatch or forgery, none of which is resolved by picking a run;
+ *  - more than one match at ANY query stops immediately;
  *  - after `gh run watch` reaches a terminal conclusion, the SAME query runs again and must
- *    re-observe exactly the same single run id immediately before the id is printed — uniqueness
- *    observed once is not uniqueness still true when evidence is read;
+ *    re-observe exactly the same single run id immediately before the id is printed;
+ *  - every external call carries a reviewed deadline: LIST_TIMEOUT_MS per query and
+ *    WATCH_TIMEOUT_MS for the watch — the lane's own jobs are bounded by `timeout-minutes`
+ *    summing to 35, so a watch that outlives 45 minutes is not a slow run, it is a hung one;
  *  - stdout carries the run id and nothing else; every stop goes to stderr with a named code.
  *
  * This helper is read-only over GitHub: `gh run list` and `gh run watch` observe; nothing here
@@ -29,6 +36,25 @@ import { execFileSync } from 'node:child_process';
 /** SPEC-LANE-007: ten attempts, thirty seconds BETWEEN them. Pinned, not configurable. */
 export const ATTEMPTS = 10;
 export const INTERVAL_MS = 30_000;
+
+/**
+ * The ONE workflow this helper resolves runs of, pinned by FILE identity. Round 9: the helper
+ * accepted any workflow string from its caller, so a caller could aim the whole contract at an
+ * attacker-named workflow; and a display NAME is not an identity — names can collide.
+ */
+export const WORKFLOW_FILE = 'release-pilot.yml';
+
+/**
+ * Exhaustive-or-stop window: the query asks for up to this many runs, and a page that comes back
+ * exactly this full is treated as TRUNCATED and refuses — round 9 caught `--limit 50` quietly
+ * assuming the newest fifty prove uniqueness while an older duplicate sits at position 51.
+ */
+export const QUERY_LIMIT = 1000;
+
+/** Wall-clock deadlines (round 9): one bounded query, one bounded watch. */
+export const LIST_TIMEOUT_MS = 60_000;
+/** release-pilot.yml pins timeout-minutes 5+5+15+5+5 = 35min end to end; 45 covers queue slack. */
+export const WATCH_TIMEOUT_MS = 45 * 60_000;
 
 /** The closed run-name grammar of SPEC-LANE-006. Anything else identifies nothing. */
 export const TITLE_RE = /^cba-release (bind_only|dev_only|abandon) cba-70-[0-9a-f]{32}$/;
@@ -43,16 +69,14 @@ export class StopError extends Error {
 
 /**
  * @param {object} deps
- * @param {string} deps.workflow - the workflow name to pin in the query
  * @param {string} deps.title - the COMPLETE expected run name (closed grammar)
- * @param {(cmd: string, args: string[]) => string} deps.exec - runs a command, returns stdout, throws on nonzero exit
+ * @param {(cmd: string, args: string[], opts: {timeoutMs: number}) => string} deps.exec -
+ *   runs a command with a wall-clock deadline, returns stdout, throws on nonzero exit; a
+ *   deadline kill must surface as an error with `timedOut: true`
  * @param {(ms: number) => Promise<void>} deps.sleep
  * @returns {Promise<number>} the unique run id, re-verified after the terminal conclusion
  */
-export async function resolveRun({ workflow, title, exec, sleep }) {
-  if (typeof workflow !== 'string' || workflow.trim() === '') {
-    throw new StopError('RESOLVE_WORKFLOW_MISSING');
-  }
+export async function resolveRun({ title, exec, sleep }) {
   if (typeof title !== 'string' || !TITLE_RE.test(title)) {
     throw new StopError('RESOLVE_TITLE_MALFORMED', 'the run name grammar is closed (SPEC-LANE-006)');
   }
@@ -62,14 +86,14 @@ export async function resolveRun({ workflow, title, exec, sleep }) {
     try {
       raw = exec('gh', [
         'run', 'list',
-        '--workflow', workflow,
+        '--workflow', WORKFLOW_FILE,
         '--branch', 'main',
         '--event', 'workflow_dispatch',
-        '--limit', '50',
+        '--limit', String(QUERY_LIMIT),
         '--json', 'databaseId,displayTitle',
-      ]);
-    } catch {
-      throw new StopError('RESOLVE_GH_LIST_FAILED');
+      ], { timeoutMs: LIST_TIMEOUT_MS });
+    } catch (err) {
+      throw new StopError(err && err.timedOut ? 'RESOLVE_LIST_TIMEOUT' : 'RESOLVE_GH_LIST_FAILED');
     }
     let rows;
     try {
@@ -83,6 +107,10 @@ export async function resolveRun({ workflow, title, exec, sleep }) {
         || typeof r.databaseId !== 'number' || typeof r.displayTitle !== 'string')
     ) {
       throw new StopError('RESOLVE_GH_OUTPUT_UNPARSEABLE');
+    }
+    // A FULL page may have cut off an older duplicate: it proves presence, never uniqueness.
+    if (rows.length >= QUERY_LIMIT) {
+      throw new StopError('RESOLVE_WINDOW_TRUNCATED', `the query returned ${rows.length} rows; uniqueness cannot be proven from a truncated window`);
     }
     // EQUALITY on the complete name. `includes()` over a title is not identification.
     return rows.filter((r) => r.displayTitle === title).map((r) => r.databaseId);
@@ -104,9 +132,12 @@ export async function resolveRun({ workflow, title, exec, sleep }) {
   }
 
   try {
-    exec('gh', ['run', 'watch', String(runId), '--exit-status']);
-  } catch {
-    throw new StopError('RESOLVE_RUN_FAILED', 'the run did not conclude successfully');
+    exec('gh', ['run', 'watch', String(runId), '--exit-status'], { timeoutMs: WATCH_TIMEOUT_MS });
+  } catch (err) {
+    throw new StopError(
+      err && err.timedOut ? 'RESOLVE_WATCH_TIMEOUT' : 'RESOLVE_RUN_FAILED',
+      err && err.timedOut ? 'the watch outlived the reviewed deadline; a hung run is not a slow run' : 'the run did not conclude successfully',
+    );
   }
 
   // The run is terminal. Re-observe IMMEDIATELY before handing the id to whatever accepts the
@@ -125,12 +156,21 @@ function cliArg(argv, name) {
 
 const invokedAsMain = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (invokedAsMain) {
-  const workflow = cliArg(process.argv, '--workflow');
   const title = cliArg(process.argv, '--title');
   resolveRun({
-    workflow,
     title,
-    exec: (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8' }),
+    exec: (cmd, args, { timeoutMs }) => {
+      try {
+        return execFileSync(cmd, args, { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGTERM' });
+      } catch (err) {
+        if (err && (err.killed === true || err.signal === 'SIGTERM' || err.code === 'ETIMEDOUT')) {
+          const timeout = new Error(`deadline of ${timeoutMs}ms exceeded`);
+          timeout.timedOut = true;
+          throw timeout;
+        }
+        throw err;
+      }
+    },
     sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   }).then(
     (runId) => {

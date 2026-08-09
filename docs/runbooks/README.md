@@ -103,14 +103,24 @@ change, `gh` failure and unparseable output.
 CORRELATION_ID="cba-70-$(openssl rand -hex 16)"   # matches ^cba-70-[0-9a-f]{32}$
 printf '%s\n' "$CORRELATION_ID"                   # record it BEFORE dispatching
 # …dispatch per the runbook…
-RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
-  --title "cba-release <mode> ${CORRELATION_ID}")
+RUN_ID=$(node bin/resolve-run.mjs --title "cba-release <mode> ${CORRELATION_ID}")
 ```
 
 What the helper enforces — each rule proven by mutation in its tests, none of them optional:
 
+- **The workflow is pinned by FILE identity inside the helper** (`release-pilot.yml`). Round 9
+  found the helper forwarding any caller-supplied workflow name to `gh`; there is no workflow
+  argument anymore — a display name is not an identity, and a caller cannot aim the contract at
+  another workflow.
 - **Equality on the COMPLETE run name.** A title that merely contains the id never matches; the
   comparison is `===` in code, so nothing is ever interpolated into a query language.
+- **The window is exhaustive or the run stops.** The query asks for up to 1000 rows and a page
+  that comes back full refuses as `RESOLVE_WINDOW_TRUNCATED` — round 9 caught `--limit 50`
+  quietly assuming the newest fifty prove uniqueness while an older duplicate sits at row 51.
+- **Every external call has a reviewed wall-clock deadline.** Each query is bounded at 60s and
+  the watch at 45 minutes — the lane's own jobs are bounded by `timeout-minutes` summing to 35,
+  so a watch that outlives 45 minutes is a hung run, not a slow one. Both deadlines stop with
+  named codes; ten attempts alone bound nothing when a single call can stall forever.
 - **At most ten queries, thirty seconds between them, and no wait after the last.**
 - **More than one match at ANY query stops immediately.** A correlation id is used once; a second
   run bearing it means reuse, an unrecorded re-dispatch, or forgery — none of which is resolved
