@@ -539,6 +539,21 @@ commit would become "an ancestor of HEAD" the moment anything advances. Eight mo
 shapes refuse as `REVIEWED_HEAD_NOT_A_FULL_SHA`, a well-formed SHA naming no commit refuses as
 `REVIEWED_HEAD_MISSING`, and the scripted history now tells the two cat-file probes apart.
 
+Design round 14 (Codex, one finding) ended the arms race by removing the contest. Rounds 11-13
+tried to ANALYZE commands — flags, then anchored templates keyed on the word `gh` — and each
+round the analysis proved fail-open: the executable can be spelled without the sequence
+(`g'h'`, `g\h`, `$(printf '\147\150')`, `${G}${H}`), and template alternations accepted
+cartesian combinations no runbook contains (a download whose artifact and directory name
+different operations; a plan gate carrying the deploy value's wording). **Identity needs no
+analysis**: the governance test now holds a reviewed inventory of EVERY reconstructed fenced
+command line of EVERY runbook — gh or not — and requires equality, in order; a runbook absent
+from the inventory is itself a deviation, and a stale inventory entry whose file is gone fails
+too. Changing any fenced command anywhere is a red build until the same reviewed commit updates
+the inventory. The regression suite mutates the REAL runbook texts: the four obfuscated
+spellings, the three cartesian swaps, a silent command removal, and all eight prior bypasses,
+each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
+every dispatch/download/API path, no administrative subcommand ever inventoried).
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

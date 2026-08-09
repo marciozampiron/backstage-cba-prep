@@ -2248,83 +2248,188 @@ function reconstructFencedCommands(text) {
 }
 
 /**
- * The CLOSED allowlist of gh commands a runbook may carry — EXACT anchored templates, one per
- * reviewed form (round 13). Flag-level analysis was fail-open four different ways: it ignored
- * commands not STARTING with `gh` (`env X=1 gh …`, `true; gh …`), tokenized past shell operators
- * (`… && gh secret set`), recognized only the `--repo VALUE` spelling (`--repo=fork` slid by),
- * and accepted any method or endpoint under the canonical prefix (`-X DELETE
- * repos/<canon>/actions/secrets/…`). A finite command set needs no analysis: a command either IS
- * one of the reviewed templates, character for character with anchors, or it is an offense —
- * extra arguments, duplicated options, alternate spellings, wrappers and operators all fail the
- * match by construction.
+ * The reviewed command inventory — round 14. Rounds 11-13 tried to ANALYZE commands (flags, then
+ * anchored templates keyed on the word `gh`) and each round found the analysis fail-open: the
+ * word `gh` can be spelled without the sequence `gh` (`g'h'`, `g\\h`, `$(printf '\\147\\150')`,
+ * `${G}${H}`), and template alternations accepted cartesian combinations no runbook contains.
+ * Identity needs no analysis: EVERY reconstructed fenced command line of EVERY runbook — gh or
+ * not — must EQUAL its reviewed literal, in order, and a runbook absent from this inventory is
+ * itself a deviation. Changing any fenced command anywhere is a red build until the same
+ * reviewed commit updates this inventory.
  */
-const GH_COMMAND_TEMPLATES = [
-  // the ONE sanctioned mutation: installing the decision's gate value
-  /^gh api -X PATCH repos\/marciozampiron\/backstage-cba-prep\/environments\/dev\/variables\/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the (plan_only|deploy|abandon) JSON for this decision(, planDigest included)?>'$/,
-  // the ONE sanctioned dispatch: by workflow file, one canonical --repo, pinned ref and inputs
-  /^gh workflow run release-pilot\.yml --repo marciozampiron\/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=(bind_only|dev_only|abandon) -f correlation_id=<caller-generated id for this (decision|request)>$/,
-  // the ONE sanctioned download: the helper's run id, one canonical --repo, a named artifact
-  /^gh run download "\$RUN_ID" --repo marciozampiron\/backstage-cba-prep --name (binding|plan|deploy|abandon) --dir <evidence-dir>\/(bind|plan|deploy|abandon)-"\$RUN_ID"$/,
-];
+const REVIEWED_RUNBOOK_COMMANDS = {
+  "docs/runbooks/README.md": [
+    "---",
+    "id: <kebab-case, unique, matches the filename without .md>",
+    "kind: <runbook | index>",
+    "version: <semver — bump on every change>",
+    "owner: <the actor that maintains this document>",
+    "humanApprover: Zamp",
+    "specs: [<SPEC-IDs this document operationalizes, per spec/spec-anchored-development.md>]",
+    "inputs: [<what the operator must have before starting — names, never values>]",
+    "outputs: [<what a completed run produces — evidence, records>]",
+    "gateRequired: <true|false — whether any step depends on a Zamp authorization, of either kind>",
+    "cloudMutation: <true|false — whether any step can change cloud state, change-set creation included>",
+    "---",
+    "CORRELATION_ID=\"cba-70-$(openssl rand -hex 16)\"   # matches ^cba-70-[0-9a-f]{32}$",
+    "printf '%s\\n' \"$CORRELATION_ID\"                   # record it BEFORE dispatching",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release <mode> ${CORRELATION_ID}\")",
+  ],
+  "docs/runbooks/aws-dev-release-abandon.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the abandon JSON for this decision>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=abandon -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release abandon ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name abandon --dir <evidence-dir>/abandon-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/abandon-\"$RUN_ID\"/abandon.json",
+  ],
+  "docs/runbooks/aws-dev-release-bind.md": [
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=bind_only -f correlation_id=<caller-generated id for this request>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release bind_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name binding --dir <evidence-dir>/bind-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/bind-\"$RUN_ID\"/binding.json",
+  ],
+  "docs/runbooks/aws-dev-release-deploy.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the deploy JSON for this decision, planDigest included>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release dev_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name deploy --dir <evidence-dir>/deploy-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/deploy-\"$RUN_ID\"/deploy.json",
+  ],
+  "docs/runbooks/aws-dev-release-plan.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the plan_only JSON for this decision>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release dev_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name plan --dir <evidence-dir>/plan-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/plan-\"$RUN_ID\"/plan.json",
+  ],
+  "docs/runbooks/aws-dev-release-recovery.md": [
+    "aws sts get-caller-identity --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager",
+    "aws cloudformation describe-stacks --stack-name <cba-study-coach-dev-…> --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager --query 'Stacks[0].StackStatus'",
+    "aws cloudformation describe-stack-events --stack-name <cba-study-coach-dev-…> --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager --max-items 20",
+  ],
+  "docs/runbooks/aws-dev-release.md": [
+  ],
+  "docs/runbooks/spec-conformance-audit.md": [
+  ],
+};
 
-/** Any command BEARING the word gh — wherever it sits in the line — must BE a template. */
-function ghOffenses(cmd) {
-  if (!/\bgh\b/.test(cmd)) return [];
-  if (GH_COMMAND_TEMPLATES.some((re) => re.test(cmd))) return [];
-  return [`gh-bearing command is not one of the reviewed templates: ${cmd}`];
+function runbookCommandDeviations(rel, commands) {
+  const expected = REVIEWED_RUNBOOK_COMMANDS[rel];
+  if (expected === undefined) return [`${rel} is not in the reviewed command inventory`];
+  const out = [];
+  const max = Math.max(expected.length, commands.length);
+  for (let i = 0; i < max; i += 1) {
+    if (commands[i] !== expected[i]) {
+      out.push(`${rel}[${i}] expected ${JSON.stringify(expected[i])} but found ${JSON.stringify(commands[i])}`);
+    }
+  }
+  return out;
 }
 
-test('ROUND 11-12: every fenced gh command in the runbooks satisfies the closed structural allowlist', () => {
+test('ROUND 11-14: every fenced command in every runbook IS its reviewed literal', () => {
   const runbooks = fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'));
   const offenses = [];
   for (const rel of runbooks) {
-    for (const cmd of reconstructFencedCommands(read(`docs/runbooks/${rel}`))) {
-      if (/<owner>\/<repo>/.test(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — <owner>/<repo> placeholder`);
-      for (const why of ghOffenses(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — ${why}`);
-    }
+    offenses.push(...runbookCommandDeviations(`docs/runbooks/${rel}`, reconstructFencedCommands(read(`docs/runbooks/${rel}`))));
+  }
+  // Fail-closed in both directions: an inventory entry whose file is gone is stale review.
+  for (const rel of Object.keys(REVIEWED_RUNBOOK_COMMANDS)) {
+    assert.ok(fs.existsSync(path.join(ROOT, rel)), `stale inventory entry: ${rel}`);
   }
   assert.deepEqual(offenses, [], offenses.join('\n'));
+  // And the INVENTORY itself stays canonical: every dispatch/download names the one repository,
+  // every gate mutation uses the literal canonical path — so an edit that rewrote both a runbook
+  // and this inventory toward a foreign repository still trips a rule that names the pin.
+  for (const cmds of Object.values(REVIEWED_RUNBOOK_COMMANDS)) {
+    for (const cmd of cmds) {
+      if (/^gh (workflow run|run download)\b/.test(cmd)) assert.ok(cmd.includes(`--repo ${CANONICAL_REPO}`), cmd);
+      if (/^gh api\b/.test(cmd)) assert.ok(cmd.includes(`repos/${CANONICAL_REPO}/`), cmd);
+      assert.ok(!/^gh (secret|run list|run watch|repo|auth)\b/.test(cmd), cmd);
+    }
+  }
 });
 
-test('ROUND 12-13: the gh allowlist is fail-closed — every demonstrated bypass is an offense', () => {
-  const CANON = CANONICAL_REPO;
-  // Round 12's three bypasses…
-  assert.ok(ghOffenses('gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE').length > 0);
-  assert.ok(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --repo attacker/fork --ref main`).length > 0);
-  {
-    const doc = [
-      '```bash',
-      `gh workflow run release-pilot.yml --repo ${CANON} \\`,
-      '  --repo attacker/fork --ref main',
-      '```',
-    ].join('\n');
-    const [cmd] = reconstructFencedCommands(doc);
-    assert.match(cmd, /--repo attacker\/fork/);
-    assert.ok(ghOffenses(cmd).length > 0);
+test('ROUND 14: identity, not analysis — every demonstrated bypass class deviates', () => {
+  const planRel = 'docs/runbooks/aws-dev-release-plan.md';
+  const bindRel = 'docs/runbooks/aws-dev-release-bind.md';
+  const planText = read(planRel);
+  const bindText = read(bindRel);
+  const injectIntoFirstFence = (text, line) => text.replace(/```[a-z]*\n/, (m) => `${m}${line}\n`);
+  const deviates = (rel, text) => runbookCommandDeviations(rel, reconstructFencedCommands(text));
+
+  // The real files, unmodified, are clean — so every deviation below is caused by the injection.
+  assert.deepEqual(deviates(planRel, planText), []);
+  assert.deepEqual(deviates(bindRel, bindText), []);
+
+  // ROUND 14: gh spelled without the sequence `gh`. Analysis keyed on the word could never see
+  // these; identity does not care how the executable is spelled.
+  for (const obfuscated of [
+    "g'h' secret set PROD",
+    'g\\h secret set PROD',
+    "$(printf '\\147\\150') secret set PROD",
+    'G=g; H=h; ${G}${H} secret set PROD',
+  ]) {
+    assert.ok(deviates(planRel, injectIntoFirstFence(planText, obfuscated)).length > 0, obfuscated);
   }
-  // …and round 13's five: destructive administration under the canonical prefix, the --repo=
-  // spelling, a shell operator smuggling a second command, an env wrapper, and a compound line.
+
+  // ROUND 14: cartesian combinations of the old alternations — each is a line no runbook
+  // contains, so each deviates from the literal at its position.
+  const swaps = [
+    [bindRel, bindText,
+      'gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name binding --dir <evidence-dir>/bind-"$RUN_ID"',
+      'gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name plan --dir <evidence-dir>/deploy-"$RUN_ID"'],
+    [planRel, planText,
+      "-f value='<the plan_only JSON for this decision>'",
+      "-f value='<the deploy JSON for this decision>'"],
+    [bindRel, bindText,
+      '-f correlation_id=<caller-generated id for this request>',
+      '-f correlation_id=<caller-generated id for this decision>'],
+  ];
+  for (const [rel, text, fromStr, toStr] of swaps) {
+    assert.ok(text.includes(fromStr), `swap source must exist: ${fromStr}`);
+    assert.ok(deviates(rel, text.replace(fromStr, toStr)).length > 0, toStr);
+  }
+
+  // Removal deviates too: a command cannot quietly disappear from a runbook.
+  const withoutDownload = bindText.replace(/gh run download[^\n]*\n/, '');
+  assert.ok(deviates(bindRel, withoutDownload).length > 0);
+
+  // And an APPENDED command — beyond the last reviewed literal — deviates as well: length is
+  // part of identity, not only per-position content. (Round 14's own reversion proof exposed
+  // this: a comparator that skips positions past the expected list stayed green until this
+  // regression existed.)
+  const appendToLastFence = (text, line) => {
+    const closer = text.lastIndexOf('```');
+    return `${text.slice(0, closer)}${line}\n${text.slice(closer)}`;
+  };
+  assert.ok(deviates(planRel, appendToLastFence(planText, 'gh secret set PROD')).length > 0);
+  assert.ok(deviates(planRel, appendToLastFence(planText, "g'h' secret set PROD")).length > 0);
+
+  // Rounds 12-13 regressions, restated under identity: none of these lines is a reviewed
+  // literal, so each deviates wherever it is injected.
   for (const bypass of [
-    `gh api -X DELETE repos/${CANON}/actions/secrets/PROD`,
-    `gh workflow run release-pilot.yml --repo ${CANON} --repo=attacker/fork --ref main`,
-    `gh workflow run release-pilot.yml --repo ${CANON} --ref main && gh secret set PROD`,
+    'gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE',
+    `gh api -X DELETE repos/${CANONICAL_REPO}/actions/secrets/PROD`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo attacker/fork --ref main`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo=attacker/fork --ref main`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main && gh secret set PROD`,
     'env X=1 gh secret set PROD',
     'true; gh secret set PROD',
+    'gh run list --workflow release-pilot.yml',
   ]) {
-    assert.ok(ghOffenses(bypass).length > 0, `must be an offense: ${bypass}`);
+    assert.ok(deviates(planRel, injectIntoFirstFence(planText, bypass)).length > 0, bypass);
   }
-  // Extra arguments, duplicated options and truncations of the sanctioned forms all fail too.
-  assert.ok(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision> --json`).length > 0);
-  assert.ok(ghOffenses(`gh run download "$RUN_ID" --repo ${CANON} --name plan`).length > 0);
-  assert.ok(ghOffenses('gh run list --workflow release-pilot.yml').length > 0);
-  assert.ok(ghOffenses('gh secret set FOO').length > 0);
-  // …and the ACTUAL commands of the runbooks are asserted to pass, so the allowlist is exact:
-  // every reconstructed gh-bearing command in the tree matches a template (proven by the scan
-  // test above returning zero offenses), and these canonical spot-checks keep the templates from
-  // drifting stricter than the documents they guard.
-  assert.deepEqual(ghOffenses(`gh api -X PATCH repos/${CANON}/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the plan_only JSON for this decision>'`), []);
-  assert.deepEqual(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --ref main -f release_sha=<full 40-character release SHA> -f mode=bind_only -f correlation_id=<caller-generated id for this request>`), []);
-  assert.deepEqual(ghOffenses(`gh run download "$RUN_ID" --repo ${CANON} --name deploy --dir <evidence-dir>/deploy-"$RUN_ID"`), []);
+
+  // …and the continuation-line override still deviates as ONE reconstructed command.
+  const doc = [
+    '```bash',
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} \\`,
+    '  --repo attacker/fork --ref main',
+    '```',
+  ].join('\n');
+  const [cmd] = reconstructFencedCommands(doc);
+  assert.match(cmd, /--repo attacker\/fork/);
+  assert.ok(deviates(planRel, injectIntoFirstFence(planText, `${cmd}`)).length > 0);
 });
 
 test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {
