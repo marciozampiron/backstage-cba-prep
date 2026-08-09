@@ -64,7 +64,12 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
     return {
       registryRaw: git('git', ['show', `${commit}:${REGISTRY_PATH}`]),
       specMd: git('git', ['show', `${commit}:${SPEC_PATH}`]),
-      previousRegistryRaw: tryOrNull(() => git('git', ['show', `${commit}~1:${REGISTRY_PATH}`])),
+      previousRegistryRaw: (() => {
+        assertHistoryDeep(git);
+        const parents = gitParents(git, commit);
+        if (parents.length === 0) return null; // proven root commit
+        return fileAtCommit(git, parents[0], REGISTRY_PATH);
+      })(),
       fileExists: (rel) => {
         try {
           git('git', ['cat-file', '-e', `${commit}:${rel}`]);
@@ -121,13 +126,53 @@ function tryOrNull(fn) {
   }
 }
 
-/** Round I1-4: absent history must be PROVEN absent, never assumed. A shallow clone makes
- * HEAD~1 unreadable for a commit that HAS a parent, and treating that as "registry birth"
- * silently switched every historical law off in CI. */
+/** Rounds I1-4/5: absent history must be PROVEN absent, never assumed — and a git FAILURE is
+ * never absence. The shallow probe itself must run and answer; anything else refuses. */
 function assertHistoryDeep(git) {
-  const shallow = String(tryOrNull(() => git('git', ['rev-parse', '--is-shallow-repository'])) ?? '').trim();
-  if (shallow === 'true') {
+  let out;
+  try {
+    out = git('git', ['rev-parse', '--is-shallow-repository']);
+  } catch {
+    fail('HISTORY_UNPROVABLE: could not determine whether this clone is shallow; a git failure is never "no history".');
+  }
+  const answer = String(out).trim();
+  if (answer === 'true') {
     fail('HISTORY_TRUNCATED: this is a shallow clone, so absent history proves nothing — fetch full history (fetch-depth: 0) before linting.');
+  }
+  if (answer !== 'false') {
+    fail(`HISTORY_UNPROVABLE: unexpected answer from the shallow probe: ${JSON.stringify(answer)}.`);
+  }
+}
+
+/** The parents of a commit, PROVEN: the enumeration itself must succeed. Zero parents is the
+ * only legitimate "no baseline" — a root commit — and it is demonstrated, not defaulted to. */
+function gitParents(git, ref) {
+  let out;
+  try {
+    out = git('git', ['rev-list', '--max-count=1', '--parents', ref]);
+  } catch {
+    fail(`HISTORY_UNPROVABLE: could not enumerate the parents of ${ref}.`);
+  }
+  const tokens = String(out).trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) fail(`HISTORY_UNPROVABLE: empty parent listing for ${ref}.`);
+  return tokens.slice(1);
+}
+
+/** A file's content at a commit: null ONLY when ls-tree proves the path absent there; a failure
+ * of ls-tree, or of show for a path ls-tree just listed, refuses by name (round I1-5 — every
+ * tryOrNull on this path silently converted git breakage into "legitimate birth"). */
+function fileAtCommit(git, commitRef, rel) {
+  let line;
+  try {
+    line = git('git', ['ls-tree', commitRef, '--', rel]);
+  } catch {
+    fail(`HISTORY_UNPROVABLE: git ls-tree failed for ${commitRef}; absence must be proven, not assumed.`);
+  }
+  if (String(line).trim() === '') return null;
+  try {
+    return git('git', ['show', `${commitRef}:${rel}`]);
+  } catch {
+    fail(`HISTORY_UNPROVABLE: ${rel} exists at ${commitRef} but could not be read.`);
   }
 }
 
@@ -135,10 +180,12 @@ function assertHistoryDeep(git) {
  * HEAD's parent — never the very bytes under validation (round I1-3). */
 export function resolvePreviousRegistryRaw({ currentRaw, git = defaultGit }) {
   assertHistoryDeep(git);
-  const headRaw = tryOrNull(() => git('git', ['show', `HEAD:${REGISTRY_PATH}`]));
-  if (headRaw === null) return null; // the registry is being born in this commit
+  const headRaw = fileAtCommit(git, 'HEAD', REGISTRY_PATH);
+  if (headRaw === null) return null; // proven: the registry does not exist at HEAD — being born
   if (headRaw !== currentRaw) return headRaw;
-  return tryOrNull(() => git('git', ['show', `HEAD~1:${REGISTRY_PATH}`]));
+  const parents = gitParents(git, 'HEAD');
+  if (parents.length === 0) return null; // proven: HEAD is a root commit
+  return fileAtCommit(git, parents[0], REGISTRY_PATH);
 }
 
 /**
@@ -496,8 +543,15 @@ export function diffChangedFiles({ commit = null, git = defaultGit }) {
     return files.filter(Boolean);
   };
   if (commit !== null) {
-    const raw = tryOrNull(() => git('git', ['diff', '--name-status', '-M', `${commit}~1`, commit]));
-    return raw === null ? null : parseStatus(raw);
+    const parents = gitParents(git, commit);
+    if (parents.length === 0) return null; // proven root commit — nothing to diff against
+    let raw;
+    try {
+      raw = git('git', ['diff', '--name-status', '-M', parents[0], commit]);
+    } catch {
+      fail('HISTORY_UNPROVABLE: git diff failed; an unproven diff is not an empty diff.');
+    }
+    return parseStatus(raw);
   }
   const status = String(git('git', ['status', '--porcelain'])).trim();
   if (status !== '') {
@@ -505,8 +559,15 @@ export function diffChangedFiles({ commit = null, git = defaultGit }) {
     const untracked = status.split('\n').filter((l) => l.startsWith('??')).map((l) => l.slice(3).trim());
     return [...new Set([...tracked, ...untracked])];
   }
-  const raw = tryOrNull(() => git('git', ['diff', '--name-status', '-M', 'HEAD~1', 'HEAD']));
-  return raw === null ? null : parseStatus(raw);
+  const parents = gitParents(git, 'HEAD');
+  if (parents.length === 0) return null; // proven root commit
+  let raw;
+  try {
+    raw = git('git', ['diff', '--name-status', '-M', parents[0], 'HEAD']);
+  } catch {
+    fail('HISTORY_UNPROVABLE: git diff failed; an unproven diff is not an empty diff.');
+  }
+  return parseStatus(raw);
 }
 
 /**
@@ -548,12 +609,68 @@ export const CHECK_TIMEOUT_MS = 60_000;
  * child process and a child that edited code or tests mid-run must invalidate the verdict, not
  * decorate it.
  */
-export function runConformanceForCommit({ commit, git = defaultGit, loadDeps = {}, runDeps = {} }) {
+export function runConformanceForCommit({ commit, git = defaultGit, root = process.cwd(), loadDeps = {}, runDeps = {} }) {
   assertConformTarget({ commit, git });
   const registry = validateSpecRegistry(loadSpecSources({ commit, ...loadDeps }));
-  const report = runConformance(registry, runDeps);
+  // Round I1-5: two guards around the WHOLE run left a window — a check or a concurrent process
+  // could swap a later child's file for a symlink and restore it before the final guard. Every
+  // child now runs inside its own boundary: object mode, lstat, exact bytes and tree
+  // cleanliness, verified immediately before AND immediately after that child.
+  const baseTests = runDeps.runTests ?? defaultRunTests;
+  const baseCheck = runDeps.runCheck ?? defaultRunCheck;
+  const guarded = (rel, fn) => {
+    assertChildBoundary({ commit, rel, git, root });
+    const outcome = fn();
+    assertChildBoundary({ commit, rel, git, root });
+    return outcome;
+  };
+  const report = runConformance(registry, {
+    runTests: (file, title) => guarded(file, () => baseTests(file, title)),
+    runCheck: (ref) => guarded(ref, () => baseCheck(ref)),
+  });
   assertConformTarget({ commit, git });
   return report;
+}
+
+/**
+ * The per-child boundary (round I1-5): the bytes about to run — and just ran — are exactly the
+ * audited commit's regular blob, on a physically regular path, in a clean tree. A symlink swap
+ * between the run-level guards lands exactly here.
+ */
+export function assertChildBoundary({ commit, rel, git = defaultGit, root = process.cwd() }) {
+  let line;
+  try {
+    line = git('git', ['ls-tree', commit, '--', rel]);
+  } catch {
+    fail(`EXEC_OBJECT_UNREADABLE: could not read the audited object for ${rel}.`);
+  }
+  const mode = String(line).trim().split(/\s+/)[0];
+  if (mode !== '100644' && mode !== '100755') {
+    fail(`EXEC_NOT_REGULAR_IN_COMMIT: ${rel} is not a regular file in the audited commit.`);
+  }
+  let blob;
+  try {
+    blob = git('git', ['show', `${commit}:${rel}`]);
+  } catch {
+    fail(`EXEC_OBJECT_UNREADABLE: could not read the audited bytes of ${rel}.`);
+  }
+  let st;
+  try {
+    st = lstatSync(path.join(root, rel));
+  } catch {
+    fail(`EXEC_PATH_MISSING: ${rel} is absent from the tree that would execute it.`);
+  }
+  if (!st.isFile()) {
+    fail(`EXEC_PATH_NOT_REGULAR: ${rel} is not a regular file on disk — a symlink swapped in between guards is exactly this.`);
+  }
+  const disk = readFileSync(path.join(root, rel), 'utf8');
+  if (disk !== String(blob)) {
+    fail(`EXEC_BYTES_DRIFTED: ${rel} on disk differs from the audited commit's bytes.`);
+  }
+  const status = String(git('git', ['status', '--porcelain'])).trim();
+  if (status !== '') {
+    fail('CONFORM_WORKTREE_DIRTY: uncommitted changes present at a child boundary.');
+  }
 }
 
 function defaultRunCheck(ref) {

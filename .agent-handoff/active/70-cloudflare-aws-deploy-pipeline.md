@@ -554,6 +554,23 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I1-5 (Codex, two HIGH) removed the last places where breakage read as
+absence. **A git failure is never "no history"**: the shallow probe must run and answer
+(`HISTORY_UNPROVABLE` otherwise), parents are ENUMERATED (`rev-list --parents` — a proven root
+commit is the only legitimate "no baseline"), file absence is proven by `ls-tree` (and a `show`
+that fails for a file ls-tree just listed refuses), and a broken diff refuses instead of
+returning "no changes" — in the worktree resolver, the commit-mode loader and both diff modes,
+with adversarials for each breakage in a non-shallow repository. **Every child runs inside its
+own boundary**: two run-level guards left a window where a check or concurrent process could
+swap a later child's file for a symlink and restore it before the final guard —
+`assertChildBoundary` now verifies, immediately before AND after each test and each check, that
+the audited object is a regular blob, that the PHYSICAL path is a regular file (lstat), that its
+bytes equal the audited commit's bytes exactly, and that the tree is clean. Codex's
+discriminating reproduction is a regression: a check that swaps the probe file for a symlink to
+/tmp mid-run is caught at that child's boundary (`EXEC_PATH_NOT_REGULAR`), same-length byte
+drift is caught (`EXEC_BYTES_DRIFTED`), and the honest end-to-end run over an ACTIVE fixture
+conforms.
+
 Implementation round I1-4 (Codex, three HIGH + one MEDIUM) took the laws to where CI actually
 runs. **The reviewed commit itself was not green** — the round-I1-3 provenance assertion demanded
 baseline bytes differ from current bytes, which is false for any commit that does not touch the
