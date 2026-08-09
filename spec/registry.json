@@ -467,7 +467,7 @@
         "docs/runbooks/aws-dev-release-plan.md",
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed in I3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN",
+      "mutationEvidence": "code + tests reviewed in I3/I3-3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN; the record is bounded to the job-output channel (450k UTF-16 units, half the platform bound) and a plan whose record cannot cross it REFUSES (PLAN_RENDERING_TOO_LARGE) — evidence is reshaped by named code, never truncated, and transport loss is a red run",
       "supersedes": [],
       "supersededBy": null
     },

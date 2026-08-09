@@ -434,13 +434,31 @@ jobs:
         env:
           EVIDENCE: ${{ needs.dev-stage.outputs.evidence }}
           MODE: ${{ needs.dev-stage.outputs.mode }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/evidence"
+          # ROUND I3-3: transport loss is a RED RUN, never a silent gap. A mode on the record with
+          # no evidence output means the channel dropped or suppressed the value AFTER a cloud
+          # effect may have happened — the one state that must never pass quietly.
+          if [ -n "$MODE" ] && [ -z "$EVIDENCE" ]; then
+            echo "::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts"
+            exit 1
+          fi
           if [ -z "$EVIDENCE" ]; then
             echo "no evidence record was produced (the run refused before the entrypoint); nothing to materialize"
             exit 0
           fi
+          # The record must arrive INTACT: parseable JSON whose correlation is THIS dispatch's.
+          printf '%s\n' "$EVIDENCE" | node -e '
+            let raw = "";
+            process.stdin.on("data", (c) => { raw += c; });
+            process.stdin.on("end", () => {
+              const record = JSON.parse(raw);
+              if (record.schema !== "cba-release-evidence/1") throw new Error("unexpected evidence schema");
+              if (record.correlationId !== process.env.CORRELATION_ID) throw new Error("evidence correlation does not match this dispatch");
+            });
+          '
           case "$MODE" in
             plan_only) name=plan.json ;;
             deploy) name=deploy.json ;;

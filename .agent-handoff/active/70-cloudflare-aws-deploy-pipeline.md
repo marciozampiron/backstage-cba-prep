@@ -554,6 +554,24 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I3-3 (Codex, 1 HIGH) proved the transport instead of assuming it. The
+evidence record crosses jobs as a GitHub output — a channel with a documented ~1MB per-job bound
+(UTF-16) that can also suppress values — so three laws landed. (1) The record is BOUNDED to the
+channel: EVIDENCE_MAX_UTF16 = 450k units (half the platform bound), and `boundedEvidence`
+reshapes by NAMED code — rendering removed with EVIDENCE_RENDERING_OMITTED, variable lists
+dropped with EVIDENCE_CHANNEL_OVERFLOW — never a truncation; the fixed core always fits. (2) The
+run-level law: a plan whose full record cannot cross the channel REFUSES as
+PLAN_RENDERING_TOO_LARGE after preparation — the prepared change sets REMAIN (a refused plan is a
+declined plan, removable only under the abandon operation), the bounded refusal evidence still
+travels, and no gate can be issued over a rendering nobody could download complete; the plan
+runbook gained the stop condition (split the wave, plan again). Deploy records carry no rendering
+and cross even a test-narrowed 2k channel untouched. (3) Transport loss is a RED RUN: the
+materializer fails loudly when a mode arrived with empty evidence (the dropped/suppressed-output
+case, after a possible effect), and validates arrival — schema plus THIS dispatch's correlation —
+before writing the file. Tests drive a plan through a channel it cannot fit, force the
+pathological reshape branch, and pin the vanish guard; the normal four-stack record measures
+under a quarter of the real cap.
+
 Implementation round I3-2 (Codex: 1 HIGH, 2 MEDIUM) replaced the scrub with the boundary it was
 pretending to be. **`id-token: write` is job-scoped**: emptying AWS_* variables cannot remove the
 ability to mint a fresh OIDC token, and `!cancelled()` would have let the uploaders run even

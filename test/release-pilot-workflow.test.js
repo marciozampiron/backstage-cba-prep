@@ -309,9 +309,10 @@ const EXPECTED_WORKFLOW = {
           "name": "Materialize the evidence file under its reviewed name",
           "env": {
             "EVIDENCE": "${{ needs.dev-stage.outputs.evidence }}",
-            "MODE": "${{ needs.dev-stage.outputs.mode }}"
+            "MODE": "${{ needs.dev-stage.outputs.mode }}",
+            "CORRELATION_ID": "${{ inputs.correlation_id }}"
           },
-          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\"\nif [ -z \"$EVIDENCE\" ]; then\n  echo \"no evidence record was produced (the run refused before the entrypoint); nothing to materialize\"\n  exit 0\nfi\ncase \"$MODE\" in\n  plan_only) name=plan.json ;;\n  deploy) name=deploy.json ;;\n  *) name=evidence.json ;;\nesac\nprintf '%s\\n' \"$EVIDENCE\" > \"$RUNNER_TEMP/evidence/$name\"\n"
+          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\"\n# ROUND I3-3: transport loss is a RED RUN, never a silent gap. A mode on the record with\n# no evidence output means the channel dropped or suppressed the value AFTER a cloud\n# effect may have happened — the one state that must never pass quietly.\nif [ -n \"$MODE\" ] && [ -z \"$EVIDENCE\" ]; then\n  echo \"::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts\"\n  exit 1\nfi\nif [ -z \"$EVIDENCE\" ]; then\n  echo \"no evidence record was produced (the run refused before the entrypoint); nothing to materialize\"\n  exit 0\nfi\n# The record must arrive INTACT: parseable JSON whose correlation is THIS dispatch's.\nprintf '%s\\n' \"$EVIDENCE\" | node -e '\n  let raw = \"\";\n  process.stdin.on(\"data\", (c) => { raw += c; });\n  process.stdin.on(\"end\", () => {\n    const record = JSON.parse(raw);\n    if (record.schema !== \"cba-release-evidence/1\") throw new Error(\"unexpected evidence schema\");\n    if (record.correlationId !== process.env.CORRELATION_ID) throw new Error(\"evidence correlation does not match this dispatch\");\n  });\n'\ncase \"$MODE\" in\n  plan_only) name=plan.json ;;\n  deploy) name=deploy.json ;;\n  *) name=evidence.json ;;\nesac\nprintf '%s\\n' \"$EVIDENCE\" > \"$RUNNER_TEMP/evidence/$name\"\n"
         },
         {
           "name": "Upload the plan artifact",
@@ -763,6 +764,35 @@ test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC 
   for (const [name, job] of Object.entries(wf.jobs)) {
     assert.ok(!(job.needs ?? []).includes('dev-evidence'), `${name} must not depend on dev-evidence`);
   }
+});
+
+test('SLICE I3-3: transport loss is a red run, and the record must arrive intact', () => {
+  const { wf } = parseWorkflow(raw);
+  const materialize = wf.jobs['dev-evidence'].steps[0];
+  // A mode with no evidence = the channel dropped or suppressed the value after a possible
+  // effect: the job FAILS loudly instead of uploading nothing.
+  assert.ok(materialize.run.includes('the evidence output vanished in transport'));
+  assert.ok(materialize.run.includes('exit 1'));
+  // The record is validated on arrival: schema and THIS dispatch's correlation id.
+  assert.ok(materialize.run.includes('cba-release-evidence/1'));
+  assert.ok(materialize.run.includes('evidence correlation does not match this dispatch'));
+  assert.equal(materialize.env.CORRELATION_ID, '${{ inputs.correlation_id }}');
+});
+
+test('SLICE I3-3 MUTATION PROOF: removing the vanish guard is refused', () => {
+  const noGuard = raw.replace(
+    `          if [ -n "$MODE" ] && [ -z "$EVIDENCE" ]; then
+            echo "::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts"
+            exit 1
+          fi
+`,
+    '',
+  );
+  assert.notEqual(noGuard, raw, 'mutation did not apply: vanish guard');
+  const { wf } = parseWorkflow(noGuard);
+  assert.ok(!wf.jobs['dev-evidence'].steps[0].run.includes('vanished in transport'));
+  // The reviewed-object diff refuses it; the semantic assertion above names it.
+  assert.notDeepEqual(wf, EXPECTED_WORKFLOW);
 });
 
 test('SLICE I3-2: the file names the workflow produces are the names the runbooks digest', () => {

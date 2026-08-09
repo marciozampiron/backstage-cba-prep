@@ -170,6 +170,29 @@ const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
 const CORRELATION_ID_RE = /^cba-70-[0-9a-f]{32}$/;
 
 /**
+ * ROUND I3-3: the evidence record travels between jobs as a GitHub job output, and that channel
+ * has a documented 1 MB per-job bound, estimated in UTF-16 code units. A record that exceeds the
+ * channel does not get truncated — the RUN refuses, because evidence that cannot arrive complete
+ * must not be the thing a human reviews. The cap is HALF the platform bound: a margin, not a
+ * guess. JavaScript string .length IS UTF-16 code units, so the measurement is the channel's own.
+ */
+const EVIDENCE_MAX_UTF16 = 450_000;
+
+/**
+ * The transport guarantee, as a pure function: a record that fits passes untouched; a record
+ * whose rendering pushes past the cap loses the rendering AND says so by code; a record that
+ * still cannot fit drops its variable-length lists too. The fixed core (schema, ids, digests,
+ * outcome) always fits — every field has a closed grammar with a known bound.
+ */
+function boundedEvidence(record, cap) {
+  const fits = (r) => JSON.stringify(r, null, 2).length <= cap;
+  if (fits(record)) return record;
+  const withoutRendering = { ...record, rendering: null, refusals: [...record.refusals, 'EVIDENCE_RENDERING_OMITTED'] };
+  if (fits(withoutRendering)) return withoutRendering;
+  return { ...withoutRendering, changeSets: [], stacks: [], refusals: [...withoutRendering.refusals, 'EVIDENCE_CHANNEL_OVERFLOW'] };
+}
+
+/**
  * Validate the human cloud-execution gate against the VERIFIED manifest.
  *
  * The GitHub Environment answers WHO may run the lane; it cannot bind the run to a reviewed plan.
@@ -932,7 +955,7 @@ function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text), sleep = defaultSleep } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text), sleep = defaultSleep, evidenceMaxUtf16 = EVIDENCE_MAX_UTF16 } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -983,8 +1006,11 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     if (!opts.artifactOut) return;
     evidence.outcome = outcome;
     evidence.refusals = failures.map((f) => f.code);
+    // ROUND I3-3: the record is bounded to the TRANSPORT it must survive — never truncated,
+    // reshaped by named codes when the cap forces it (the run-level law below refuses first).
+    const bounded = boundedEvidence(evidence, evidenceMaxUtf16);
     fs.mkdirSync(path.dirname(opts.artifactOut), { recursive: true });
-    fs.writeFileSync(opts.artifactOut, `${JSON.stringify(evidence, null, 2)}\n`);
+    fs.writeFileSync(opts.artifactOut, `${JSON.stringify(bounded, null, 2)}\n`);
   };
   const refuse = () => {
     const lines = [`deploy-release — environment ${opts.environment}`, '  FAIL  BINDING'];
@@ -1206,6 +1232,17 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     //     deploy-mode gate NAMING this digest. Only these exact change sets can then execute.
     if (gate.mode === 'plan_only') {
       evidence.rendering = renderPlan(planEntries);
+      // ROUND I3-3: the transport is proven BEFORE the record becomes review material. A plan
+      // whose full record cannot cross the channel REFUSES — the prepared change sets remain
+      // (they are removable only under an abandon-mode authorization, exactly like a declined
+      // plan), the bounded refusal evidence still travels, and no gate can be issued over a
+      // rendering nobody could download complete.
+      if (JSON.stringify({ ...evidence, outcome: 'PLAN_PREPARED', refusals: [] }, null, 2).length > evidenceMaxUtf16) {
+        failures.push({ check: 'PLAN', code: 'PLAN_RENDERING_TOO_LARGE', field: 'rendering' });
+        evidence.rendering = null;
+        const refused = refuse();
+        return { ...refused, output: `${refused.output}\nThe prepared change sets REMAIN (a refused plan is a declined plan): removing them is the abandon operation under its own authorization. Split the wave and plan again.` };
+      }
       writeEvidence('PLAN_PREPARED');
       return {
         exit: EXIT.OK,
@@ -1281,7 +1318,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_UTF16, boundedEvidence, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

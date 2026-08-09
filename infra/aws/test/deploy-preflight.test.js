@@ -2708,3 +2708,100 @@ test('EVIDENCE: a STACK_EXECUTION_FAILED halt records the STARTED mutation — l
     });
   });
 });
+
+// -------------------------------------------------------------------------------------------------
+// ROUND I3-3 — the transport is proven, never assumed: job outputs carry a documented ~1MB bound
+// (UTF-16 units), so the record is bounded to the channel and an unfittable plan REFUSES.
+// -------------------------------------------------------------------------------------------------
+
+const { boundedEvidence, EVIDENCE_MAX_UTF16 } = require('../bin/deploy-release');
+
+test('EVIDENCE BOUND: the cap is pinned, and boundedEvidence reshapes by NAMED code, never truncates', () => {
+  assert.equal(EVIDENCE_MAX_UTF16, 450_000);
+  const record = {
+    schema: 'cba-release-evidence/1', correlationId: CORRELATION, releaseSha: 'a'.repeat(40),
+    environment: 'pilot', mode: 'plan_only', decisionId: 'zamp-1', stacks: ['A', 'B'],
+    planDigest: 'b'.repeat(64), changeSets: [{ stackName: 'A', changeSetName: 'c', status: 'CREATE_COMPLETE' }],
+    executed: [], outcome: 'PLAN_PREPARED', refusals: [], rendering: 'small',
+  };
+  // Fits: untouched — same object, no codes invented.
+  assert.deepEqual(boundedEvidence(record, 100_000), record);
+  // The rendering pushes past the cap: it is REMOVED and said so — never sliced.
+  const big = { ...record, rendering: 'x'.repeat(5_000) };
+  const shaped = boundedEvidence(big, 2_000);
+  assert.equal(shaped.rendering, null);
+  assert.ok(shaped.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+  assert.ok(JSON.stringify(shaped, null, 2).length <= 2_000);
+  assert.ok(!JSON.stringify(shaped).includes('xxx'), 'no fragment of the rendering survives — omitted, not truncated');
+  // Pathological caps drop the variable-length lists too, by code — force the third branch by
+  // capping just below the without-rendering size.
+  const withoutRendering = boundedEvidence(big, 2_000);
+  const belowCore = JSON.stringify(withoutRendering, null, 2).length - 1;
+  const tiny = boundedEvidence(big, belowCore);
+  assert.ok(tiny.refusals.includes('EVIDENCE_CHANNEL_OVERFLOW'));
+  assert.deepEqual(tiny.changeSets, []);
+  assert.deepEqual(tiny.stacks, []);
+});
+
+test('EVIDENCE BOUND: a plan whose record cannot cross the channel REFUSES — sets remain, evidence travels', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+        evidenceMaxUtf16: 2_000, // a channel this plan cannot fit
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /PLAN_RENDERING_TOO_LARGE/);
+      assert.match(r.output, /change sets REMAIN/, 'the post-effect state is stated, not hidden');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('PLAN_RENDERING_TOO_LARGE'));
+      assert.equal(record.rendering, null);
+      assert.ok(fs.readFileSync(artifact, 'utf8').length <= 2_000 + 1, 'the refusal evidence itself fits the channel');
+    });
+  });
+  // …and a deploy record — which carries no rendering — still crosses the same narrow channel.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+        evidenceMaxUtf16: 2_000,
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'DEPLOYED');
+      assert.ok(!record.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+    });
+  });
+});
+
+test('EVIDENCE BOUND: the normal fixture fits the real cap with a wide margin', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const bytes = fs.readFileSync(artifact, 'utf8').length;
+      assert.ok(bytes < EVIDENCE_MAX_UTF16 / 4, `the four-stack record uses ${bytes} units — far from the cap`);
+    });
+  });
+});

@@ -114,6 +114,7 @@ const CODES = {
   CHANGE_SET_PAGINATION_UNCONSUMED: 'has a change set whose description did not finish paginating — a partial plan describes an effect nobody reviewed, so it authorizes nothing',
   CHANGE_SET_FAILED: 'has a change set in a failed state — a plan that CloudFormation itself rejected cannot be reviewed or executed',
   PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
+  PLAN_RENDERING_TOO_LARGE: 'produced a rendering whose evidence record cannot cross the job-output channel complete — evidence is never truncated, so the plan refuses; split the wave and plan again',
   EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',
   STACK_EXECUTION_FAILED: 'did not reach a healthy terminal state — the execution failed or rolled back; the partial record above is the honest state',
 };
