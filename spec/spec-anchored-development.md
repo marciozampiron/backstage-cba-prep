@@ -526,11 +526,14 @@ refuses any non-null value that is not a CLOSED record with exactly these thirte
   path in the envelope, two locators differing in their introducing commit kept the same digest —
   `mediaType: "text/markdown"`, and the content hash inside the record. The locator is verified
   against HISTORY, not against its own shape: `verifyStatementLocator` (same file, `git`
-  injected, testable against a scripted history) checks that the commit exists, that it is an
-  ancestor of the reviewed HEAD, that it ADDED the file at that path, and that the blob there
-  has the recorded byte length and digests — under this locator — to the recorded sha256. Review
-  and the runtime consumer run those four steps verbatim; a SHA that merely looks like a SHA
-  proves nothing;
+  injected, testable against a scripted history) first requires the REVIEWED HEAD itself to obey
+  the identity rule — a full lowercase 40-character SHA that names an existing commit; `HEAD` and
+  a branch name are moving targets, and a statement introduced after the actually reviewed
+  commit would become "an ancestor of HEAD" the moment anything advances (round 13) — then
+  checks that the locator's commit exists, that it is an ancestor of that reviewed SHA, that it
+  ADDED the file at that path, and that the blob there has the recorded byte length and
+  digests — under this locator — to the recorded sha256. Review and the runtime consumer run
+  those steps verbatim; a SHA that merely looks like a SHA proves nothing;
 - `decisionId`, `finding`, `justification`, `compensatingControls` (non-empty) — round 8's core;
 - `residualRiskSha256` — the §6b `text`-framed digest of THIS instrument's exact `residualRisk`
   (subject: the field's canonical path), recomputed by the validator. Round 10: a raw

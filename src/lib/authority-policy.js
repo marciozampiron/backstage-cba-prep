@@ -379,8 +379,21 @@ export function zampStatementDigest(locator, content) {
  *   4. the blob at that path in that commit has the recorded byte length and, digested under
  *      the statement envelope WITH this locator, the recorded sha256.
  * Every failure is a named refusal; ok is only ok when all four hold.
+ *
+ * Round 13: `reviewedHead` is itself part of the proof, so it obeys the protocol's identity
+ * rule — a full lowercase 40-character SHA, confirmed to exist, BEFORE any ancestry test.
+ * `HEAD` and a branch name are moving targets: a statement introduced after the actually
+ * reviewed commit would become "an ancestor of HEAD" the moment anything advances.
  */
 export function verifyStatementLocator({ locator, bytes, sha256, reviewedHead, git }) {
+  if (typeof reviewedHead !== 'string' || !COMMIT_SHA_RE.test(reviewedHead)) {
+    return { ok: false, reason: 'REVIEWED_HEAD_NOT_A_FULL_SHA' };
+  }
+  try {
+    git('git', ['cat-file', '-e', `${reviewedHead}^{commit}`]);
+  } catch {
+    return { ok: false, reason: 'REVIEWED_HEAD_MISSING' };
+  }
   try {
     git('git', ['cat-file', '-e', `${locator.introducedIn}^{commit}`]);
   } catch {

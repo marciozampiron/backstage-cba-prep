@@ -2133,9 +2133,11 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   // ROUND 12: a SHA that merely looks like a SHA proves nothing — the locator verification runs
   // the four history checks, here against a SCRIPTED git covering every named refusal.
   {
+    const REVIEWED_HEAD_SHA = 'd'.repeat(40);
     const scriptedGit = (overrides = {}) => (cmd, args) => {
       assert.equal(cmd, 'git');
-      const step = args[0] === 'cat-file' ? 'exists'
+      // cat-file is called for the reviewed head AND the locator commit; tell them apart.
+      const step = args[0] === 'cat-file' ? (args[2].startsWith(REVIEWED_HEAD_SHA) ? 'headExists' : 'exists')
         : args[0] === 'merge-base' ? 'ancestor'
           : args[0] === 'diff-tree' ? 'added'
             : args[0] === 'show' ? 'content' : assert.fail(`unexpected git call: ${args.join(' ')}`);
@@ -2144,8 +2146,22 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
       if (step === 'content') return STATEMENT_TEXT;
       return '';
     };
-    const base = { locator: { ...STATEMENT_LOCATOR }, bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'), sha256: STATEMENT_SHA, reviewedHead: 'HEAD' };
+    const base = { locator: { ...STATEMENT_LOCATOR }, bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'), sha256: STATEMENT_SHA, reviewedHead: REVIEWED_HEAD_SHA };
     assert.deepEqual(verifyStatementLocator({ ...base, git: scriptedGit() }), { ok: true });
+    // ROUND 13: the reviewed head obeys the identity rule — a moving target is not a proof
+    // anchor. Each bad shape refuses by name, BEFORE any git call touches ancestry.
+    for (const movingTarget of ['HEAD', 'main', 'd'.repeat(39), 'D'.repeat(40), `${'d'.repeat(40)} `, 42, null, undefined]) {
+      assert.equal(
+        verifyStatementLocator({ ...base, reviewedHead: movingTarget, git: scriptedGit() }).reason,
+        'REVIEWED_HEAD_NOT_A_FULL_SHA',
+        String(movingTarget),
+      );
+    }
+    // A well-formed SHA that names no commit refuses too — shape is not existence.
+    assert.equal(
+      verifyStatementLocator({ ...base, git: scriptedGit({ headExists: () => { throw new Error('missing'); } }) }).reason,
+      'REVIEWED_HEAD_MISSING',
+    );
     assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ exists: () => { throw new Error('missing'); } }) }).reason, 'LOCATOR_COMMIT_MISSING');
     assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ ancestor: () => { throw new Error('not ancestor'); } }) }).reason, 'LOCATOR_COMMIT_NOT_ANCESTOR');
     assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ added: () => `M\t${STATEMENT_PATH}\n` }) }).reason, 'LOCATOR_FILE_NOT_ADDED_THERE');
@@ -2232,51 +2248,30 @@ function reconstructFencedCommands(text) {
 }
 
 /**
- * The CLOSED structural allowlist of gh commands a runbook may carry. Fail-open was the round-12
- * finding: checking `gh api` only when the line said `repos/` accepted `gh api "$ENDPOINT"`, and
- * substring acceptance let a second `--repo` override the first. Every reconstructed gh command
- * must satisfy exactly one form below; anything else — including subcommands this list does not
- * know — is an offense.
+ * The CLOSED allowlist of gh commands a runbook may carry — EXACT anchored templates, one per
+ * reviewed form (round 13). Flag-level analysis was fail-open four different ways: it ignored
+ * commands not STARTING with `gh` (`env X=1 gh …`, `true; gh …`), tokenized past shell operators
+ * (`… && gh secret set`), recognized only the `--repo VALUE` spelling (`--repo=fork` slid by),
+ * and accepted any method or endpoint under the canonical prefix (`-X DELETE
+ * repos/<canon>/actions/secrets/…`). A finite command set needs no analysis: a command either IS
+ * one of the reviewed templates, character for character with anchors, or it is an offense —
+ * extra arguments, duplicated options, alternate spellings, wrappers and operators all fail the
+ * match by construction.
  */
-function analyzeGhCommand(cmd) {
-  if (!/^gh\s/.test(cmd)) return [];
-  const offenses = [];
-  const tokens = cmd.split(/\s+/);
-  const repoValues = [];
-  tokens.forEach((t, i) => {
-    if (t === '--repo') repoValues.push(tokens[i + 1] ?? '(none)');
-  });
-  const requireOneCanonicalRepo = () => {
-    if (repoValues.length !== 1 || repoValues[0] !== CANONICAL_REPO) {
-      offenses.push(`must carry exactly one --repo ${CANONICAL_REPO} (found: [${repoValues.join(', ')}])`);
-    }
-  };
-  if (/^gh api\s/.test(cmd)) {
-    // The endpoint is the first non-flag token after `api`; -X and -f consume their values.
-    const rest = tokens.slice(2);
-    let endpoint = null;
-    for (let i = 0; i < rest.length; i += 1) {
-      if (rest[i] === '-X' || rest[i] === '-f' || rest[i] === '-H') { i += 1; continue; }
-      if (rest[i].startsWith('-')) continue;
-      endpoint = rest[i];
-      break;
-    }
-    if (!endpoint || endpoint.includes('$') || endpoint.includes('"') || endpoint.includes("'")
-      || !endpoint.startsWith(`repos/${CANONICAL_REPO}/`)) {
-      offenses.push(`gh api endpoint must be the literal repos/${CANONICAL_REPO}/… path (found: ${endpoint ?? '(none)'})`);
-    }
-  } else if (/^gh workflow run\s/.test(cmd)) {
-    if (tokens[3] !== 'release-pilot.yml') {
-      offenses.push(`dispatch must name the workflow FILE release-pilot.yml (found: ${tokens[3]})`);
-    }
-    requireOneCanonicalRepo();
-  } else if (/^gh run download\s/.test(cmd)) {
-    requireOneCanonicalRepo();
-  } else {
-    // Closed list: list/watch live in bin/resolve-run.mjs, and nothing else is sanctioned.
-    offenses.push('gh subcommand outside the closed allowlist (api PATCH gate, workflow run, run download)');
-  }
-  return offenses;
+const GH_COMMAND_TEMPLATES = [
+  // the ONE sanctioned mutation: installing the decision's gate value
+  /^gh api -X PATCH repos\/marciozampiron\/backstage-cba-prep\/environments\/dev\/variables\/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the (plan_only|deploy|abandon) JSON for this decision(, planDigest included)?>'$/,
+  // the ONE sanctioned dispatch: by workflow file, one canonical --repo, pinned ref and inputs
+  /^gh workflow run release-pilot\.yml --repo marciozampiron\/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=(bind_only|dev_only|abandon) -f correlation_id=<caller-generated id for this (decision|request)>$/,
+  // the ONE sanctioned download: the helper's run id, one canonical --repo, a named artifact
+  /^gh run download "\$RUN_ID" --repo marciozampiron\/backstage-cba-prep --name (binding|plan|deploy|abandon) --dir <evidence-dir>\/(bind|plan|deploy|abandon)-"\$RUN_ID"$/,
+];
+
+/** Any command BEARING the word gh — wherever it sits in the line — must BE a template. */
+function ghOffenses(cmd) {
+  if (!/\bgh\b/.test(cmd)) return [];
+  if (GH_COMMAND_TEMPLATES.some((re) => re.test(cmd))) return [];
+  return [`gh-bearing command is not one of the reviewed templates: ${cmd}`];
 }
 
 test('ROUND 11-12: every fenced gh command in the runbooks satisfies the closed structural allowlist', () => {
@@ -2285,36 +2280,51 @@ test('ROUND 11-12: every fenced gh command in the runbooks satisfies the closed 
   for (const rel of runbooks) {
     for (const cmd of reconstructFencedCommands(read(`docs/runbooks/${rel}`))) {
       if (/<owner>\/<repo>/.test(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — <owner>/<repo> placeholder`);
-      for (const why of analyzeGhCommand(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — ${why}`);
+      for (const why of ghOffenses(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — ${why}`);
     }
   }
   assert.deepEqual(offenses, [], offenses.join('\n'));
 });
 
-test('ROUND 12: the gh allowlist is fail-closed — the three demonstrated bypasses are offenses', () => {
-  // 1. The indirect endpoint: `gh api` with a variable — previously invisible because the line
-  //    never contained `repos/`.
-  assert.ok(analyzeGhCommand('gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE').length > 0);
-  // 2. The second --repo: substring acceptance saw the canonical slug and stopped looking.
-  assert.ok(analyzeGhCommand(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo attacker/fork --ref main`).length > 0);
-  // 3. The continuation-line override: the override lives on the NEXT physical line of the SAME
-  //    command, so only a reconstructed command can see it.
-  const doc = [
-    '```bash',
-    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} \\`,
-    '  --repo attacker/fork --ref main',
-    '```',
-  ].join('\n');
-  const [cmd] = reconstructFencedCommands(doc);
-  assert.match(cmd, /--repo attacker\/fork/);
-  assert.ok(analyzeGhCommand(cmd).length > 0);
-  // …and the canonical forms pass, so the allowlist is exact rather than merely strict.
-  assert.deepEqual(analyzeGhCommand(`gh api -X PATCH repos/${CANONICAL_REPO}/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<json>'`), []);
-  assert.deepEqual(analyzeGhCommand(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main -f release_sha=<sha>`), []);
-  assert.deepEqual(analyzeGhCommand(`gh run download "$RUN_ID" --repo ${CANONICAL_REPO} --name plan --dir <dir>`), []);
-  // a gh subcommand outside the closed list is an offense wherever it appears
-  assert.ok(analyzeGhCommand('gh run list --workflow release-pilot.yml').length > 0);
-  assert.ok(analyzeGhCommand('gh secret set FOO').length > 0);
+test('ROUND 12-13: the gh allowlist is fail-closed — every demonstrated bypass is an offense', () => {
+  const CANON = CANONICAL_REPO;
+  // Round 12's three bypasses…
+  assert.ok(ghOffenses('gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE').length > 0);
+  assert.ok(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --repo attacker/fork --ref main`).length > 0);
+  {
+    const doc = [
+      '```bash',
+      `gh workflow run release-pilot.yml --repo ${CANON} \\`,
+      '  --repo attacker/fork --ref main',
+      '```',
+    ].join('\n');
+    const [cmd] = reconstructFencedCommands(doc);
+    assert.match(cmd, /--repo attacker\/fork/);
+    assert.ok(ghOffenses(cmd).length > 0);
+  }
+  // …and round 13's five: destructive administration under the canonical prefix, the --repo=
+  // spelling, a shell operator smuggling a second command, an env wrapper, and a compound line.
+  for (const bypass of [
+    `gh api -X DELETE repos/${CANON}/actions/secrets/PROD`,
+    `gh workflow run release-pilot.yml --repo ${CANON} --repo=attacker/fork --ref main`,
+    `gh workflow run release-pilot.yml --repo ${CANON} --ref main && gh secret set PROD`,
+    'env X=1 gh secret set PROD',
+    'true; gh secret set PROD',
+  ]) {
+    assert.ok(ghOffenses(bypass).length > 0, `must be an offense: ${bypass}`);
+  }
+  // Extra arguments, duplicated options and truncations of the sanctioned forms all fail too.
+  assert.ok(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision> --json`).length > 0);
+  assert.ok(ghOffenses(`gh run download "$RUN_ID" --repo ${CANON} --name plan`).length > 0);
+  assert.ok(ghOffenses('gh run list --workflow release-pilot.yml').length > 0);
+  assert.ok(ghOffenses('gh secret set FOO').length > 0);
+  // …and the ACTUAL commands of the runbooks are asserted to pass, so the allowlist is exact:
+  // every reconstructed gh-bearing command in the tree matches a template (proven by the scan
+  // test above returning zero offenses), and these canonical spot-checks keep the templates from
+  // drifting stricter than the documents they guard.
+  assert.deepEqual(ghOffenses(`gh api -X PATCH repos/${CANON}/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the plan_only JSON for this decision>'`), []);
+  assert.deepEqual(ghOffenses(`gh workflow run release-pilot.yml --repo ${CANON} --ref main -f release_sha=<full 40-character release SHA> -f mode=bind_only -f correlation_id=<caller-generated id for this request>`), []);
+  assert.deepEqual(ghOffenses(`gh run download "$RUN_ID" --repo ${CANON} --name deploy --dir <evidence-dir>/deploy-"$RUN_ID"`), []);
 });
 
 test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {

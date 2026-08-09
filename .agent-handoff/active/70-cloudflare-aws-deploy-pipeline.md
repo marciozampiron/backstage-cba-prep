@@ -522,6 +522,23 @@ and any other gh subcommand is an offense by default. The three demonstrated byp
 as adversarial tests, and the canonical forms are asserted to pass, so the allowlist is exact
 rather than merely strict.
 
+Design round 13 (Codex, two findings) replaced analysis with identity. **The gh allowlist became
+exact anchored templates**: flag-level analysis was fail-open four ways — commands not STARTING
+with gh were ignored (`env X=1 gh …`, `true; gh …`), tokenization slid past shell operators
+(`… && gh secret set`), only the `--repo VALUE` spelling was recognized (`--repo=fork` passed),
+and any method under the canonical prefix was accepted (`-X DELETE repos/<canon>/actions/
+secrets/…`). A finite command set needs no analysis: any gh-BEARING command — wherever the word
+sits in the line — either matches one of the three reviewed templates character for character, or
+it is an offense. All five demonstrated bypasses plus round 12's three are pinned as regressions,
+and the canonical forms are asserted to pass.
+
+**The reviewed head obeys the identity rule.** `verifyStatementLocator` refused to take `HEAD` or
+a branch name at face value: the anchor of the proof is now a full lowercase 40-character SHA,
+confirmed to EXIST, before any ancestry test — a statement introduced after the actually reviewed
+commit would become "an ancestor of HEAD" the moment anything advances. Eight moving-target
+shapes refuse as `REVIEWED_HEAD_NOT_A_FULL_SHA`, a well-formed SHA naming no commit refuses as
+`REVIEWED_HEAD_MISSING`, and the scripted history now tells the two cat-file probes apart.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
