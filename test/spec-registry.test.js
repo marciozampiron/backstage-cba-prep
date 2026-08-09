@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import {
   loadSpecSources, validateSpecRegistry, parseSpecTables, runConformance,
   assertConformTarget, annotationOffenses, CHECK_TIMEOUT_MS, CONFORM_TEST_TIMEOUT_MS,
@@ -31,7 +32,7 @@ function expectRejected(mutate, expected) {
   const setSpec = (next) => { specMd = next; };
   mutate(registry, setSpec);
   assert.throws(
-    () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile }),
+    () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile, isRegularTrackedFile: SOURCES.isRegularTrackedFile }),
     (err) => {
       assert.ok(err instanceof SpecRegistryError, `expected SpecRegistryError, got ${err}`);
       assert.match(err.message, expected, `unexpected reason: ${err.message}`);
@@ -354,7 +355,8 @@ test('ROUND I1-2: an ACTIVE anchor symbol must actually appear in its file', () 
 test('ROUND I1-3: the history baseline is never the bytes under validation', () => {
   const HEAD_RAW = '{"head":true}';
   const PARENT_RAW = '{"parent":true}';
-  const scripted = ({ head = HEAD_RAW, parent = PARENT_RAW } = {}) => (cmd, args) => {
+  const scripted = ({ head = HEAD_RAW, parent = PARENT_RAW, shallow = 'false' } = {}) => (cmd, args) => {
+    if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return `${shallow}\n`;
     assert.equal(args[0], 'show');
     if (args[1] === `HEAD:${REGISTRY_PATH}`) {
       if (head === null) throw new Error('no HEAD version');
@@ -374,10 +376,28 @@ test('ROUND I1-3: the history baseline is never the bytes under validation', () 
   // Birth commits have no baseline — in either direction.
   assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ head: null }) }), null);
   assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ parent: null }) }), null);
-  // …and the REAL loader in THIS clean-or-dirty checkout produces a baseline that is not the
-  // current bytes (or none at all) — the exact vacuity Codex demonstrated.
+  // Round I1-4: the shallow-clone hazard — absent history must be PROVEN absent, never assumed.
+  assert.throws(
+    () => resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ shallow: 'true' }) }),
+    /HISTORY_TRUNCATED/,
+  );
+  // …and the REAL loader's baseline is tested by PROVENANCE, not by content inequality: a commit
+  // that does not touch the registry legitimately has parent bytes equal to the current bytes
+  // (round I1-4 corrected the previous assertion, which failed exactly on such a commit). The
+  // baseline must be WHAT THE RIGHT SOURCE HOLDS, whatever those bytes are.
   const real = loadSpecSources({ root: ROOT });
-  assert.ok(real.previousRegistryRaw === null || real.previousRegistryRaw !== real.registryRaw);
+  const headRaw = execFileSync('git', ['-C', ROOT, 'show', `HEAD:${REGISTRY_PATH}`], { encoding: 'utf8' });
+  if (real.registryRaw !== headRaw) {
+    assert.equal(real.previousRegistryRaw, headRaw, 'diverged worktree is judged against HEAD');
+  } else {
+    let parentRaw = null;
+    try {
+      parentRaw = execFileSync('git', ['-C', ROOT, 'show', `HEAD~1:${REGISTRY_PATH}`], { encoding: 'utf8' });
+    } catch {
+      parentRaw = null;
+    }
+    assert.equal(real.previousRegistryRaw, parentRaw, 'clean checkout is judged against the parent, whatever its bytes');
+  }
 });
 
 test('ROUND I1-3: retiring an ACTIVE id is not a license to rewrite its text', () => {
@@ -459,29 +479,93 @@ test('ROUND I1-3: a governed-path change without moving evidence is an offense',
   assert.deepEqual(governedPathOffenses({ registry, changedFiles: null }), []);
 });
 
-test('ROUND I1-3: diffChangedFiles picks the honest baseline per mode', () => {
+test('ROUND I1-3/4: diffChangedFiles picks the honest baseline and sees BOTH sides of a rename', () => {
   const scripted = (responses) => (cmd, args) => {
     const key = args.join(' ');
+    if (key === 'rev-parse --is-shallow-repository') return 'false\n';
     if (!(key in responses)) throw new Error(`unexpected: ${key}`);
     const v = responses[key];
     if (v instanceof Error) throw v;
     return v;
   };
-  // Commit mode: the commit against its parent.
+  const C = 'c'.repeat(40);
+  // Commit mode: the commit against its parent, name-status parsed.
   assert.deepEqual(
-    diffChangedFiles({ commit: 'c'.repeat(40), git: scripted({ [`diff --name-only ${'c'.repeat(40)}~1 ${'c'.repeat(40)}`]: 'a.js\nb.md\n' }) }),
+    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${C}~1 ${C}`]: 'A\ta.js\nM\tb.md\n' }) }),
     ['a.js', 'b.md'],
+  );
+  // ROUND I1-4 (Codex's reproduction): a rename reports BOTH paths, so a governed file renamed
+  // AWAY still counts as touched.
+  assert.deepEqual(
+    diffChangedFiles({ commit: C, git: scripted({ [`diff --name-status -M ${C}~1 ${C}`]: 'R097\tsrc/lib/spec-registry.js\tsrc/lib/spec-registry-moved.js\n' }) }),
+    ['src/lib/spec-registry.js', 'src/lib/spec-registry-moved.js'],
   );
   // Dirty worktree: worktree vs HEAD, untracked included.
   assert.deepEqual(
-    diffChangedFiles({ git: scripted({ 'status --porcelain': ' M a.js\n?? new.md\n', 'diff --name-only HEAD': 'a.js\n' }) }),
+    diffChangedFiles({ git: scripted({ 'status --porcelain': ' M a.js\n?? new.md\n', 'diff --name-status -M HEAD': 'M\ta.js\n' }) }),
     ['a.js', 'new.md'],
   );
   // Clean checkout: HEAD against its parent — never an empty self-diff.
   assert.deepEqual(
-    diffChangedFiles({ git: scripted({ 'status --porcelain': '', 'diff --name-only HEAD~1 HEAD': 'c.js\n' }) }),
+    diffChangedFiles({ git: scripted({ 'status --porcelain': '', 'diff --name-status -M HEAD~1 HEAD': 'M\tc.js\n' }) }),
     ['c.js'],
   );
+  // Shallow clones refuse instead of degrading to "no baseline".
+  assert.throws(
+    () => diffChangedFiles({ git: (cmd, args) => (args[1] === '--is-shallow-repository' ? 'true\n' : '') }),
+    /HISTORY_TRUNCATED/,
+  );
+  // A rename OUT of a governed directory flags the ACTIVE id even though the destination is
+  // outside every governed path.
+  const registry = {
+    entries: [{
+      id: 'SPEC-A-001', status: 'ACTIVE', governedPaths: ['infra/aws/bootstrap/policies/'],
+      tests: [{ file: 'infra/aws/test/release-bootstrap.test.js', title: 'x' }], checks: [],
+    }],
+  };
+  const offenses = governedPathOffenses({ registry, changedFiles: ['infra/aws/bootstrap/policies/cfn-exec-release.template.json', 'somewhere/else.json'] });
+  assert.equal(offenses.length, 1);
+});
+
+test('ROUND I1-4: executed bytes must be regular tracked files — symlinks refuse in both views', () => {
+  const real = loadSpecSources({ root: ROOT });
+  // The real accessor: a committed regular file passes; directories and escapes do not.
+  assert.equal(real.isRegularTrackedFile('test/fixtures/conform-probe.js'), true);
+  assert.equal(real.isRegularTrackedFile('test/fixtures'), false);
+  assert.equal(real.isRegularTrackedFile('no/such/file.sh'), false);
+  // Codex's reproduction: a symlink to outside bytes "exists" and executes — build one for real
+  // and prove the accessor refuses it (untracked AND a link, either alone suffices).
+  const linkPath = path.join(ROOT, 'test/fixtures/evil-link.sh');
+  try {
+    fs.symlinkSync('/tmp/does-not-matter.sh', linkPath);
+    assert.equal(fs.existsSync(linkPath) || fs.lstatSync(linkPath).isSymbolicLink(), true);
+    assert.equal(real.isRegularTrackedFile('test/fixtures/evil-link.sh'), false);
+  } finally {
+    fs.rmSync(linkPath, { force: true });
+  }
+  // The validator refuses an executable that is not a regular tracked file — tests and checks.
+  expectRejected((r) => {
+    entry(r, 'SPEC-DEPLOY-001').checks = [{ kind: 'script', ref: 'test/fixtures/evil-link.sh' }];
+  }, /check.ref must be an existing path|must be a regular tracked file/);
+  // Commit mode reads the MODE from the git object: 120000 (symlink) refuses, 100755 passes.
+  const commitSources = loadSpecSources({
+    commit: 'a'.repeat(40),
+    git: (cmd, args) => {
+      if (args[0] === 'ls-tree') {
+        const rel = args[args.length - 1];
+        if (rel === 'link.sh') return `120000 blob abc\tlink.sh\n`;
+        if (rel === 'real.sh') return `100755 blob abc\treal.sh\n`;
+        return '';
+      }
+      if (args[0] === 'show') return '{}';
+      if (args[0] === 'cat-file') return '';
+      if (args[0] === 'rev-parse') return 'false\n';
+      throw new Error(`unexpected: ${args.join(' ')}`);
+    },
+  });
+  assert.equal(commitSources.isRegularTrackedFile('link.sh'), false);
+  assert.equal(commitSources.isRegularTrackedFile('real.sh'), true);
+  assert.equal(commitSources.isRegularTrackedFile('missing.sh'), false);
 });
 
 test('ROUND I1-3: checks cannot escape the repository, and children get a minimal environment', () => {
@@ -524,6 +608,8 @@ test('ROUND I1-3: a check that mutates the tree invalidates the verdict', () => 
       git,
       loadDeps: {
         git: (cmd, args) => {
+          if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return 'false\n';
+          if (args[0] === 'ls-tree') return `100644 blob abc\t${args[args.length - 1]}\n`;
           if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return SOURCES.registryRaw;
           if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return SOURCES.specMd;
           if (args[0] === 'show' && args[1] === `${COMMIT}~1:${REGISTRY_PATH}`) { const e = new Error('none'); throw e; }

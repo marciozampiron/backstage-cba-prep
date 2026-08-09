@@ -17,6 +17,11 @@ jobs:
         node-version: [20, 22]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Round I1-4: the default single-commit checkout makes HEAD~1 unavailable, and the
+          # spec system's historical laws would silently degrade to "registry birth". Full
+          # history keeps them enforced; the linter also fails closed on shallow clones.
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
@@ -25,6 +30,10 @@ jobs:
         run: npm ci
       - name: Run CLI tests
         run: npm test
+      - name: Spec traceability lint (SHA-bound)
+        run: npm run spec:lint -- --commit "$(git rev-parse HEAD)"
+      - name: Spec conformance (SHA-bound)
+        run: npm run spec:conform -- --commit "$(git rev-parse HEAD)"
       - name: Validate question bank
         run: node bin/cli.js validate
       - name: Check bank coverage

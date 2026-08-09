@@ -554,6 +554,23 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I1-4 (Codex, three HIGH + one MEDIUM) took the laws to where CI actually
+runs. **The reviewed commit itself was not green** — the round-I1-3 provenance assertion demanded
+baseline bytes differ from current bytes, which is false for any commit that does not touch the
+registry; the test now asserts PROVENANCE (the baseline equals what the right source holds —
+HEAD when diverged, HEAD's parent when clean — whatever those bytes are), and this round's
+battery was re-run at the final commit. **Shallow clones refuse instead of degrading**: CI's
+default single-commit checkout made HEAD~1 unreadable and every historical law silently became
+"registry birth" — `HISTORY_TRUNCATED` now fails closed in both the baseline resolver and the
+diff, quality.yml checks out with fetch-depth: 0, and CI runs the FULL SHA-bound paths
+(`spec:lint --commit $(git rev-parse HEAD)` and `spec:conform --commit …`) beside npm test.
+**Executed bytes must be regular tracked files**: a tracked symlink "exists", keeps the worktree
+clean, and runs bytes from outside the audited commit — `isRegularTrackedFile` now checks BOTH
+views (the git object's mode 100644/100755 and lstat on the path the child would actually
+execute), applied to test files and check refs, proven with a real symlink built and refused in
+the test. **Renames carry both sides**: `--name-status -M` replaced `--name-only`, so a governed
+file renamed AWAY still counts as touched, with Codex's exact reproduction as a regression.
+
 Implementation round I1-3 (Codex, four HIGH findings) closed the gap between the laws and what
 CI actually exercises. **The history baseline is never the bytes under validation**: on a clean
 checkout the worktree file IS HEAD's file, so "compare with HEAD" compared the registry with

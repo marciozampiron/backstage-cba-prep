@@ -10,7 +10,7 @@
  *
  * Nothing here writes to spec/ (SPEC-GOV-001): every function is read-only over its inputs.
  */
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, lstatSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { framedTextDigest } from './authority-policy.js';
@@ -74,6 +74,14 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
         }
       },
       readFile: (rel) => git('git', ['show', `${commit}:${rel}`]),
+      // Round I1-4: EXECUTED bytes must be a regular file tracked in the audited tree — a
+      // symlink "exists", keeps the worktree clean, and runs bytes from outside the commit.
+      isRegularTrackedFile: (rel) => {
+        const line = tryOrNull(() => git('git', ['ls-tree', commit, '--', rel]));
+        if (line === null || String(line).trim() === '') return false;
+        const mode = String(line).trim().split(/\s+/)[0];
+        return mode === '100644' || mode === '100755';
+      },
     };
   }
   return {
@@ -89,6 +97,19 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
     }),
     fileExists: (rel) => existsSync(path.join(root, rel)),
     readFile: (rel) => readFileSync(path.join(root, rel), 'utf8'),
+    isRegularTrackedFile: (rel) => {
+      // BOTH views must agree: the git object is a regular blob AND the path on disk — the one
+      // the child would actually execute — is a regular file, not a symlink.
+      const line = tryOrNull(() => defaultGit('git', ['-C', root, 'ls-files', '-s', '--', rel]));
+      if (line === null || String(line).trim() === '') return false;
+      const mode = String(line).trim().split(/\s+/)[0];
+      if (mode !== '100644' && mode !== '100755') return false;
+      try {
+        return lstatSync(path.join(root, rel)).isFile();
+      } catch {
+        return false;
+      }
+    },
   };
 }
 
@@ -100,9 +121,20 @@ function tryOrNull(fn) {
   }
 }
 
+/** Round I1-4: absent history must be PROVEN absent, never assumed. A shallow clone makes
+ * HEAD~1 unreadable for a commit that HAS a parent, and treating that as "registry birth"
+ * silently switched every historical law off in CI. */
+function assertHistoryDeep(git) {
+  const shallow = String(tryOrNull(() => git('git', ['rev-parse', '--is-shallow-repository'])) ?? '').trim();
+  if (shallow === 'true') {
+    fail('HISTORY_TRUNCATED: this is a shallow clone, so absent history proves nothing — fetch full history (fetch-depth: 0) before linting.');
+  }
+}
+
 /** The history baseline for the worktree: HEAD if the worktree registry diverged from it, else
  * HEAD's parent — never the very bytes under validation (round I1-3). */
 export function resolvePreviousRegistryRaw({ currentRaw, git = defaultGit }) {
+  assertHistoryDeep(git);
   const headRaw = tryOrNull(() => git('git', ['show', `HEAD:${REGISTRY_PATH}`]));
   if (headRaw === null) return null; // the registry is being born in this commit
   if (headRaw !== currentRaw) return headRaw;
@@ -146,7 +178,7 @@ export function parseSpecTables(specMd) {
  * anchor existence. Throws SpecRegistryError naming the first violation; returns the parsed
  * registry when everything holds.
  */
-export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile = null, previousRegistryRaw = null }) {
+export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile = null, previousRegistryRaw = null, isRegularTrackedFile = null }) {
   let registry;
   try {
     registry = JSON.parse(registryRaw);
@@ -199,6 +231,11 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
       }
       if (!isRepoRelativePath(t.file)) fail(`${id} test file must be a normalized repo-relative path: ${t.file}`);
       if (!fileExists(t.file)) fail(`${id} test file does not exist: ${t.file}`);
+      // Round I1-4: a test file is EXECUTED, so it must be a regular tracked file of the audited
+      // tree — a symlink executes bytes that belong to no reviewed commit.
+      if (isRegularTrackedFile !== null && !isRegularTrackedFile(t.file)) {
+        fail(`${id} test file must be a regular tracked file (symlinks and untracked files refuse): ${t.file}`);
+      }
     }
     if (!Array.isArray(entry.checks)) fail(`${id}.checks must be an array.`);
     for (const check of entry.checks) {
@@ -206,6 +243,9 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
       if (check.kind !== 'script') fail(`${id} check.kind must be "script".`);
       if (!isRepoRelativePath(check.ref)) fail(`${id} check.ref must be a normalized repo-relative path: ${check.ref}`);
       if (!fileExists(check.ref)) fail(`${id} check.ref must be an existing path.`);
+      if (isRegularTrackedFile !== null && !isRegularTrackedFile(check.ref)) {
+        fail(`${id} check.ref must be a regular tracked file (symlinks and untracked files refuse): ${check.ref}`);
+      }
     }
     if (!Array.isArray(entry.governedPaths) || entry.governedPaths.some((g) => typeof g !== 'string' || g.trim() === '')) {
       fail(`${id}.governedPaths must be an array of paths.`);
@@ -438,19 +478,35 @@ export function governedPathOffenses({ registry, changedFiles }) {
 /** The changed-file list for the mode being audited: commit vs its parent, a dirty worktree vs
  * HEAD, or a clean checkout's HEAD vs its parent. Null when no baseline exists (birth commit). */
 export function diffChangedFiles({ commit = null, git = defaultGit }) {
-  const parse = (raw) => String(raw).split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  assertHistoryDeep(git);
+  // Round I1-4: `--name-only` reported only a rename's DESTINATION, so a governed file renamed
+  // away disappeared without ever counting as touched. `--name-status` carries both sides.
+  const parseStatus = (raw) => {
+    const files = [];
+    for (const line of String(raw).split('\n')) {
+      if (line.trim() === '') continue;
+      const cols = line.split('\t');
+      const code = cols[0].trim();
+      if (code.startsWith('R') || code.startsWith('C')) {
+        files.push(cols[1], cols[2]); // a rename/copy touches BOTH paths
+      } else {
+        files.push(cols[1]);
+      }
+    }
+    return files.filter(Boolean);
+  };
   if (commit !== null) {
-    const raw = tryOrNull(() => git('git', ['diff', '--name-only', `${commit}~1`, commit]));
-    return raw === null ? null : parse(raw);
+    const raw = tryOrNull(() => git('git', ['diff', '--name-status', '-M', `${commit}~1`, commit]));
+    return raw === null ? null : parseStatus(raw);
   }
   const status = String(git('git', ['status', '--porcelain'])).trim();
   if (status !== '') {
-    const tracked = parse(git('git', ['diff', '--name-only', 'HEAD']));
+    const tracked = parseStatus(git('git', ['diff', '--name-status', '-M', 'HEAD']));
     const untracked = status.split('\n').filter((l) => l.startsWith('??')).map((l) => l.slice(3).trim());
     return [...new Set([...tracked, ...untracked])];
   }
-  const raw = tryOrNull(() => git('git', ['diff', '--name-only', 'HEAD~1', 'HEAD']));
-  return raw === null ? null : parse(raw);
+  const raw = tryOrNull(() => git('git', ['diff', '--name-status', '-M', 'HEAD~1', 'HEAD']));
+  return raw === null ? null : parseStatus(raw);
 }
 
 /**
