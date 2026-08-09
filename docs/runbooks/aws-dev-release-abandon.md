@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.4.0
+version: 0.5.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -88,8 +88,9 @@ and not by a lane (SPEC-DEPLOY-021).
    them this operation does not run.
 2. Zamp decided this plan will NOT execute. An abandoned plan cannot be un-abandoned; a new
    binding and plan cycle is what follows.
-3. A correlation id is generated for THIS decision, matching `^cba-70-[0-9a-f]{32}$`, and
-   recorded before dispatch (SPEC-LANE-006). The declined plan's binding record is at hand — run
+3. A correlation id is generated for THIS decision with a CSPRNG
+   (`cba-70-$(openssl rand -hex 16)`, matching `^cba-70-[0-9a-f]{32}$`) and recorded before
+   dispatch (SPEC-LANE-006). The declined plan's binding record is at hand — run
    id, correlation id, `decisionId`, release SHA, stack group, `PLAN_DIGEST` (SPEC-RUN-007). The
    lane re-derives the change-set names from the release; the record is what ties this abandon to
    that decision.
@@ -132,29 +133,29 @@ and not by a lane (SPEC-DEPLOY-021).
    deletes those change sets. Nothing is prepared, nothing is executed, and no stack is deleted.
    Any stack left in `REVIEW_IN_PROGRESS` is recorded in the artifact as a reported condition.
 
-3. **Zamp** resolves the run by the complete run name — matched by EQUALITY, bounded at ten
-   attempts 30s apart; `headSha` is main's tip, not the release SHA, and selects nothing
-   (SPEC-LANE-006/007) — waits for a terminal conclusion, and downloads the artifact:
+3. **Zamp** resolves the run with [the canonical procedure](README.md#resolving-a-run) and
+   downloads the artifact:
 
-   ```text
-   gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
-     --json databaseId,displayTitle,headSha,status,conclusion,event \
-     --jq '[.[] | select(.displayTitle == "cba-release abandon <correlation-id>")]'
-   gh run watch <run-id> --exit-status
-   gh run download <run-id> --name abandon --dir <evidence-dir>/abandon-<run-id>
-   sha256sum <evidence-dir>/abandon-<run-id>/abandon.json
+   ```bash
+   export WANT="cba-release abandon ${CORRELATION_ID}"
+   # …the standard's bounded loop yields RUN_ID and watches it to a terminal conclusion…
+   gh run download "$RUN_ID" --name abandon --dir <evidence-dir>/abandon-"$RUN_ID"
+   sha256sum <evidence-dir>/abandon-"$RUN_ID"/abandon.json
    ```
 
    Expected outcome: an artifact listing, per stack, which change sets were deleted, which were
    already absent, and which stacks remain in `REVIEW_IN_PROGRESS` — with correlation id and
    release SHA for verification.
 
-4. **Zamp** decides, separately, what to do with any reported `REVIEW_IN_PROGRESS` record. That
-   decision is out of scope for this runbook and for every lane: the effect is
+4. **Zamp** records any reported `REVIEW_IN_PROGRESS` stack for a separate decision. **There is
+   no step here that resolves it, and this runbook offers no command that would.** The effect is
    `delete-review-in-progress-stack-record`, authorized only by a `stack-record-authorization`
-   record bound to `stack+observedStatus+observedAt+decisionId` (spec §8b), performed by hand.
-   The binding is the point — the hazard is acting on a stale observation, so the instrument
-   names the observation it rests on.
+   record (spec §8b) whose nine keys name the account, region, stack name, immutable stack ARN,
+   the exact observed status and the instant, valid for fifteen minutes and re-verified
+   immediately before acting. Even so, `DeleteStack` has no compare-and-delete, and that residual
+   is unaccepted: `spec/authority-policy.json` records `riskAccepted: false` and
+   `executableProcedure: false`. Making it executable is Zamp's risk-acceptance decision, taken
+   on its own record — never a step added here (SPEC-DEPLOY-022).
 
 ## Evidence
 

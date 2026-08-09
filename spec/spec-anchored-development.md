@@ -216,7 +216,11 @@ Two rules the #70 rounds already paid for, applied to this system's own artifact
 
    **Every digest a document in this system names must state its kind.** A digest with no kind is
    not evidence of anything; §5a of the auditor persona maps each of its digests to one of these
-   four, and a future digest that fits none of them is a finding, not a fifth improvisation.
+   four, §6c fixes `patchSha256` as a `diff`, and §8a fixes `manifestDigest` as a `bundle` — the
+   release manifest is PRODUCED BY the binding run, so it is a generated stream and not a set of
+   tracked files at a commit, which round 7 caught as a contradiction with `snapshot`'s own
+   definition. A future digest that fits none of the four kinds is a finding, not a fifth
+   improvisation.
 
    **`renamed` is gone from the diff status enum, deliberately.** Git does not record renames;
    rename detection is a *similarity heuristic* whose output depends on a threshold and on what
@@ -246,11 +250,17 @@ it before an activation:
 ```jsonc
 "mutationEvidence": {
   "commit": "<full 40-character SHA where the proof was performed>",
-  "patchSha256": "<digest of the exact reverting patch, framed per §6b>",
+  // a §6b `diff` document: baseSha = the commit, headSha = the reverted tree's commit,
+  // both inside the digested bytes
+  "patchSha256": "<hex>",
   "command": "<the exact command run to observe the failure>",
   "expectedFailure": "<the exact test name(s) that must fail, and how many>"
 }
 ```
+
+Round 7: `patchSha256` states its KIND, not merely that it is "framed". A patch is a change
+between two trees, so it is a `diff` document whose `baseSha`/`headSha` are inside the digested
+bytes — which is what lets a verifier recompute it instead of trusting the label.
 
 A reversion proof nobody can re-run is not evidence. Staleness — the named tests no longer
 existing, or the patch no longer applying — is a finding for the semantic stage, not a silent
@@ -345,6 +355,7 @@ carry — recorded now, claimed as enforcement never.
 | SPEC-DEPLOY-017 | PROPOSED | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) | The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
 | SPEC-DEPLOY-020 | RETIRED (never ACTIVE; `supersededBy` SPEC-DEPLOY-019) | The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none. | — | — | none — absorbed into SPEC-DEPLOY-019 before activation (§4) |
+| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b) naming the account, region, stack NAME and immutable stack ARN, the exact observed status `REVIEW_IN_PROGRESS` and the instant it was observed, valid at most fifteen minutes; the performer re-observes the same identity, status and window immediately before deleting, and the residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records explicit risk acceptance. | `spec/authority-policy.json` (`stack-record-authorization`) | `test/governance-model.test.js` | policy data + tests reviewed in this commit; no procedure exists |
 | SPEC-DEPLOY-021 | PROPOSED | Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision. | `spec/authority-policy.json` (`delete-review-in-progress-stack-record`) | `test/governance-model.test.js` | policy data + test reviewed in this commit; no lane may perform it |
 | SPEC-LANE-005 | PROPOSED | A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run. | not yet implemented | not yet implemented | none — awaiting the workflow path |
 | SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id matching exactly `^cba-70-[0-9a-f]{32}$`; a dispatch whose id does not match is refused in the preflight, before any credentialed stage. The run's NAME is exactly `cba-release <mode> <correlationId>` and nothing else, so a run is selected by EQUALITY on its complete name — never by substring — and is identifiable from run metadata alone, before any artifact exists. The same id appears inside the structured uploaded artifact, together with the release SHA the run acted on, which is what a reviewer compares against the request; a run's `headSha` is the dispatch ref's tip and is never that comparison. | not yet implemented | not yet implemented | none — awaiting the workflow input, run name and artifact |
@@ -419,21 +430,31 @@ any of them grants nothing (SPEC-RUN-001).
 ### 8a. The cloud authorization value, key by key (SPEC-DEPLOY-019)
 
 Round 6 found -019 claiming a "closed key set" without saying what it closes over, and requiring
-no `planDigest` even though the instrument's `boundTo` names one. A schema that a reader must
-reconstruct is not closed. The successor's value is exactly these ten keys:
+no `planDigest` even though the instrument's `boundTo` names one. Round 7 found the remainder: a
+key list is not a schema while `decisionId` points at a "documented shape" that exists nowhere and
+two digests have no format at all. The types below are not invented — they are what the reviewed
+runtime already enforces (`infra/aws/bin/deploy-release.js`), which is what a successor must
+inherit rather than loosen.
 
-| Key | Constraint | `plan_only` | `deploy` | `abandon` |
-| --- | --- | --- | --- | --- |
-| `issue` | the integer `70` | required | required | required |
-| `mode` | one of `plan_only`, `deploy`, `abandon` — nothing else, and the mode fixes the permitted effects exactly as partitioned in [`authority-policy.json`](authority-policy.json) | required | required | required |
-| `decisionId` | matches the documented shape; FRESH per decision, never reused across modes or retries | required | required | required |
-| `releaseSha` | the full 40-character release SHA the decision covers | required | required | required |
-| `environment` | the tier the decision covers (`dev`) | required | required | required |
-| `manifestDigest` | digest of the COMPLETE closed manifest — release, environment, region, account, bound context, stack set — per §6b's `snapshot` framing; a release SHA plus an assembly digest is NOT this | required | required, equal to the plan decision's | required, equal to the plan decision's |
-| `stacks` | equal, in content AND order, to one reviewed plan group (SPEC-DEPLOY-011) | required | required, equal to the plan decision's | required, equal to the plan decision's |
-| `planDigest` | the reviewed `PLAN_DIGEST` (SPEC-DEPLOY-016) | **`null`** — no plan exists yet, and a non-null value here authorizes a plan nobody reviewed | **required, non-null** — this is the plan being executed | **required, non-null** — the digest of the DECLINED plan whose change sets are being deleted |
-| `approvedAt` | strict RFC3339 UTC that round-trips through the calendar (SPEC-DEPLOY-009) | required | required | required |
-| `expiresAt` | same format; `expiresAt − approvedAt` ≤ 1h, re-checked before EACH effect (SPEC-DEPLOY-010/017) | required | required | required |
+The value is a JSON object with EXACTLY these ten keys — none absent, none unknown, compared as a
+sorted key set:
+
+| Key | Type and exact form | Cardinality / nullability | `plan_only` | `deploy` | `abandon` |
+| --- | --- | --- | --- | --- | --- |
+| `issue` | number, the integer `70` | required, never null | `70` | `70` | `70` |
+| `mode` | string, one of `plan_only`, `deploy`, `abandon` | required, never null | `plan_only` | `deploy` | `abandon` |
+| `decisionId` | string matching `/^[A-Za-z0-9._-]{8,64}$/` | required, never null | fresh | fresh | fresh |
+| `releaseSha` | string matching `/^[0-9a-f]{40}$/`, equal to the manifest's | required, never null | required | equal to the plan decision's | equal to the plan decision's |
+| `environment` | string, the tier id (`dev`), equal to the manifest's | required, never null | required | equal | equal |
+| `manifestDigest` | string matching `/^[0-9a-f]{64}$/` — a `bundle` digest per §6b over the manifest the binding run produced | required, never null | required | equal to the plan decision's | equal to the plan decision's |
+| `stacks` | array of strings, length ≥ 1, equal in content AND order to one reviewed plan group (SPEC-DEPLOY-011) | required, never null, never empty | required | equal to the plan decision's | equal to the plan decision's |
+| `planDigest` | `null`, or a string matching `/^[0-9a-f]{64}$/` (SPEC-DEPLOY-016) | see per-mode | **exactly `null`** — no plan exists yet, and a non-null value authorizes a plan nobody reviewed | **string, non-null** — the plan being executed | **string, non-null** — the DECLINED plan whose change sets are deleted |
+| `approvedAt` | string, strict RFC3339 UTC to whole seconds, calendar round-trip (SPEC-DEPLOY-009) | required, never null | required | required | required |
+| `expiresAt` | same form; `approvedAt < expiresAt` and `expiresAt − approvedAt` ≤ 1h, re-checked before EACH effect (SPEC-DEPLOY-010/017) | required, never null | required | required | required |
+
+Anything else refuses: an absent key, an unknown key, a value of the wrong type, a string that
+fails its regex, an empty `stacks`, a `stacks` outside the reviewed groups, or a `planDigest`
+whose nullability contradicts the mode.
 
 Per-mode effects are not restated here as prose: they are the partition in the policy file, and a
 value whose mode does not cover the effect being attempted refuses. There is **no cleanup mode**.
@@ -450,10 +471,40 @@ value permitting it.
 
 It therefore has its own closed instrument, `stack-record-authorization`: written by Zamp, per
 stack record, AFTER observing that record's status; supplied the way the spend instrument is — an
-**out-of-band record with nothing to read it**; and bound to
-`stack+observedStatus+observedAt+decisionId`, because the hazard being managed is a stale
-observation. It authorizes exactly one effect, and that effect is performed by a human
-(SPEC-DEPLOY-021).
+**out-of-band record with nothing to read it**. It authorizes exactly one effect, performed by a
+human (SPEC-DEPLOY-021).
+
+**Round 7: recording an observation is not constraining one.** The earlier binding named
+`observedAt` and stopped there — a field that says WHEN someone looked, while nothing bounded how
+old that look may be, which stack it identified, or what had to be true at the moment of the
+delete. The value is a JSON object with EXACTLY these nine keys (SPEC-DEPLOY-022):
+
+| Key | Type and exact form | Why it is in the binding |
+| --- | --- | --- |
+| `issue` | number, the integer `70` | the decision belongs to a tracked piece of work |
+| `decisionId` | string matching `/^[A-Za-z0-9._-]{8,64}$/` | one decision, never reused |
+| `environment` | string, the tier id (`dev`) | a value for one tier can never resolve in another |
+| `account` | string matching `/^[0-9]{12}$/` | the account is named, not inferred from ambient credentials |
+| `region` | string matching `/^[a-z]{2}(-[a-z]+)+-[0-9]$/` | a stack name is unique per account AND region |
+| `stackName` | string, the exact name | what a human reads |
+| `stackId` | string, the full CloudFormation stack ARN including its unique suffix | the IMMUTABLE identity: a name can be deleted and recreated, and the recreation is a different stack that the same name would happily address |
+| `observedStatus` | string, exactly `REVIEW_IN_PROGRESS` — no other value is legal in this instrument | the only status under which this effect exists |
+| `observedAt` | string, strict RFC3339 UTC (§8a's form); the decision is valid for at most **15 minutes** from it | an observation has an age, and an old one authorizes nothing |
+
+Before deleting, the performer RE-OBSERVES: same `stackId`, same `REVIEW_IN_PROGRESS`, still
+inside the window. Anything else — different id, different status, window lapsed — and the
+decision is void; a new observation means a new decision.
+
+**And that is still not enough, which is the point.** CloudFormation offers no compare-and-delete:
+between the final re-observation and `DeleteStack`, the stack can acquire resources. Every field
+above narrows the window and none of them closes it. **This design therefore leaves the effect
+with NO executable procedure.** No runbook here carries a command that performs it; the abandon
+operation reports the condition and stops. Making it executable requires something this design
+cannot supply and must not simulate: **Zamp's explicit, written acceptance of the residual TOCTOU
+risk**, recorded as a risk-acceptance decision. Until that record exists, `riskAccepted` is
+`false` in [`authority-policy.json`](authority-policy.json), the effect is expressible and
+unperformable, and a runbook that acquired a command for it would be a finding against this
+section (SEC-GOV-01, SEC-IAM-01).
 
 ## 9. Relationship to existing mechanisms
 

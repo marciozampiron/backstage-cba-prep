@@ -38,7 +38,7 @@ A step therefore names the instrument AND the mode it depends on. The policy als
 `delete-review-in-progress-stack-record` as a distinct effect that **no lane performs** — it is
 human-only by policy, and no runbook here automates it.
 
-All three are Zamp's alone. A step states WHICH instrument it depends on; depending on one never
+All four are Zamp's alone. A step states WHICH instrument it depends on; depending on one never
 implies another.
 
 ## Every command names its performer
@@ -82,6 +82,55 @@ Rules:
   touch no spec-anchored behavior (and should be rare).
 - `inputs`/`outputs` name artifacts and identifiers, **never** secret values, account ids or
   live ARNs.
+
+## Resolving a run — the canonical procedure
+
+Every dispatching runbook uses THIS procedure and does not restate its loop. Round 7 of the
+design review found the previous version describing bounded polling and cardinality while showing
+a single `gh run list` call: a rule stated in prose beside a command that does not implement it is
+a rule nobody runs.
+
+**The correlation id is generated with a CSPRNG.** "Caller-generated" allowed
+`cba-70-000…000`; 128 bits from `openssl rand` do not.
+
+```bash
+CORRELATION_ID="cba-70-$(openssl rand -hex 16)"   # matches ^cba-70-[0-9a-f]{32}$
+printf '%s\n' "$CORRELATION_ID"                   # record it BEFORE dispatching
+```
+
+After dispatching, resolve the run by the COMPLETE run name, by equality, bounded:
+
+```bash
+# WANT is passed through the environment, so the title is never interpolated into the jq program.
+export WANT="cba-release <mode> ${CORRELATION_ID}"
+RUN_ID=""
+for attempt in $(seq 1 10); do
+  IDS=$(gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
+        --json databaseId,displayTitle \
+        --jq '[.[] | select(.displayTitle == env.WANT) | .databaseId]')
+  COUNT=$(printf '%s' "$IDS" | jq 'length')
+  if [ "$COUNT" -gt 1 ]; then
+    echo "STOP: ${COUNT} runs carry this correlation id (SPEC-LANE-007)" >&2; exit 1
+  fi
+  if [ "$COUNT" -eq 1 ]; then RUN_ID=$(printf '%s' "$IDS" | jq -r '.[0]'); break; fi
+  sleep 30
+done
+[ -n "$RUN_ID" ] || { echo "STOP: no run after 10 attempts (SPEC-LANE-007)" >&2; exit 1; }
+gh run watch "$RUN_ID" --exit-status
+```
+
+Rules this encodes, none of them optional:
+
+- **Equality on the complete name**, never `contains()`: a substring match over a title is not
+  identification.
+- **Exactly ten attempts, thirty seconds apart.** Zero matches after the tenth is a STOP, not a
+  longer wait.
+- **Two or more matches is a STOP immediately**, at any attempt. A correlation id is used once;
+  a second run bearing it means reuse, an unrecorded re-dispatch, or forgery — none of which is
+  resolved by picking one.
+- **`headSha` is never a selector.** The dispatch targets `--ref main`, so `headSha` is main's
+  tip; for any release that is not the tip it is not the release SHA. The release SHA is verified
+  afterwards, from the run's artifact.
 
 ## One operation per runbook
 

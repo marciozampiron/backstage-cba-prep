@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.5.0
+version: 0.6.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -30,9 +30,9 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    `prepare-change-sets` and NOTHING else (`spec/authority-policy.json`), the manifest digest,
    the wave's stack group, fresh `decisionId`, `planDigest: null`, `approvedAt`/`expiresAt`
    window of at most one hour (SPEC-DEPLOY-002/009/010/011/019).
-3a. A correlation id is generated for THIS dispatch, matching exactly `^cba-70-[0-9a-f]{32}$`,
-   and recorded before it; the run name that carries it is `cba-release <mode> <correlationId>`
-   (SPEC-LANE-006).
+3a. A correlation id is generated for THIS dispatch with a CSPRNG
+   (`cba-70-$(openssl rand -hex 16)`, matching `^cba-70-[0-9a-f]{32}$`) and recorded before it;
+   the run name that carries it is `cba-release <mode> <correlationId>` (SPEC-LANE-006).
 4. No value from a previous decision is still set on the Environment (that decision's Cleanup
    completed).
 
@@ -70,22 +70,17 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    run, it does not prove which request produced it, and an in-flight log hashes as happily as a
    complete one (SPEC-RUN-009):
 
-   ```text
-   # at most 10 attempts, 30s apart; the complete run name is matched by EQUALITY
-   gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
-     --json databaseId,displayTitle,headSha,status,conclusion,event \
-     --jq '[.[] | select(.displayTitle == "cba-release dev_only <correlation-id>")]'
-   gh run watch <run-id> --exit-status
+   Run [the canonical resolution procedure](README.md#resolving-a-run) with
+
+   ```bash
+   export WANT="cba-release dev_only ${CORRELATION_ID}"
    ```
 
-   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. Round 6
-   replaced a `contains()` match with equality on the complete name: a substring match over an
-   attacker- or accident-controlled title is not identification, and the run name is a closed
-   string (`cba-release <mode> <correlationId>`, SPEC-LANE-006). Zero matches after the tenth
-   attempt is a STOP, not a longer wait; two or more is a STOP in every case (SPEC-LANE-007).
-   **`headSha` is not a selector here**: the dispatch targets `--ref main`, so `headSha` is main's
-   tip, which for any release older than the tip is not the release SHA. The release SHA is
-   verified separately, from the artifact, in the next step.
+   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. The loop,
+   its ten attempts, the cardinality check and the STOP conditions are the standard's, not
+   restated here — round 7 found prose describing a loop next to a command that had none. The
+   release SHA is verified separately, from the artifact, in the next step; `headSha` selects
+   nothing (SPEC-LANE-006/007).
 
 4. **Zamp** downloads the structured plan ARTIFACT and digests it — never a `grep` window over a
    log, because a larger plan would be silently truncated and a truncated plan is not what was

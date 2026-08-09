@@ -360,8 +360,7 @@ to this file's own literals at import, so a self-contradicting pin cannot load. 
 pins mean no data mutation can reach it first, the law is proven by calling it directly with a
 deliberately dangling pair — the same call the module makes on itself. The effect got its own
 instrument, `stack-record-authorization`: out-of-band like the spend one, never an Environment
-variable, bound to `stack+observedStatus+observedAt+decisionId`, because the hazard being managed
-is acting on a stale observation.
+variable, because the hazard being managed is acting on a stale observation.
 
 Run selection became identification rather than a guess: the correlation id has a closed format
 (`^cba-70-[0-9a-f]{32}$`, refused in the preflight when malformed), the run NAME is exactly
@@ -378,6 +377,35 @@ prompt-as-invoked does not have, so generated streams are `bundle`, bound to the
 `snapshot` binds its commit and `diff` binds `baseSha`/`headSha` inside the digested bytes; and
 every digest the auditor persona names — `PERSONA_SHA256` included, which previously had no kind
 at all — is mapped to exactly one.
+
+Design round 7 (Codex, five findings) drew the line between an expressible decision and a
+performable one. **The cleanup instrument recorded a stale observation without constraining it**:
+`observedAt` said when someone looked while nothing bounded the age of that look, which stack it
+identified, or what had to be true at the moment of the delete. Its value is now a closed
+nine-key decision (spec §8b, SPEC-DEPLOY-022) naming environment, account, region, stack NAME and
+the immutable stack ARN — a name can be deleted and recreated, and the recreation is a different
+stack the same name addresses — plus the exact status `REVIEW_IN_PROGRESS` and the instant, valid
+fifteen minutes, re-verified immediately before acting.
+
+**And that is still not enough, which is the finding's real content.** `DeleteStack` has no
+compare-and-delete; every field narrows the window and none closes it. The design therefore
+leaves the effect with **no executable procedure**: `riskAccepted: false` and
+`executableProcedure: false` in the policy, no runbook carries the command, and the validator
+refuses the one combination that would paper over it — an executable procedure over an unaccepted
+residual. Making it performable is **Zamp's risk-acceptance decision**, on its own record; Opus
+cannot take it and this design does not simulate it.
+
+The bounded run resolution became a command instead of a description: the standard now carries the
+canonical procedure — `openssl rand -hex 16` for the correlation id (a regex alone admitted
+`cba-70-000…000`), the title passed through the environment so it is never interpolated into the
+jq program, exactly ten attempts thirty seconds apart, cardinality 1 required, two-or-more an
+immediate stop — and the four runbooks invoke it with their mode rather than restating a loop
+none of them implemented. SPEC-DEPLOY-019 gained types, regexes, cardinality and nullability for
+all ten keys, inherited from what the reviewed runtime already enforces. The generated release
+manifest is a `bundle`, not a `snapshot` — it is produced by the binding run and exists at no
+commit — and `patchSha256` states its kind (`diff`). The governed vocabulary now collects
+sentences about the cleanup instrument and about risk acceptance, closing the same "governed in
+name only" gap round 3 found.
 
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):

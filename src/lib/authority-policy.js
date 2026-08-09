@@ -168,10 +168,23 @@ const EXPECTED_DOCUMENTS = {
   // observed and the instant of that observation, because the whole hazard is a stale reading.
   'stack-record-authorization': {
     writtenBy: 'zamp',
-    writtenWhen: 'per stack record, after observing its status',
+    writtenWhen: 'per stack record, immediately after observing its status',
     suppliedAs: 'out-of-band record',
-    boundTo: 'stack+observedStatus+observedAt+decisionId',
+    // Round 7: `observedAt` recorded WHEN someone looked and constrained nothing. The binding now
+    // names the account, the region, the stack NAME and its immutable ARN (a name can be deleted
+    // and recreated; the recreation is a different stack the same name addresses), the exact
+    // status, and the instant — with a hard age limit below.
+    boundTo: 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt',
+    maxObservationAgeMinutes: 15,
     authorizes: ['delete-review-in-progress-stack-record'],
+    // …and even a fresh, complete, re-verified observation cannot close the gap: DeleteStack has
+    // no compare-and-delete, so the stack can acquire resources between the last read and the
+    // call. That residual is Zamp's to accept or refuse — never Opus's — so until a risk
+    // acceptance exists, this effect has NO executable procedure and no runbook may carry a
+    // command that performs it.
+    residualRisk: 'TOCTOU: CloudFormation offers no compare-and-delete, so the stack can change between the final re-observation and DeleteStack',
+    riskAccepted: false,
+    executableProcedure: false,
   },
 };
 
@@ -206,7 +219,7 @@ const DOCUMENT_KEYS = {
   'execution-gate': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'messageType', 'boundTo', 'authorizes'],
   'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes', 'modes'],
   'spend-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
-  'stack-record-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
+  'stack-record-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'maxObservationAgeMinutes', 'authorizes', 'residualRisk', 'riskAccepted', 'executableProcedure'],
 };
 
 /** Exact effect set and keys. */
@@ -443,13 +456,31 @@ export function validateAuthorityPolicy(policy) {
         fail(`policy.documents.cloud-authorization.modes does not cover ${unmapped.join(', ')}; every authorized effect must name the mode that authorizes it.`);
       }
     }
+    // Round 7: risk acceptance is Zamp's alone, so the policy states the two together and refuses
+    // the combination that would let a procedure exist over an unaccepted residual: `riskAccepted:
+    // false` with `executableProcedure: true` is a document authorizing an operation nobody
+    // accepted the risk of. Accepting it is a decision recorded by Zamp, never a default reached
+    // by editing one field.
+    if (Object.prototype.hasOwnProperty.call(doc, 'executableProcedure')) {
+      if (typeof doc.riskAccepted !== 'boolean' || typeof doc.executableProcedure !== 'boolean') {
+        fail(`policy.documents.${name}.riskAccepted and .executableProcedure must be booleans.`);
+      }
+      if (typeof doc.residualRisk !== 'string' || doc.residualRisk.trim() === '') {
+        fail(`policy.documents.${name}.residualRisk must state the risk that is being accepted or not.`);
+      }
+      if (doc.executableProcedure && !doc.riskAccepted) {
+        fail(`policy.documents.${name} declares an executable procedure over an unaccepted residual risk; acceptance is Zamp's decision and must be recorded first.`);
+      }
+    }
+    if (name === 'stack-record-authorization') {
+      if (!Number.isInteger(doc.maxObservationAgeMinutes) || doc.maxObservationAgeMinutes < 1 || doc.maxObservationAgeMinutes > 15) {
+        fail('policy.documents.stack-record-authorization.maxObservationAgeMinutes must be an integer of at most 15: an observation older than that authorizes nothing.');
+      }
+    }
     if (name === 'review-scope' && doc.authorizes.length !== 0) {
       fail('policy.documents.review-scope.authorizes must be empty: the review scope authorizes nothing.');
     }
-    // A document may only authorize an effect that names it back — checked before exact comparison so
-    // a dangling authority is reported as dangling.
-    for (const effect of doc.authorizes) {
-    }
+    // (The document/effect relation in both directions is `assertAuthorityAgreement`, below.)
     for (const [field, want] of Object.entries(expected)) {
       const got = doc[field];
       if (Array.isArray(want)) {

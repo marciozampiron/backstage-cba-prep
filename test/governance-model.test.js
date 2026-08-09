@@ -1487,7 +1487,12 @@ const POLICY_SURFACES = POLICY.governedSurfaces ?? [];
  * closed policy, it is a decoration. The vocabulary now covers all three authorization kinds and
  * the two role claims that carry authority.
  */
-const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
+/**
+ * Round 7 widened it again, for the reason round 3 established: a new instrument whose sentences
+ * nobody collects is governed in name only. `stack-record-authorization` is an authorization
+ * instrument, and risk acceptance is a capability only Zamp holds — both belong in the vocabulary.
+ */
+const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|stack-record-authorization|stack-record cleanup|risk acceptance|riskAccepted|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
 const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
 
 /**
@@ -1589,9 +1594,27 @@ test('the authority policy states the invariants as data, not prose', () => {
     deploy: ['deploy', 'execute-change-sets'],
     abandon: ['abandon-change-sets'],
   });
-  // Removing the empty stack RECORD is a DISTINCT effect, and no lane performs it.
+  // Removing the empty stack RECORD is a DISTINCT effect, with its own instrument, and no lane
+  // performs it. Round 6: it used to name the cloud instrument, which did not authorize it — the
+  // effect read as authorized and no value could authorize it.
   assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].performedBy, 'zamp');
+  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].authorizedBy, 'stack-record-authorization');
   assert.match(POLICY.effects['delete-review-in-progress-stack-record'].note, /human-performed only/);
+  const cleanup = POLICY.documents['stack-record-authorization'];
+  assert.deepEqual(cleanup.authorizes, ['delete-review-in-progress-stack-record']);
+  assert.equal(cleanup.writtenBy, 'zamp');
+  // Out of band, so no lane can consume a value permitting it.
+  assert.equal(cleanup.suppliedAs, 'out-of-band record');
+  // The cloud instrument must NOT carry it: that is what would make it lane-readable.
+  assert.equal(POLICY.documents['cloud-authorization'].authorizes.includes('delete-review-in-progress-stack-record'), false);
+  // ROUND 7: the binding names the account, region, stack NAME and immutable ARN, the exact
+  // status and the instant — recording WHEN someone looked constrained nothing on its own.
+  assert.equal(cleanup.boundTo, 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt');
+  assert.equal(cleanup.maxObservationAgeMinutes, 15);
+  // And the residual that no re-observation can close: unaccepted, so NO procedure exists.
+  assert.equal(cleanup.riskAccepted, false);
+  assert.equal(cleanup.executableProcedure, false);
+  assert.match(cleanup.residualRisk, /compare-and-delete/);
   const modeEffects = Object.values(POLICY.documents['cloud-authorization'].modes).flat();
   assert.equal(new Set(modeEffects).size, modeEffects.length, 'an effect belongs to exactly one mode');
   assert.deepEqual(POLICY.documents['spend-authorization'].authorizes, ['invoke-paid-model-audit']);
@@ -1902,6 +1925,37 @@ test('ROUND 6: the instrument/effect relation is a law over both matrices, prove
   );
   // The real matrices satisfy it — the same call the module makes at import.
   assert.doesNotThrow(() => assertAuthorityAgreement(POLICY.effects, POLICY.documents, 'live'));
+});
+
+test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () => {
+  // Acceptance is Zamp's decision. A document may not declare an executable procedure while the
+  // residual it names is unaccepted — that is the one combination that would turn "we wrote the
+  // risk down" into "we proceeded anyway".
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].executableProcedure = true;
+  }, /unaccepted residual risk/);
+  // The risk must actually be stated; whitespace is not a statement.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].residualRisk = '   ';
+  }, /must state the risk/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAccepted = 'yes';
+  }, /must be booleans/);
+  // An observation may not be allowed to age past the reviewed bound.
+  for (const bad of [60, 16, 0, -1, 1.5, '15']) {
+    expectRejected((p) => {
+      p.documents['stack-record-authorization'].maxObservationAgeMinutes = bad;
+    }, /at most 15|authorizes nothing/);
+  }
+  // And, while no procedure exists, no runbook may carry the command that performs the effect.
+  for (const rel of fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'))) {
+    const text = read(`docs/runbooks/${rel}`);
+    assert.equal(
+      /aws\s+cloudformation\s+delete-stack/i.test(text),
+      false,
+      `${rel} carries a delete-stack command while stack-record-authorization.executableProcedure is false`,
+    );
+  }
 });
 
 test('a dangling document-to-effect authority is rejected', () => {
