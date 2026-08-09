@@ -355,11 +355,11 @@ carry — recorded now, claimed as enforcement never.
 | SPEC-DEPLOY-017 | PROPOSED | The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) | The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses. | not yet implemented | not yet implemented | none — successor, awaiting its activation commit |
 | SPEC-DEPLOY-020 | RETIRED (never ACTIVE; `supersededBy` SPEC-DEPLOY-019) | The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none. | — | — | none — absorbed into SPEC-DEPLOY-019 before activation (§4) |
-| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b) naming the account, region, stack NAME and immutable stack ARN, the exact observed status `REVIEW_IN_PROGRESS` and the instant it was observed, valid at most fifteen minutes; the performer re-observes the same identity, status and window immediately before deleting, and the residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records explicit risk acceptance. | `spec/authority-policy.json` (`stack-record-authorization`) | `test/governance-model.test.js` | policy data + tests reviewed in this commit; no procedure exists |
+| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b): each key holds its exact grammar, `stackId` is a positionally validated CloudFormation stack ARN whose embedded region, account and name EQUAL the record's `region`, `account` and `stackName`, and the decision is valid only while `observedAt <= now < observedAt + 15 minutes`, a future instant refusing. The performer re-observes the same identity, status and window immediately before deleting. The activation commit must contain the instance parser and its adversarial tests. The residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records acceptance as the closed `riskAcceptance` record — a boolean is not a decision. | `spec/authority-policy.json` (`stack-record-authorization`) | `test/governance-model.test.js` | policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists |
 | SPEC-DEPLOY-021 | PROPOSED | Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision. | `spec/authority-policy.json` (`delete-review-in-progress-stack-record`) | `test/governance-model.test.js` | policy data + test reviewed in this commit; no lane may perform it |
 | SPEC-LANE-005 | PROPOSED | A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run. | not yet implemented | not yet implemented | none — awaiting the workflow path |
 | SPEC-LANE-006 | PROPOSED | Every dispatch carries a caller-generated correlation id matching exactly `^cba-70-[0-9a-f]{32}$`; a dispatch whose id does not match is refused in the preflight, before any credentialed stage. The run's NAME is exactly `cba-release <mode> <correlationId>` and nothing else, so a run is selected by EQUALITY on its complete name — never by substring — and is identifiable from run metadata alone, before any artifact exists. The same id appears inside the structured uploaded artifact, together with the release SHA the run acted on, which is what a reviewer compares against the request; a run's `headSha` is the dispatch ref's tip and is never that comparison. | not yet implemented | not yet implemented | none — awaiting the workflow input, run name and artifact |
-| SPEC-LANE-007 | PROPOSED | Run resolution is bounded and unambiguous: the query pins workflow, `--branch main` and `--event workflow_dispatch`, matches the complete run name by equality, and polls at most a stated number of attempts at a stated interval. Zero matches after the bound is a stop, not a longer wait; two or more matches is a stop in every case, because a correlation id is used once and a second run bearing it means reuse, a re-dispatch nobody recorded, or forgery. | not yet implemented | not yet implemented | none — awaiting the workflow run name |
+| SPEC-LANE-007 | PROPOSED | Run resolution is bounded and unambiguous: the query pins workflow, `--branch main` and `--event workflow_dispatch`, matches the complete run name by EQUALITY, polls at most ten times with thirty seconds between attempts and no wait after the last, and stops on zero matches after the bound or more than one at ANY query. After the run reaches a terminal conclusion, the SAME query must re-observe exactly the same single run id immediately before the artifact is accepted — a late duplicate, a vanished run or a different id at that point stops the operation, because uniqueness observed once is not uniqueness still true when evidence is read. | `bin/resolve-run.mjs` | `test/resolve-run.test.js` | helper + simulated-`gh` tests reviewed in this commit; the run name itself awaits the workflow |
 | SPEC-RUN-009 | PROPOSED | Evidence is accepted only from a run that reached a terminal conclusion, identified by the correlation id it published in run metadata, whose artifact repeats that correlation id and names the release SHA the request dispatched, and whose provenance (run id, conclusion) is verified. The run's `headSha` is never used to identify the release. | `docs/runbooks/aws-dev-release-bind.md`, `-plan.md`, `-deploy.md` | not yet implemented | none — awaiting SPEC-LANE-006 |
 | SPEC-DEPLOY-018 | PROPOSED | When a sequence halts, the output names exactly which change sets executed and states that the remaining ones did not. | `infra/aws/bin/deploy-release.js` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed, reversion proven |
 | SPEC-LANE-001 | PROPOSED | In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step only the reviewed entrypoints execute — no action step and no package-manager command. | `.github/workflows/release-pilot.yml` | `test/release-pilot-workflow.test.js` | code + tests reviewed, reversion proven |
@@ -486,14 +486,36 @@ delete. The value is a JSON object with EXACTLY these nine keys (SPEC-DEPLOY-022
 | `environment` | string, the tier id (`dev`) | a value for one tier can never resolve in another |
 | `account` | string matching `/^[0-9]{12}$/` | the account is named, not inferred from ambient credentials |
 | `region` | string matching `/^[a-z]{2}(-[a-z]+)+-[0-9]$/` | a stack name is unique per account AND region |
-| `stackName` | string, the exact name | what a human reads |
-| `stackId` | string, the full CloudFormation stack ARN including its unique suffix | the IMMUTABLE identity: a name can be deleted and recreated, and the recreation is a different stack that the same name would happily address |
+| `stackName` | string matching `/^[A-Za-z][A-Za-z0-9-]{0,127}$/` — CloudFormation's stack-name grammar — never null | what a human reads |
+| `stackId` | string, the full CloudFormation stack ARN, validated POSITIONALLY: `arn:aws:cloudformation:<region>:<account>:stack/<stackName>/<uuid>` with partition literally `aws`, service literally `cloudformation`, `<region>` matching the `region` grammar above, `<account>` matching `/^[0-9]{12}$/`, `<stackName>` matching the stack-name grammar, and `<uuid>` matching `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/`. The embedded region, account and name MUST EQUAL the value's `region`, `account` and `stackName` fields — cross-field equality is what stops a record naming one stack while its ARN addresses another | the IMMUTABLE identity: a name can be deleted and recreated, and the recreation is a different stack that the same name would happily address |
 | `observedStatus` | string, exactly `REVIEW_IN_PROGRESS` — no other value is legal in this instrument | the only status under which this effect exists |
-| `observedAt` | string, strict RFC3339 UTC (§8a's form); the decision is valid for at most **15 minutes** from it | an observation has an age, and an old one authorizes nothing |
+| `observedAt` | string, strict RFC3339 UTC (§8a's form). The decision is valid ONLY while `observedAt <= now < observedAt + 15 minutes`: a FUTURE `observedAt` refuses — an observation from the future is malformed, not pending — and at or past the boundary the decision is void | an observation has an age, and an old one authorizes nothing |
 
 Before deleting, the performer RE-OBSERVES: same `stackId`, same `REVIEW_IN_PROGRESS`, still
 inside the window. Anything else — different id, different status, window lapsed — and the
 decision is void; a new observation means a new decision.
+
+**A schema is enforced by a parser, not by a table.** `maxObservationAgeMinutes` in the policy is
+instrument METADATA — it bounds what the instrument may promise, and the validator holds it to at
+most 15; it does not validate an INSTANCE of this value, and nothing in this design does.
+SPEC-DEPLOY-022's activation commit MUST therefore contain the instance parser implementing every
+row above, plus its adversarial tests — absent key, unknown key, wrong type, each regex refused,
+each cross-field mismatch between `stackId` and `account`/`region`/`stackName` refused, a future
+`observedAt` refused, and the boundary at exactly +15 minutes refused — each proven by mutation
+like every other activation (§6c). Until that commit, this schema binds review, not runtime,
+which is one more reason the effect has no executable procedure.
+
+**Round 8: a boolean is not a decision.** `riskAccepted: false` could be flipped alongside
+`executableProcedure` in a single edit, and nothing in the data said what an acceptance must
+contain. The policy now carries `riskAcceptance: null`, and the validator refuses any non-null
+value that is not a CLOSED record with exactly these keys: `acceptedBy` (must be `zamp`, the only
+actor holding `accept-risk`), `decisionId`, `finding`, `justification`, `compensatingControls`
+(non-empty), `acceptedAt`, `reviewBy`, `expiresAt` (strict UTC instants, ordered
+`acceptedAt < reviewBy <= expiresAt` — an acceptance with no expiry is not an acceptance), and
+`boundToEffect` (an effect this instrument authorizes). `executableProcedure: true` over
+`riskAcceptance: null` refuses. Past `expiresAt` the record authorizes nothing and the procedure
+reverts to non-executable. The acceptance reaches the policy only through a reviewed commit of
+Zamp's own decision; Opus may transcribe it, never originate it.
 
 **And that is still not enough, which is the point.** CloudFormation offers no compare-and-delete:
 between the final re-observation and `DeleteStack`, the stack can acquire resources. Every field
@@ -501,10 +523,10 @@ above narrows the window and none of them closes it. **This design therefore lea
 with NO executable procedure.** No runbook here carries a command that performs it; the abandon
 operation reports the condition and stops. Making it executable requires something this design
 cannot supply and must not simulate: **Zamp's explicit, written acceptance of the residual TOCTOU
-risk**, recorded as a risk-acceptance decision. Until that record exists, `riskAccepted` is
-`false` in [`authority-policy.json`](authority-policy.json), the effect is expressible and
-unperformable, and a runbook that acquired a command for it would be a finding against this
-section (SEC-GOV-01, SEC-IAM-01).
+risk**, recorded as the closed `riskAcceptance` record described below. Until that record exists,
+`riskAcceptance` is `null` in [`authority-policy.json`](authority-policy.json), the effect is
+expressible and unperformable, and a runbook that acquired a command for it would be a finding
+against this section (SEC-GOV-01, SEC-IAM-01).
 
 ## 9. Relationship to existing mechanisms
 
@@ -532,6 +554,8 @@ runbook above is marked blocked rather than runnable:
 | A complete successor authorization schema: closed key set, `issue` pin, `decisionId`, the `plan_only`/`deploy`/`abandon` mode enum, the window, the stack group, and a digest of the complete closed manifest | Release SHA plus assembly digest leaves environment, region, account, context and stack set unauthorized; and an instrument that does not name its mode cannot distinguish a plan from an execution | SPEC-DEPLOY-019 |
 | An abandon lane under the release lock that deletes CHANGE SETS only | Declined plans leave executable change sets, and cleanup cannot be raw CLI calls outside the lock without gate or window revalidation | SPEC-DEPLOY-019, SPEC-RUN-008 |
 | An out-of-band `stack-record-authorization` record, never an Environment variable, plus no lane capable of deleting a stack record and an execution policy that does not grant `cloudformation:DeleteStack` to a lane | `DeleteStack` takes no expected-status precondition and the release lock binds only this repository's lanes, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it | SPEC-DEPLOY-021 |
+| The cleanup-value INSTANCE parser implementing every row of §8b, with adversarial tests proven by mutation | A schema enforced only by a table binds review, not runtime; `maxObservationAgeMinutes` in the policy bounds the instrument, not an instance | SPEC-DEPLOY-022 |
+| A Zamp-authored `riskAcceptance` record (closed keys, expiry) before any executable cleanup procedure | A boolean flip is not a risk decision; the record carries finding, justification, compensating controls, owner, review date and expiry | SPEC-DEPLOY-022 |
 
 **Activation, once each tool exists.** The PROPOSED ids in §7 become ACTIVE one at a time, each
 in an implementation commit whose tree already satisfies its predicates and carries its mutation

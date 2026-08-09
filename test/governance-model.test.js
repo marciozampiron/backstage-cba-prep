@@ -1492,7 +1492,7 @@ const POLICY_SURFACES = POLICY.governedSurfaces ?? [];
  * nobody collects is governed in name only. `stack-record-authorization` is an authorization
  * instrument, and risk acceptance is a capability only Zamp holds — both belong in the vocabulary.
  */
-const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|stack-record-authorization|stack-record cleanup|risk acceptance|riskAccepted|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
+const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|stack-record-authorization|stack-record cleanup|risk acceptance|riskAccept|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
 const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
 
 /**
@@ -1612,7 +1612,8 @@ test('the authority policy states the invariants as data, not prose', () => {
   assert.equal(cleanup.boundTo, 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt');
   assert.equal(cleanup.maxObservationAgeMinutes, 15);
   // And the residual that no re-observation can close: unaccepted, so NO procedure exists.
-  assert.equal(cleanup.riskAccepted, false);
+  // Round 8: acceptance is a RECORD or nothing — null means no one accepted anything.
+  assert.equal(cleanup.riskAcceptance, null);
   assert.equal(cleanup.executableProcedure, false);
   assert.match(cleanup.residualRisk, /compare-and-delete/);
   const modeEffects = Object.values(POLICY.documents['cloud-authorization'].modes).flat();
@@ -1938,9 +1939,50 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   expectRejected((p) => {
     p.documents['stack-record-authorization'].residualRisk = '   ';
   }, /must state the risk/);
+  // ROUND 8: acceptance is a RECORD, not a boolean — a flag could be flipped together with
+  // executableProcedure in one edit, and nothing in the data said what an acceptance contains.
+  // Each defect of the record is refused by name, BEFORE the pinned-literal comparison.
+  const record = () => ({
+    acceptedBy: 'zamp',
+    decisionId: 'risk-70-stack-record-cleanup',
+    finding: 'TOCTOU between the final re-observation and DeleteStack',
+    justification: 'example under test',
+    compensatingControls: ['re-observation within the 15-minute window immediately before acting'],
+    acceptedAt: '2026-08-07T12:00:00Z',
+    reviewBy: '2026-11-05T12:00:00Z',
+    expiresAt: '2027-02-03T12:00:00Z',
+    boundToEffect: 'delete-review-in-progress-stack-record',
+  });
   expectRejected((p) => {
-    p.documents['stack-record-authorization'].riskAccepted = 'yes';
-  }, /must be booleans/);
+    p.documents['stack-record-authorization'].riskAcceptance = true;
+  }, /must be null or a closed acceptance record/);
+  expectRejected((p) => {
+    const r = record(); delete r.expiresAt;
+    p.documents['stack-record-authorization'].riskAcceptance = r;
+  }, /riskAcceptance/);
+  // Only Zamp holds accept-risk; an acceptance signed by the executor is the self-approval this
+  // whole protocol exists to prevent.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedBy: 'opus' };
+  }, /accept-risk is Zamp's capability alone/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), expiresAt: '2026-08-07T11:00:00Z' };
+  }, /ordered acceptedAt < reviewBy <= expiresAt/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), compensatingControls: [] };
+  }, /compensatingControls/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), boundToEffect: 'execute-change-sets' };
+  }, /must be an effect this document authorizes/);
+  // A calendar-invalid instant is a DIFFERENT date than the human wrote — same rule as the lane.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedAt: '2026-02-30T12:00:00Z' };
+  }, /strict RFC3339 UTC instant/);
+  // Even a COMPLETE, well-shaped record cannot slip in silently: the pinned literal is null, so
+  // accepting the risk is a reviewed change to the policy itself, never a runtime state.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = record();
+  }, /must be exactly/);
   // An observation may not be allowed to age past the reviewed bound.
   for (const bad of [60, 16, 0, -1, 1.5, '15']) {
     expectRejected((p) => {

@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.6.0
+version: 0.7.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -70,25 +70,27 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
    run, it does not prove which request produced it, and an in-flight log hashes as happily as a
    complete one (SPEC-RUN-009):
 
-   Run [the canonical resolution procedure](README.md#resolving-a-run) with
+   Run [the canonical resolution helper](README.md#resolving-a-run):
 
    ```bash
-   export WANT="cba-release dev_only ${CORRELATION_ID}"
+   RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
+     --title "cba-release dev_only ${CORRELATION_ID}")
    ```
 
-   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. The loop,
-   its ten attempts, the cardinality check and the STOP conditions are the standard's, not
-   restated here — round 7 found prose describing a loop next to a command that had none. The
-   release SHA is verified separately, from the artifact, in the next step; `headSha` selects
-   nothing (SPEC-LANE-006/007).
+   Expected outcome: the helper prints exactly one run id, and only after re-observing that same
+   single id past the terminal conclusion — its ten bounded attempts, the equality match, the
+   duplicate stops (immediate AND late) and the post-terminal re-check are implemented and
+   test-proven in the helper, not restated here (SPEC-LANE-007). Every deviation stops with a
+   named code on stderr. The release SHA is verified separately, from the artifact, in the next
+   step; `headSha` selects nothing (SPEC-LANE-006).
 
 4. **Zamp** downloads the structured plan ARTIFACT and digests it — never a `grep` window over a
    log, because a larger plan would be silently truncated and a truncated plan is not what was
    reviewed (SPEC-RUN-007, SPEC-LANE-006):
 
    ```text
-   gh run download <run-id> --name plan --dir <evidence-dir>/plan-<run-id>
-   sha256sum <evidence-dir>/plan-<run-id>/plan.json
+   gh run download "$RUN_ID" --name plan --dir <evidence-dir>/plan-"$RUN_ID"
+   sha256sum <evidence-dir>/plan-"$RUN_ID"/plan.json
    ```
 
    Expected outcome: an artifact carrying the correlation id, the release SHA, the

@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.5.0
+version: 0.6.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -133,12 +133,13 @@ and not by a lane (SPEC-DEPLOY-021).
    deletes those change sets. Nothing is prepared, nothing is executed, and no stack is deleted.
    Any stack left in `REVIEW_IN_PROGRESS` is recorded in the artifact as a reported condition.
 
-3. **Zamp** resolves the run with [the canonical procedure](README.md#resolving-a-run) and
-   downloads the artifact:
+3. **Zamp** resolves the run with [the canonical helper](README.md#resolving-a-run) — which
+   re-observes the same single id past the terminal conclusion before printing it
+   (SPEC-LANE-007) — and downloads the artifact:
 
    ```bash
-   export WANT="cba-release abandon ${CORRELATION_ID}"
-   # …the standard's bounded loop yields RUN_ID and watches it to a terminal conclusion…
+   RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
+     --title "cba-release abandon ${CORRELATION_ID}")
    gh run download "$RUN_ID" --name abandon --dir <evidence-dir>/abandon-"$RUN_ID"
    sha256sum <evidence-dir>/abandon-"$RUN_ID"/abandon.json
    ```
@@ -153,9 +154,11 @@ and not by a lane (SPEC-DEPLOY-021).
    record (spec §8b) whose nine keys name the account, region, stack name, immutable stack ARN,
    the exact observed status and the instant, valid for fifteen minutes and re-verified
    immediately before acting. Even so, `DeleteStack` has no compare-and-delete, and that residual
-   is unaccepted: `spec/authority-policy.json` records `riskAccepted: false` and
-   `executableProcedure: false`. Making it executable is Zamp's risk-acceptance decision, taken
-   on its own record — never a step added here (SPEC-DEPLOY-022).
+   is unaccepted: `spec/authority-policy.json` records `riskAcceptance: null` and
+   `executableProcedure: false` — and round 8 made acceptance a closed RECORD (finding,
+   justification, compensating controls, Zamp as owner, review date, expiry), never a boolean a
+   later edit could flip. Making it executable is Zamp's risk-acceptance decision, taken on its
+   own record — never a step added here (SPEC-DEPLOY-022).
 
 ## Evidence
 

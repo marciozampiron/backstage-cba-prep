@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-bind
 kind: runbook
-version: 0.5.0
+version: 0.6.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007]
@@ -76,23 +76,25 @@ produces the manifest FIRST, so Zamp can author an authorization that names its 
 2. **Zamp** resolves the run and WAITS for a terminal conclusion — an in-flight run's log is a
    partial file that hashes just as happily as a complete one (SPEC-RUN-009):
 
-   Run [the canonical resolution procedure](README.md#resolving-a-run) with
+   Run [the canonical resolution helper](README.md#resolving-a-run):
 
    ```bash
-   export WANT="cba-release bind_only ${CORRELATION_ID}"
+   RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
+     --title "cba-release bind_only ${CORRELATION_ID}")
    ```
 
-   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. The loop,
-   its ten attempts, the cardinality check and the STOP conditions are the standard's, not
-   restated here — round 7 found prose describing a loop next to a command that had none. The
-   release SHA is verified separately, from the artifact, in the next step; `headSha` selects
-   nothing (SPEC-LANE-006/007).
+   Expected outcome: the helper prints exactly one run id, and only after re-observing that same
+   single id past the terminal conclusion — its ten bounded attempts, the equality match, the
+   duplicate stops (immediate AND late) and the post-terminal re-check are implemented and
+   test-proven in the helper, not restated here (SPEC-LANE-007). Every deviation stops with a
+   named code on stderr. The release SHA is verified separately, from the artifact, in the next
+   step; `headSha` selects nothing (SPEC-LANE-006).
 
 3. **Zamp** downloads the structured binding ARTIFACT — not the log — and digests it:
 
    ```text
-   gh run download <run-id> --name binding --dir <evidence-dir>/bind-<run-id>
-   sha256sum <evidence-dir>/bind-<run-id>/binding.json
+   gh run download "$RUN_ID" --name binding --dir <evidence-dir>/bind-"$RUN_ID"
+   sha256sum <evidence-dir>/bind-"$RUN_ID"/binding.json
    ```
 
    Expected outcome: a JSON artifact whose `correlationId` equals the one dispatched, whose

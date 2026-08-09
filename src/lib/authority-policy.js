@@ -183,7 +183,14 @@ const EXPECTED_DOCUMENTS = {
     // acceptance exists, this effect has NO executable procedure and no runbook may carry a
     // command that performs it.
     residualRisk: 'TOCTOU: CloudFormation offers no compare-and-delete, so the stack can change between the final re-observation and DeleteStack',
-    riskAccepted: false,
+    // Round 8: a boolean is not a decision. `riskAccepted: false` could be flipped alongside
+    // `executableProcedure` in one edit, and nothing in the DATA said what an acceptance must
+    // contain. Acceptance is now a RECORD or nothing: null here, and any non-null value must be
+    // the closed shape the validator enforces below — finding, justification, compensating
+    // controls, Zamp as the accepting owner, review date and expiry. The record reaches this
+    // file only through a reviewed commit, which is the gate; the shape law is what makes a
+    // quiet two-literal flip impossible.
+    riskAcceptance: null,
     executableProcedure: false,
   },
 };
@@ -219,7 +226,7 @@ const DOCUMENT_KEYS = {
   'execution-gate': ['writtenBy', 'writtenWhen', 'suppliedAs', 'filenameConvention', 'messageType', 'boundTo', 'authorizes'],
   'cloud-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes', 'modes'],
   'spend-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'authorizes'],
-  'stack-record-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'maxObservationAgeMinutes', 'authorizes', 'residualRisk', 'riskAccepted', 'executableProcedure'],
+  'stack-record-authorization': ['writtenBy', 'writtenWhen', 'suppliedAs', 'boundTo', 'maxObservationAgeMinutes', 'authorizes', 'residualRisk', 'riskAcceptance', 'executableProcedure'],
 };
 
 /** Exact effect set and keys. */
@@ -294,6 +301,18 @@ export function assertAuthorityAgreement(effects, documents, label) {
  * (#70 design round 3), which is named, bound and Zamp's — a placeholder cannot be validated.
  */
 const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
+
+/** The closed shape of a risk acceptance. A boolean is not a decision (design round 8). */
+const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect'];
+const DECISION_ID_RE = /^[A-Za-z0-9._-]{8,64}$/;
+/** Strict RFC3339 UTC to whole seconds, calendar round-trip — the deploy lane's rule, applied to
+ * governance instants for the same reason: Date.parse alone normalizes 2026-02-30 into March. */
+const STRICT_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+function strictUtcInstant(v) {
+  if (typeof v !== 'string' || !STRICT_UTC_RE.test(v)) return false;
+  const ms = Date.parse(v);
+  return !Number.isNaN(ms) && new Date(ms).toISOString() === v.replace('Z', '.000Z');
+}
 
 // The pinned matrices are held to the same law as the data they validate. A literal that names an
 // instrument which does not name it back stops this module from loading at all.
@@ -462,14 +481,52 @@ export function validateAuthorityPolicy(policy) {
     // accepted the risk of. Accepting it is a decision recorded by Zamp, never a default reached
     // by editing one field.
     if (Object.prototype.hasOwnProperty.call(doc, 'executableProcedure')) {
-      if (typeof doc.riskAccepted !== 'boolean' || typeof doc.executableProcedure !== 'boolean') {
-        fail(`policy.documents.${name}.riskAccepted and .executableProcedure must be booleans.`);
+      if (typeof doc.executableProcedure !== 'boolean') {
+        fail(`policy.documents.${name}.executableProcedure must be a boolean.`);
       }
       if (typeof doc.residualRisk !== 'string' || doc.residualRisk.trim() === '') {
         fail(`policy.documents.${name}.residualRisk must state the risk that is being accepted or not.`);
       }
-      if (doc.executableProcedure && !doc.riskAccepted) {
-        fail(`policy.documents.${name} declares an executable procedure over an unaccepted residual risk; acceptance is Zamp's decision and must be recorded first.`);
+      // Round 8: acceptance is a RECORD, not a boolean. A bare flag could be flipped together
+      // with `executableProcedure` in one edit; a record must carry the finding, the reasoning,
+      // the compensating controls, the accepting owner, a review date and an expiry — and every
+      // field is held to a shape, so "accepted" cannot be asserted without saying by whom, why,
+      // under what controls and until when.
+      const acc = doc.riskAcceptance;
+      if (acc !== null) {
+        if (!isPlainObject(acc)) {
+          fail(`policy.documents.${name}.riskAcceptance must be null or a closed acceptance record.`);
+        }
+        assertKeys(`policy.documents.${name}.riskAcceptance`, acc, RISK_ACCEPTANCE_KEYS);
+        if (acc.acceptedBy !== 'zamp' || !policy.actors?.[acc.acceptedBy]?.may?.includes('accept-risk')) {
+          fail(`policy.documents.${name}.riskAcceptance.acceptedBy must be "zamp": accept-risk is Zamp's capability alone.`);
+        }
+        if (typeof acc.decisionId !== 'string' || !DECISION_ID_RE.test(acc.decisionId)) {
+          fail(`policy.documents.${name}.riskAcceptance.decisionId must match ${DECISION_ID_RE}.`);
+        }
+        for (const key of ['finding', 'justification']) {
+          if (typeof acc[key] !== 'string' || acc[key].trim() === '') {
+            fail(`policy.documents.${name}.riskAcceptance.${key} must be a non-empty string.`);
+          }
+        }
+        if (!Array.isArray(acc.compensatingControls) || acc.compensatingControls.length === 0
+          || acc.compensatingControls.some((c) => typeof c !== 'string' || c.trim() === '')) {
+          fail(`policy.documents.${name}.riskAcceptance.compensatingControls must be a non-empty array of non-empty strings.`);
+        }
+        for (const key of ['acceptedAt', 'reviewBy', 'expiresAt']) {
+          if (!strictUtcInstant(acc[key])) {
+            fail(`policy.documents.${name}.riskAcceptance.${key} must be a strict RFC3339 UTC instant the calendar round-trips.`);
+          }
+        }
+        if (!(acc.acceptedAt < acc.reviewBy && acc.reviewBy <= acc.expiresAt)) {
+          fail(`policy.documents.${name}.riskAcceptance must be ordered acceptedAt < reviewBy <= expiresAt; an acceptance whose review or expiry precedes it was written backwards, and one with no expiry is not an acceptance.`);
+        }
+        if (!doc.authorizes.includes(acc.boundToEffect)) {
+          fail(`policy.documents.${name}.riskAcceptance.boundToEffect must be an effect this document authorizes.`);
+        }
+      }
+      if (doc.executableProcedure && acc === null) {
+        fail(`policy.documents.${name} declares an executable procedure over an unaccepted residual risk; acceptance is Zamp's closed riskAcceptance record, never a default.`);
       }
     }
     if (name === 'stack-record-authorization') {

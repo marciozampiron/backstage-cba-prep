@@ -389,11 +389,11 @@ fifteen minutes, re-verified immediately before acting.
 
 **And that is still not enough, which is the finding's real content.** `DeleteStack` has no
 compare-and-delete; every field narrows the window and none closes it. The design therefore
-leaves the effect with **no executable procedure**: `riskAccepted: false` and
-`executableProcedure: false` in the policy, no runbook carries the command, and the validator
-refuses the one combination that would paper over it — an executable procedure over an unaccepted
-residual. Making it performable is **Zamp's risk-acceptance decision**, on its own record; Opus
-cannot take it and this design does not simulate it.
+leaves the effect with **no executable procedure**: no runbook carries the command, and the
+validator refuses the one combination that would paper over it — an executable procedure over an
+unaccepted residual. Making it performable is **Zamp's risk-acceptance decision**, on its own
+record; Opus cannot take it and this design does not simulate it. (Round 8 replaced the boolean
+this paragraph originally named with the closed `riskAcceptance` record.)
 
 The bounded run resolution became a command instead of a description: the standard now carries the
 canonical procedure — `openssl rand -hex 16` for the correlation id (a regex alone admitted
@@ -406,6 +406,34 @@ manifest is a `bundle`, not a `snapshot` — it is produced by the binding run a
 commit — and `patchSha256` states its kind (`diff`). The governed vocabulary now collects
 sentences about the cleanup instrument and about risk acceptance, closing the same "governed in
 name only" gap round 3 found.
+
+Design round 8 (Codex, three findings) turned the three remaining descriptions into contracts.
+**Risk acceptance became a record, not a boolean**: `riskAccepted: false` could be flipped
+together with `executableProcedure` in one edit, and nothing in the data said what an acceptance
+must contain. The policy now carries `riskAcceptance: null`, and the validator refuses any
+non-null value that is not a closed record — `acceptedBy` (must be `zamp`, the only holder of
+`accept-risk`), `decisionId`, `finding`, `justification`, `compensatingControls`, `acceptedAt`,
+`reviewBy`, `expiresAt` (strict UTC, ordered; an acceptance with no expiry is not an acceptance)
+and `boundToEffect` (an effect the instrument authorizes). An executor-signed acceptance is
+refused by name. A complete well-formed record still cannot slip in silently: the pinned literal
+is `null`, so accepting is a reviewed policy change of Zamp's own decision.
+
+**The cleanup value became a real schema** (SPEC-DEPLOY-022): `stackName` carries CloudFormation's
+name grammar; `stackId` is validated positionally (`arn:aws:cloudformation:<region>:<account>:
+stack/<name>/<uuid>`) and its embedded region, account and name must EQUAL the record's fields —
+cross-field equality is what stops a record naming one stack while its ARN addresses another; and
+the window is stated as `observedAt <= now < observedAt + 15 minutes`, a future instant refusing.
+The spec also states that a table is not an enforcer: the activation commit must contain the
+instance parser plus adversarial tests, mutation-proven; until then the schema binds review.
+
+**Run resolution became an executable** — `bin/resolve-run.mjs`, driven in `test/resolve-run.test.js`
+by a simulated `gh`. Round 8 caught what two rounds of prose review missed: the pasted loop
+stopped watching for duplicates the moment it found one run, so a duplicate appearing DURING
+`gh run watch` was never seen. The helper re-runs the same query after the terminal conclusion and
+requires exactly the same single id immediately before printing anything; late duplication, a
+vanished run, an identity change, `gh` failure, unparseable output, substring titles and the
+no-sleep-after-last-attempt bound are each proven by a scripted sequence. The runbooks now invoke
+the helper; the loop nobody could test is gone.
 
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):

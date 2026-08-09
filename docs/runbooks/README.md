@@ -85,10 +85,16 @@ Rules:
 
 ## Resolving a run — the canonical procedure
 
-Every dispatching runbook uses THIS procedure and does not restate its loop. Round 7 of the
-design review found the previous version describing bounded polling and cardinality while showing
-a single `gh run list` call: a rule stated in prose beside a command that does not implement it is
-a rule nobody runs.
+Every dispatching runbook uses THIS procedure and does not restate it. Round 7 found prose
+describing a loop beside a command that had none; round 8 found the pasted loop itself defective
+in a way prose review missed twice: it stopped watching for duplicates the moment it found one
+run, so a second run bearing the same correlation id that appeared DURING `gh run watch` was
+never seen — although the rule says duplicates always stop — and nothing executed the procedure,
+so nothing could prove it. The procedure is therefore a REVIEWED HELPER,
+[`bin/resolve-run.mjs`](../../bin/resolve-run.mjs), and its tests
+([`test/resolve-run.test.js`](../../test/resolve-run.test.js)) drive it with a simulated `gh`
+through zero-then-found, immediate duplication, LATE duplication, a vanished run, an identity
+change, `gh` failure and unparseable output.
 
 **The correlation id is generated with a CSPRNG.** "Caller-generated" allowed
 `cba-70-000…000`; 128 bits from `openssl rand` do not.
@@ -96,41 +102,33 @@ a rule nobody runs.
 ```bash
 CORRELATION_ID="cba-70-$(openssl rand -hex 16)"   # matches ^cba-70-[0-9a-f]{32}$
 printf '%s\n' "$CORRELATION_ID"                   # record it BEFORE dispatching
+# …dispatch per the runbook…
+RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
+  --title "cba-release <mode> ${CORRELATION_ID}")
 ```
 
-After dispatching, resolve the run by the COMPLETE run name, by equality, bounded:
+What the helper enforces — each rule proven by mutation in its tests, none of them optional:
 
-```bash
-# WANT is passed through the environment, so the title is never interpolated into the jq program.
-export WANT="cba-release <mode> ${CORRELATION_ID}"
-RUN_ID=""
-for attempt in $(seq 1 10); do
-  IDS=$(gh run list --workflow "Release Pilot" --branch main --event workflow_dispatch --limit 50 \
-        --json databaseId,displayTitle \
-        --jq '[.[] | select(.displayTitle == env.WANT) | .databaseId]')
-  COUNT=$(printf '%s' "$IDS" | jq 'length')
-  if [ "$COUNT" -gt 1 ]; then
-    echo "STOP: ${COUNT} runs carry this correlation id (SPEC-LANE-007)" >&2; exit 1
-  fi
-  if [ "$COUNT" -eq 1 ]; then RUN_ID=$(printf '%s' "$IDS" | jq -r '.[0]'); break; fi
-  sleep 30
-done
-[ -n "$RUN_ID" ] || { echo "STOP: no run after 10 attempts (SPEC-LANE-007)" >&2; exit 1; }
-gh run watch "$RUN_ID" --exit-status
-```
-
-Rules this encodes, none of them optional:
-
-- **Equality on the complete name**, never `contains()`: a substring match over a title is not
-  identification.
-- **Exactly ten attempts, thirty seconds apart.** Zero matches after the tenth is a STOP, not a
-  longer wait.
-- **Two or more matches is a STOP immediately**, at any attempt. A correlation id is used once;
-  a second run bearing it means reuse, an unrecorded re-dispatch, or forgery — none of which is
-  resolved by picking one.
+- **Equality on the COMPLETE run name.** A title that merely contains the id never matches; the
+  comparison is `===` in code, so nothing is ever interpolated into a query language.
+- **At most ten queries, thirty seconds between them, and no wait after the last.**
+- **More than one match at ANY query stops immediately.** A correlation id is used once; a second
+  run bearing it means reuse, an unrecorded re-dispatch, or forgery — none of which is resolved
+  by picking one.
+- **Zero matches after the tenth query stops.** Waiting longer is not a remedy for a run that
+  never started.
+- **After `gh run watch` reaches a terminal conclusion, the helper REPEATS the query** and
+  requires exactly the same single run id immediately before it prints anything — a late
+  duplicate, a vanished run and an identity change all stop (SPEC-LANE-007). Uniqueness observed
+  once is not uniqueness still true when evidence is read.
+- **Its only stdout is the run id**; every stop goes to stderr with a named code. The runbook's
+  next step downloads the artifact with that id and nothing else.
 - **`headSha` is never a selector.** The dispatch targets `--ref main`, so `headSha` is main's
   tip; for any release that is not the tip it is not the release SHA. The release SHA is verified
   afterwards, from the run's artifact.
+
+The helper is read-only over GitHub — `gh run list` and `gh run watch` observe; it dispatches
+nothing, mutates nothing and spends nothing.
 
 ## One operation per runbook
 

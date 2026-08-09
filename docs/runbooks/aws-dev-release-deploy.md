@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.6.0
+version: 0.7.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -67,23 +67,25 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
 
 3. **Zamp** resolves the run and waits for a terminal conclusion (SPEC-RUN-009):
 
-   Run [the canonical resolution procedure](README.md#resolving-a-run) with
+   Run [the canonical resolution helper](README.md#resolving-a-run):
 
    ```bash
-   export WANT="cba-release dev_only ${CORRELATION_ID}"
+   RUN_ID=$(node bin/resolve-run.mjs --workflow "Release Pilot" \
+     --title "cba-release dev_only ${CORRELATION_ID}")
    ```
 
-   Expected outcome: EXACTLY ONE candidate and a terminal `conclusion` of `success`. The loop,
-   its ten attempts, the cardinality check and the STOP conditions are the standard's, not
-   restated here — round 7 found prose describing a loop next to a command that had none. The
-   release SHA is verified separately, from the artifact, in the next step; `headSha` selects
-   nothing (SPEC-LANE-006/007).
+   Expected outcome: the helper prints exactly one run id, and only after re-observing that same
+   single id past the terminal conclusion — its ten bounded attempts, the equality match, the
+   duplicate stops (immediate AND late) and the post-terminal re-check are implemented and
+   test-proven in the helper, not restated here (SPEC-LANE-007). Every deviation stops with a
+   named code on stderr. The release SHA is verified separately, from the artifact, in the next
+   step; `headSha` selects nothing (SPEC-LANE-006).
 
 4. **Zamp** downloads the structured deploy ARTIFACT and digests it:
 
    ```text
-   gh run download <run-id> --name deploy --dir <evidence-dir>/deploy-<run-id>
-   sha256sum <evidence-dir>/deploy-<run-id>/deploy.json
+   gh run download "$RUN_ID" --name deploy --dir <evidence-dir>/deploy-"$RUN_ID"
+   sha256sum <evidence-dir>/deploy-"$RUN_ID"/deploy.json
    ```
 
 5. **Zamp** verifies the run is THIS decision's (correlation id in the run name and artifact,
