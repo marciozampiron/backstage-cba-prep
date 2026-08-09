@@ -350,16 +350,93 @@ export function framedBundleDigest({ producer, name, mediaType, content }) {
   return createHash('sha256').update(JSON.stringify(doc), 'utf8').digest('hex');
 }
 
-/** The exact envelope of Zamp's verbatim decision statement: the record NAME is the decision
- * file's repo-relative path, so the digest and the locator can never disagree about identity. */
+/** The exact envelope of Zamp's verbatim decision statement: the record NAME carries the
+ * COMPLETE locator — path AND introducing commit — so the digest and the locator can never
+ * disagree about identity. Round 12: with only the path in the envelope, two locators differing
+ * in `introducedIn` kept the same digest, which is exactly the disagreement the name exists to
+ * prevent. */
 export const ZAMP_STATEMENT_MEDIA_TYPE = 'text/markdown';
-export function zampStatementDigest(path, content) {
-  return framedBundleDigest({ producer: 'zamp', name: path, mediaType: ZAMP_STATEMENT_MEDIA_TYPE, content });
+export function zampStatementDigest(locator, content) {
+  if (!isPlainObject(locator) || typeof locator.path !== 'string' || typeof locator.introducedIn !== 'string') {
+    throw new PolicyError('zampStatementDigest requires the complete locator: { path, introducedIn }.');
+  }
+  return framedBundleDigest({
+    producer: 'zamp',
+    name: `${locator.path}@${locator.introducedIn}`,
+    mediaType: ZAMP_STATEMENT_MEDIA_TYPE,
+    content,
+  });
 }
 
-/** The exact envelope of the out-of-band cleanup authorization value: nine keys, THIS order. */
+/**
+ * The reproducible verification of a statement locator against HISTORY — round 12: a SHA that
+ * merely looks like a SHA proves nothing. `git` is injected exactly like the resolve-run
+ * helper's `exec`, so the four steps are testable against a scripted history and runnable
+ * verbatim by review and by the runtime consumer against the real repository:
+ *   1. the commit exists;
+ *   2. it is an ancestor of the reviewed HEAD;
+ *   3. it ADDED the file at the locator's path (not modified it, not merely contained it);
+ *   4. the blob at that path in that commit has the recorded byte length and, digested under
+ *      the statement envelope WITH this locator, the recorded sha256.
+ * Every failure is a named refusal; ok is only ok when all four hold.
+ */
+export function verifyStatementLocator({ locator, bytes, sha256, reviewedHead, git }) {
+  try {
+    git('git', ['cat-file', '-e', `${locator.introducedIn}^{commit}`]);
+  } catch {
+    return { ok: false, reason: 'LOCATOR_COMMIT_MISSING' };
+  }
+  try {
+    git('git', ['merge-base', '--is-ancestor', locator.introducedIn, reviewedHead]);
+  } catch {
+    return { ok: false, reason: 'LOCATOR_COMMIT_NOT_ANCESTOR' };
+  }
+  let changes;
+  try {
+    changes = git('git', ['diff-tree', '--no-commit-id', '--name-status', '-r', '--root', locator.introducedIn]);
+  } catch {
+    return { ok: false, reason: 'LOCATOR_COMMIT_UNREADABLE' };
+  }
+  const entry = String(changes).split('\n').map((l) => l.split('\t')).find((cols) => cols[1] === locator.path);
+  if (!entry || entry[0] !== 'A') return { ok: false, reason: 'LOCATOR_FILE_NOT_ADDED_THERE' };
+  let content;
+  try {
+    content = git('git', ['show', `${locator.introducedIn}:${locator.path}`]);
+  } catch {
+    return { ok: false, reason: 'LOCATOR_BLOB_MISSING' };
+  }
+  const buf = Buffer.from(String(content), 'utf8');
+  if (buf.length !== bytes) return { ok: false, reason: 'LOCATOR_BYTES_MISMATCH' };
+  if (zampStatementDigest(locator, buf) !== sha256) return { ok: false, reason: 'LOCATOR_CONTENT_MISMATCH' };
+  return { ok: true };
+}
+
+/** The exact envelope of the out-of-band cleanup authorization value: nine keys, THIS order —
+ * and round 12 made the shape a PRECONDITION, not a projection: an extra key silently dropped
+ * and a missing key silently serialized away meant this was a digest of what the function kept,
+ * not of the value presented. Anything but the exact closed object REFUSES. (The full per-key
+ * grammar parser remains SPEC-DEPLOY-022's activation obligation; this function refuses shape,
+ * the parser will refuse content.) */
 export const CLEANUP_VALUE_KEY_ORDER = ['issue', 'decisionId', 'environment', 'account', 'region', 'stackName', 'stackId', 'observedStatus', 'observedAt'];
 export function cleanupAuthorizationDigest(value) {
+  if (!isPlainObject(value)) {
+    throw new PolicyError('cleanup authorization value must be a plain object.');
+  }
+  const got = Object.keys(value).sort();
+  const want = [...CLEANUP_VALUE_KEY_ORDER].sort();
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    const extra = got.filter((k) => !want.includes(k));
+    const missing = want.filter((k) => !got.includes(k));
+    throw new PolicyError(`cleanup authorization value must have exactly the nine closed keys — a digest of a projection is not a digest of the value presented (extra: [${extra.join(', ')}]; missing: [${missing.join(', ')}]).`);
+  }
+  for (const key of CLEANUP_VALUE_KEY_ORDER) {
+    const v = value[key];
+    if (key === 'issue') {
+      if (v !== 70) throw new PolicyError('cleanup authorization value.issue must be the integer 70.');
+    } else if (typeof v !== 'string' || v.trim() === '') {
+      throw new PolicyError(`cleanup authorization value.${key} must be a non-empty string; a present-but-undefined key would vanish in serialization and two different values would share a digest.`);
+    }
+  }
   const ordered = {};
   for (const key of CLEANUP_VALUE_KEY_ORDER) ordered[key] = value[key];
   return framedBundleDigest({

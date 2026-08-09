@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import {
   validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement,
   framedTextDigest, framedBundleDigest, zampStatementDigest, cleanupAuthorizationDigest,
-  ZAMP_STATEMENT_MEDIA_TYPE, CLEANUP_VALUE_KEY_ORDER,
+  verifyStatementLocator, ZAMP_STATEMENT_MEDIA_TYPE, CLEANUP_VALUE_KEY_ORDER,
 } from '../src/lib/authority-policy.js';
 import { CANONICAL_REPO } from '../bin/resolve-run.mjs';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
@@ -1960,8 +1960,9 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   // ROUND 11: the positive fixtures are REAL — actual statement bytes and an actual nine-key
   // cleanup value, digested through the one shared implementation, never a repeated hex.
   const STATEMENT_PATH = '.agent-handoff/decisions/risk-70-stack-record-cleanup.md';
+  const STATEMENT_LOCATOR = { path: STATEMENT_PATH, introducedIn: 'f'.repeat(40) };
   const STATEMENT_TEXT = 'I, Zamp, accept the TOCTOU residual for stack record X under decision cleanup-70-example-0001.\n';
-  const STATEMENT_SHA = zampStatementDigest(STATEMENT_PATH, STATEMENT_TEXT);
+  const STATEMENT_SHA = zampStatementDigest(STATEMENT_LOCATOR, STATEMENT_TEXT);
   const CLEANUP_VALUE = {
     issue: 70,
     decisionId: 'cleanup-70-example-0001',
@@ -1989,7 +1990,7 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     coversCleanupDecisionId: 'cleanup-70-example-0001',
     zampStatement: {
       source: 'zamp-verbatim-message',
-      locator: { path: STATEMENT_PATH, introducedIn: 'f'.repeat(40) },
+      locator: { ...STATEMENT_LOCATOR },
       sentAt: '2026-08-07T11:00:00Z',
       encoding: 'utf-8',
       bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'),
@@ -2092,17 +2093,21 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   {
     assert.equal(ZAMP_STATEMENT_MEDIA_TYPE, 'text/markdown');
     assert.deepEqual(CLEANUP_VALUE_KEY_ORDER, ['issue', 'decisionId', 'environment', 'account', 'region', 'stackName', 'stackId', 'observedStatus', 'observedAt']);
+    const statementName = `${STATEMENT_PATH}@${STATEMENT_LOCATOR.introducedIn}`;
     const variants = [
-      framedBundleDigest({ producer: 'opus', name: STATEMENT_PATH, mediaType: 'text/markdown', content: STATEMENT_TEXT }),
+      framedBundleDigest({ producer: 'opus', name: statementName, mediaType: 'text/markdown', content: STATEMENT_TEXT }),
       framedBundleDigest({ producer: 'zamp', name: 'some-other-name.md', mediaType: 'text/markdown', content: STATEMENT_TEXT }),
-      framedBundleDigest({ producer: 'zamp', name: STATEMENT_PATH, mediaType: 'text/plain', content: STATEMENT_TEXT }),
-      zampStatementDigest(STATEMENT_PATH, `${STATEMENT_TEXT}\n`),
-      zampStatementDigest('.agent-handoff/decisions/other-decision.md', STATEMENT_TEXT),
+      framedBundleDigest({ producer: 'zamp', name: statementName, mediaType: 'text/plain', content: STATEMENT_TEXT }),
+      zampStatementDigest(STATEMENT_LOCATOR, `${STATEMENT_TEXT}\n`),
+      zampStatementDigest({ path: '.agent-handoff/decisions/other-decision.md', introducedIn: STATEMENT_LOCATOR.introducedIn }, STATEMENT_TEXT),
+      // ROUND 12: the same path at a DIFFERENT introducing commit is a different statement — the
+      // exact pair that round 11's envelope could not tell apart.
+      zampStatementDigest({ path: STATEMENT_PATH, introducedIn: 'e'.repeat(40) }, STATEMENT_TEXT),
     ];
     for (const v of variants) assert.notEqual(v, STATEMENT_SHA);
     assert.equal(new Set(variants).size, variants.length, 'each perturbation is its own digest');
     // determinism: the same inputs reproduce the same digest
-    assert.equal(zampStatementDigest(STATEMENT_PATH, STATEMENT_TEXT), STATEMENT_SHA);
+    assert.equal(zampStatementDigest(STATEMENT_LOCATOR, STATEMENT_TEXT), STATEMENT_SHA);
     assert.equal(cleanupAuthorizationDigest({ ...CLEANUP_VALUE }), CLEANUP_SHA);
     // one authorization key changed → a different authorization
     assert.notEqual(cleanupAuthorizationDigest({ ...CLEANUP_VALUE, observedAt: '2026-08-07T10:00:01Z' }), CLEANUP_SHA);
@@ -2110,6 +2115,47 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     // key order is the envelope's, not the caller's: a permuted object digests identically
     const permuted = Object.fromEntries(Object.entries(CLEANUP_VALUE).reverse());
     assert.equal(cleanupAuthorizationDigest(permuted), CLEANUP_SHA);
+    // ROUND 12: the shape is a PRECONDITION, not a projection. Codex's reproductions, inverted:
+    // an extra key no longer digests identically — it REFUSES; a missing key no longer yields a
+    // plausible digest — it refuses; and so do undefined values, wrong types and non-objects.
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, effect: 'delete-something-else' }), /extra: \[effect\]/);
+    assert.throws(() => {
+      const { stackId, ...withoutStackId } = CLEANUP_VALUE;
+      return cleanupAuthorizationDigest(withoutStackId);
+    }, /missing: \[stackId\]/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, stackName: undefined }), /would vanish in serialization/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, issue: '70' }), /must be the integer 70/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, region: 42 }), /must be a non-empty string/);
+    for (const notAnObject of [null, [], 'value', 42]) {
+      assert.throws(() => cleanupAuthorizationDigest(notAnObject), /plain object/);
+    }
+  }
+  // ROUND 12: a SHA that merely looks like a SHA proves nothing — the locator verification runs
+  // the four history checks, here against a SCRIPTED git covering every named refusal.
+  {
+    const scriptedGit = (overrides = {}) => (cmd, args) => {
+      assert.equal(cmd, 'git');
+      const step = args[0] === 'cat-file' ? 'exists'
+        : args[0] === 'merge-base' ? 'ancestor'
+          : args[0] === 'diff-tree' ? 'added'
+            : args[0] === 'show' ? 'content' : assert.fail(`unexpected git call: ${args.join(' ')}`);
+      if (step in overrides) return overrides[step]();
+      if (step === 'added') return `A\t${STATEMENT_PATH}\n`;
+      if (step === 'content') return STATEMENT_TEXT;
+      return '';
+    };
+    const base = { locator: { ...STATEMENT_LOCATOR }, bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'), sha256: STATEMENT_SHA, reviewedHead: 'HEAD' };
+    assert.deepEqual(verifyStatementLocator({ ...base, git: scriptedGit() }), { ok: true });
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ exists: () => { throw new Error('missing'); } }) }).reason, 'LOCATOR_COMMIT_MISSING');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ ancestor: () => { throw new Error('not ancestor'); } }) }).reason, 'LOCATOR_COMMIT_NOT_ANCESTOR');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ added: () => `M\t${STATEMENT_PATH}\n` }) }).reason, 'LOCATOR_FILE_NOT_ADDED_THERE');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ added: () => 'A\tsome/other/file.md\n' }) }).reason, 'LOCATOR_FILE_NOT_ADDED_THERE');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ content: () => 'different historical content\n' }) }).reason, 'LOCATOR_BYTES_MISMATCH');
+    const sameLength = STATEMENT_TEXT.replace('accept', 'reject'); // same byte count, different bytes
+    assert.equal(Buffer.byteLength(sameLength, 'utf8'), Buffer.byteLength(STATEMENT_TEXT, 'utf8'));
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ content: () => sameLength }) }).reason, 'LOCATOR_CONTENT_MISMATCH');
+    // a locator whose SHA differs verifies only against ITS OWN digest, never the recorded one
+    assert.equal(verifyStatementLocator({ ...base, locator: { path: STATEMENT_PATH, introducedIn: 'e'.repeat(40) }, git: scriptedGit() }).reason, 'LOCATOR_CONTENT_MISMATCH');
   }
   // ROUND 9: the validator evaluates the CLOCK. An expired acceptance in the tree fails closed…
   {
@@ -2151,35 +2197,124 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   }
 });
 
-test('ROUND 11: every mutating gh command in the runbooks names the canonical repository', () => {
-  // Round 10 pinned the reads and the dispatch; the FIRST mutation — installing CBA_CLOUD_GATE
-  // on the Environment — still said repos/<owner>/<repo>, which gh resolves nowhere and a hasty
-  // fill-in resolves to the AMBIENT repository. Every gh command in every runbook now either
-  // names the canonical repository literally or is repository-independent.
+/**
+ * Rebuild the COMPLETE commands inside fenced blocks, joining backslash continuations — round
+ * 12: a per-line scan let an override live on the next line of the same command.
+ */
+function reconstructFencedCommands(text) {
+  const commands = [];
+  let inFence = false;
+  let buffer = null;
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      buffer = null;
+      continue;
+    }
+    if (!inFence) continue;
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const continued = /\\$/.test(trimmed);
+    const payload = trimmed.replace(/\\$/, '').trim();
+    if (buffer !== null) {
+      buffer = `${buffer} ${payload}`;
+      if (!continued) {
+        commands.push(buffer);
+        buffer = null;
+      }
+    } else if (continued) {
+      buffer = payload;
+    } else {
+      commands.push(payload);
+    }
+  }
+  return commands;
+}
+
+/**
+ * The CLOSED structural allowlist of gh commands a runbook may carry. Fail-open was the round-12
+ * finding: checking `gh api` only when the line said `repos/` accepted `gh api "$ENDPOINT"`, and
+ * substring acceptance let a second `--repo` override the first. Every reconstructed gh command
+ * must satisfy exactly one form below; anything else — including subcommands this list does not
+ * know — is an offense.
+ */
+function analyzeGhCommand(cmd) {
+  if (!/^gh\s/.test(cmd)) return [];
+  const offenses = [];
+  const tokens = cmd.split(/\s+/);
+  const repoValues = [];
+  tokens.forEach((t, i) => {
+    if (t === '--repo') repoValues.push(tokens[i + 1] ?? '(none)');
+  });
+  const requireOneCanonicalRepo = () => {
+    if (repoValues.length !== 1 || repoValues[0] !== CANONICAL_REPO) {
+      offenses.push(`must carry exactly one --repo ${CANONICAL_REPO} (found: [${repoValues.join(', ')}])`);
+    }
+  };
+  if (/^gh api\s/.test(cmd)) {
+    // The endpoint is the first non-flag token after `api`; -X and -f consume their values.
+    const rest = tokens.slice(2);
+    let endpoint = null;
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === '-X' || rest[i] === '-f' || rest[i] === '-H') { i += 1; continue; }
+      if (rest[i].startsWith('-')) continue;
+      endpoint = rest[i];
+      break;
+    }
+    if (!endpoint || endpoint.includes('$') || endpoint.includes('"') || endpoint.includes("'")
+      || !endpoint.startsWith(`repos/${CANONICAL_REPO}/`)) {
+      offenses.push(`gh api endpoint must be the literal repos/${CANONICAL_REPO}/… path (found: ${endpoint ?? '(none)'})`);
+    }
+  } else if (/^gh workflow run\s/.test(cmd)) {
+    if (tokens[3] !== 'release-pilot.yml') {
+      offenses.push(`dispatch must name the workflow FILE release-pilot.yml (found: ${tokens[3]})`);
+    }
+    requireOneCanonicalRepo();
+  } else if (/^gh run download\s/.test(cmd)) {
+    requireOneCanonicalRepo();
+  } else {
+    // Closed list: list/watch live in bin/resolve-run.mjs, and nothing else is sanctioned.
+    offenses.push('gh subcommand outside the closed allowlist (api PATCH gate, workflow run, run download)');
+  }
+  return offenses;
+}
+
+test('ROUND 11-12: every fenced gh command in the runbooks satisfies the closed structural allowlist', () => {
   const runbooks = fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'));
   const offenses = [];
   for (const rel of runbooks) {
-    const lines = read(`docs/runbooks/${rel}`).split('\n');
-    // COMMANDS live in fenced blocks; prose may mention `gh workflow run` without being one.
-    let inFence = false;
-    lines.forEach((line, i) => {
-      if (/^\s*```/.test(line)) { inFence = !inFence; return; }
-      if (!inFence) return;
-      const where = `docs/runbooks/${rel}:${i + 1}`;
-      if (/<owner>\/<repo>/.test(line)) offenses.push(`${where} uses the <owner>/<repo> placeholder`);
-      if (/\bgh api\b/.test(line) && line.includes('repos/') && !line.includes(`repos/${CANONICAL_REPO}/`)) {
-        offenses.push(`${where} gh api path is not the canonical repository`);
-      }
-      if (/\bgh (workflow run|run download)\b/.test(line) && !line.includes(`--repo ${CANONICAL_REPO}`)) {
-        offenses.push(`${where} lacks --repo ${CANONICAL_REPO}`);
-      }
-    });
+    for (const cmd of reconstructFencedCommands(read(`docs/runbooks/${rel}`))) {
+      if (/<owner>\/<repo>/.test(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — <owner>/<repo> placeholder`);
+      for (const why of analyzeGhCommand(cmd)) offenses.push(`docs/runbooks/${rel}: ${cmd} — ${why}`);
+    }
   }
   assert.deepEqual(offenses, [], offenses.join('\n'));
-  // POSITIVE CONTROLS: each rule fires on the shape it guards against.
-  assert.ok(/<owner>\/<repo>/.test('gh api repos/<owner>/<repo>/environments'));
-  assert.ok(!('gh api -X PATCH repos/attacker/fork/environments/dev/variables/X'.includes(`repos/${CANONICAL_REPO}/`)));
-  assert.ok(!('gh workflow run release-pilot.yml --ref main'.includes(`--repo ${CANONICAL_REPO}`)));
+});
+
+test('ROUND 12: the gh allowlist is fail-closed — the three demonstrated bypasses are offenses', () => {
+  // 1. The indirect endpoint: `gh api` with a variable — previously invisible because the line
+  //    never contained `repos/`.
+  assert.ok(analyzeGhCommand('gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE').length > 0);
+  // 2. The second --repo: substring acceptance saw the canonical slug and stopped looking.
+  assert.ok(analyzeGhCommand(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo attacker/fork --ref main`).length > 0);
+  // 3. The continuation-line override: the override lives on the NEXT physical line of the SAME
+  //    command, so only a reconstructed command can see it.
+  const doc = [
+    '```bash',
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} \\`,
+    '  --repo attacker/fork --ref main',
+    '```',
+  ].join('\n');
+  const [cmd] = reconstructFencedCommands(doc);
+  assert.match(cmd, /--repo attacker\/fork/);
+  assert.ok(analyzeGhCommand(cmd).length > 0);
+  // …and the canonical forms pass, so the allowlist is exact rather than merely strict.
+  assert.deepEqual(analyzeGhCommand(`gh api -X PATCH repos/${CANONICAL_REPO}/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<json>'`), []);
+  assert.deepEqual(analyzeGhCommand(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main -f release_sha=<sha>`), []);
+  assert.deepEqual(analyzeGhCommand(`gh run download "$RUN_ID" --repo ${CANONICAL_REPO} --name plan --dir <dir>`), []);
+  // a gh subcommand outside the closed list is an offense wherever it appears
+  assert.ok(analyzeGhCommand('gh run list --workflow release-pilot.yml').length > 0);
+  assert.ok(analyzeGhCommand('gh secret set FOO').length > 0);
 });
 
 test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {

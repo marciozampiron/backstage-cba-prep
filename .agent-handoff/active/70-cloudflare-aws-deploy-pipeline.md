@@ -498,6 +498,30 @@ in every runbook: no `<owner>/<repo>` placeholder anywhere, every `gh api … re
 canonical repository, every dispatch and download carrying `--repo` — with positive controls and
 the pin imported from the helper, so there is exactly one place the repository's identity lives.
 
+Design round 12 (Codex, three findings) closed the daylight between looking right and being
+right. **The statement digest now binds the complete locator**: the record name is
+`<path>@<introducedIn>`, so the same path at a different introducing commit — the exact pair the
+round-11 envelope could not tell apart — is a different digest; and a SHA that merely looks like
+a SHA proves nothing, so `verifyStatementLocator` runs the four history checks (commit exists,
+ancestor of the reviewed HEAD, ADDED that file, blob bytes match the recorded length and digest)
+with `git` injected — proven against a scripted history covering every named refusal, including
+same-length-different-bytes content and a foreign introducing commit.
+
+**The cleanup digest refuses what it is not given.** An extra key was silently dropped and a
+missing key silently serialized away — a digest of a projection, not of the value presented. Both
+of Codex's reproductions are now inverted into refusals, along with present-but-undefined values,
+wrong types and non-objects; the full per-key grammar parser remains SPEC-DEPLOY-022's activation
+obligation, stated as shape-now/content-at-activation.
+
+**The gh scanner became a closed structural allowlist over reconstructed commands.** Continuation
+lines are joined, and every fenced `gh` command must satisfy exactly one sanctioned form — the
+literal gate PATCH endpoint (a `"$ENDPOINT"` indirection is an offense because the endpoint token
+itself is inspected), the file-named dispatch with EXACTLY ONE canonical `--repo` (a second
+`--repo` on the same or the next physical line is an offense), the download with the same rule —
+and any other gh subcommand is an offense by default. The three demonstrated bypasses are pinned
+as adversarial tests, and the canonical forms are asserted to pass, so the allowlist is exact
+rather than merely strict.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
