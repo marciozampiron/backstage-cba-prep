@@ -2515,3 +2515,159 @@ test('verify-manifest can check the assembly too, and refuses drift', () => {
     { assemblyFiles: { ...ASSEMBLY_FILES, 'DataStack.template.json': '{"Resources":{"Other":1}}' } },
   );
 });
+
+// -------------------------------------------------------------------------------------------------
+// SLICE I3 — the closed evidence record (SPEC-RUN-007, SPEC-DEPLOY-006/018, SPEC-LANE-006).
+// Evidence is an artifact tied to a DECISION: correlation id proven before anything runs, change
+// sets by NAME (an id is an ARN and never enters evidence), the honest partial `executed` list on
+// every halt, and the refusal codes verbatim.
+// -------------------------------------------------------------------------------------------------
+
+const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'outcome', 'refusals', 'rendering'];
+const CORRELATION = `cba-70-${'a'.repeat(32)}`;
+
+function withArtifact(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-evidence-'));
+  try {
+    fn(path.join(dir, 'nested', 'evidence.json'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('EVIDENCE: --artifact-out without a well-formed CORRELATION_ID refuses before anything runs', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      for (const bad of [undefined, '', 'nope', `cba-70-${'a'.repeat(31)}`, `cba-70-${'A'.repeat(32)}`, ` ${CORRELATION}`]) {
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run: () => assert.fail('no aws call may run'),
+          git: () => assert.fail('no git call may run'),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', ...(bad === undefined ? {} : { CORRELATION_ID: bad }), CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('no child may run'),
+        });
+        assert.notEqual(r.exit, 0, JSON.stringify(bad));
+        assert.match(r.output, /CORRELATION_MALFORMED/);
+        assert.equal(fs.existsSync(artifact), false, 'unattributable evidence must not be written');
+      }
+    });
+  });
+});
+
+test('EVIDENCE: plan_only writes the closed record — decision-bound, name-only, ARN-free', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const raw = fs.readFileSync(artifact, 'utf8');
+      const record = JSON.parse(raw);
+      assert.deepEqual(Object.keys(record).sort(), [...EVIDENCE_KEYS].sort(), 'the record is CLOSED');
+      assert.equal(record.schema, 'cba-release-evidence/1');
+      assert.equal(record.correlationId, CORRELATION);
+      assert.equal(record.releaseSha, manifest.releaseSha);
+      assert.equal(record.environment, 'pilot');
+      assert.equal(record.mode, 'plan_only');
+      assert.equal(record.outcome, 'PLAN_PREPARED');
+      assert.deepEqual(record.refusals, []);
+      assert.deepEqual(record.executed, []);
+      assert.match(record.planDigest, /^[0-9a-f]{64}$/);
+      const printed = r.output.match(/PLAN_DIGEST ([0-9a-f]{64})/);
+      assert.equal(record.planDigest, printed[1], 'the artifact digest IS the printed digest');
+      assert.equal(record.changeSets.length, 4);
+      for (const entry of record.changeSets) {
+        assert.deepEqual(Object.keys(entry).sort(), ['changeSetName', 'stackName', 'status']);
+        assert.equal(entry.changeSetName, `cba-70-${manifest.releaseSha.slice(0, 12)}`);
+      }
+      assert.equal(typeof record.rendering, 'string');
+      assert.ok(record.rendering.length > 0, 'the rendering travels with the plan evidence');
+      // SPEC-DEPLOY-006: no LIVE ARN may enter evidence. The rendering legitimately carries
+      // redacted ARN skeletons (reviewed IAM principal paths render verbatim with the account
+      // replaced), so the law is: no ARN bearing a REAL 12-digit account anywhere, and outside
+      // the rendering no ARN of any shape at all.
+      assert.equal(/arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:/.test(raw), false, 'no account-bearing ARN may enter evidence');
+      const withoutRendering = JSON.stringify({ ...record, rendering: null });
+      assert.equal(/\barn:aws/i.test(withoutRendering), false, 'outside the rendering, evidence is ARN-free entirely');
+    });
+  });
+});
+
+test('EVIDENCE: deploy writes DEPLOYED with the executed names; a mid-wave halt records the honest partial', () => {
+  // Success: all four executed, by NAME.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun();
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.mode, 'deploy');
+      assert.equal(record.outcome, 'DEPLOYED');
+      assert.equal(record.executed.length, 4);
+      assert.ok(record.executed.every((name) => typeof name === 'string' && !/\barn:aws/i.test(name)));
+    });
+  });
+  // Halt after the first execution: REFUSED, the named code, and EXACTLY the executed prefix.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let executes = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'execute-change-set') {
+            executes += 1;
+            if (executes === 2) return { status: 254, stdout: '', stderr: 'ChangeSet is stale' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('EXECUTE_FAILED'), JSON.stringify(record.refusals));
+      assert.equal(record.executed.length, 1, 'the honest partial: exactly what ran before the halt');
+    });
+  });
+});
+
+test('EVIDENCE: without --artifact-out the entrypoint behaves exactly as before and writes nothing', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease(releaseArgs(p, asm), {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(fs.existsSync(artifact), false);
+    });
+  });
+});

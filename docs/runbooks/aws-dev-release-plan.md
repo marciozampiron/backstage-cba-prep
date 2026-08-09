@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.10.0
+version: 0.11.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -13,10 +13,15 @@ cloudMutation: true
 
 # Runbook — dev release, PLAN one wave
 
-> **Status: DESIGN — `PLANNED — not executable`.** Nothing here runs in the current phase. This
-> operation is CLOUD MUTATION even though no stack executes: preparing change sets creates
-> CloudFormation resources and publishes assets (SPEC-RUN-002). Its authorization instrument is
-> the **cloud authorization** (`CBA_CLOUD_GATE`, `plan_only`), never the publication one.
+> **Status: EVIDENCE PREREQUISITES IMPLEMENTED (Slice I3) — STILL `PLANNED — not executable`.**
+> The structured plan artifact now EXISTS in the reviewed tree: the entrypoint writes the closed
+> evidence record (`--artifact-out`, correlation-bound, change sets by NAME, honest partial on
+> every halt) and the lane uploads it as `plan` after the credential scrub closes the window.
+> What keeps this runbook non-executable is the lane's activation prerequisites and the absence
+> of publication. This operation is CLOUD MUTATION even though no stack executes: preparing
+> change sets creates CloudFormation resources and publishes assets (SPEC-RUN-002). Its
+> authorization instrument is the **cloud authorization** (`CBA_CLOUD_GATE`, `plan_only`), never
+> the publication one.
 
 One operation: prepare ONE wave's change sets and put the plan on the record.
 

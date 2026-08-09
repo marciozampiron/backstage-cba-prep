@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.10.0
+version: 0.11.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -13,7 +13,10 @@ cloudMutation: true
 
 # Runbook — dev release, DEPLOY one reviewed wave
 
-> **Status: DESIGN — `PLANNED — not executable`.** Nothing here runs in the current phase. This
+> **Status: EVIDENCE PREREQUISITES IMPLEMENTED (Slice I3) — STILL `PLANNED — not executable`.**
+> The structured deploy artifact now EXISTS in the reviewed tree (closed record, executed stacks
+> by NAME, uploaded as `deploy` after the credential scrub). What keeps this runbook
+> non-executable is the lane's activation prerequisites and the absence of publication. This
 > operation executes stacks; its authorization instrument is the **cloud authorization**
 > (`CBA_CLOUD_GATE`, `deploy`, naming the reviewed `PLAN_DIGEST`), never the publication one.
 

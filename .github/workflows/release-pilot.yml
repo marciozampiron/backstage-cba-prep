@@ -371,6 +371,7 @@ jobs:
           TARGET_REGION: ${{ vars.AWS_REGION }}
           MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
           CBA_CLOUD_GATE: ${{ vars.CBA_CLOUD_GATE }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
@@ -383,9 +384,56 @@ jobs:
             --release-sha "$RELEASE_SHA" \
             --region "$TARGET_REGION" \
             --assembly cdk.out \
+            --artifact-out "$RUNNER_TEMP/release-evidence/evidence.json" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+      # From here the CREDENTIAL WINDOW is closed before anything else runs: the scrub empties the
+      # AWS environment for every subsequent step, so the pinned uploaders below execute with no
+      # cloud authority to exfiltrate or spend (SPEC-LANE-001, widened in I3 while PROPOSED). The
+      # steps run on refusals too — evidence of a refused run is still evidence (SPEC-DEPLOY-018).
+      - name: Close the credential window (scrub AWS env before any post-effect step)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION AWS_REGION; do
+            echo "$name=" >> "$GITHUB_ENV"
+          done
+      - name: Read the evidence mode
+        id: evidence
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/release-evidence/evidence.json"
+          mode=""
+          if [ -f "$evidence" ]; then
+            mode=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mode ?? ""))' "$evidence")
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Upload the plan artifact
+        if: ${{ !cancelled() && steps.evidence.outputs.mode == 'plan_only' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan
+          path: ${{ runner.temp }}/release-evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload the deploy artifact
+        if: ${{ !cancelled() && steps.evidence.outputs.mode == 'deploy' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deploy
+          path: ${{ runner.temp }}/release-evidence/evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload refusal evidence (no mode reached the record)
+        if: ${{ !cancelled() && steps.evidence.outputs.mode == '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: evidence
+          path: ${{ runner.temp }}/release-evidence/evidence.json
+          if-no-files-found: ignore
+          retention-days: 90
 
   # ---------------------------------------------------------------------------------------------
   # PILOT PREFLIGHT — reachable ONLY through a green dev stage, and only when the operator asked

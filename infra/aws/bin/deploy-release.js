@@ -84,6 +84,7 @@ function parseArgs(argv) {
     else if (a === '--release-sha') out.releaseSha = argv[++i];
     else if (a === '--region') out.region = argv[++i];
     else if (a === '--assembly') out.assembly = argv[++i];
+    else if (a === '--artifact-out') out.artifactOut = argv[++i];
     else if (a === '--help' || a === '-h') out.help = true;
     // The offending token is not echoed: argv can hold a mistyped secret.
     else throw new PreflightError('unrecognised argument');
@@ -100,6 +101,7 @@ function usage() {
     '  --release-sha <40-hex>  required; must equal the manifest',
     '  --region <aws-region>   required; must equal the manifest',
     '  --assembly <dir>        required; the synthesized cdk.out whose digest the manifest binds',
+    '  --artifact-out <file>   optional; write the closed evidence record (SPEC-RUN-007) — requires CORRELATION_ID',
     '  -c key=value            the effective context (repeatable) — the SAME values the',
     '                          preflight validated; the digest is recomputed from them',
     '',
@@ -163,6 +165,9 @@ const CLOUD_GATE_MAX_TTL_MS = 60 * 60 * 1000;
 
 /** decisionId names Zamp's one decision, for the audit trail and the EVENTS record. */
 const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
+
+/** SPEC-LANE-006: the closed correlation grammar — evidence binds to a decision, never a window. */
+const CORRELATION_ID_RE = /^cba-70-[0-9a-f]{32}$/;
 
 /**
  * Validate the human cloud-execution gate against the VERIFIED manifest.
@@ -939,11 +944,53 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     if (!opts[key]) return { exit: EXIT.USAGE, output: `${label} is required\n\n${usage()}`, executed: false };
   }
 
+  // SPEC-LANE-006/RUN-007: evidence exists only when it can be TIED to a decision. An artifact
+  // request without a well-formed correlation id refuses before anything else runs — unattributable
+  // evidence is not evidence, and writing it anyway would invite exactly the timestamp-window
+  // guessing the correlation id exists to end.
+  let correlationId = null;
+  if (opts.artifactOut) {
+    correlationId = typeof env.CORRELATION_ID === 'string' ? env.CORRELATION_ID : '';
+    if (!CORRELATION_ID_RE.test(correlationId)) {
+      return {
+        exit: EXIT.REFUSED,
+        output: 'deploy-release — CORRELATION_MALFORMED: --artifact-out requires CORRELATION_ID matching cba-70- plus exactly 32 lowercase hex; evidence that cannot be tied to a decision is not evidence.\nREFUSED. Nothing was deployed.',
+        executed: false,
+      };
+    }
+  }
+
   const failures = [];
+  // The CLOSED evidence record (SPEC-RUN-007/DEPLOY-018): change sets by NAME (an id is an ARN
+  // and never enters evidence — SPEC-DEPLOY-006), the honest partial `executed` list on every
+  // halt, and the refusal codes verbatim. Written on EVERY exit after the correlation was proven.
+  const evidence = {
+    schema: 'cba-release-evidence/1',
+    correlationId,
+    releaseSha: null,
+    environment: opts.environment,
+    mode: null,
+    decisionId: null,
+    stacks: null,
+    planDigest: null,
+    changeSets: [],
+    executed: [],
+    outcome: null,
+    refusals: [],
+    rendering: null,
+  };
+  const writeEvidence = (outcome) => {
+    if (!opts.artifactOut) return;
+    evidence.outcome = outcome;
+    evidence.refusals = failures.map((f) => f.code);
+    fs.mkdirSync(path.dirname(opts.artifactOut), { recursive: true });
+    fs.writeFileSync(opts.artifactOut, `${JSON.stringify(evidence, null, 2)}\n`);
+  };
   const refuse = () => {
     const lines = [`deploy-release — environment ${opts.environment}`, '  FAIL  BINDING'];
     for (const f of failures) lines.push(`          ${describeFailure(f)}`);
     lines.push('', 'REFUSED. Nothing was deployed.');
+    writeEvidence('REFUSED');
     return { exit: EXIT.REFUSED, output: lines.join('\n'), executed: false };
   };
 
@@ -971,6 +1018,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   if (manifest.region !== opts.region) failures.push({ check: 'VERIFY', code: 'MANIFEST_REGION_MISMATCH', field: 'region' });
   if (manifest.target.service !== MANIFEST_TARGET_SERVICE) failures.push({ check: 'VERIFY', code: 'DEPLOY_TARGET_UNSUPPORTED', field: 'target' });
   if (failures.length > 0) return refuse();
+  evidence.releaseSha = manifest.releaseSha;
 
   // 2b. The RELEASE, bound to reality. The manifest naming a SHA proves nothing about the files on
   //     disk: round 4 reproduced a verified deploy whose HEAD was a different commit entirely. The
@@ -1042,6 +1090,9 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       return refuse();
     }
     const gate = gateCheck.gate;
+    evidence.mode = gate.mode;
+    evidence.decisionId = gate.decisionId;
+    evidence.stacks = [...gate.stacks];
 
   // 5. THE PLAN IS THE CHANGE SETS. plan_only PREPARES one named change set per stack from the
   //    verified snapshot and digests the canonical UNREDACTED describes; deploy re-describes the
@@ -1137,6 +1188,8 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     }
     if (failures.length > 0) return refuse();
     const digestOfPlan = planDigestOf(planEntries);
+    evidence.planDigest = digestOfPlan;
+    evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status }));
 
     // The plan goes on the record BEFORE any effect — review material must exist before the
     // mutation it authorizes. Rendering is sanitized; the digest was not.
@@ -1152,6 +1205,8 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     // 5c. plan_only stops here, successfully: Zamp reviews the rendering, then issues a
     //     deploy-mode gate NAMING this digest. Only these exact change sets can then execute.
     if (gate.mode === 'plan_only') {
+      evidence.rendering = renderPlan(planEntries);
+      writeEvidence('PLAN_PREPARED');
       return {
         exit: EXIT.OK,
         output: [
@@ -1184,6 +1239,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       return refuse();
     }
     const executed = [];
+    evidence.executed = executed; // shared reference: every halt carries the honest partial list
     for (const entry of planEntries) {
       if (entry.status === 'NO_CHANGES') continue;
       if (Date.parse(gate.expiresAt) <= now()) {
@@ -1204,6 +1260,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       }
       executed.push(entry.stackName);
     }
+    writeEvidence('DEPLOYED');
     return {
       exit: EXIT.OK,
       output: [

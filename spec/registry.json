@@ -438,6 +438,14 @@
       "normativeSha256": "d967b3e410d1744c72c76485d9eaa6e2b04bb217d2e13d5ba1eba46215bdac04",
       "anchors": [
         {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "--artifact-out"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        },
+        {
           "file": "docs/runbooks/aws-dev-release-plan.md",
           "symbol": null
         },
@@ -446,13 +454,20 @@
           "symbol": null
         }
       ],
-      "tests": [],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
       "checks": [],
       "governedPaths": [
+        ".github/workflows/release-pilot.yml",
         "docs/runbooks/aws-dev-release-deploy.md",
-        "docs/runbooks/aws-dev-release-plan.md"
+        "docs/runbooks/aws-dev-release-plan.md",
+        "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "mutationEvidence": "code + tests reviewed in I3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN",
       "supersedes": [],
       "supersededBy": null
     },
@@ -1165,8 +1180,8 @@
       "id": "SPEC-LANE-001",
       "status": "PROPOSED",
       "title": "In every credentialed job, synthesis completes before the",
-      "normativeText": "In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step only the reviewed entrypoints execute — no action step and no package-manager command.",
-      "normativeSha256": "10793e13df39ffebbd887136032a27b2fe68c6ff7060b4312ce2f7c7539803c3",
+      "normativeText": "In every credentialed job, synthesis completes before the pinned OIDC consumer step; after that step, until the reviewed credential scrub empties the AWS environment, only the reviewed entrypoints execute — no action step and no package-manager command — and after the scrub only the pinned evidence uploaders and the evidence read may run.",
+      "normativeSha256": "2b65395606e30c3837229389c88055b801f3fdb469fc494a8146dbeb8592c0d2",
       "anchors": [
         {
           "file": ".github/workflows/release-pilot.yml",
@@ -1183,7 +1198,7 @@
       "governedPaths": [
         ".github/workflows/release-pilot.yml"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": "code + tests reviewed, reversion proven (text widened in I3 while PROPOSED — §4 permits it; the scrub closes the window before any uploader runs)",
       "supersedes": [],
       "supersededBy": null
     },

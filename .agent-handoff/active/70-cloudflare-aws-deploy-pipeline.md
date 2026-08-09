@@ -554,6 +554,25 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation Slice I3 delivered the evidence artifacts for the two mutating operations
+(SPEC-RUN-007 made real; SPEC-LANE-001 widened while PROPOSED). The entrypoint gained
+`--artifact-out`: with it, `CORRELATION_ID` must match the closed grammar BEFORE anything runs
+(unattributable evidence is not evidence — CORRELATION_MALFORMED refuses and writes nothing), and
+every exit after that proof writes the CLOSED record — schema, correlationId, releaseSha,
+environment, mode, decisionId, stacks, planDigest, change sets by NAME (an id is an ARN and never
+enters evidence), the SHARED `executed` array so every halt carries the honest partial, refusal
+codes verbatim, and the sanitized rendering on plan_only. Tests prove: the closed key set, the
+artifact digest IS the printed digest, no account-bearing ARN anywhere and no ARN at all outside
+the rendering, the mid-wave halt recording exactly the executed prefix, and byte-for-byte
+unchanged behavior without the flag. The lane uploads it with the credential window CLOSED first:
+a reviewed scrub step empties every AWS_* variable via GITHUB_ENV, and only AFTER it do the three
+pinned uploaders run (plan / deploy / refusal-evidence, upload-artifact v7.0.1 by SHA,
+if-no-files-found error/error/ignore) — the window rule was widened to a still-closed grammar
+(consumer → entrypoint only → scrub → pinned uploaders + evidence read only), with mutation
+proofs: an uploader BEFORE the scrub trips the action rule, a foreign action AFTER the scrub
+trips the post-scrub vocabulary, npm after the scrub refused. Steps run on refusals too
+(`!cancelled()`): evidence of a refused run is still evidence.
+
 Implementation Slice I2 (first commit) delivered the lane's bind foundations — SPEC-LANE-005/006
 made real. `release-pilot.yml` gained: a canonical `run-name` (`cba-release <mode>
 <correlation_id>` — the exact closed string bin/resolve-run.mjs matches by equality); a REQUIRED
