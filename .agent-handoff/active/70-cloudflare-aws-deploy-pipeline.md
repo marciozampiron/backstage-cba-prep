@@ -554,6 +554,13 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+**DESIGN PHASE CLOSED — APPROVED.** Codex `REVIEW_APPROVED` with zero findings at
+`648748aadf5a9a5101524337f9a09379d6807ca7` (2026-08-07); Zamp accepted the design and authorized
+the implementation phase, LOCAL ONLY (`decisions/70-spec-anchored-design-accepted.md`). The
+implementation follows §10's order — spec system first, then annotations, protocol amendments and
+lane changes — with every activation atomic with its conformance. Publication, cloud effects,
+secrets, paid calls and the TOCTOU acceptance remain exactly as gated before.
+
 Design round 15 (Codex, two findings) made the reconstruction itself fail-closed. **A dangling
 continuation can no longer vanish**: the reconstructor used to reset its buffer silently at a
 fence boundary, and skipped blank/comment lines even mid-continuation — so a trailing backslash

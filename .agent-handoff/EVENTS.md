@@ -2,6 +2,17 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-07 — Claude — #70 Spec-Anchored Design APPROVED; implementation phase opens, local only
+
+- Codex `REVIEW_APPROVED`, zero findings, target `648748aadf5a9a5101524337f9a09379d6807ca7`
+  (design rounds 1-15 all closed fix-forward).
+- Zamp accepted the design and authorized the implementation phase, LOCAL ONLY
+  (`.agent-handoff/decisions/70-spec-anchored-design-accepted.md`).
+- No publication, cloud effect, secret or paid call authorized; every SPEC-ID stays PROPOSED;
+  TOCTOU riskAcceptance stays null.
+- Next: Slice I1 — `spec/registry.json` + closed-schema validator + `spec:lint` + `spec:conform`,
+  wired into the root test battery.
+
 ## 2026-08-07 — Claude — #70 Slice B1 round 15: pages validated before transformation, ARNs positional
 
 - Codex's round-15 review of 49731da4: the raw page was still transformed before validation —

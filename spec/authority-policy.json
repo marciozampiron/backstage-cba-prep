@@ -238,7 +238,8 @@
     "docs/runbooks/aws-dev-release-deploy.md",
     "docs/runbooks/aws-dev-release-recovery.md",
     "docs/runbooks/aws-dev-release-bind.md",
-    "docs/runbooks/aws-dev-release-abandon.md"
+    "docs/runbooks/aws-dev-release-abandon.md",
+    ".agent-handoff/decisions/70-spec-anchored-design-accepted.md"
   ],
   "surfaceClassification": {
     "canonical-authority": [
@@ -283,7 +284,8 @@
       "docs/runbooks/aws-dev-release-deploy.md",
       "docs/runbooks/aws-dev-release-recovery.md",
       "docs/runbooks/aws-dev-release-bind.md",
-      "docs/runbooks/aws-dev-release-abandon.md"
+      "docs/runbooks/aws-dev-release-abandon.md",
+      ".agent-handoff/decisions/70-spec-anchored-design-accepted.md"
     ],
     "link-only": [
       "CLAUDE.md",
@@ -614,6 +616,10 @@
       "There is no step here that resolves it, and this runbook offers no command that would. The effect is delete-review-in-progress-stack-record, authorized only by a stack-record-authorization record (spec §8b) whose nine keys name the account, region, stack name, immutable stack ARN, the exact observed status and the instant, valid for fifteen minutes and re-verified immediately before acting.",
       "Even so, DeleteStack has no compare-and-delete, and that residual is unaccepted: spec/authority-policy.json records riskAcceptance: null and executableProcedure: false — and round 8 made acceptance a closed RECORD (finding, justification, compensating controls, Zamp as owner, review date, expiry), never a boolean a later edit could flip.",
       "- Zamp clears the CBA_CLOUD_GATE value for the abandon decision."
+    ],
+    ".agent-handoff/decisions/70-spec-anchored-design-accepted.md": [
+      "- It authorizes NO cloud effect, secret access or paid call; CBA_CLOUD_GATE, stack-record-authorization and the spend instrument are untouched.",
+      "- The TOCTOU riskAcceptance remains null: delete-review-in-progress-stack-record stays without an executable procedure."
     ]
   }
 }
