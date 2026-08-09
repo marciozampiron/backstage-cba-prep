@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-bind
 kind: runbook
-version: 0.8.0
+version: 0.9.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007]
@@ -13,8 +13,12 @@ cloudMutation: false
 
 # Runbook — dev release, BIND the release to its manifest and digests
 
-> **Status: DESIGN — BLOCKED ON AN IMPLEMENTATION-PHASE PREREQUISITE.** This runbook cannot be
-> executed until the workflow gains the `bind_only` path described below. Round 4 of this
+> **Status: PREREQUISITES IMPLEMENTED (Slice I2) — STILL `PLANNED — not executable`.** The
+> `bind_only` path, the canonical run name, the closed correlation grammar and the structured
+> binding artifact now EXIST in the reviewed tree; what keeps this runbook non-executable is the
+> lane's own activation prerequisites (bootstraps, Environment secrets/variables — see the
+> workflow header) and the fact that no publication has occurred. The history below records why
+> the path was built this way. Round 4 of this
 > design's review proved the earlier version could not work and was not safe:
 >
 > 1. **It could not produce its output.** The manifest is written to `$GITHUB_OUTPUT`, which is

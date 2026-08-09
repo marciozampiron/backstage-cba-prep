@@ -33,6 +33,7 @@ const raw = fs.readFileSync(WORKFLOW, 'utf8');
  */
 const EXPECTED_WORKFLOW = {
   "name": "Release Pilot",
+  "run-name": "cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}",
   "on": {
     "workflow_dispatch": {
       "inputs": {
@@ -41,11 +42,17 @@ const EXPECTED_WORKFLOW = {
           "required": true,
           "type": "string"
         },
+        "correlation_id": {
+          "description": "Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact",
+          "required": true,
+          "type": "string"
+        },
         "mode": {
-          "description": "dev_only is the only selectable path in Slice B1 — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented",
+          "description": "bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the deploy path — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented",
           "required": true,
           "type": "choice",
           "options": [
+            "bind_only",
             "dev_only"
           ]
         }
@@ -83,9 +90,10 @@ const EXPECTED_WORKFLOW = {
           "name": "Validate release identity",
           "id": "identity",
           "env": {
-            "RELEASE_SHA": "${{ inputs.release_sha }}"
+            "RELEASE_SHA": "${{ inputs.release_sha }}",
+            "CORRELATION_ID": "${{ inputs.correlation_id }}"
           },
-          "run": "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main — only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\n# Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`\n# pattern validates only the first one, so \"a\" followed by 39 \"Z\"s passed it.\nif [ \"${#RELEASE_SHA}\" -ne 40 ] || [ -n \"${RELEASE_SHA//[0-9a-f]/}\" ]; then\n  echo \"::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name\"\n  exit 1\nfi\n# The correlation id has a CLOSED grammar (SPEC-LANE-006) and is refused here, before\n# any credentialed stage: prefix, then exactly 32 lowercase hex.\nsuffix=\"${CORRELATION_ID#cba-70-}\"\nif [ \"$suffix\" = \"$CORRELATION_ID\" ] || [ \"${#suffix}\" -ne 32 ] || [ -n \"${suffix//[0-9a-f]/}\" ]; then\n  echo \"::error::correlation_id must match cba-70- followed by exactly 32 lowercase hex characters\"\n  exit 1\nfi\ngit fetch --quiet origin main\n# The object must BE a commit: a 40-hex tag or blob OID is not a release.\ntype=$(git cat-file -t \"$RELEASE_SHA\" 2>/dev/null || true)\nif [ \"$type\" != \"commit\" ]; then\n  echo \"::error::release_sha does not name a commit object in main's history\"\n  exit 1\nfi\nresolved=$(git rev-parse --verify \"$RELEASE_SHA^{commit}\")\nif [ \"$resolved\" != \"$RELEASE_SHA\" ]; then\n  echo \"::error::release_sha did not resolve to itself; refusing an ambiguous name\"\n  exit 1\nfi\nif ! git merge-base --is-ancestor \"$resolved\" origin/main; then\n  echo \"::error::release_sha is not an ancestor of main — only reviewed, merged commits are releasable\"\n  exit 1\nfi\n# Emit the RESOLVED OID, never the original input: downstream jobs pin to this output,\n# so a ref moved between validation and a later checkout has nothing left to move.\necho \"release_sha=$resolved\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -168,13 +176,47 @@ const EXPECTED_WORKFLOW = {
         }
       ]
     },
+    "bind-stage": {
+      "name": "Bind — publish the release manifest as evidence (no cloud authority)",
+      "needs": [
+        "global-preflight",
+        "dev-preflight"
+      ],
+      "if": "needs.dev-preflight.result == 'success' && inputs.mode == 'bind_only'",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "name": "Assemble the binding artifact",
+          "env": {
+            "MANIFEST": "${{ needs.dev-preflight.outputs.manifest }}",
+            "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
+            "CORRELATION_ID": "${{ inputs.correlation_id }}"
+          },
+          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/binding\"\nnode -e '\n  const manifest = JSON.parse(process.env.MANIFEST);\n  const binding = {\n    correlationId: process.env.CORRELATION_ID,\n    releaseSha: process.env.RELEASE_SHA,\n    manifest,\n  };\n  require(\"fs\").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + \"\\n\");\n' \"$RUNNER_TEMP/binding/binding.json\"\n"
+        },
+        {
+          "name": "Upload the binding artifact",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "binding",
+            "path": "${{ runner.temp }}/binding/binding.json",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        }
+      ]
+    },
     "dev-stage": {
       "name": "Dev stage — deploy AWS (dev)",
       "needs": [
         "global-preflight",
         "dev-preflight"
       ],
-      "if": "needs.dev-preflight.result == 'success'",
+      "if": "needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'",
       "runs-on": "ubuntu-latest",
       "timeout-minutes": 15,
       "environment": "dev",
@@ -391,7 +433,7 @@ function objectDiff(expected, actual, base = '') {
 
 /** The ONLY success expressions a job may carry; see rounds 2–3 for why the grammar is closed. */
 const IF_GRAMMAR =
-  /^needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == 'dev_then_pilot')?$/;
+  /^needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == '(dev_then_pilot|dev_only|bind_only)')?$/;
 
 /** Job-level keys that hand execution or environment to something nobody reviewed. */
 const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 'secrets', 'continue-on-error'];
@@ -399,7 +441,7 @@ const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 
 /** Every job is time-bounded (design §1: preflights 5, deploys 15; the pilot placeholder runs no
  * deploy and is bounded like a preflight). An unbounded job that hangs keeps its OIDC authority
  * alive until GitHub's default limit — hours, not minutes. */
-const EXPECTED_TIMEOUTS = { 'global-preflight': 5, 'dev-preflight': 5, 'dev-stage': 15, 'pilot-preflight': 5, 'pilot-stage': 5 };
+const EXPECTED_TIMEOUTS = { 'global-preflight': 5, 'dev-preflight': 5, 'bind-stage': 5, 'dev-stage': 15, 'pilot-preflight': 5, 'pilot-stage': 5 };
 
 const DEPLOY_COMMAND = /\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/;
 
@@ -425,14 +467,26 @@ export function releaseLaneErrors(text) {
   if (!on.workflow_dispatch || Object.keys(on).length !== 1) {
     errors.push('the lane must be triggered by workflow_dispatch and nothing else');
   }
-  // SLICE B1: promotion is MECHANICALLY blocked. `mode` may offer ONLY dev_only — the pilot jobs'
-  // success expressions require dev_then_pilot, so with the option absent they are unreachable.
-  // Restoring the option is the promotion slice's deliberate act, together with O1/O2, the smokes
-  // and the live SNS/KMS proof; until then it is refused HERE BY NAME, so the reviewed-object diff
-  // cannot be the only thing standing when that edit arrives.
+  // SLICE B1 + I2: promotion is MECHANICALLY blocked. `mode` may offer ONLY the reviewed
+  // NON-PILOT set — bind_only (terminates after the preflight) and dev_only — because the pilot
+  // jobs' success expressions require dev_then_pilot, so with that option absent they are
+  // unreachable. Restoring dev_then_pilot is the promotion slice's deliberate act, together with
+  // O1/O2, the smokes and the live SNS/KMS proof; until then it is refused HERE BY NAME, so the
+  // reviewed-object diff cannot be the only thing standing when that edit arrives.
   const modeOptions = on.workflow_dispatch?.inputs?.mode?.options ?? [];
-  if (JSON.stringify(modeOptions) !== JSON.stringify(['dev_only'])) {
-    errors.push('promotion is mechanically blocked: mode must offer only dev_only until O1/O2, the smokes and the SNS/KMS proof land');
+  if (JSON.stringify(modeOptions) !== JSON.stringify(['bind_only', 'dev_only'])) {
+    errors.push('promotion is mechanically blocked: mode must offer only the reviewed non-pilot set [bind_only, dev_only] until O1/O2, the smokes and the SNS/KMS proof land');
+  }
+  // SPEC-LANE-006: the run is identifiable from run metadata alone. The run name is EXACTLY the
+  // closed string bin/resolve-run.mjs matches by equality — nothing prepended, nothing appended.
+  if (wf['run-name'] !== 'cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}') {
+    errors.push('the run name must be exactly the closed cba-release string the resolver matches by equality');
+  }
+  // …and the correlation id is a REQUIRED dispatch input with the closed grammar validated in
+  // the global preflight before any credentialed stage.
+  const corr = on.workflow_dispatch?.inputs?.correlation_id;
+  if (!corr || corr.required !== true || corr.type !== 'string') {
+    errors.push('correlation_id must be a required string dispatch input (SPEC-LANE-006)');
   }
   // Releases serialize PER ENVIRONMENT (Slice B1 review). The lock must be the LITERAL group —
   // a group derived from inputs (the old release-pilot-${{ inputs.release_sha }}) gives two
@@ -567,10 +621,51 @@ test('the release lane parses cleanly and EQUALS the reviewed object', () => {
   assert.deepEqual(releaseLaneErrors(raw), []);
 });
 
-test('YAML sees exactly the five reviewed jobs — the round-7 lesson, asserted at the source', () => {
+test('YAML sees exactly the six reviewed jobs — the round-7 lesson, asserted at the source', () => {
   const { wf } = parseWorkflow(raw);
-  assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'dev-stage', 'pilot-preflight', 'pilot-stage']);
-  assert.deepEqual(Object.keys(wf), ['name', 'on', 'permissions', 'concurrency', 'jobs']);
+  assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'bind-stage', 'dev-stage', 'pilot-preflight', 'pilot-stage']);
+  assert.deepEqual(Object.keys(wf), ['name', 'run-name', 'on', 'permissions', 'concurrency', 'jobs']);
+});
+
+test('SLICE I2: the bind stage terminates the DAG with no cloud authority and a pinned artifact', () => {
+  const { wf } = parseWorkflow(raw);
+  const bind = wf.jobs['bind-stage'];
+  // Gated on the IMMUTABLE dispatch input: an Environment value changed mid-run changes nothing.
+  assert.equal(bind.if, "needs.dev-preflight.result == 'success' && inputs.mode == 'bind_only'");
+  // No id-token, no Environment binding, no OIDC consumer: this job cannot acquire AWS authority.
+  assert.deepEqual(bind.permissions, { contents: 'read' });
+  assert.equal(bind.environment, undefined);
+  assert.ok(bind.steps.every((step) => !String(step.uses ?? '').includes('aws-actions/')));
+  // Terminal in the DAG: no job needs bind-stage, so nothing can run downstream of a binding.
+  for (const [name, job] of Object.entries(wf.jobs)) {
+    assert.ok(!(job.needs ?? []).includes('bind-stage'), `${name} must not depend on bind-stage`);
+  }
+  // The artifact uploader is pinned by SHA and uploads exactly the named binding file.
+  const upload = bind.steps.find((step) => String(step.uses ?? '').startsWith('actions/upload-artifact@'));
+  assert.equal(upload.uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
+  // The version comment lives in the raw text, beside the pin, like every other action here.
+  assert.ok(raw.includes('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'));
+  assert.equal(upload.with.name, 'binding');
+  assert.equal(upload.with['if-no-files-found'], 'error');
+  // …and dev-stage is reachable ONLY on the deploy mode, so a bind run cannot deploy.
+  assert.equal(wf.jobs['dev-stage'].if, "needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'");
+});
+
+test('SLICE I2 MUTATION PROOFS: the bind path cannot quietly gain authority or lose its gate', () => {
+  // dev-stage losing its mode gate would let a bind_only dispatch deploy.
+  rejects(raw.replace("if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'", "if: needs.dev-preflight.result == 'success'"),
+    'dev-stage without the mode gate must fail the reviewed-object diff');
+  // bind-stage acquiring id-token would fail: permissions are part of the reviewed object, and
+  // the OIDC rule counts consumers per job.
+  rejects(raw.replace('  bind-stage:\n    name: Bind — publish the release manifest as evidence (no cloud authority)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\' && inputs.mode == \'bind_only\'\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    permissions:\n      contents: read',
+    '  bind-stage:\n    name: Bind — publish the release manifest as evidence (no cloud authority)\n    needs: [global-preflight, dev-preflight]\n    if: needs.dev-preflight.result == \'success\' && inputs.mode == \'bind_only\'\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    permissions:\n      contents: read\n      id-token: write'),
+    'bind-stage with id-token must fail the reviewed-object diff');
+  // The run name is the resolver's contract: any deviation fails by name.
+  rejects(raw.replace('run-name: cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}', 'run-name: release ${{ inputs.correlation_id }}'),
+    'a foreign run name must be refused');
+  // The correlation input cannot become optional.
+  rejects(raw.replace("      correlation_id:\n        description: 'Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact'\n        required: true", "      correlation_id:\n        description: 'Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact'\n        required: false"),
+    'an optional correlation id must be refused');
 });
 
 test('Slice B1 deploys dev and ONLY dev: the entrypoint lives in dev-stage alone, raw deploys nowhere', () => {
@@ -595,8 +690,8 @@ test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoin
   // the promotion slice will legitimately edit the reviewed object, and this named rule is what
   // forces that edit to also bring O1/O2, the smokes and the SNS/KMS proof through review.
   const unblocked = raw.replace(
-    '        options:\n          - dev_only',
-    '        options:\n          - dev_only\n          - dev_then_pilot',
+    '        options:\n          - bind_only\n          - dev_only',
+    '        options:\n          - bind_only\n          - dev_only\n          - dev_then_pilot',
   );
   assert.notEqual(unblocked, raw);
   assert.ok(
@@ -833,9 +928,9 @@ test('POSITIVE CONTROL: pinning, inputs, gating and credentials cannot be loosen
   rejects(raw.replace('on:\n  workflow_dispatch:', 'on:\n  push:\n    branches: [main]\n  workflow_dispatch:'), 'an automatic trigger');
   rejects(raw.replace("    if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'", "    if: needs.global-preflight.result == 'success'"), 'pilot entry without the dev stage or the mode');
   rejects(raw.replace('\n    needs: [global-preflight, dev-preflight, dev-stage]', '\n    needs: [global-preflight]'), 'pilot-preflight detached from the dev stage');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), '|| true');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    if: always()\n    runs-on'), 'always()');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), '|| true');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", '    if: always()\n    runs-on'), 'always()');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
   rejects(raw.replaceAll('secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN', 'vars.AWS_DEPLOY_PREFLIGHT_ROLE_ARN'), 'the role ARN moved to a variable');
   rejects(raw.replaceAll('          mask-aws-account-id: true\n', ''), 'account-id masking removed');
   rejects(raw.replace('${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}', `arn:aws:iam::${'9'.repeat(12)}:role/x`), 'a literal IAM ARN');
@@ -903,7 +998,7 @@ function identityScript() {
   return step.run;
 }
 
-function runIdentity({ sha, type = 'commit', resolved = '', ancestorExit = 0 }) {
+function runIdentity({ sha, type = 'commit', resolved = '', ancestorExit = 0, correlation = `cba-70-${'0'.repeat(32)}` }) {
   const script = identityScript();
   const dir = fs.mkdtempSync(join(os.tmpdir(), 'cba-identity-'));
   try {
@@ -938,6 +1033,7 @@ function runIdentity({ sha, type = 'commit', resolved = '', ancestorExit = 0 }) 
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
         RELEASE_SHA: sha,
+        CORRELATION_ID: correlation,
         GITHUB_OUTPUT: outFile,
         GIT_CALLS: calls,
         GIT_TYPE: type,
@@ -985,6 +1081,17 @@ test('EXECUTED: a non-ancestor of main is refused', () => {
   const r = runIdentity({ sha: OID, ancestorExit: 1 });
   assert.notEqual(r.status, 0);
   assert.match(r.calls, /merge-base --is-ancestor/);
+});
+
+test('EXECUTED: a malformed correlation id is refused BEFORE any git invocation', () => {
+  // SPEC-LANE-006: closed grammar, refused in the global preflight — before fetch, before any
+  // credentialed stage. The release SHA is valid here so the refusal is attributable.
+  for (const bad of ['', 'cba-70-123', `cba-70-${'0'.repeat(31)}Z`, `cba-71-${'0'.repeat(32)}`, '0'.repeat(39), `cba-70-${'0'.repeat(32)} `, `CBA-70-${'0'.repeat(32)}`]) {
+    const r = runIdentity({ sha: OID, correlation: bad });
+    assert.notEqual(r.status, 0, JSON.stringify(bad));
+    assert.equal(r.calls.trim(), '', `no git call may run for ${JSON.stringify(bad)}`);
+    assert.equal(r.out.trim(), '', 'nothing is emitted for a refused dispatch');
+  }
 });
 
 test('EXECUTED: the happy path emits the resolved OID, in order, after every proof', () => {

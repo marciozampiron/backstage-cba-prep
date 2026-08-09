@@ -2,6 +2,16 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-09 — Claude — #70 Slice I1 APPROVED (spec system core); Slice I2 opens (lane, local)
+
+- Codex `REVIEW_APPROVED`, zero findings, target `d0c9bf60b89f7541905b39091284bcd7e51f0e69`
+  (I1 rounds 1-5 all closed fix-forward). Slice I1 concluded: registry (56 ids), traceability
+  linter, conformance checker, historical laws, per-child execution boundaries, CI wiring.
+- 0 ACTIVE remains intentional; activations await their own commits.
+- Next: Slice I2 — the lane's functional prerequisites (SPEC-LANE-005/006, SPEC-RUN-006):
+  correlation_id input, canonical run-name, bind_only path, structured binding artifact.
+  Local only; nothing published; no cloud effect.
+
 ## 2026-08-07 — Claude — #70 Spec-Anchored Design APPROVED; implementation phase opens, local only
 
 - Codex `REVIEW_APPROVED`, zero findings, target `648748aadf5a9a5101524337f9a09379d6807ca7`

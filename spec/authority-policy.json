@@ -603,7 +603,7 @@
       "- Zamp clears any CBA_CLOUD_GATE value left from the halted decision before the next cycle; this runbook itself sets nothing."
     ],
     "docs/runbooks/aws-dev-release-bind.md": [
-      "--- id: aws-dev-release-bind kind: runbook version: 0.8.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007] inputs: [the release SHA, a caller-generated correlation id, the dev Environment configuration] outputs: [the structured binding artifact carrying the exact manifest and its digest, the terminal run record] gateRequired: false cloudMutation: false ---",
+      "--- id: aws-dev-release-bind kind: runbook version: 0.9.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007] inputs: [the release SHA, a caller-generated correlation id, the dev Environment configuration] outputs: [the structured binding artifact carrying the exact manifest and its digest, the terminal run record] gateRequired: false cloudMutation: false ---",
       "It was not mechanically read-only. Checking that CBA_CLOUD_GATE is absent BEFORE > dispatch binds nothing: dev-stage reads that mutable Environment variable later, so a > value planted during the run would let it prepare change sets.",
       "Design round 3 found the ordering defect this operation fixes: a plan_only cloud authorization must name the manifest digest, but that digest is produced inside the preflight, after dispatch."
     ],

@@ -1,8 +1,10 @@
 # Release orchestrator (#70) — release identity, preflight, binding, gates and the DEV deploy.
-# SLICE B1: the dev stage deploys AWS through the sanctioned entrypoint. PILOT DEPLOYS NOTHING —
-# promotion is MECHANICALLY BLOCKED: `mode` offers only `dev_only`, so the pilot jobs (whose
-# success expressions require `dev_then_pilot`) are unreachable until O1/O2, the deployed smokes
-# and the live SNS/KMS notification proof are implemented in later slices.
+# SLICE B1 + I2: the dev stage deploys AWS through the sanctioned entrypoint, and `bind_only`
+# publishes the release manifest as a structured artifact without entering any mutating stage.
+# PILOT DEPLOYS NOTHING — promotion is MECHANICALLY BLOCKED: `mode` offers only the reviewed
+# non-pilot set {bind_only, dev_only}, so the pilot jobs (whose success expressions require
+# `dev_then_pilot`) are unreachable until O1/O2, the deployed smokes and the live SNS/KMS
+# notification proof are implemented in later slices.
 #
 # Shaped by `docs/architecture/deployed-environment-smoke-workflow-design.md` §1 and §4. Slice A
 # delivers the identity, the ordering, the binding and the refusals; the deploys, the F1/F2 gates
@@ -80,6 +82,10 @@
 # entrypoint (node bin/deploy-preflight.js / node bin/deploy-release.js); a semantic invariant
 # refuses npm/npx or any action step after credential acquisition.
 name: Release Pilot
+# The run's NAME carries the caller's correlation id (SPEC-LANE-006): a run must be identifiable
+# from run metadata alone, BEFORE any artifact can be downloaded — bin/resolve-run.mjs matches
+# this exact closed string by equality.
+run-name: cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}
 
 on:
   workflow_dispatch:
@@ -88,11 +94,16 @@ on:
         description: 'Full 40-character commit SHA to release; must be an ancestor of main'
         required: true
         type: string
+      correlation_id:
+        description: 'Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact'
+        required: true
+        type: string
       mode:
-        description: 'dev_only is the only selectable path in Slice B1 — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
+        description: 'bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the deploy path — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
         required: true
         type: choice
         options:
+          - bind_only
           - dev_only
 
 permissions:
@@ -131,12 +142,20 @@ jobs:
         id: identity
         env:
           RELEASE_SHA: ${{ inputs.release_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
         run: |
           set -euo pipefail
           # Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`
           # pattern validates only the first one, so "a" followed by 39 "Z"s passed it.
           if [ "${#RELEASE_SHA}" -ne 40 ] || [ -n "${RELEASE_SHA//[0-9a-f]/}" ]; then
             echo "::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name"
+            exit 1
+          fi
+          # The correlation id has a CLOSED grammar (SPEC-LANE-006) and is refused here, before
+          # any credentialed stage: prefix, then exactly 32 lowercase hex.
+          suffix="${CORRELATION_ID#cba-70-}"
+          if [ "$suffix" = "$CORRELATION_ID" ] || [ "${#suffix}" -ne 32 ] || [ -n "${suffix//[0-9a-f]/}" ]; then
+            echo "::error::correlation_id must match cba-70- followed by exactly 32 lowercase hex characters"
             exit 1
           fi
           git fetch --quiet origin main
@@ -239,6 +258,48 @@ jobs:
           echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-dev.json")" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------------------------
+  # BIND STAGE — SPEC-LANE-005/006, SPEC-RUN-006: publish the release's manifest as a STRUCTURED
+  # UPLOADED ARTIFACT so Zamp can author a cloud authorization that names its digest. This path
+  # terminates here BY CONSTRUCTION: it is gated on the immutable dispatch input (an Environment
+  # value changed mid-run changes nothing), no job needs it, it holds no id-token permission and
+  # contains no OIDC consumer — it cannot prepare or execute anything, whatever the Environment
+  # holds at any instant of the run. Evidence is read from the artifact, never scraped from logs.
+  # ---------------------------------------------------------------------------------------------
+  bind-stage:
+    name: Bind — publish the release manifest as evidence (no cloud authority)
+    needs: [global-preflight, dev-preflight]
+    if: needs.dev-preflight.result == 'success' && inputs.mode == 'bind_only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Assemble the binding artifact
+        env:
+          MANIFEST: ${{ needs.dev-preflight.outputs.manifest }}
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/binding"
+          node -e '
+            const manifest = JSON.parse(process.env.MANIFEST);
+            const binding = {
+              correlationId: process.env.CORRELATION_ID,
+              releaseSha: process.env.RELEASE_SHA,
+              manifest,
+            };
+            require("fs").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + "\n");
+          ' "$RUNNER_TEMP/binding/binding.json"
+      - name: Upload the binding artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binding
+          path: ${{ runner.temp }}/binding/binding.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------------------------
   # DEV STAGE — SLICE B1: the sanctioned AWS deploy of the dev tier.
   #
   # Deployment happens ONLY through infra/aws/bin/deploy-release.js. In one process it validates
@@ -264,7 +325,7 @@ jobs:
   dev-stage:
     name: Dev stage — deploy AWS (dev)
     needs: [global-preflight, dev-preflight]
-    if: needs.dev-preflight.result == 'success'
+    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: dev

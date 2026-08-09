@@ -554,6 +554,24 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation Slice I2 (first commit) delivered the lane's bind foundations — SPEC-LANE-005/006
+made real. `release-pilot.yml` gained: a canonical `run-name` (`cba-release <mode>
+<correlation_id>` — the exact closed string bin/resolve-run.mjs matches by equality); a REQUIRED
+`correlation_id` dispatch input whose closed grammar (`^cba-70-[0-9a-f]{32}$`) is refused in the
+global preflight BEFORE any git invocation or credentialed stage (executed tests drive the real
+script: seven malformed shapes refused with zero git calls and nothing emitted); a `bind_only`
+mode option; and a `bind-stage` job that terminates the DAG — gated on the IMMUTABLE dispatch
+input (an Environment value changed mid-run changes nothing), holding no id-token, containing no
+OIDC consumer, needed by no job — which assembles `binding.json` (correlationId, releaseSha,
+manifest) and uploads it via SHA-pinned upload-artifact v7.0.1. `dev-stage` is now reachable
+ONLY on `mode == 'dev_only'`, so a bind run cannot deploy. EXPECTED_WORKFLOW regenerated
+deliberately; the mode rule names the reviewed non-pilot set {bind_only, dev_only} with
+dev_then_pilot still refused by name; IF grammar extended to the closed mode literals; six jobs;
+new semantic rules and mutation proofs (mode gate stripped, id-token acquired, foreign run name,
+optional correlation). SPEC-LANE-004's PROPOSED text widened accordingly (§4 permits editing
+PROPOSED); LANE-005/006 rows and registry entries now carry their real anchors. All ids remain
+PROPOSED.
+
 Implementation round I1-5 (Codex, two HIGH) removed the last places where breakage read as
 absence. **A git failure is never "no history"**: the shallow probe must run and answer
 (`HISTORY_UNPROVABLE` otherwise), parents are ENUMERATED (`rev-list --parents` — a proven root
