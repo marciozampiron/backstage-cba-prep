@@ -14,11 +14,17 @@ review AND Zamp's decision.
 
 ## Decision
 
-Zamp accepted the design and authorized the implementation phase, verbatim, 2026-08-07:
+Zamp accepted the design and authorized the implementation phase, 2026-08-07. Provenance,
+attributed line by line (round I1-2 corrected an earlier version of this record that
+labelled everything below "Zamp, verbatim"):
 
-> Aproado
-
-> NEXT_OWNER: Opus (implementação local Spec-Anchored da #70)
+- **Received by Opus in the working session, verbatim:** `Aproado` — and, in a follow-up
+  relay: `NEXT_OWNER: Opus (implementação local Spec-Anchored da #70)`.
+- **Per Codex's independent review of this record:** Zamp's own words on Zamp's channel
+  were `Aprovado!!!!`; the `NEXT_OWNER:` line is Codex's subsequent NORMALIZATION of
+  Zamp's assignment, not Zamp's phrasing.
+- The operative content every channel agrees on: the design is accepted, and the
+  implementation phase is authorized, LOCAL ONLY.
 
 Interpreted and recorded by Opus as: (1) the design is accepted; (2) the implementation
 phase of §10 may begin, LOCAL ONLY, in the order the spec states — the spec system first

@@ -24,7 +24,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -45,7 +45,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -66,7 +66,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -91,7 +91,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -112,7 +112,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -133,7 +133,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -154,7 +154,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -175,7 +175,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -196,7 +196,7 @@
         "spec/spec-anchored-development.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -217,7 +217,7 @@
         "docs/runbooks/spec-conformance-audit.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -238,7 +238,7 @@
         "spec/agents/gemini-spec-auditor.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -259,7 +259,7 @@
         "spec/agents/gemini-spec-auditor.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -280,7 +280,7 @@
         "spec/agents/gemini-spec-auditor.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -301,7 +301,7 @@
         "spec/agents/gemini-spec-auditor.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -322,7 +322,7 @@
         "docs/runbooks/README.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -343,7 +343,7 @@
         "docs/runbooks/README.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -364,7 +364,7 @@
         "docs/runbooks/README.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -385,7 +385,7 @@
         "docs/runbooks/README.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -406,7 +406,7 @@
         "docs/runbooks/README.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -427,7 +427,7 @@
         "docs/runbooks/aws-dev-release-bind.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -453,7 +453,7 @@
         "docs/runbooks/aws-dev-release-plan.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -474,7 +474,7 @@
         "docs/runbooks/aws-dev-release-abandon.md"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -500,7 +500,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -530,7 +530,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -556,7 +556,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -582,7 +582,7 @@
         "infra/aws/lib/context.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -608,7 +608,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -638,7 +638,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -664,7 +664,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -690,7 +690,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -716,7 +716,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -742,7 +742,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -768,7 +768,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -794,7 +794,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -820,7 +820,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -850,7 +850,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -880,7 +880,7 @@
         "infra/aws/lib/context.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -906,7 +906,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -932,7 +932,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -946,7 +946,10 @@
       "checks": [],
       "governedPaths": [],
       "mutationEvidence": "none — successor, awaiting its activation commit",
-      "supersedes": "SPEC-DEPLOY-002",
+      "supersedes": [
+        "SPEC-DEPLOY-002",
+        "SPEC-DEPLOY-020"
+      ],
       "supersededBy": null
     },
     {
@@ -960,7 +963,7 @@
       "checks": [],
       "governedPaths": [],
       "mutationEvidence": "none — absorbed into SPEC-DEPLOY-019 before activation (§4)",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": "SPEC-DEPLOY-019"
     },
     {
@@ -986,7 +989,7 @@
         "spec/authority-policy.json"
       ],
       "mutationEvidence": "policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1012,7 +1015,7 @@
         "spec/authority-policy.json"
       ],
       "mutationEvidence": "policy data + test reviewed in this commit; no lane may perform it",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1026,7 +1029,7 @@
       "checks": [],
       "governedPaths": [],
       "mutationEvidence": "none — awaiting the workflow path",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1040,7 +1043,7 @@
       "checks": [],
       "governedPaths": [],
       "mutationEvidence": "none — awaiting the workflow input, run name and artifact",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1066,7 +1069,7 @@
         "bin/resolve-run.mjs"
       ],
       "mutationEvidence": "helper + simulated-`gh` tests reviewed in this commit; the run name itself awaits the workflow",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1097,7 +1100,7 @@
         "docs/runbooks/aws-dev-release-plan.md"
       ],
       "mutationEvidence": "none — awaiting SPEC-LANE-006",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1123,7 +1126,7 @@
         "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1149,7 +1152,7 @@
         ".github/workflows/release-pilot.yml"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1175,7 +1178,7 @@
         ".github/workflows/release-pilot.yml"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1201,7 +1204,7 @@
         ".github/workflows/release-pilot.yml"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1227,7 +1230,7 @@
         ".github/workflows/release-pilot.yml"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1262,7 +1265,7 @@
         "infra/aws/lib/security-stack.js"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1288,7 +1291,7 @@
         "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1314,7 +1317,7 @@
         "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     },
     {
@@ -1340,7 +1343,7 @@
         "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
       ],
       "mutationEvidence": "code + tests reviewed, reversion proven",
-      "supersedes": null,
+      "supersedes": [],
       "supersededBy": null
     }
   ]

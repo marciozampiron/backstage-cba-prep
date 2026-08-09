@@ -6,11 +6,12 @@
  * and says so plainly: nothing is enforced yet, and claiming otherwise would be the overclaim
  * design round 4 removed.
  *
- * `--commit <full-sha>` validates the registry as of that commit first; the TESTS always run in
- * the current working tree, which is the tree whose conformance is being asked about.
+ * `--commit <full-sha>` requires the worktree to BE that commit (HEAD equal, tree clean) before
+ * anything runs: the tests execute from the worktree, and a commit target that borrowed another
+ * tree's results would prove nothing (round I1-2).
  * Read-only over the repository (SPEC-GOV-001).
  */
-import { loadSpecSources, validateSpecRegistry, runConformance, SpecRegistryError } from '../src/lib/spec-registry.js';
+import { loadSpecSources, validateSpecRegistry, runConformance, assertConformTarget, SpecRegistryError } from '../src/lib/spec-registry.js';
 
 function cliArg(argv, name) {
   const i = argv.indexOf(name);
@@ -19,6 +20,10 @@ function cliArg(argv, name) {
 
 try {
   const commit = cliArg(process.argv, '--commit') ?? null;
+  // Round I1-2: the TESTS run from the worktree, so a commit target is honest only when the
+  // worktree IS that commit, exactly and cleanly — a broken target must not borrow a fixed
+  // tree's green.
+  if (commit !== null) assertConformTarget({ commit });
   const registry = validateSpecRegistry(loadSpecSources({ commit }));
   const report = runConformance(registry);
   if (report.activeCount === 0) {

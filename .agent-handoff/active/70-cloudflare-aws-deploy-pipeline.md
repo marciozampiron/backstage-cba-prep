@@ -554,6 +554,23 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I1-2 (Codex, six findings on Slice I1) hardened the spec system before any
+id can activate. `--commit` now requires the worktree to BE the audited commit (HEAD equal, tree
+clean) — the tests run from the worktree, and a broken target must not borrow a fixed tree's
+green. Conformance executes CHECKS as obligations (bash, 60s bound, named refusals), not just
+tests. The historical laws exist: judged against the last committed registry — inductively, every
+reviewed commit — nothing is ever deleted, an ACTIVE text cannot change even when digest and
+table are edited consistently with it, ACTIVE never quietly reverts to PROPOSED, and RETIRED is
+permanent in status, successor and text. Supersession became RECIPROCAL data (`supersedes` is a
+list; -019 names both -002 and the absorbed -020), so a supersededBy aimed at an unrelated id
+refuses. Paths must be normalized repo-relative (an anchor can no longer escape to a sibling
+checkout), an ACTIVE anchor symbol must actually appear in its file, and the third traceability
+direction runs from day one: every `[SPEC-…]` annotation in tracked content must resolve. The
+decision record now attributes each received line to its actual channel — what Opus received
+verbatim, what Codex reports as Zamp's own words, and Codex's normalization, separately. The
+spec header states the honest phase: implementation in progress, zero ACTIVE, no completeness
+claimed.
+
 **DESIGN PHASE CLOSED — APPROVED.** Codex `REVIEW_APPROVED` with zero findings at
 `648748aadf5a9a5101524337f9a09379d6807ca7` (2026-08-07); Zamp accepted the design and authorized
 the implementation phase, LOCAL ONLY (`decisions/70-spec-anchored-design-accepted.md`). The

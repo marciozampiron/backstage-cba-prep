@@ -1,11 +1,14 @@
 # Spec-Anchored Development
 
-> **Status: DESIGN — under independent review.** This document defines the contract. The
-> traceability linter, the conformance checks, the machine-readable registry file and any CI or
-> runtime change are a LATER phase and do not exist yet; nothing in this document creates
-> authority or executes anything. Approval flows are unchanged: `HUMAN_GATE_GRANTED` (Zamp)
-> remains the publication instrument, and cloud effects have their own Zamp-issued
-> authorization, per §8 and
+> **Status: IMPLEMENTATION IN PROGRESS — design approved (Codex, zero findings, 2026-08-07;
+> accepted by Zamp, `.agent-handoff/decisions/70-spec-anchored-design-accepted.md`).**
+> This document defines the contract. `spec/registry.json`, the traceability linter
+> (`npm run spec:lint`) and the conformance checker (`npm run spec:conform`) exist and run in the
+> root test battery; **zero ids are ACTIVE**, so nothing is enforced against code yet and no
+> completeness is claimed — annotations, protocol amendments, lane changes and every activation
+> remain future reviewed commits. Nothing in this document creates authority or executes
+> anything. Approval flows are unchanged: `HUMAN_GATE_GRANTED` (Zamp) remains the publication
+> instrument, and cloud effects have their own Zamp-issued authorization, per §8 and
 > [`.agent-handoff/MESSAGE-PROTOCOL.md`](../.agent-handoff/MESSAGE-PROTOCOL.md).
 
 ## 1. The problem this solves
@@ -161,13 +164,20 @@ id:
   "checks": [{ "kind": "script", "ref": "spec/checks/deploy-001-no-all.sh" }],
   "governedPaths": ["infra/aws/lib/context.js", "infra/aws/bin/deploy-release.js"],
   "mutationEvidence": "reviewed in #70 round N — reversion fails K tests",
-  "supersedes": null,
+  "supersedes": [],                      // ids this one replaces on activation, or absorbed (§4)
   "supersededBy": null
 }
 ```
 
-The human-readable tables in this file and the registry must agree; the linter checks that too.
-Until `spec/registry.json` exists, this document is the registry of record.
+`supersedes` is a LIST: one successor may replace one id on activation while having absorbed
+another before it (SPEC-DEPLOY-019 does exactly that), and reciprocity is a checkable law only
+when the absorbing side names everything it covers — `X.supersededBy = Y` requires
+`X ∈ Y.supersedes`, and an ACTIVE `Y` requires every id it supersedes to be RETIRED naming `Y`
+back.
+
+The human-readable tables in this file and the registry must agree; the linter checks that in
+both directions. `spec/registry.json` exists as of implementation slice I1; the tables remain
+the normative TEXT of record, and the registry is its machine-readable half.
 
 ### 6b. Digests are framed, and immutability is checked against history
 

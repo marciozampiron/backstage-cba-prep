@@ -64,6 +64,7 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
     return {
       registryRaw: git('git', ['show', `${commit}:${REGISTRY_PATH}`]),
       specMd: git('git', ['show', `${commit}:${SPEC_PATH}`]),
+      previousRegistryRaw: tryOrNull(() => git('git', ['show', `${commit}~1:${REGISTRY_PATH}`])),
       fileExists: (rel) => {
         try {
           git('git', ['cat-file', '-e', `${commit}:${rel}`]);
@@ -72,13 +73,40 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
           return false;
         }
       },
+      readFile: (rel) => git('git', ['show', `${commit}:${rel}`]),
     };
   }
   return {
     registryRaw: readFileSync(path.join(root, REGISTRY_PATH), 'utf8'),
     specMd: readFileSync(path.join(root, SPEC_PATH), 'utf8'),
+    // History is judged against the last COMMITTED registry: each lint run compares one step,
+    // and induction over reviewed commits carries the law back to the registry's birth.
+    previousRegistryRaw: tryOrNull(() => git('git', ['-C', root, 'show', `HEAD:${REGISTRY_PATH}`])),
     fileExists: (rel) => existsSync(path.join(root, rel)),
+    readFile: (rel) => readFileSync(path.join(root, rel), 'utf8'),
   };
+}
+
+function tryOrNull(fn) {
+  try {
+    return fn();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A registry path names a tracked, repo-relative, normalized object — round I1-2: existence
+ * alone accepted `../cba-issue-91/package.json`, which "exists" and escapes the repository.
+ */
+function isRepoRelativePath(p) {
+  if (typeof p !== 'string' || p.trim() === '' || p.includes('\0')) return false;
+  if (p.startsWith('/') || p.includes('\\')) return false;
+  // A single trailing slash names a directory anchor (a policy FAMILY is a legitimate anchor).
+  const normalized = p.endsWith('/') ? p.slice(0, -1) : p;
+  if (normalized === '') return false;
+  if (normalized.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) return false;
+  return true;
 }
 
 function defaultGit(cmd, args) {
@@ -104,7 +132,7 @@ export function parseSpecTables(specMd) {
  * anchor existence. Throws SpecRegistryError naming the first violation; returns the parsed
  * registry when everything holds.
  */
-export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
+export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile = null, previousRegistryRaw = null }) {
   let registry;
   try {
     registry = JSON.parse(registryRaw);
@@ -145,6 +173,7 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
       if (anchor.symbol !== null && (typeof anchor.symbol !== 'string' || anchor.symbol.trim() === '')) {
         fail(`${id} anchor.symbol must be null or a non-empty string.`);
       }
+      if (!isRepoRelativePath(anchor.file)) fail(`${id} anchor file must be a normalized repo-relative path: ${anchor.file}`);
       if (!fileExists(anchor.file)) fail(`${id} anchor file does not exist: ${anchor.file}`);
     }
     if (!Array.isArray(entry.tests)) fail(`${id}.tests must be an array.`);
@@ -154,6 +183,7 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
       if (t.title !== null && (typeof t.title !== 'string' || t.title.trim() === '')) {
         fail(`${id} test.title must be null (PROPOSED only) or the exact test name.`);
       }
+      if (!isRepoRelativePath(t.file)) fail(`${id} test file must be a normalized repo-relative path: ${t.file}`);
       if (!fileExists(t.file)) fail(`${id} test file does not exist: ${t.file}`);
     }
     if (!Array.isArray(entry.checks)) fail(`${id}.checks must be an array.`);
@@ -166,12 +196,25 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
       fail(`${id}.governedPaths must be an array of paths.`);
     }
     for (const g of entry.governedPaths) {
+      if (!isRepoRelativePath(g)) fail(`${id} governed path must be a normalized repo-relative path: ${g}`);
       if (!fileExists(g)) fail(`${id} governed path does not exist: ${g}`);
     }
 
     // §4 + §6c: what an ACTIVE id must carry — the activation contains its conformance.
     if (entry.status === 'ACTIVE') {
       if (entry.anchors.length === 0) fail(`${id} is ACTIVE with no code anchor (SPEC-GOV-006).`);
+      // Round I1-2: existence of the FILE is not existence of the ANCHOR. An ACTIVE id's symbol
+      // must appear in the anchored file — a weak but real check; the semantic stage judges
+      // meaning, this only refuses a symbol nobody could find.
+      for (const anchor of entry.anchors) {
+        if (anchor.symbol !== null) {
+          if (readFile === null) fail(`${id} is ACTIVE with symbol anchors but no readFile accessor was provided to verify them.`);
+          const content = readFile(anchor.file);
+          if (!String(content).includes(anchor.symbol)) {
+            fail(`${id} anchor symbol ${JSON.stringify(anchor.symbol)} does not appear in ${anchor.file}.`);
+          }
+        }
+      }
       if (entry.tests.length === 0) fail(`${id} is ACTIVE with no test anchor (SPEC-GOV-006).`);
       if (entry.tests.some((t) => t.title === null)) {
         fail(`${id} is ACTIVE but a test names only a file; ACTIVE requires the exact tests that fail when the invariant breaks (§5).`);
@@ -192,10 +235,15 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
       fail(`${id}.mutationEvidence must be prose (PROPOSED/RETIRED) or the closed §6c record.`);
     }
 
-    for (const key of ['supersedes', 'supersededBy']) {
-      const v = entry[key];
-      if (v !== null && (typeof v !== 'string' || !ID_RE.test(v))) fail(`${id}.${key} must be null or a SPEC-ID.`);
-      if (v === id) fail(`${id}.${key} cannot reference itself.`);
+    if (!Array.isArray(entry.supersedes) || entry.supersedes.some((v) => typeof v !== 'string' || !ID_RE.test(v))) {
+      fail(`${id}.supersedes must be an array of SPEC-IDs (empty when it replaces nothing).`);
+    }
+    if (new Set(entry.supersedes).size !== entry.supersedes.length) fail(`${id}.supersedes repeats an id.`);
+    if (entry.supersedes.includes(id)) fail(`${id}.supersedes cannot reference itself.`);
+    {
+      const v = entry.supersededBy;
+      if (v !== null && (typeof v !== 'string' || !ID_RE.test(v))) fail(`${id}.supersededBy must be null or a SPEC-ID.`);
+      if (v === id) fail(`${id}.supersededBy cannot reference itself.`);
     }
     // §4: RETIRED keeps the record and names what absorbed or replaced it — never a quiet delete.
     if (entry.status === 'RETIRED' && entry.supersededBy === null) {
@@ -203,11 +251,28 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
     }
   }
 
-  // Referenced ids must exist — a supersession chain cannot dangle.
+  // Referenced ids must exist, and the supersession relation is RECIPROCAL — round I1-2:
+  // SPEC-DEPLOY-020 pointing its supersededBy at an unrelated id validated, because nothing
+  // required the named successor to name it back.
   for (const entry of registry.entries) {
-    for (const key of ['supersedes', 'supersededBy']) {
-      const v = entry[key];
-      if (v !== null && !byId.has(v)) fail(`${entry.id}.${key} references unregistered id ${v}.`);
+    for (const v of entry.supersedes) {
+      if (!byId.has(v)) fail(`${entry.id}.supersedes references unregistered id ${v}.`);
+    }
+    const by = entry.supersededBy;
+    if (by !== null) {
+      if (!byId.has(by)) fail(`${entry.id}.supersededBy references unregistered id ${by}.`);
+      if (!byId.get(by).supersedes.includes(entry.id)) {
+        fail(`${entry.id}.supersededBy names ${by}, but ${by}.supersedes does not name ${entry.id} back — supersession is reciprocal or it is nothing.`);
+      }
+    }
+    // §4 atomicity: an ACTIVE successor's activation commit retired everything it replaces.
+    if (entry.status === 'ACTIVE') {
+      for (const v of entry.supersedes) {
+        const prior = byId.get(v);
+        if (prior.status !== 'RETIRED' || prior.supersededBy !== entry.id) {
+          fail(`${entry.id} is ACTIVE but ${v} is not RETIRED naming it back; activation and retirement are one atomic commit (§4).`);
+        }
+      }
     }
   }
 
@@ -228,7 +293,79 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
     if (!byId.has(row.id)) fail(`${row.id} is in the spec tables but not in the registry.`);
   }
 
+  // --- the HISTORICAL laws (round I1-2) -------------------------------------------------------
+  // Judged against the last committed registry; induction over reviewed commits carries each law
+  // back to the registry's birth. Without this, an ACTIVE text edited together with its digest
+  // and table validated, and a deleted id simply lowered the count.
+  if (previousRegistryRaw !== null) {
+    let previous;
+    try {
+      previous = JSON.parse(previousRegistryRaw);
+    } catch {
+      fail('the previous committed registry does not parse; history cannot be judged.');
+    }
+    for (const prev of previous.entries ?? []) {
+      const now = byId.get(prev.id);
+      if (!now) fail(`${prev.id} existed in the committed registry and is gone; ids are never deleted and never reused (§4).`);
+      if (prev.status === 'ACTIVE') {
+        if (now.status === 'PROPOSED') fail(`${prev.id} was ACTIVE and is now PROPOSED; enforcement is never quietly switched off (§4).`);
+        if (now.status === 'ACTIVE' && now.normativeText !== prev.normativeText) {
+          fail(`${prev.id} is ACTIVE and its normative text changed; an ACTIVE invariant is immutable — a change mints a successor (§4).`);
+        }
+        if (now.status === 'RETIRED') {
+          const successor = now.supersededBy === null ? null : byId.get(now.supersededBy);
+          if (!successor || successor.status !== 'ACTIVE') {
+            fail(`${prev.id} was ACTIVE and is now RETIRED without an ACTIVE successor; retirement of an enforced id is atomic with its successor's activation (§4).`);
+          }
+        }
+      }
+      if (prev.status === 'RETIRED') {
+        if (now.status !== 'RETIRED') fail(`${prev.id} was RETIRED and changed status; retirement is permanent (§4).`);
+        if (now.supersededBy !== prev.supersededBy) fail(`${prev.id} is RETIRED and its supersededBy changed; the record of what absorbed it is immutable.`);
+        if (now.normativeText !== prev.normativeText) fail(`${prev.id} is RETIRED and its normative text changed; the record is kept, not edited.`);
+      }
+    }
+  }
+
   return registry;
+}
+
+/**
+ * Round I1-2: `--commit` proved nothing while the TESTS ran from whatever worktree happened to
+ * be checked out — a broken target could borrow a fixed tree's green. Conformance for a commit
+ * requires the worktree to BE that commit, exactly and cleanly.
+ */
+export function assertConformTarget({ commit, git = defaultGit }) {
+  const head = String(git('git', ['rev-parse', 'HEAD'])).trim();
+  if (head !== commit) {
+    fail(`CONFORM_HEAD_MISMATCH: the worktree is at ${head}, not the audited ${commit}; tests always run from the tree they claim to describe.`);
+  }
+  const status = String(git('git', ['status', '--porcelain'])).trim();
+  if (status !== '') {
+    fail('CONFORM_WORKTREE_DIRTY: uncommitted changes present; a dirty tree is not the audited commit.');
+  }
+}
+
+/**
+ * The third traceability direction (§5): every `[SPEC-…]` annotation in tracked content must
+ * resolve to a registered id. Zero annotations resolve trivially — the direction exists from
+ * day one so the first annotation is already governed.
+ */
+export function annotationOffenses({ registryIds, git = defaultGit }) {
+  let grep = '';
+  try {
+    grep = git('git', ['grep', '-In', '-E', String.raw`\[SPEC-[A-Z]+-[0-9]{3}\]`]);
+  } catch {
+    return []; // git grep exits 1 when nothing matches — no annotations, no offenses
+  }
+  const offenses = [];
+  for (const line of String(grep).split('\n')) {
+    if (line.trim() === '') continue;
+    for (const [, id] of line.matchAll(/\[(SPEC-[A-Z]+-[0-9]{3})\]/g)) {
+      if (!registryIds.has(id)) offenses.push(`${line.split(':').slice(0, 2).join(':')} annotates unregistered ${id}`);
+    }
+  }
+  return offenses;
 }
 
 /**
@@ -239,13 +376,19 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists }) {
  * A pattern that matches ZERO tests is a failure, not a pass: node exits 0 when nothing ran,
  * and "the test I named no longer exists" is precisely the drift conformance exists to catch.
  */
-export function runConformance(registry, { runTests = defaultRunTests } = {}) {
+export function runConformance(registry, { runTests = defaultRunTests, runCheck = defaultRunCheck } = {}) {
   const results = [];
   const active = registry.entries.filter((e) => e.status === 'ACTIVE');
   for (const entry of active) {
     for (const t of entry.tests) {
       const outcome = runTests(t.file, t.title);
-      results.push({ id: entry.id, file: t.file, title: t.title, ...outcome });
+      results.push({ id: entry.id, kind: 'test', file: t.file, title: t.title, ...outcome });
+    }
+    // Round I1-2: an ACTIVE id's checks are obligations, not decoration — a conformance that
+    // ignored them returned PASS over a failing check. Every check runs, bounded.
+    for (const check of entry.checks ?? []) {
+      const outcome = runCheck(check.ref);
+      results.push({ id: entry.id, kind: 'check', file: check.ref, title: null, ...outcome });
     }
   }
   return {
@@ -253,6 +396,21 @@ export function runConformance(registry, { runTests = defaultRunTests } = {}) {
     results,
     ok: results.every((r) => r.ok),
   };
+}
+
+/** Wall-clock bound for a conformance check script — the resolve-run lesson applied here. */
+export const CHECK_TIMEOUT_MS = 60_000;
+
+function defaultRunCheck(ref) {
+  try {
+    execFileSync('bash', [ref], { encoding: 'utf8', timeout: CHECK_TIMEOUT_MS, killSignal: 'SIGTERM' });
+    return { ok: true };
+  } catch (err) {
+    if (err && (err.killed === true || err.signal === 'SIGTERM')) {
+      return { ok: false, reason: 'CONFORM_CHECK_TIMEOUT', detail: `check outlived ${CHECK_TIMEOUT_MS}ms` };
+    }
+    return { ok: false, reason: 'CONFORM_CHECK_FAILED', detail: String(err.stdout ?? err.message).slice(0, 2000) };
+  }
 }
 
 function defaultRunTests(file, title) {

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadSpecSources, validateSpecRegistry, parseSpecTables, runConformance,
+  assertConformTarget, annotationOffenses, CHECK_TIMEOUT_MS,
   SpecRegistryError, REGISTRY_PATH, SPEC_PATH,
 } from '../src/lib/spec-registry.js';
 import { framedTextDigest } from '../src/lib/authority-policy.js';
@@ -29,7 +30,7 @@ function expectRejected(mutate, expected) {
   const setSpec = (next) => { specMd = next; };
   mutate(registry, setSpec);
   assert.throws(
-    () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists }),
+    () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile }),
     (err) => {
       assert.ok(err instanceof SpecRegistryError, `expected SpecRegistryError, got ${err}`);
       assert.match(err.message, expected, `unexpected reason: ${err.message}`);
@@ -51,7 +52,9 @@ test('CI WIRING: the real registry validates against the real spec document', ()
   const retired = registry.entries.find((e) => e.status === 'RETIRED');
   assert.equal(retired.id, 'SPEC-DEPLOY-020');
   assert.equal(retired.supersededBy, 'SPEC-DEPLOY-019');
-  assert.equal(entry(registry, 'SPEC-DEPLOY-019').supersedes, 'SPEC-DEPLOY-002');
+  // Round I1-2: supersedes is a LIST — -019 replaces -002 on activation AND absorbed -020,
+  // and reciprocity is checkable only when the absorbing side names everything it covers.
+  assert.deepEqual(entry(registry, 'SPEC-DEPLOY-019').supersedes, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
   // …and SPEC-DEPLOY-002 is NOT yet retired: that happens in -019's activation commit, not now.
   assert.equal(entry(registry, 'SPEC-DEPLOY-002').status, 'PROPOSED');
   assert.equal(entry(registry, 'SPEC-DEPLOY-002').supersededBy, null);
@@ -140,8 +143,11 @@ test('the lifecycle law: what ACTIVE must carry, what RETIRED must name', () => 
   expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = null; }, /RETIRED without supersededBy/);
   // A dangling supersession refuses in either field.
   expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-DEPLOY-099'; }, /references unregistered id/);
-  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = 'SPEC-DEPLOY-098'; }, /references unregistered id/);
-  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = 'SPEC-DEPLOY-019'; }, /cannot reference itself/);
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = ['SPEC-DEPLOY-098']; }, /references unregistered id|does not name/);
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = ['SPEC-DEPLOY-019']; }, /cannot reference itself/);
+  // ROUND I1-2 (Codex's exact reproduction): a supersededBy aimed at an unrelated id refuses,
+  // because supersession is reciprocal or it is nothing.
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-GOV-001'; }, /does not name SPEC-DEPLOY-020 back/);
 });
 
 test('anchors and governed paths must exist in the tree being linted', () => {
@@ -207,6 +213,141 @@ test('parseSpecTables reads exactly the SPEC rows, statuses parsed from the lead
   assert.ok(rows.every((r) => /^SPEC-(GOV|AUDIT|RUN|DEPLOY|LANE|IAM)-[0-9]{3}$/.test(r.id)));
   const d20 = rows.find((r) => r.id === 'SPEC-DEPLOY-020');
   assert.equal(d20.status, 'RETIRED');
+});
+
+test('ROUND I1-2: the historical laws — nothing deleted, ACTIVE immutable, RETIRED permanent', () => {
+  const validateWithHistory = (previous, mutate) => {
+    const registry = structuredClone(REGISTRY);
+    if (mutate) mutate(registry);
+    return () => validateSpecRegistry({
+      registryRaw: JSON.stringify(registry),
+      specMd: SOURCES.specMd,
+      fileExists: SOURCES.fileExists,
+      readFile: SOURCES.readFile,
+      previousRegistryRaw: JSON.stringify(previous),
+    });
+  };
+  // The committed registry against itself is clean history.
+  assert.doesNotThrow(validateWithHistory(REGISTRY, null));
+  // A deleted id refuses even when BOTH current surfaces agree it is gone — Codex's reproduction:
+  // remove from registry AND table, count drops to 55, and before this law that validated.
+  {
+    const registry = structuredClone(REGISTRY);
+    registry.entries = registry.entries.filter((e) => e.id !== 'SPEC-GOV-001');
+    const specMd = SOURCES.specMd.split('\n').filter((l) => !l.startsWith('| SPEC-GOV-001 |')).join('\n');
+    assert.throws(
+      () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile, previousRegistryRaw: JSON.stringify(REGISTRY) }),
+      /existed in the committed registry and is gone; ids are never deleted/,
+    );
+  }
+  // An ACTIVE text edited with digest AND table kept consistent refuses against history — the
+  // other reproduction: all three current surfaces agreed, and only the past disagreed.
+  {
+    const previous = structuredClone(REGISTRY);
+    const pe = previous.entries.find((e) => e.id === 'SPEC-DEPLOY-001');
+    pe.status = 'ACTIVE';
+    const registry = structuredClone(REGISTRY);
+    const ce = registry.entries.find((e) => e.id === 'SPEC-DEPLOY-001');
+    ce.status = 'ACTIVE';
+    ce.normativeText = 'a quietly rewritten obligation';
+    ce.normativeSha256 = framedTextDigest(ce.id, ce.normativeText);
+    ce.tests = ce.tests.map((t) => ({ ...t, title: 'x' }));
+    ce.mutationEvidence = { commit: 'a'.repeat(40), patchSha256: 'b'.repeat(64), command: 'npm test', expectedFailure: '1 test' };
+    const specMd = SOURCES.specMd
+      .replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |')
+      .replace(/^\| SPEC-DEPLOY-001 \| ACTIVE \| [^|]+\|/m, `| SPEC-DEPLOY-001 | ACTIVE | ${ce.normativeText} |`);
+    assert.throws(
+      () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile, previousRegistryRaw: JSON.stringify(previous) }),
+      /ACTIVE and its normative text changed|status disagrees/,
+    );
+  }
+  // ACTIVE cannot quietly become PROPOSED; RETIRED is permanent in status, successor and text.
+  {
+    const previous = structuredClone(REGISTRY);
+    previous.entries.find((e) => e.id === 'SPEC-DEPLOY-020').status = 'RETIRED';
+    assert.throws(validateWithHistory(previous, (r) => {
+      const e = r.entries.find((x) => x.id === 'SPEC-DEPLOY-020');
+      e.status = 'PROPOSED';
+      e.supersededBy = null;
+    }), /was RETIRED and changed status|RETIRED without supersededBy|status disagrees/);
+  }
+});
+
+test('ROUND I1-2: conformance for a commit requires the worktree to BE that commit', () => {
+  const HEAD = 'a'.repeat(40);
+  const scripted = ({ head = HEAD, status = '' } = {}) => (cmd, args) => {
+    assert.equal(cmd, 'git');
+    if (args[0] === 'rev-parse') return `${head}\n`;
+    if (args[0] === 'status') return status;
+    throw new Error(`unexpected git call: ${args.join(' ')}`);
+  };
+  assert.doesNotThrow(() => assertConformTarget({ commit: HEAD, git: scripted() }));
+  // A fixed worktree cannot lend its green to a broken audited commit…
+  assert.throws(
+    () => assertConformTarget({ commit: 'b'.repeat(40), git: scripted() }),
+    /CONFORM_HEAD_MISMATCH/,
+  );
+  // …and a dirty tree is not the audited commit either.
+  assert.throws(
+    () => assertConformTarget({ commit: HEAD, git: scripted({ status: ' M src/lib/spec-registry.js\n' }) }),
+    /CONFORM_WORKTREE_DIRTY/,
+  );
+});
+
+test('ROUND I1-2: checks are obligations — a failing check fails conformance', () => {
+  assert.equal(CHECK_TIMEOUT_MS, 60_000);
+  const scripted = (checkRef) => ({
+    entries: [{
+      id: 'SPEC-GOV-001',
+      status: 'ACTIVE',
+      tests: [{ file: 'test/fixtures/conform-probe.js', title: 'conform probe: this test passes' }],
+      checks: [{ kind: 'script', ref: checkRef }],
+    }],
+  });
+  // Codex's reproduction, inverted: passing test + failing check is FAIL, not PASS.
+  const failing = runConformance(scripted('test/fixtures/check-fail.sh'));
+  assert.equal(failing.ok, false);
+  assert.equal(failing.results.find((r) => r.kind === 'check').reason, 'CONFORM_CHECK_FAILED');
+  const passing = runConformance(scripted('test/fixtures/check-pass.sh'));
+  assert.equal(passing.ok, true);
+  assert.equal(passing.results.length, 2);
+});
+
+test('ROUND I1-2: annotations resolve or offend — the third traceability direction', () => {
+  const ids = new Set(REGISTRY.entries.map((e) => e.id));
+  // The REAL tree, today: whatever annotations exist must resolve (currently none).
+  assert.deepEqual(annotationOffenses({ registryIds: ids }), []);
+  // A scripted grep with an unregistered annotation offends; a registered one does not.
+  // Tokens are assembled at runtime so this file passes the real scan above.
+  const token = (id) => `[${id}]`;
+  const scripted = (line) => (cmd, args) => {
+    assert.equal(args[0], 'grep');
+    return `${line}\n`;
+  };
+  assert.equal(
+    annotationOffenses({ registryIds: ids, git: scripted(`src/x.js:12: // ${token('SPEC-GOV-001')}`) }).length,
+    0,
+  );
+  const offenses = annotationOffenses({ registryIds: ids, git: scripted(`src/x.js:12: // ${token('SPEC-GOV-999')}`) });
+  assert.equal(offenses.length, 1);
+  assert.match(offenses[0], /unregistered SPEC-GOV-999/);
+});
+
+test('ROUND I1-2: paths are repo-relative and normalized — escapes and traversals refuse', () => {
+  for (const bad of ['../cba-issue-91/package.json', '/etc/passwd', 'a/../b.js', './x.js', 'a//b.js']) {
+    expectRejected((r) => { entry(r, 'SPEC-DEPLOY-001').anchors[0].file = bad; }, /normalized repo-relative path/);
+  }
+});
+
+test('ROUND I1-2: an ACTIVE anchor symbol must actually appear in its file', () => {
+  expectRejected((r, setSpec) => {
+    const e = entry(r, 'SPEC-DEPLOY-001');
+    e.status = 'ACTIVE';
+    e.tests = e.tests.map((t) => ({ ...t, title: 'x' }));
+    e.mutationEvidence = { commit: 'a'.repeat(40), patchSha256: 'b'.repeat(64), command: 'npm test', expectedFailure: '1 test' };
+    e.anchors = [{ file: 'infra/aws/bin/deploy-release.js', symbol: 'THIS_SYMBOL_DOES_NOT_EXIST' }];
+    setSpec(SOURCES.specMd.replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |'));
+  }, /does not appear in/);
 });
 
 test('POSITIVE CONTROL: the registry file on disk is byte-identical to what validation read', () => {
