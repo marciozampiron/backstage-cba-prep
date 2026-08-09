@@ -1180,8 +1180,8 @@
       "id": "SPEC-LANE-001",
       "status": "PROPOSED",
       "title": "In every credentialed job, synthesis completes before the",
-      "normativeText": "In every credentialed job, synthesis completes before the pinned OIDC consumer step; after that step, until the reviewed credential scrub empties the AWS environment, only the reviewed entrypoints execute — no action step and no package-manager command — and after the scrub only the pinned evidence uploaders and the evidence read may run.",
-      "normativeSha256": "2b65395606e30c3837229389c88055b801f3fdb469fc494a8146dbeb8592c0d2",
+      "normativeText": "In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step ONLY the reviewed entrypoints and the evidence-output reader execute — no action step and no package-manager command, ever, because `id-token: write` is job-scoped and no scrub can remove the ability to mint a fresh token. Evidence leaves the lane exclusively from a job that never holds `id-token`.",
+      "normativeSha256": "a40b9a7d78f84f19be7a1f1d5a8ca4cc3893b7ee3a87d6075a8b5d4428f1a9c3",
       "anchors": [
         {
           "file": ".github/workflows/release-pilot.yml",
@@ -1198,7 +1198,7 @@
       "governedPaths": [
         ".github/workflows/release-pilot.yml"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven (text widened in I3 while PROPOSED — §4 permits it; the scrub closes the window before any uploader runs)",
+      "mutationEvidence": "code + tests reviewed, reversion proven (I3-2 replaced the short-lived scrub clause with the job boundary after review showed env scrubbing cannot close OIDC authority)",
       "supersedes": [],
       "supersededBy": null
     },

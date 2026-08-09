@@ -2671,3 +2671,40 @@ test('EVIDENCE: without --artifact-out the entrypoint behaves exactly as before 
     });
   });
 });
+
+test('EVIDENCE: a STACK_EXECUTION_FAILED halt records the STARTED mutation — log and artifact agree', () => {
+  // ROUND I3-2 (Codex): execute-change-set was ACCEPTED, then the stack failed to stabilize. The
+  // artifact must carry that stack in `executed` — a mutation that began is on the record.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let waits = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'describe-stacks') {
+            waits += 1;
+            if (waits >= 1) return { status: 0, stdout: JSON.stringify({ Stacks: [{ StackStatus: 'UPDATE_ROLLBACK_COMPLETE' }] }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /STACK_EXECUTION_FAILED/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('STACK_EXECUTION_FAILED'));
+      assert.equal(record.executed.length, 1, 'the started mutation is ON the record');
+      // …and the output names exactly the same set — log and artifact can no longer disagree.
+      const printed = r.output.match(/Executed before the failure: ([^.]+)\./);
+      assert.deepEqual(printed[1].split(', '), record.executed);
+    });
+  });
+});

@@ -1253,12 +1253,16 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         const refused = refuse();
         return { ...refused, output: `${refused.output}\nExecuted before the failure: ${executed.length === 0 ? 'none' : executed.join(', ')}. Remaining change sets were NOT executed.` };
       }
+      // ROUND I3-2: the mutation BEGAN the moment execute-change-set was accepted — recording it
+      // only after the wait let a STACK_EXECUTION_FAILED artifact say "not executed" about a
+      // stack the log said executed. `executed` means accepted-for-execution, and the evidence
+      // record shares this array, so every later halt carries this stack.
+      executed.push(entry.stackName);
       if (!waitForStack(run, cfnEnv, entry.stackName, { sleep })) {
         failures.push({ check: 'DEPLOY', code: 'STACK_EXECUTION_FAILED', field: entry.stackId });
         const refused = refuse();
-        return { ...refused, output: `${refused.output}\nExecuted before the failure: ${[...executed, entry.stackName].join(', ')}. Remaining change sets were NOT executed.` };
+        return { ...refused, output: `${refused.output}\nExecuted before the failure: ${executed.join(', ')}. Remaining change sets were NOT executed.` };
       }
-      executed.push(entry.stackName);
     }
     writeEvidence('DEPLOYED');
     return {

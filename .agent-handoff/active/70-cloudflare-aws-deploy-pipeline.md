@@ -554,6 +554,24 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I3-2 (Codex: 1 HIGH, 2 MEDIUM) replaced the scrub with the boundary it was
+pretending to be. **`id-token: write` is job-scoped**: emptying AWS_* variables cannot remove the
+ability to mint a fresh OIDC token, and `!cancelled()` would have let the uploaders run even
+after a failed scrub — so no post-effect ACTION ever runs in the credentialed job again. The
+evidence record leaves dev-stage as job OUTPUTS (the channel the manifest already travels) and a
+new `dev-evidence` job — no id-token, no Environment, no AWS consumer, a fresh runner that can
+never mint a token, DAG-terminal — materializes the file under the NAME the runbooks digest
+(plan.json / deploy.json / evidence.json, closing the F3 mismatch) and runs the three pinned
+uploaders. The window rule was re-narrowed: after the consumer, the ONLY steps are the closed
+named set (preflight evaluator, entrypoint, evidence reader) with their full content pinned; a
+job holding id-token may never contain an uploader; both proven by mutation (uploader in
+dev-stage trips two named rules; a foreign run step after the consumer trips the closed set;
+dev-evidence acquiring id-token refused). The entrypoint records a mutation at ACCEPTANCE
+(F2): `executed` is pushed when execute-change-set returns success, before the stability wait, so
+a STACK_EXECUTION_FAILED artifact carries the started stack and log and artifact can no longer
+disagree — regression proves the printed set equals the recorded set. SPEC-LANE-001's PROPOSED
+text now states the job-boundary law, with the short-lived scrub clause recorded as replaced.
+
 Implementation Slice I3 delivered the evidence artifacts for the two mutating operations
 (SPEC-RUN-007 made real; SPEC-LANE-001 widened while PROPOSED). The entrypoint gained
 `--artifact-out`: with it, `CORRELATION_ID` must match the closed grammar BEFORE anything runs

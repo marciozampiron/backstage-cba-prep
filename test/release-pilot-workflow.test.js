@@ -224,6 +224,10 @@ const EXPECTED_WORKFLOW = {
         "contents": "read",
         "id-token": "write"
       },
+      "outputs": {
+        "evidence": "${{ steps.evidence.outputs.evidence }}",
+        "mode": "${{ steps.evidence.outputs.mode }}"
+      },
       "defaults": {
         "run": {
           "working-directory": "infra/aws"
@@ -282,45 +286,62 @@ const EXPECTED_WORKFLOW = {
           "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --artifact-out \"$RUNNER_TEMP/release-evidence/evidence.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         },
         {
-          "name": "Close the credential window (scrub AWS env before any post-effect step)",
-          "if": "${{ !cancelled() }}",
-          "run": "set -euo pipefail\nfor name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION AWS_REGION; do\n  echo \"$name=\" >> \"$GITHUB_ENV\"\ndone\n"
-        },
-        {
-          "name": "Read the evidence mode",
+          "name": "Publish the evidence record as job outputs",
           "id": "evidence",
           "if": "${{ !cancelled() }}",
-          "run": "set -euo pipefail\nevidence=\"$RUNNER_TEMP/release-evidence/evidence.json\"\nmode=\"\"\nif [ -f \"$evidence\" ]; then\n  mode=$(node -e 'process.stdout.write(String(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).mode ?? \"\"))' \"$evidence\")\nfi\necho \"mode=$mode\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nfile=\"$RUNNER_TEMP/release-evidence/evidence.json\"\nmode=\"\"\nif [ -f \"$file\" ]; then\n  mode=$(node -e 'process.stdout.write(String(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).mode ?? \"\"))' \"$file\")\n  {\n    echo \"evidence<<CBA_EVIDENCE_EOF\"\n    cat \"$file\"\n    echo \"CBA_EVIDENCE_EOF\"\n  } >> \"$GITHUB_OUTPUT\"\nfi\necho \"mode=$mode\" >> \"$GITHUB_OUTPUT\"\n"
+        }
+      ]
+    },
+    "dev-evidence": {
+      "name": "Dev evidence — upload the run's record (no cloud authority)",
+      "needs": [
+        "dev-stage"
+      ],
+      "if": "always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 5,
+      "permissions": {
+        "contents": "read"
+      },
+      "steps": [
+        {
+          "name": "Materialize the evidence file under its reviewed name",
+          "env": {
+            "EVIDENCE": "${{ needs.dev-stage.outputs.evidence }}",
+            "MODE": "${{ needs.dev-stage.outputs.mode }}"
+          },
+          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\"\nif [ -z \"$EVIDENCE\" ]; then\n  echo \"no evidence record was produced (the run refused before the entrypoint); nothing to materialize\"\n  exit 0\nfi\ncase \"$MODE\" in\n  plan_only) name=plan.json ;;\n  deploy) name=deploy.json ;;\n  *) name=evidence.json ;;\nesac\nprintf '%s\\n' \"$EVIDENCE\" > \"$RUNNER_TEMP/evidence/$name\"\n"
         },
         {
           "name": "Upload the plan artifact",
-          "if": "${{ !cancelled() && steps.evidence.outputs.mode == 'plan_only' }}",
+          "if": "${{ needs.dev-stage.outputs.mode == 'plan_only' }}",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "plan",
-            "path": "${{ runner.temp }}/release-evidence/evidence.json",
+            "path": "${{ runner.temp }}/evidence/plan.json",
             "if-no-files-found": "error",
             "retention-days": 90
           }
         },
         {
           "name": "Upload the deploy artifact",
-          "if": "${{ !cancelled() && steps.evidence.outputs.mode == 'deploy' }}",
+          "if": "${{ needs.dev-stage.outputs.mode == 'deploy' }}",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "deploy",
-            "path": "${{ runner.temp }}/release-evidence/evidence.json",
+            "path": "${{ runner.temp }}/evidence/deploy.json",
             "if-no-files-found": "error",
             "retention-days": 90
           }
         },
         {
           "name": "Upload refusal evidence (no mode reached the record)",
-          "if": "${{ !cancelled() && steps.evidence.outputs.mode == '' }}",
+          "if": "${{ needs.dev-stage.outputs.mode == '' }}",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "evidence",
-            "path": "${{ runner.temp }}/release-evidence/evidence.json",
+            "path": "${{ runner.temp }}/evidence/evidence.json",
             "if-no-files-found": "ignore",
             "retention-days": 90
           }
@@ -478,7 +499,7 @@ function objectDiff(expected, actual, base = '') {
 
 /** The ONLY success expressions a job may carry; see rounds 2–3 for why the grammar is closed. */
 const IF_GRAMMAR =
-  /^needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == '(dev_then_pilot|dev_only|bind_only)')?$/;
+  /^(needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == '(dev_then_pilot|dev_only|bind_only)')?|always\(\) && needs\.dev-stage\.result != 'skipped' && needs\.dev-stage\.result != 'cancelled')$/;
 
 /** Job-level keys that hand execution or environment to something nobody reviewed. */
 const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 'secrets', 'continue-on-error'];
@@ -486,7 +507,7 @@ const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 
 /** Every job is time-bounded (design §1: preflights 5, deploys 15; the pilot placeholder runs no
  * deploy and is bounded like a preflight). An unbounded job that hangs keeps its OIDC authority
  * alive until GitHub's default limit — hours, not minutes. */
-const EXPECTED_TIMEOUTS = { 'global-preflight': 5, 'dev-preflight': 5, 'bind-stage': 5, 'dev-stage': 15, 'pilot-preflight': 5, 'pilot-stage': 5 };
+const EXPECTED_TIMEOUTS = { 'global-preflight': 5, 'dev-preflight': 5, 'bind-stage': 5, 'dev-stage': 15, 'dev-evidence': 5, 'pilot-preflight': 5, 'pilot-stage': 5 };
 
 const DEPLOY_COMMAND = /\bcdk\s+deploy\b|\bopennextjs-cloudflare\s+deploy\b|\bwrangler\s+deploy\b/;
 
@@ -604,38 +625,39 @@ export function releaseLaneErrors(text) {
         errors.push(`job "${name}" runs the deploy entrypoint without Zamp's cloud gate (CBA_CLOUD_GATE) in the step environment`);
       }
     }
-    // CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (Slice B1 round 3; widened in I3 while
-    // SPEC-LANE-001 is PROPOSED). Synth executes project code — the CDK app, esbuild, npm
-    // lifecycles — and anything running with the OIDC credentials can spend the role's
-    // sts:AssumeRole before the entrypoint validates the cloud gate. So after the pinned
-    // consumer, until the reviewed SCRUB empties the AWS environment, NOTHING executes except
-    // the reviewed entrypoints: no npm, no npx, no action step. AFTER the scrub — and only
-    // after — the pinned evidence uploaders may run, because the window is closed: every AWS_*
-    // variable the consumer exported is overwritten for all subsequent steps.
+    // CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (Slice B1 round 3; re-narrowed in
+    // I3-2). `id-token: write` is JOB-scoped: scrubbing AWS_* variables cannot remove the
+    // ability to mint a fresh OIDC token, so NO action step may ever follow the consumer in this
+    // job — evidence leaves as job OUTPUTS and is uploaded by dev-evidence, which never holds
+    // id-token. After the pinned consumer, the ONLY steps are the reviewed entrypoint and the
+    // evidence reader, both run steps whose full content the reviewed object pins.
     const consumerIdx = (job?.steps ?? []).findIndex(
       (st) => st.uses === 'aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c',
     );
     if (consumerIdx >= 0) {
-      const after = job.steps.slice(consumerIdx + 1);
-      const scrubRel = after.findIndex(
-        (st) => typeof st.run === 'string' && st.run.includes('AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN') && st.run.includes('GITHUB_ENV'),
-      );
-      const inWindow = scrubRel === -1 ? after : after.slice(0, scrubRel);
-      const afterScrub = scrubRel === -1 ? [] : after.slice(scrubRel + 1);
-      for (const st of inWindow) {
+      const allowedAfterConsumer = [
+        'Evaluate PREFLIGHT-1 and PREFLIGHT-2', // the preflight evaluator, under the read-only role
+        'Deploy the verified release through the sanctioned entrypoint',
+        'Publish the evidence record as job outputs',
+      ];
+      for (const st of job.steps.slice(consumerIdx + 1)) {
         if (st.uses !== undefined) {
           errors.push(`job "${name}" runs an action step after credential acquisition — only the reviewed entrypoints may execute with credentials`);
         }
         if (typeof st.run === 'string' && /\bnpm\b|\bnpx\b/.test(st.run)) {
           errors.push(`job "${name}" runs project or package-manager code after credential acquisition and before the gate — synth and installs must complete before the OIDC consumer`);
         }
+        if (!allowedAfterConsumer.includes(st.name)) {
+          errors.push(`job "${name}" runs a step outside the closed post-consumer set: ${st.name ?? st.uses}`);
+        }
       }
-      for (const st of afterScrub) {
-        // The closed post-scrub vocabulary: pinned evidence uploaders and the evidence-mode read.
-        const isPinnedUploader = st.uses === 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
-        const isEvidenceRead = st.uses === undefined && typeof st.run === 'string' && !/\bnpm\b|\bnpx\b|\baws\b/.test(st.run);
-        if (!isPinnedUploader && !isEvidenceRead) {
-          errors.push(`job "${name}" runs an unreviewed step after the credential scrub — only the pinned evidence uploaders and the evidence read may follow it`);
+    }
+    // ARTIFACTS NEVER LEAVE A CREDENTIALED JOB (I3-2): any job holding id-token: write may mint
+    // tokens for its entire duration, so uploaders live only in jobs that never held it.
+    if (job?.permissions?.['id-token'] === 'write') {
+      for (const st of job?.steps ?? []) {
+        if (String(st.uses ?? '').startsWith('actions/upload-artifact@')) {
+          errors.push(`job "${name}" uploads an artifact while holding id-token: write — evidence leaves only from a job with no OIDC capability`);
         }
       }
     }
@@ -683,9 +705,9 @@ test('the release lane parses cleanly and EQUALS the reviewed object', () => {
   assert.deepEqual(releaseLaneErrors(raw), []);
 });
 
-test('YAML sees exactly the six reviewed jobs — the round-7 lesson, asserted at the source', () => {
+test('YAML sees exactly the seven reviewed jobs — the round-7 lesson, asserted at the source', () => {
   const { wf } = parseWorkflow(raw);
-  assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'bind-stage', 'dev-stage', 'pilot-preflight', 'pilot-stage']);
+  assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'bind-stage', 'dev-stage', 'dev-evidence', 'pilot-preflight', 'pilot-stage']);
   assert.deepEqual(Object.keys(wf), ['name', 'run-name', 'on', 'permissions', 'concurrency', 'jobs']);
 });
 
@@ -713,73 +735,101 @@ test('SLICE I2: the bind stage terminates the DAG with no cloud authority and a 
   assert.equal(wf.jobs['dev-stage'].if, "needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'");
 });
 
-test('SLICE I3: evidence leaves the job only after the credential window is CLOSED', () => {
+test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC capability', () => {
   const { wf } = parseWorkflow(raw);
-  const steps = wf.jobs['dev-stage'].steps;
-  const consumerIdx = steps.findIndex((st) => String(st.uses ?? '').startsWith('aws-actions/configure-aws-credentials@'));
-  const scrubIdx = steps.findIndex((st) => typeof st.run === 'string' && st.run.includes('AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN'));
-  const uploadIdxs = steps.map((st, i) => (String(st.uses ?? '').startsWith('actions/upload-artifact@') ? i : -1)).filter((i) => i >= 0);
-  // Order is the guarantee: consumer → entrypoint → scrub → uploads. Nothing uploads inside the window.
-  assert.ok(consumerIdx >= 0 && scrubIdx > consumerIdx);
-  assert.equal(uploadIdxs.length, 3);
-  assert.ok(uploadIdxs.every((i) => i > scrubIdx), 'every uploader runs only after the scrub');
-  // The scrub empties EVERY credential variable the consumer exported, for all later steps.
-  for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
-    assert.ok(steps[scrubIdx].run.includes(name), name);
-  }
-  // The three uploaders are pinned to the one reviewed SHA and carry the reviewed artifact names.
-  const names = uploadIdxs.map((i) => steps[i].with.name);
-  assert.deepEqual(names, ['plan', 'deploy', 'evidence']);
-  for (const i of uploadIdxs) assert.equal(steps[i].uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
-  // plan/deploy demand their file (a claimed mode with no evidence is an error); the refusal
-  // fallback tolerates absence (a failure before the entrypoint has nothing to upload).
-  assert.equal(steps[uploadIdxs[0]].with['if-no-files-found'], 'error');
-  assert.equal(steps[uploadIdxs[1]].with['if-no-files-found'], 'error');
-  assert.equal(steps[uploadIdxs[2]].with['if-no-files-found'], 'ignore');
-  // The entrypoint carries the correlation id and writes the evidence record.
-  const entry = steps.find((st) => typeof st.run === 'string' && st.run.includes('deploy-release.js'));
+  // dev-stage: no uploader, no scrub theater — after the consumer, only the entrypoint and the
+  // evidence reader, and the record leaves as job OUTPUTS.
+  const stage = wf.jobs['dev-stage'];
+  assert.ok(stage.steps.every((st) => !String(st.uses ?? '').startsWith('actions/upload-artifact@')));
+  assert.deepEqual(Object.keys(stage.outputs), ['evidence', 'mode']);
+  const entry = stage.steps.find((st) => typeof st.run === 'string' && st.run.includes('deploy-release.js'));
   assert.equal(entry.env.CORRELATION_ID, '${{ inputs.correlation_id }}');
   assert.ok(entry.run.includes('--artifact-out "$RUNNER_TEMP/release-evidence/evidence.json"'));
+  // dev-evidence: the boundary the scrub could not be — no id-token, no Environment, no AWS
+  // consumer; it can NEVER mint a token, so uploader failure modes leak nothing.
+  const evidence = wf.jobs['dev-evidence'];
+  assert.deepEqual(evidence.permissions, { contents: 'read' });
+  assert.equal(evidence.environment, undefined);
+  assert.ok(evidence.steps.every((st) => !String(st.uses ?? '').includes('aws-actions/')));
+  assert.deepEqual(evidence.needs, ['dev-stage']);
+  // It runs on refusals too — but never on a skip or a cancel.
+  assert.equal(evidence.if, "always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'");
+  // The three uploaders are pinned and carry the reviewed artifact names, keyed on the mode.
+  const uploads = evidence.steps.filter((st) => String(st.uses ?? '').startsWith('actions/upload-artifact@'));
+  assert.deepEqual(uploads.map((st) => st.with.name), ['plan', 'deploy', 'evidence']);
+  for (const st of uploads) assert.equal(st.uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
+  assert.deepEqual(uploads.map((st) => st.with['if-no-files-found']), ['error', 'error', 'ignore']);
+  // No job downstream of dev-evidence: it is DAG-terminal like bind-stage.
+  for (const [name, job] of Object.entries(wf.jobs)) {
+    assert.ok(!(job.needs ?? []).includes('dev-evidence'), `${name} must not depend on dev-evidence`);
+  }
 });
 
-test('SLICE I3 MUTATION PROOFS: the window rule bites in its widened form', () => {
-  // An uploader moved BEFORE the scrub is inside the window: the named action rule fires.
-  const uploaderBeforeScrub = raw.replace(
-    '      - name: Close the credential window (scrub AWS env before any post-effect step)',
+test('SLICE I3-2: the file names the workflow produces are the names the runbooks digest', () => {
+  // ROUND I3-2 (Codex): the plan runbook digests plan.json and the deploy runbook deploy.json —
+  // the workflow must materialize exactly those basenames, keyed on the evidence mode.
+  const { wf } = parseWorkflow(raw);
+  const materialize = wf.jobs['dev-evidence'].steps.find((st) => typeof st.run === 'string' && st.run.includes('Materialize') === false && st.run.includes('plan.json'));
+  assert.ok(materialize.run.includes('plan_only) name=plan.json'));
+  assert.ok(materialize.run.includes('deploy) name=deploy.json'));
+  const planRunbook = fs.readFileSync(join(here, '..', 'docs', 'runbooks', 'aws-dev-release-plan.md'), 'utf8');
+  const deployRunbook = fs.readFileSync(join(here, '..', 'docs', 'runbooks', 'aws-dev-release-deploy.md'), 'utf8');
+  assert.ok(planRunbook.includes('/plan.json'), 'the plan runbook digests plan.json');
+  assert.ok(deployRunbook.includes('/deploy.json'), 'the deploy runbook digests deploy.json');
+  assert.ok(!planRunbook.includes('evidence.json'), 'the plan runbook must not reference a name the workflow reserves for refusals');
+});
+
+test('SLICE I3-2 MUTATION PROOFS: authority and evidence cannot re-merge', () => {
+  // An uploader re-added to dev-stage (which holds id-token) trips BOTH named rules.
+  const uploaderInStage = raw.replace(
+    '      # ROUND I3-2: no post-effect ACTION runs in this job, ever.',
     `      - name: Upload early (attack)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: early
           path: \${{ runner.temp }}/release-evidence/evidence.json
-      - name: Close the credential window (scrub AWS env before any post-effect step)`,
+      # ROUND I3-2: no post-effect ACTION runs in this job, ever.`,
   );
-  assert.notEqual(uploaderBeforeScrub, raw);
+  assert.notEqual(uploaderInStage, raw);
+  const errs = releaseLaneErrors(uploaderInStage);
+  assert.ok(errs.some((e) => e.includes('runs an action step after credential acquisition')));
+  assert.ok(errs.some((e) => e.includes('uploads an artifact while holding id-token')));
+  // A foreign run step after the consumer is outside the closed post-consumer set.
+  const foreignAfterConsumer = raw.replace(
+    '      # ROUND I3-2: no post-effect ACTION runs in this job, ever.',
+    `      - name: Innocuous cleanup
+        run: echo done
+      # ROUND I3-2: no post-effect ACTION runs in this job, ever.`,
+  );
+  assert.notEqual(foreignAfterConsumer, raw);
   assert.ok(
-    releaseLaneErrors(uploaderBeforeScrub).some((e) => e.includes('runs an action step after credential acquisition')),
-    'an uploader inside the window must trip the action rule by name',
+    releaseLaneErrors(foreignAfterConsumer).some((e) => e.includes('outside the closed post-consumer set')),
+    'any unreviewed step name after the consumer must be refused',
   );
-  // A foreign action AFTER the scrub is refused by the closed post-scrub vocabulary.
-  const foreignAfterScrub = raw.replace(
-    '      - name: Read the evidence mode',
-    `      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Read the evidence mode`,
+  // dev-evidence acquiring id-token trips the uploader rule.
+  const evidenceWithToken = raw.replace(
+    `  dev-evidence:
+    name: Dev evidence — upload the run's record (no cloud authority)
+    needs: [dev-stage]
+    if: always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read`,
+    `  dev-evidence:
+    name: Dev evidence — upload the run's record (no cloud authority)
+    needs: [dev-stage]
+    if: always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write`,
   );
-  assert.notEqual(foreignAfterScrub, raw);
+  assert.notEqual(evidenceWithToken, raw);
   assert.ok(
-    releaseLaneErrors(foreignAfterScrub).some((e) => e.includes('unreviewed step after the credential scrub')),
-    'a foreign action after the scrub must be refused by name',
-  );
-  // npm after the scrub is still project code and still refused.
-  const npmAfterScrub = raw.replace(
-    "          echo \"mode=$mode\" >> \"$GITHUB_OUTPUT\"",
-    "          echo \"mode=$mode\" >> \"$GITHUB_OUTPUT\"\n          npm run synth:quiet",
-  );
-  assert.notEqual(npmAfterScrub, raw);
-  assert.ok(
-    releaseLaneErrors(npmAfterScrub).some((e) => e.includes('unreviewed step after the credential scrub')),
-    'project code after the scrub must be refused',
+    releaseLaneErrors(evidenceWithToken).some((e) => e.includes('uploads an artifact while holding id-token') || e.includes('id-token')),
+    'dev-evidence with id-token must be refused',
   );
 });
 
@@ -850,8 +900,8 @@ test('POSITIVE CONTROL: promotion cannot be unblocked by name, and the entrypoin
 
   // The entrypoint without id-token: write.
   const noToken = raw.replace(
-    '    environment: dev\n    permissions:\n      contents: read\n      id-token: write\n    defaults:',
-    '    environment: dev\n    permissions:\n      contents: read\n    defaults:',
+    '    timeout-minutes: 15\n    environment: dev\n    permissions:\n      contents: read\n      id-token: write\n    outputs:',
+    '    timeout-minutes: 15\n    environment: dev\n    permissions:\n      contents: read\n    outputs:',
   );
   assert.notEqual(noToken, raw, 'mutation did not apply: id-token removal');
   assert.ok(releaseLaneErrors(noToken).some((e) => e.includes('runs the deploy entrypoint without id-token: write')));

@@ -332,6 +332,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    outputs:
+      evidence: ${{ steps.evidence.outputs.evidence }}
+      mode: ${{ steps.evidence.outputs.mode }}
     defaults:
       run:
         working-directory: infra/aws
@@ -388,50 +391,84 @@ jobs:
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
-      # From here the CREDENTIAL WINDOW is closed before anything else runs: the scrub empties the
-      # AWS environment for every subsequent step, so the pinned uploaders below execute with no
-      # cloud authority to exfiltrate or spend (SPEC-LANE-001, widened in I3 while PROPOSED). The
-      # steps run on refusals too — evidence of a refused run is still evidence (SPEC-DEPLOY-018).
-      - name: Close the credential window (scrub AWS env before any post-effect step)
-        if: ${{ !cancelled() }}
-        run: |
-          set -euo pipefail
-          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION AWS_REGION; do
-            echo "$name=" >> "$GITHUB_ENV"
-          done
-      - name: Read the evidence mode
+      # ROUND I3-2: no post-effect ACTION runs in this job, ever. `id-token: write` is a JOB-scoped
+      # capability — scrubbing AWS_* variables cannot remove the ability to mint a fresh OIDC
+      # token, so evidence leaves this job as OUTPUTS (the same channel the manifest already
+      # travels) and is uploaded by a separate job that never holds id-token. The reader runs on
+      # refusals too: evidence of a refused run is still evidence (SPEC-DEPLOY-018).
+      - name: Publish the evidence record as job outputs
         id: evidence
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/release-evidence/evidence.json"
+          file="$RUNNER_TEMP/release-evidence/evidence.json"
           mode=""
-          if [ -f "$evidence" ]; then
-            mode=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mode ?? ""))' "$evidence")
+          if [ -f "$file" ]; then
+            mode=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mode ?? ""))' "$file")
+            {
+              echo "evidence<<CBA_EVIDENCE_EOF"
+              cat "$file"
+              echo "CBA_EVIDENCE_EOF"
+            } >> "$GITHUB_OUTPUT"
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV EVIDENCE — ROUND I3-2: the ONLY place artifacts leave the lane. A separate job is the
+  # boundary the scrub could not be: it holds no id-token (it cannot mint an OIDC token at all),
+  # binds no Environment, assumes nothing — a fresh runner whose only inputs are the evidence
+  # OUTPUTS of dev-stage. It runs when dev-stage ran at all (success OR refusal — refusal
+  # evidence is still evidence) and materializes the file under the NAME the runbooks digest:
+  # plan.json for plan_only, deploy.json for deploy, evidence.json otherwise.
+  # ---------------------------------------------------------------------------------------------
+  dev-evidence:
+    name: Dev evidence — upload the run's record (no cloud authority)
+    needs: [dev-stage]
+    if: always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Materialize the evidence file under its reviewed name
+        env:
+          EVIDENCE: ${{ needs.dev-stage.outputs.evidence }}
+          MODE: ${{ needs.dev-stage.outputs.mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          if [ -z "$EVIDENCE" ]; then
+            echo "no evidence record was produced (the run refused before the entrypoint); nothing to materialize"
+            exit 0
+          fi
+          case "$MODE" in
+            plan_only) name=plan.json ;;
+            deploy) name=deploy.json ;;
+            *) name=evidence.json ;;
+          esac
+          printf '%s\n' "$EVIDENCE" > "$RUNNER_TEMP/evidence/$name"
       - name: Upload the plan artifact
-        if: ${{ !cancelled() && steps.evidence.outputs.mode == 'plan_only' }}
+        if: ${{ needs.dev-stage.outputs.mode == 'plan_only' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: plan
-          path: ${{ runner.temp }}/release-evidence/evidence.json
+          path: ${{ runner.temp }}/evidence/plan.json
           if-no-files-found: error
           retention-days: 90
       - name: Upload the deploy artifact
-        if: ${{ !cancelled() && steps.evidence.outputs.mode == 'deploy' }}
+        if: ${{ needs.dev-stage.outputs.mode == 'deploy' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deploy
-          path: ${{ runner.temp }}/release-evidence/evidence.json
+          path: ${{ runner.temp }}/evidence/deploy.json
           if-no-files-found: error
           retention-days: 90
       - name: Upload refusal evidence (no mode reached the record)
-        if: ${{ !cancelled() && steps.evidence.outputs.mode == '' }}
+        if: ${{ needs.dev-stage.outputs.mode == '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: evidence
-          path: ${{ runner.temp }}/release-evidence/evidence.json
+          path: ${{ runner.temp }}/evidence/evidence.json
           if-no-files-found: ignore
           retention-days: 90
 
