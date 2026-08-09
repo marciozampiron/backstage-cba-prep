@@ -477,6 +477,27 @@ workflow file and title would satisfy every other rule while handing back a fore
 The runbooks dispatch by workflow FILE with the same `--repo`, and every `gh run download`
 carries it too. A test passes `repo: 'attacker/fork'` and proves the queries stay pinned.
 
+Design round 11 (Codex, two findings) removed the last discretion from the evidence. **The two
+bundle digests got ONE canonical serialization**: `framedBundleDigest` in the policy library is
+the single shared implementation, and the two envelopes are pinned functions —
+`zampStatementDigest` (producer `zamp`, record name = the locator's path, `text/markdown`) and
+`cleanupAuthorizationDigest` (the nine keys in the exported `CLEANUP_VALUE_KEY_ORDER`,
+`application/json`; a permuted input digests identically, a changed key differently). Two
+reviewers can no longer frame the same bytes two "compatible" ways. The statement gained an
+immutable LOCATOR — the decision file under `.agent-handoff/decisions/` plus the commit that
+introduced it — because a source class and a timestamp find nothing univocally. The positive
+fixtures are now REAL: actual statement bytes and an actual nine-key value digested through the
+shared functions, with adversarials over producer, record name, media type, newline, a foreign
+path, and single-key changes to the authorization.
+
+**The first mutation now names its repository.** Round 10 pinned reads and dispatch; the `gh api
+PATCH` that installs `CBA_CLOUD_GATE` still said `repos/<owner>/<repo>`, and a hasty fill-in
+mutates a foreign Environment before the canonical dispatch would fail. The three mutating
+runbooks carry the literal canonical path, and a governance scan walks every fenced `gh` command
+in every runbook: no `<owner>/<repo>` placeholder anywhere, every `gh api … repos/…` on the
+canonical repository, every dispatch and download carrying `--repo` — with positive controls and
+the pin imported from the helper, so there is exactly one place the repository's identity lives.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil

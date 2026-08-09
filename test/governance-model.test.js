@@ -19,7 +19,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement, framedTextDigest } from '../src/lib/authority-policy.js';
+import {
+  validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement,
+  framedTextDigest, framedBundleDigest, zampStatementDigest, cleanupAuthorizationDigest,
+  ZAMP_STATEMENT_MEDIA_TYPE, CLEANUP_VALUE_KEY_ORDER,
+} from '../src/lib/authority-policy.js';
+import { CANONICAL_REPO } from '../bin/resolve-run.mjs';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -1952,6 +1957,23 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     'policy.documents.stack-record-authorization.residualRisk',
     POLICY.documents['stack-record-authorization'].residualRisk,
   );
+  // ROUND 11: the positive fixtures are REAL — actual statement bytes and an actual nine-key
+  // cleanup value, digested through the one shared implementation, never a repeated hex.
+  const STATEMENT_PATH = '.agent-handoff/decisions/risk-70-stack-record-cleanup.md';
+  const STATEMENT_TEXT = 'I, Zamp, accept the TOCTOU residual for stack record X under decision cleanup-70-example-0001.\n';
+  const STATEMENT_SHA = zampStatementDigest(STATEMENT_PATH, STATEMENT_TEXT);
+  const CLEANUP_VALUE = {
+    issue: 70,
+    decisionId: 'cleanup-70-example-0001',
+    environment: 'dev',
+    account: '111122223333',
+    region: 'us-east-1',
+    stackName: 'CbaStudyCoach-dev-Identity',
+    stackId: ['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/CbaStudyCoach-dev-Identity/12345678-1234-1234-1234-123456789012'].join(':'),
+    observedStatus: 'REVIEW_IN_PROGRESS',
+    observedAt: '2026-08-07T10:00:00Z',
+  };
+  const CLEANUP_SHA = cleanupAuthorizationDigest(CLEANUP_VALUE);
   const record = () => ({
     acceptedBy: 'zamp',
     decisionId: 'risk-70-stack-record-cleanup',
@@ -1963,14 +1985,15 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
     expiresAt: '2035-02-03T12:00:00Z',
     boundToEffect: 'delete-review-in-progress-stack-record',
     residualRiskSha256: RISK_SHA,
-    coversCleanupAuthorizationSha256: 'c'.repeat(64),
+    coversCleanupAuthorizationSha256: CLEANUP_SHA,
     coversCleanupDecisionId: 'cleanup-70-example-0001',
     zampStatement: {
       source: 'zamp-verbatim-message',
+      locator: { path: STATEMENT_PATH, introducedIn: 'f'.repeat(40) },
       sentAt: '2026-08-07T11:00:00Z',
       encoding: 'utf-8',
-      bytes: 512,
-      sha256: 'a'.repeat(64),
+      bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'),
+      sha256: STATEMENT_SHA,
     },
   });
   expectRejected((p) => {
@@ -2050,6 +2073,44 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
   expectRejected((p) => {
     p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, bytes: 0 } };
   }, /positive integer/);
+  // ROUND 11: a source CLASS plus a timestamp finds nothing univocally — the locator names the
+  // decision file and the introducing commit, and both have closed shapes.
+  expectRejected((p) => {
+    const stmt = { ...record().zampStatement };
+    delete stmt.locator;
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: stmt };
+  }, /zampStatement/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, locator: { path: '/tmp/anywhere.md', introducedIn: 'f'.repeat(40) } } };
+  }, /decision file under \.agent-handoff\/decisions\//);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, locator: { path: STATEMENT_PATH, introducedIn: 'main' } } };
+  }, /full 40-character SHA/);
+  // ROUND 11: the envelopes are canonical — same bytes under a different producer, record name,
+  // media type, or with a stray newline, and the same VALUE with one key changed, all digest
+  // differently. Two reviewers can no longer frame the same content two compatible ways.
+  {
+    assert.equal(ZAMP_STATEMENT_MEDIA_TYPE, 'text/markdown');
+    assert.deepEqual(CLEANUP_VALUE_KEY_ORDER, ['issue', 'decisionId', 'environment', 'account', 'region', 'stackName', 'stackId', 'observedStatus', 'observedAt']);
+    const variants = [
+      framedBundleDigest({ producer: 'opus', name: STATEMENT_PATH, mediaType: 'text/markdown', content: STATEMENT_TEXT }),
+      framedBundleDigest({ producer: 'zamp', name: 'some-other-name.md', mediaType: 'text/markdown', content: STATEMENT_TEXT }),
+      framedBundleDigest({ producer: 'zamp', name: STATEMENT_PATH, mediaType: 'text/plain', content: STATEMENT_TEXT }),
+      zampStatementDigest(STATEMENT_PATH, `${STATEMENT_TEXT}\n`),
+      zampStatementDigest('.agent-handoff/decisions/other-decision.md', STATEMENT_TEXT),
+    ];
+    for (const v of variants) assert.notEqual(v, STATEMENT_SHA);
+    assert.equal(new Set(variants).size, variants.length, 'each perturbation is its own digest');
+    // determinism: the same inputs reproduce the same digest
+    assert.equal(zampStatementDigest(STATEMENT_PATH, STATEMENT_TEXT), STATEMENT_SHA);
+    assert.equal(cleanupAuthorizationDigest({ ...CLEANUP_VALUE }), CLEANUP_SHA);
+    // one authorization key changed → a different authorization
+    assert.notEqual(cleanupAuthorizationDigest({ ...CLEANUP_VALUE, observedAt: '2026-08-07T10:00:01Z' }), CLEANUP_SHA);
+    assert.notEqual(cleanupAuthorizationDigest({ ...CLEANUP_VALUE, decisionId: 'cleanup-70-example-0002' }), CLEANUP_SHA);
+    // key order is the envelope's, not the caller's: a permuted object digests identically
+    const permuted = Object.fromEntries(Object.entries(CLEANUP_VALUE).reverse());
+    assert.equal(cleanupAuthorizationDigest(permuted), CLEANUP_SHA);
+  }
   // ROUND 9: the validator evaluates the CLOCK. An expired acceptance in the tree fails closed…
   {
     const expired = clonePolicy();
@@ -2088,6 +2149,37 @@ test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () 
       `${rel} carries a delete-stack command while stack-record-authorization.executableProcedure is false`,
     );
   }
+});
+
+test('ROUND 11: every mutating gh command in the runbooks names the canonical repository', () => {
+  // Round 10 pinned the reads and the dispatch; the FIRST mutation — installing CBA_CLOUD_GATE
+  // on the Environment — still said repos/<owner>/<repo>, which gh resolves nowhere and a hasty
+  // fill-in resolves to the AMBIENT repository. Every gh command in every runbook now either
+  // names the canonical repository literally or is repository-independent.
+  const runbooks = fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'));
+  const offenses = [];
+  for (const rel of runbooks) {
+    const lines = read(`docs/runbooks/${rel}`).split('\n');
+    // COMMANDS live in fenced blocks; prose may mention `gh workflow run` without being one.
+    let inFence = false;
+    lines.forEach((line, i) => {
+      if (/^\s*```/.test(line)) { inFence = !inFence; return; }
+      if (!inFence) return;
+      const where = `docs/runbooks/${rel}:${i + 1}`;
+      if (/<owner>\/<repo>/.test(line)) offenses.push(`${where} uses the <owner>/<repo> placeholder`);
+      if (/\bgh api\b/.test(line) && line.includes('repos/') && !line.includes(`repos/${CANONICAL_REPO}/`)) {
+        offenses.push(`${where} gh api path is not the canonical repository`);
+      }
+      if (/\bgh (workflow run|run download)\b/.test(line) && !line.includes(`--repo ${CANONICAL_REPO}`)) {
+        offenses.push(`${where} lacks --repo ${CANONICAL_REPO}`);
+      }
+    });
+  }
+  assert.deepEqual(offenses, [], offenses.join('\n'));
+  // POSITIVE CONTROLS: each rule fires on the shape it guards against.
+  assert.ok(/<owner>\/<repo>/.test('gh api repos/<owner>/<repo>/environments'));
+  assert.ok(!('gh api -X PATCH repos/attacker/fork/environments/dev/variables/X'.includes(`repos/${CANONICAL_REPO}/`)));
+  assert.ok(!('gh workflow run release-pilot.yml --ref main'.includes(`--repo ${CANONICAL_REPO}`)));
 });
 
 test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {

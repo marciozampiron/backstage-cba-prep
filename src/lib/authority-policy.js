@@ -318,10 +318,57 @@ const AUTHORIZATION_SOURCES = [...DOCUMENTS, 'MERGE_DECISION'];
  *    statement the digest names.
  */
 const RISK_ACCEPTANCE_KEYS = ['acceptedBy', 'decisionId', 'finding', 'justification', 'compensatingControls', 'acceptedAt', 'reviewBy', 'expiresAt', 'boundToEffect', 'residualRiskSha256', 'coversCleanupAuthorizationSha256', 'coversCleanupDecisionId', 'zampStatement'];
-/** The closed shape of the statement pointer: source, normalization and canonical bytes — round
- * 10: a bare 64-hex string fixed neither where the statement lives nor what bytes it digests. */
-const ZAMP_STATEMENT_KEYS = ['source', 'sentAt', 'encoding', 'bytes', 'sha256'];
+/** The closed shape of the statement pointer: source, LOCATOR, normalization and canonical
+ * bytes — round 10 fixed the bytes, round 11 fixed the address: a source CLASS plus a timestamp
+ * finds nothing univocally, so the pointer names the decision file and the commit that
+ * introduced it, both verifiable from history. */
+const ZAMP_STATEMENT_KEYS = ['source', 'locator', 'sentAt', 'encoding', 'bytes', 'sha256'];
+const ZAMP_STATEMENT_LOCATOR_KEYS = ['path', 'introducedIn'];
+const DECISION_FILE_RE = /^\.agent-handoff\/decisions\/[a-z0-9][a-z0-9-]*\.md$/;
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * §6b `bundle` framing over ONE record, as the single shared implementation — round 11: two
+ * reviewers framing the same bytes with different record names or media types produce different
+ * digests, both "compatible with the prose", which is no canon at all. Everything is pinned
+ * here: the envelope shape, the record shape, and the content hash inside it.
+ */
+export function framedBundleDigest({ producer, name, mediaType, content }) {
+  const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+  const doc = {
+    digestKind: 'bundle',
+    version: 1,
+    producer,
+    records: [{
+      name,
+      mediaType,
+      bytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    }],
+  };
+  return createHash('sha256').update(JSON.stringify(doc), 'utf8').digest('hex');
+}
+
+/** The exact envelope of Zamp's verbatim decision statement: the record NAME is the decision
+ * file's repo-relative path, so the digest and the locator can never disagree about identity. */
+export const ZAMP_STATEMENT_MEDIA_TYPE = 'text/markdown';
+export function zampStatementDigest(path, content) {
+  return framedBundleDigest({ producer: 'zamp', name: path, mediaType: ZAMP_STATEMENT_MEDIA_TYPE, content });
+}
+
+/** The exact envelope of the out-of-band cleanup authorization value: nine keys, THIS order. */
+export const CLEANUP_VALUE_KEY_ORDER = ['issue', 'decisionId', 'environment', 'account', 'region', 'stackName', 'stackId', 'observedStatus', 'observedAt'];
+export function cleanupAuthorizationDigest(value) {
+  const ordered = {};
+  for (const key of CLEANUP_VALUE_KEY_ORDER) ordered[key] = value[key];
+  return framedBundleDigest({
+    producer: 'zamp',
+    name: 'stack-record-authorization-value',
+    mediaType: 'application/json',
+    content: JSON.stringify(ordered),
+  });
+}
 
 /**
  * §6b `text` framing, as ONE function both the validator and any future tooling share. Round 10:
@@ -545,6 +592,18 @@ export function validateAuthorityPolicy(policy, { now = Date.now() } = {}) {
         assertKeys(`policy.documents.${name}.riskAcceptance.zampStatement`, stmt, ZAMP_STATEMENT_KEYS);
         if (stmt.source !== 'zamp-verbatim-message') {
           fail(`policy.documents.${name}.riskAcceptance.zampStatement.source must be "zamp-verbatim-message": the statement is Zamp's own message on the record, not a paraphrase.`);
+        }
+        // Round 11: a source CLASS is not an address. The locator names the decision file and
+        // the commit that introduced it — both verifiable against history, neither reusable.
+        if (!isPlainObject(stmt.locator)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.locator must name where the statement immutably lives; a source class plus a timestamp finds nothing univocally.`);
+        }
+        assertKeys(`policy.documents.${name}.riskAcceptance.zampStatement.locator`, stmt.locator, ZAMP_STATEMENT_LOCATOR_KEYS);
+        if (typeof stmt.locator.path !== 'string' || !DECISION_FILE_RE.test(stmt.locator.path)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.locator.path must be a decision file under .agent-handoff/decisions/.`);
+        }
+        if (typeof stmt.locator.introducedIn !== 'string' || !COMMIT_SHA_RE.test(stmt.locator.introducedIn)) {
+          fail(`policy.documents.${name}.riskAcceptance.zampStatement.locator.introducedIn must be the full 40-character SHA of the commit that introduced the decision file.`);
         }
         if (!strictUtcInstant(stmt.sentAt)) {
           fail(`policy.documents.${name}.riskAcceptance.zampStatement.sentAt must be a strict RFC3339 UTC instant.`);

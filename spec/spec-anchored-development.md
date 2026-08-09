@@ -513,12 +513,18 @@ refuses any non-null value that is not a CLOSED record with exactly these thirte
 
 - `acceptedBy` — must be `zamp`, the only actor holding `accept-risk`;
 - `zampStatement` — a CLOSED pointer to **Zamp's verbatim written decision**: `source` (literally
-  `zamp-verbatim-message` — Zamp's own message on the record, never a paraphrase), `sentAt`,
-  `encoding` (literally `utf-8`), `bytes` (the canonical length) and `sha256` — the §6b `bundle`
-  digest of those exact bytes, `producer: "zamp"`. Round 10: a bare 64-hex string fixed neither
-  where the statement lives nor which bytes it digests; `acceptedBy: "zamp"` typed by an executor
-  proves nothing. Independent review recomputes the digest from the actual message; the policy
-  entry is its transcript;
+  `zamp-verbatim-message` — Zamp's own message on the record, never a paraphrase), a `locator`
+  (`path`: the decision file under `.agent-handoff/decisions/`, `introducedIn`: the full SHA of
+  the commit that introduced it — round 11: a source CLASS plus a timestamp finds nothing
+  univocally; a path plus its introducing commit is verifiable against history and reusable by
+  no other statement), `sentAt`, `encoding` (literally `utf-8`), `bytes` (the canonical length)
+  and `sha256`. Round 10: a bare 64-hex string fixed neither where the statement lives nor which
+  bytes it digests. The digest's envelope is EXACT and shared: `framedBundleDigest` in
+  [`src/lib/authority-policy.js`](../src/lib/authority-policy.js) is the one implementation, and
+  `zampStatementDigest(path, content)` pins `producer: "zamp"`, record `name` = the locator's
+  path (so digest and locator can never disagree about identity), `mediaType: "text/markdown"`,
+  and the content hash inside the record. Independent review recomputes it from the decision
+  file; the policy entry is its transcript;
 - `decisionId`, `finding`, `justification`, `compensatingControls` (non-empty) — round 8's core;
 - `residualRiskSha256` — the §6b `text`-framed digest of THIS instrument's exact `residualRisk`
   (subject: the field's canonical path), recomputed by the validator. Round 10: a raw
@@ -528,11 +534,16 @@ refuses any non-null value that is not a CLOSED record with exactly these thirte
   prior acceptance, structurally;
 - `coversCleanupAuthorizationSha256` and `coversCleanupDecisionId` — an acceptance covers ONE
   stack record under ONE cleanup decision, and the stack is bound by the §6b `bundle` digest of
-  the OUT-OF-BAND cleanup authorization value (the nine keys of the table above, canonical JSON
-  in table order, `producer: "zamp"`), which contains the `stackId` and `decisionId`. Round 10:
-  the previous field copied the live stack ARN — account id included — into the tracked policy,
-  which this repository forbids; the digest binds the same identity while the ARN never enters
-  Git. It is never a class-wide waiver;
+  the OUT-OF-BAND cleanup authorization value, which contains the `stackId` and `decisionId`.
+  Round 10: the previous field copied the live stack ARN — account id included — into the
+  tracked policy, which this repository forbids; the digest binds the same identity while the
+  ARN never enters Git. Round 11 pinned the envelope so two framings of the same value cannot
+  both be "compatible": `cleanupAuthorizationDigest(value)` in
+  [`src/lib/authority-policy.js`](../src/lib/authority-policy.js) serializes exactly the nine
+  keys in the exported `CLEANUP_VALUE_KEY_ORDER` (a permuted input digests identically; a
+  changed key digests differently), record `name` literally
+  `stack-record-authorization-value`, `mediaType: "application/json"`, `producer: "zamp"`. It
+  is never a class-wide waiver;
 - `acceptedAt`, `reviewBy`, `expiresAt` — strict UTC instants, ordered
   `acceptedAt < reviewBy <= expiresAt`, **and evaluated against the clock**: the validator takes
   the current time, so a tree holding an expired acceptance — or one dated in the future — fails

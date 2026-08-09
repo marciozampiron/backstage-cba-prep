@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.9.0
+version: 0.10.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -44,7 +44,7 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
 1. **Zamp** sets the deploy value (repository administration plus the cloud instrument):
 
    ```text
-   gh api -X PATCH repos/<owner>/<repo>/environments/dev/variables/CBA_CLOUD_GATE \
+   gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE \
      -f name=CBA_CLOUD_GATE \
      -f value='<the deploy JSON for this decision, planDigest included>'
    ```
