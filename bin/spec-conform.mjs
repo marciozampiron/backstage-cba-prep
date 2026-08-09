@@ -11,7 +11,7 @@
  * tree's results would prove nothing (round I1-2).
  * Read-only over the repository (SPEC-GOV-001).
  */
-import { loadSpecSources, validateSpecRegistry, runConformance, assertConformTarget, SpecRegistryError } from '../src/lib/spec-registry.js';
+import { loadSpecSources, validateSpecRegistry, runConformance, runConformanceForCommit, SpecRegistryError } from '../src/lib/spec-registry.js';
 
 function cliArg(argv, name) {
   const i = argv.indexOf(name);
@@ -20,12 +20,12 @@ function cliArg(argv, name) {
 
 try {
   const commit = cliArg(process.argv, '--commit') ?? null;
-  // Round I1-2: the TESTS run from the worktree, so a commit target is honest only when the
-  // worktree IS that commit, exactly and cleanly — a broken target must not borrow a fixed
-  // tree's green.
-  if (commit !== null) assertConformTarget({ commit });
-  const registry = validateSpecRegistry(loadSpecSources({ commit }));
-  const report = runConformance(registry);
+  // Rounds I1-2/3: a commit target is honest only when the worktree IS that commit before the
+  // run AND still is after it — a check is an arbitrary child, and one that edited the tree
+  // mid-run must invalidate the verdict, not decorate it.
+  const report = commit !== null
+    ? runConformanceForCommit({ commit })
+    : runConformance(validateSpecRegistry(loadSpecSources({})));
   if (report.activeCount === 0) {
     process.stdout.write('spec:conform OK — 0 ACTIVE ids; nothing is enforced yet, and none can drift.\n');
   } else {

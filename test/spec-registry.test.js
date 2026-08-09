@@ -14,7 +14,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadSpecSources, validateSpecRegistry, parseSpecTables, runConformance,
-  assertConformTarget, annotationOffenses, CHECK_TIMEOUT_MS,
+  assertConformTarget, annotationOffenses, CHECK_TIMEOUT_MS, CONFORM_TEST_TIMEOUT_MS,
+  resolvePreviousRegistryRaw, governedPathOffenses, diffChangedFiles, runConformanceForCommit,
   SpecRegistryError, REGISTRY_PATH, SPEC_PATH,
 } from '../src/lib/spec-registry.js';
 import { framedTextDigest } from '../src/lib/authority-policy.js';
@@ -348,6 +349,193 @@ test('ROUND I1-2: an ACTIVE anchor symbol must actually appear in its file', () 
     e.anchors = [{ file: 'infra/aws/bin/deploy-release.js', symbol: 'THIS_SYMBOL_DOES_NOT_EXIST' }];
     setSpec(SOURCES.specMd.replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |'));
   }, /does not appear in/);
+});
+
+test('ROUND I1-3: the history baseline is never the bytes under validation', () => {
+  const HEAD_RAW = '{"head":true}';
+  const PARENT_RAW = '{"parent":true}';
+  const scripted = ({ head = HEAD_RAW, parent = PARENT_RAW } = {}) => (cmd, args) => {
+    assert.equal(args[0], 'show');
+    if (args[1] === `HEAD:${REGISTRY_PATH}`) {
+      if (head === null) throw new Error('no HEAD version');
+      return head;
+    }
+    if (args[1] === `HEAD~1:${REGISTRY_PATH}`) {
+      if (parent === null) throw new Error('no parent version');
+      return parent;
+    }
+    throw new Error(`unexpected: ${args.join(' ')}`);
+  };
+  // Codex's reproduction: clean checkout, worktree === HEAD — the baseline must be the PARENT,
+  // never the very bytes being validated.
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted() }), PARENT_RAW);
+  // A diverged worktree is judged against HEAD.
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: '{"edited":true}', git: scripted() }), HEAD_RAW);
+  // Birth commits have no baseline — in either direction.
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ head: null }) }), null);
+  assert.equal(resolvePreviousRegistryRaw({ currentRaw: HEAD_RAW, git: scripted({ parent: null }) }), null);
+  // …and the REAL loader in THIS clean-or-dirty checkout produces a baseline that is not the
+  // current bytes (or none at all) — the exact vacuity Codex demonstrated.
+  const real = loadSpecSources({ root: ROOT });
+  assert.ok(real.previousRegistryRaw === null || real.previousRegistryRaw !== real.registryRaw);
+});
+
+test('ROUND I1-3: retiring an ACTIVE id is not a license to rewrite its text', () => {
+  const previous = structuredClone(REGISTRY);
+  previous.entries.find((e) => e.id === 'SPEC-DEPLOY-002').status = 'ACTIVE';
+  const registry = structuredClone(REGISTRY);
+  const ce = registry.entries.find((e) => e.id === 'SPEC-DEPLOY-002');
+  ce.status = 'RETIRED';
+  ce.supersededBy = 'SPEC-DEPLOY-019';
+  ce.normativeText = 'a rewritten record';
+  ce.normativeSha256 = framedTextDigest(ce.id, ce.normativeText);
+  const d19 = registry.entries.find((e) => e.id === 'SPEC-DEPLOY-019');
+  d19.status = 'ACTIVE';
+  d19.anchors = [{ file: 'infra/aws/bin/deploy-release.js', symbol: 'checkCloudGate' }];
+  d19.tests = [{ file: 'test/fixtures/conform-probe.js', title: 'conform probe: this test passes' }];
+  d19.mutationEvidence = { commit: 'a'.repeat(40), patchSha256: 'b'.repeat(64), command: 'npm test', expectedFailure: '1' };
+  const specMd = SOURCES.specMd
+    .replace(/^\| SPEC-DEPLOY-002 \| PROPOSED \| [^|]+\|/m, `| SPEC-DEPLOY-002 | RETIRED | ${ce.normativeText} |`)
+    .replace('| SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) |', '| SPEC-DEPLOY-019 | ACTIVE |');
+  assert.throws(
+    () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile, previousRegistryRaw: JSON.stringify(previous) }),
+    /text changed during retirement|is not RETIRED naming it back/,
+  );
+});
+
+test('ROUND I1-3: the annotation scan fails closed and refuses malformed tokens', () => {
+  const ids = new Set(REGISTRY.entries.map((e) => e.id));
+  const token = (inner) => `[${inner}]`;
+  const grepLine = (line) => (cmd, args) => {
+    assert.equal(args[0], 'grep');
+    return `${line}\n`;
+  };
+  // Codex's reproduction 1: a git error is a REFUSAL, never "no annotations".
+  const gitError = () => { const err = new Error('not a git repository'); err.status = 128; throw err; };
+  assert.throws(() => annotationOffenses({ registryIds: ids, git: gitError }), /ANNOTATION_SCAN_FAILED/);
+  // Zero matches (exit 1, empty output) is genuinely clean.
+  const noMatch = () => { const err = new Error(''); err.status = 1; err.stdout = ''; throw err; };
+  assert.deepEqual(annotationOffenses({ registryIds: ids, git: noMatch }), []);
+  // Codex's reproduction 2: a malformed token (two digits) offends instead of vanishing.
+  const malformed = annotationOffenses({ registryIds: ids, git: grepLine(`src/x.js:9: // ${token('SPEC-GOV-01')}`) });
+  assert.equal(malformed.length, 1);
+  assert.match(malformed[0], /malformed SPEC token/);
+  // Frontmatter reference LISTS resolve piece by piece; one bad piece offends.
+  assert.deepEqual(annotationOffenses({ registryIds: ids, git: grepLine(`docs/x.md:7:specs: ${token('SPEC-GOV-001, SPEC-RUN-001')}`) }), []);
+  assert.equal(annotationOffenses({ registryIds: ids, git: grepLine(`docs/x.md:7:specs: ${token('SPEC-GOV-001, SPEC-GOV-999')}`) }).length, 1);
+  // Documentation placeholders describe the format without being annotations.
+  assert.deepEqual(annotationOffenses({ registryIds: ids, git: grepLine(`spec/x.md:3: the ${token('SPEC-…')} token`) }), []);
+  // Commit-bound: the scan targets the named tree-ish, not the ambient worktree.
+  let seenArgs = null;
+  const capture = (cmd, args) => { seenArgs = args; const err = new Error(''); err.status = 1; err.stdout = ''; throw err; };
+  annotationOffenses({ registryIds: ids, git: capture, commit: 'c'.repeat(40) });
+  assert.equal(seenArgs[seenArgs.length - 1], 'c'.repeat(40));
+});
+
+test('ROUND I1-3: a governed-path change without moving evidence is an offense', () => {
+  const registry = {
+    entries: [
+      {
+        id: 'SPEC-A-001',
+        status: 'ACTIVE',
+        governedPaths: ['infra/aws/bin/deploy-release.js', 'infra/aws/bootstrap/policies/'],
+        tests: [{ file: 'infra/aws/test/deploy-preflight.test.js', title: 'x' }],
+        checks: [{ kind: 'script', ref: 'spec/checks/a.sh' }],
+      },
+      { id: 'SPEC-A-002', status: 'PROPOSED', governedPaths: ['infra/aws/bin/deploy-release.js'], tests: [], checks: [] },
+    ],
+  };
+  // Governed file changed, evidence untouched → offense (Codex's activation-gap closed).
+  const offenses = governedPathOffenses({ registry, changedFiles: ['infra/aws/bin/deploy-release.js'] });
+  assert.equal(offenses.length, 1);
+  assert.match(offenses[0], /SPEC-A-001.*evidence must move/s);
+  // Directory prefixes cover their children.
+  assert.equal(governedPathOffenses({ registry, changedFiles: ['infra/aws/bootstrap/policies/cfn-exec-release.template.json'] }).length, 1);
+  // Evidence moving with the change clears it — either a test file or a check ref.
+  assert.deepEqual(governedPathOffenses({ registry, changedFiles: ['infra/aws/bin/deploy-release.js', 'infra/aws/test/deploy-preflight.test.js'] }), []);
+  assert.deepEqual(governedPathOffenses({ registry, changedFiles: ['infra/aws/bin/deploy-release.js', 'spec/checks/a.sh'] }), []);
+  // PROPOSED ids are not enforced; unrelated changes are silent; no baseline means no verdict.
+  assert.deepEqual(governedPathOffenses({ registry, changedFiles: ['README.md'] }), []);
+  assert.deepEqual(governedPathOffenses({ registry, changedFiles: null }), []);
+});
+
+test('ROUND I1-3: diffChangedFiles picks the honest baseline per mode', () => {
+  const scripted = (responses) => (cmd, args) => {
+    const key = args.join(' ');
+    if (!(key in responses)) throw new Error(`unexpected: ${key}`);
+    const v = responses[key];
+    if (v instanceof Error) throw v;
+    return v;
+  };
+  // Commit mode: the commit against its parent.
+  assert.deepEqual(
+    diffChangedFiles({ commit: 'c'.repeat(40), git: scripted({ [`diff --name-only ${'c'.repeat(40)}~1 ${'c'.repeat(40)}`]: 'a.js\nb.md\n' }) }),
+    ['a.js', 'b.md'],
+  );
+  // Dirty worktree: worktree vs HEAD, untracked included.
+  assert.deepEqual(
+    diffChangedFiles({ git: scripted({ 'status --porcelain': ' M a.js\n?? new.md\n', 'diff --name-only HEAD': 'a.js\n' }) }),
+    ['a.js', 'new.md'],
+  );
+  // Clean checkout: HEAD against its parent — never an empty self-diff.
+  assert.deepEqual(
+    diffChangedFiles({ git: scripted({ 'status --porcelain': '', 'diff --name-only HEAD~1 HEAD': 'c.js\n' }) }),
+    ['c.js'],
+  );
+});
+
+test('ROUND I1-3: checks cannot escape the repository, and children get a minimal environment', () => {
+  // A check ref escaping the root refuses at validation, exactly like anchors (Codex's ../outside.sh).
+  expectRejected((r, setSpec) => {
+    const e = entry(r, 'SPEC-DEPLOY-001');
+    e.checks = [{ kind: 'script', ref: '../outside.sh' }];
+  }, /check.ref must be a normalized repo-relative path/);
+  // The child environment is minimal: a variable exported by the invoking shell must NOT reach
+  // the check — proven with a real child that fails if it sees the probe.
+  process.env.CBA_SECRET_PROBE = 'leaked';
+  try {
+    const report = runConformance({
+      entries: [{
+        id: 'SPEC-GOV-001', status: 'ACTIVE', tests: [], checks: [{ kind: 'script', ref: 'test/fixtures/check-env-probe.sh' }],
+      }],
+    });
+    assert.equal(report.ok, true, 'the probe variable leaked into the check child');
+  } finally {
+    delete process.env.CBA_SECRET_PROBE;
+  }
+  assert.equal(CONFORM_TEST_TIMEOUT_MS, 10 * 60_000);
+});
+
+test('ROUND I1-3: a check that mutates the tree invalidates the verdict', () => {
+  const COMMIT = 'a'.repeat(40);
+  let statusCalls = 0;
+  const git = (cmd, args) => {
+    if (args[0] === 'rev-parse') return `${COMMIT}\n`;
+    if (args[0] === 'status') {
+      statusCalls += 1;
+      // Clean before the run; DIRTY after the children ran — a check edited the evidence.
+      return statusCalls <= 1 ? '' : ' M infra/aws/bin/deploy-release.js\n';
+    }
+    throw new Error(`unexpected git: ${args.join(' ')}`);
+  };
+  assert.throws(
+    () => runConformanceForCommit({
+      commit: COMMIT,
+      git,
+      loadDeps: {
+        git: (cmd, args) => {
+          if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return SOURCES.registryRaw;
+          if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return SOURCES.specMd;
+          if (args[0] === 'show' && args[1] === `${COMMIT}~1:${REGISTRY_PATH}`) { const e = new Error('none'); throw e; }
+          if (args[0] === 'cat-file') return '';
+          if (args[0] === 'show') return SOURCES.readFile(args[1].split(':').slice(1).join(':'));
+          throw new Error(`unexpected: ${args.join(' ')}`);
+        },
+      },
+    }),
+    /CONFORM_WORKTREE_DIRTY/,
+  );
+  assert.ok(statusCalls >= 2, 'the post-run guard must have re-checked the tree');
 });
 
 test('POSITIVE CONTROL: the registry file on disk is byte-identical to what validation read', () => {

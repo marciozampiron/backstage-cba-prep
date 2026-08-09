@@ -554,6 +554,25 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I1-3 (Codex, four HIGH findings) closed the gap between the laws and what
+CI actually exercises. **The history baseline is never the bytes under validation**: on a clean
+checkout the worktree file IS HEAD's file, so "compare with HEAD" compared the registry with
+itself and every historical law was vacuously green — the baseline is now HEAD when the worktree
+diverged, HEAD's parent when it is exactly HEAD, proven against the real loader; and retiring an
+ACTIVE id no longer licenses a rewrite — the text stays byte-identical through retirement. **The
+annotation scan fails closed and is commit-bound**: a git error refuses (exit 1 with empty output
+is the only "no matches"), broad candidates are parsed so a malformed token offends instead of
+vanishing, frontmatter reference lists resolve piece by piece, documentation placeholders are a
+closed set, and `--commit` greps the named tree-ish rather than the ambient worktree. **The
+governed-path predicate exists**: `governedPathOffenses` flags an ACTIVE id whose governed files
+changed without its tests or checks moving, fed by `diffChangedFiles` with the honest baseline
+per mode (commit vs parent; dirty worktree vs HEAD, untracked included; clean checkout HEAD vs
+parent), wired into spec:lint. **Checks are contained**: refs obey the same repo-relative law as
+anchors, every child (tests included) runs with a minimal environment — proven by a probe check
+that fails if the invoking shell's variable leaks — and bounded wall-clock; and the commit-bound
+conformance run re-guards the worktree AFTER the children ran, so a check that edited code or
+tests mid-run invalidates the verdict instead of decorating it.
+
 Implementation round I1-2 (Codex, six findings on Slice I1) hardened the spec system before any
 id can activate. `--commit` now requires the worktree to BE the audited commit (HEAD equal, tree
 clean) — the tests run from the worktree, and a broken target must not borrow a fixed tree's

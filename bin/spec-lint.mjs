@@ -7,7 +7,7 @@
  *
  * Read-only over the repository (SPEC-GOV-001): this tool reports, it never repairs.
  */
-import { loadSpecSources, validateSpecRegistry, annotationOffenses, SpecRegistryError } from '../src/lib/spec-registry.js';
+import { loadSpecSources, validateSpecRegistry, annotationOffenses, governedPathOffenses, diffChangedFiles, SpecRegistryError } from '../src/lib/spec-registry.js';
 
 function cliArg(argv, name) {
   const i = argv.indexOf(name);
@@ -17,8 +17,11 @@ function cliArg(argv, name) {
 try {
   const commit = cliArg(process.argv, '--commit') ?? null;
   const registry = validateSpecRegistry(loadSpecSources({ commit }));
-  // The third traceability direction: every [SPEC-…] annotation in tracked content resolves.
-  const offenses = annotationOffenses({ registryIds: new Set(registry.entries.map((e) => e.id)) });
+  // The third traceability direction — bound to the audited tree (round I1-3): the exact commit
+  // when one is named, the worktree otherwise. A grep failure refuses; malformed tokens offend.
+  const offenses = annotationOffenses({ registryIds: new Set(registry.entries.map((e) => e.id)), commit });
+  // The governed-path predicate (§6): an ACTIVE id's governed change must move its evidence.
+  offenses.push(...governedPathOffenses({ registry, changedFiles: diffChangedFiles({ commit }) }));
   if (offenses.length) {
     throw new SpecRegistryError(offenses.join('; '));
   }

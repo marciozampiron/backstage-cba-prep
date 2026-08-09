@@ -79,9 +79,14 @@ export function loadSpecSources({ root = process.cwd(), commit = null, git = def
   return {
     registryRaw: readFileSync(path.join(root, REGISTRY_PATH), 'utf8'),
     specMd: readFileSync(path.join(root, SPEC_PATH), 'utf8'),
-    // History is judged against the last COMMITTED registry: each lint run compares one step,
-    // and induction over reviewed commits carries the law back to the registry's birth.
-    previousRegistryRaw: tryOrNull(() => git('git', ['-C', root, 'show', `HEAD:${REGISTRY_PATH}`])),
+    // Round I1-3: on a CLEAN checkout the worktree file IS HEAD's file, so "compare with HEAD"
+    // compared the registry with itself and every historical law was vacuously green in CI. The
+    // baseline is the last committed version that is NOT the bytes under validation: HEAD when
+    // the worktree diverged from it, HEAD's parent when the worktree is exactly HEAD.
+    previousRegistryRaw: resolvePreviousRegistryRaw({
+      currentRaw: readFileSync(path.join(root, REGISTRY_PATH), 'utf8'),
+      git: (cmd, args) => git(cmd, ['-C', root, ...args]),
+    }),
     fileExists: (rel) => existsSync(path.join(root, rel)),
     readFile: (rel) => readFileSync(path.join(root, rel), 'utf8'),
   };
@@ -93,6 +98,15 @@ function tryOrNull(fn) {
   } catch {
     return null;
   }
+}
+
+/** The history baseline for the worktree: HEAD if the worktree registry diverged from it, else
+ * HEAD's parent — never the very bytes under validation (round I1-3). */
+export function resolvePreviousRegistryRaw({ currentRaw, git = defaultGit }) {
+  const headRaw = tryOrNull(() => git('git', ['show', `HEAD:${REGISTRY_PATH}`]));
+  if (headRaw === null) return null; // the registry is being born in this commit
+  if (headRaw !== currentRaw) return headRaw;
+  return tryOrNull(() => git('git', ['show', `HEAD~1:${REGISTRY_PATH}`]));
 }
 
 /**
@@ -190,7 +204,8 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
     for (const check of entry.checks) {
       assertKeys(`${id} check`, check, ['kind', 'ref']);
       if (check.kind !== 'script') fail(`${id} check.kind must be "script".`);
-      if (typeof check.ref !== 'string' || !fileExists(check.ref)) fail(`${id} check.ref must be an existing path.`);
+      if (!isRepoRelativePath(check.ref)) fail(`${id} check.ref must be a normalized repo-relative path: ${check.ref}`);
+      if (!fileExists(check.ref)) fail(`${id} check.ref must be an existing path.`);
     }
     if (!Array.isArray(entry.governedPaths) || entry.governedPaths.some((g) => typeof g !== 'string' || g.trim() === '')) {
       fail(`${id}.governedPaths must be an array of paths.`);
@@ -317,6 +332,10 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
           if (!successor || successor.status !== 'ACTIVE') {
             fail(`${prev.id} was ACTIVE and is now RETIRED without an ACTIVE successor; retirement of an enforced id is atomic with its successor's activation (§4).`);
           }
+          // Round I1-3: retiring is not a license to rewrite — the record is kept byte-identical.
+          if (now.normativeText !== prev.normativeText) {
+            fail(`${prev.id} was ACTIVE and its text changed during retirement; a previously enforced sentence is immutable through and past its retirement (§4).`);
+          }
         }
       }
       if (prev.status === 'RETIRED') {
@@ -351,21 +370,87 @@ export function assertConformTarget({ commit, git = defaultGit }) {
  * resolve to a registered id. Zero annotations resolve trivially — the direction exists from
  * day one so the first annotation is already governed.
  */
-export function annotationOffenses({ registryIds, git = defaultGit }) {
+const ANNOTATION_ID_RE = /^SPEC-(GOV|AUDIT|RUN|DEPLOY|LANE|IAM)-[0-9]{3}$/;
+/** Documentation placeholders that DESCRIBE the token format without being annotations. Closed. */
+const ANNOTATION_PLACEHOLDERS = new Set(['SPEC-…', 'SPEC-<AREA>-<NNN>', 'SPEC-ID']);
+// Assembled so this file's own source never contains a degenerate bracket candidate.
+const ANNOTATION_CANDIDATE_RE = new RegExp(`\\[${'SPEC-'}[^\\]]*\\]`, 'g');
+
+export function annotationOffenses({ registryIds, git = defaultGit, commit = null }) {
+  // Round I1-3: the scan is bound to what it audits — the exact commit when one is named, the
+  // worktree otherwise — and a grep FAILURE is a refusal, never "no annotations": git grep exits
+  // 1 with no output for zero matches, and anything else is an error.
+  const args = ['grep', '-In', '-F', `[${'SPEC-'}`];
+  if (commit !== null) args.push(commit);
   let grep = '';
   try {
-    grep = git('git', ['grep', '-In', '-E', String.raw`\[SPEC-[A-Z]+-[0-9]{3}\]`]);
-  } catch {
-    return []; // git grep exits 1 when nothing matches — no annotations, no offenses
+    grep = git('git', args);
+  } catch (err) {
+    const status = err && typeof err.status === 'number' ? err.status : null;
+    const out = err && err.stdout ? String(err.stdout).trim() : '';
+    if (status === 1 && out === '') return [];
+    fail(`ANNOTATION_SCAN_FAILED: git grep did not run cleanly (exit ${status ?? 'unknown'}); an unscanned tree is not an annotation-free tree.`);
   }
   const offenses = [];
   for (const line of String(grep).split('\n')) {
     if (line.trim() === '') continue;
-    for (const [, id] of line.matchAll(/\[(SPEC-[A-Z]+-[0-9]{3})\]/g)) {
-      if (!registryIds.has(id)) offenses.push(`${line.split(':').slice(0, 2).join(':')} annotates unregistered ${id}`);
+    const where = line.split(':').slice(0, commit === null ? 2 : 3).join(':');
+    for (const match of line.matchAll(ANNOTATION_CANDIDATE_RE)) {
+      const inner = match[0].slice(1, -1);
+      if (ANNOTATION_PLACEHOLDERS.has(inner)) continue;
+      // A bracket may carry ONE annotation or a comma-separated reference list (runbook
+      // frontmatter); every piece must be a well-formed, registered id — round I1-3: a broad
+      // candidate that fails the grammar (a two-digit id, a typo) is an offense, not invisible.
+      for (const piece of inner.split(',').map((x) => x.trim())) {
+        if (!ANNOTATION_ID_RE.test(piece)) {
+          offenses.push(`${where} carries malformed SPEC token ${JSON.stringify(piece)}`);
+        } else if (!registryIds.has(piece)) {
+          offenses.push(`${where} annotates unregistered ${piece}`);
+        }
+      }
     }
   }
   return offenses;
+}
+
+/**
+ * The governed-path predicate (§6): a change to an ACTIVE id's governed paths without a change
+ * to any of that id's tests or checks is flagged. Pure over a changed-file list so it is
+ * provable; `diffChangedFiles` supplies the list for the audited mode.
+ */
+export function governedPathOffenses({ registry, changedFiles }) {
+  if (changedFiles === null) return [];
+  const offenses = [];
+  const covers = (governed, file) => (governed.endsWith('/') ? file.startsWith(governed) : file === governed);
+  for (const entry of registry.entries) {
+    if (entry.status !== 'ACTIVE') continue;
+    const touched = changedFiles.filter((f) => entry.governedPaths.some((g) => covers(g, f)));
+    if (touched.length === 0) continue;
+    const evidenceFiles = new Set([...entry.tests.map((t) => t.file), ...(entry.checks ?? []).map((c) => c.ref)]);
+    const evidenceMoved = changedFiles.some((f) => evidenceFiles.has(f));
+    if (!evidenceMoved) {
+      offenses.push(`${entry.id}: governed path(s) changed (${touched.join(', ')}) with no change to its tests or checks — conformance evidence must move with the code it governs (§6).`);
+    }
+  }
+  return offenses;
+}
+
+/** The changed-file list for the mode being audited: commit vs its parent, a dirty worktree vs
+ * HEAD, or a clean checkout's HEAD vs its parent. Null when no baseline exists (birth commit). */
+export function diffChangedFiles({ commit = null, git = defaultGit }) {
+  const parse = (raw) => String(raw).split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  if (commit !== null) {
+    const raw = tryOrNull(() => git('git', ['diff', '--name-only', `${commit}~1`, commit]));
+    return raw === null ? null : parse(raw);
+  }
+  const status = String(git('git', ['status', '--porcelain'])).trim();
+  if (status !== '') {
+    const tracked = parse(git('git', ['diff', '--name-only', 'HEAD']));
+    const untracked = status.split('\n').filter((l) => l.startsWith('??')).map((l) => l.slice(3).trim());
+    return [...new Set([...tracked, ...untracked])];
+  }
+  const raw = tryOrNull(() => git('git', ['diff', '--name-only', 'HEAD~1', 'HEAD']));
+  return raw === null ? null : parse(raw);
 }
 
 /**
@@ -401,9 +486,23 @@ export function runConformance(registry, { runTests = defaultRunTests, runCheck 
 /** Wall-clock bound for a conformance check script — the resolve-run lesson applied here. */
 export const CHECK_TIMEOUT_MS = 60_000;
 
+/**
+ * The commit-bound conformance run, as ONE function: target guard, validation, execution, and —
+ * round I1-3 — the guard AGAIN before any PASS is emitted, because a check is an arbitrary
+ * child process and a child that edited code or tests mid-run must invalidate the verdict, not
+ * decorate it.
+ */
+export function runConformanceForCommit({ commit, git = defaultGit, loadDeps = {}, runDeps = {} }) {
+  assertConformTarget({ commit, git });
+  const registry = validateSpecRegistry(loadSpecSources({ commit, ...loadDeps }));
+  const report = runConformance(registry, runDeps);
+  assertConformTarget({ commit, git });
+  return report;
+}
+
 function defaultRunCheck(ref) {
   try {
-    execFileSync('bash', [ref], { encoding: 'utf8', timeout: CHECK_TIMEOUT_MS, killSignal: 'SIGTERM' });
+    execFileSync('bash', [ref], { encoding: 'utf8', env: childEnv(), timeout: CHECK_TIMEOUT_MS, killSignal: 'SIGTERM' });
     return { ok: true };
   } catch (err) {
     if (err && (err.killed === true || err.signal === 'SIGTERM')) {
@@ -413,17 +512,27 @@ function defaultRunCheck(ref) {
   }
 }
 
+/** Wall-clock bound for one named conformance test — ten minutes of one test is a hang. */
+export const CONFORM_TEST_TIMEOUT_MS = 10 * 60_000;
+
+/** Children run with a MINIMAL environment: the conformance verdict must not depend on — or
+ * leak — whatever the invoking shell happened to export (round I1-3). */
+function childEnv() {
+  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
+}
+
 function defaultRunTests(file, title) {
-  // The checker itself runs under `node --test`; a child inheriting NODE_TEST_CONTEXT joins the
-  // parent's reporter protocol and stops printing the summary this parser reads. The child is a
-  // fresh, independent runner on purpose.
-  const env = { ...process.env };
-  delete env.NODE_TEST_CONTEXT;
-  delete env.NODE_OPTIONS;
+  // A fresh, independent runner on purpose: a child inheriting NODE_TEST_CONTEXT joins the
+  // parent's reporter protocol and stops printing the summary this parser reads.
   let stdout = '';
   try {
-    stdout = execFileSync('node', ['--test', '--test-name-pattern', `^${escapeRegExp(title)}$`, file], { encoding: 'utf8', env });
+    stdout = execFileSync('node', ['--test', '--test-name-pattern', `^${escapeRegExp(title)}$`, file], {
+      encoding: 'utf8', env: childEnv(), timeout: CONFORM_TEST_TIMEOUT_MS, killSignal: 'SIGTERM',
+    });
   } catch (err) {
+    if (err && (err.killed === true || err.signal === 'SIGTERM')) {
+      return { ok: false, reason: 'CONFORM_TEST_TIMEOUT', detail: `test outlived ${CONFORM_TEST_TIMEOUT_MS}ms` };
+    }
     return { ok: false, reason: 'CONFORM_TEST_FAILED', detail: String(err.stdout ?? err.message).slice(0, 2000) };
   }
   // node counts the FILE as one passing test even when the name pattern matches nothing inside
