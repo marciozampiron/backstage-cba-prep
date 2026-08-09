@@ -2223,17 +2223,24 @@ function reconstructFencedCommands(text) {
   let buffer = null;
   for (const line of text.split('\n')) {
     if (/^\s*```/.test(line)) {
+      // ROUND 15: a fence boundary reached with a continuation open used to RESET the buffer —
+      // the joined command vanished from the reconstruction while bash would execute it. A
+      // dangling continuation is refused, never dropped.
+      if (buffer !== null) throw new Error('dangling continuation at a fence boundary — a trailing backslash with nothing sanctioned to join is refused');
       inFence = !inFence;
-      buffer = null;
       continue;
     }
     if (!inFence) continue;
     const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    // ROUND 15: the blank/comment skip applies ONLY between commands. While a continuation is
+    // open, shell semantics join WHATEVER comes next — a comment line is payload that lands
+    // inside the very command bash would run, and a blank line terminates it; skipping either
+    // made the injected command invisible while executable.
+    if (buffer === null && (trimmed === '' || trimmed.startsWith('#'))) continue;
     const continued = /\\$/.test(trimmed);
     const payload = trimmed.replace(/\\$/, '').trim();
     if (buffer !== null) {
-      buffer = `${buffer} ${payload}`;
+      buffer = `${buffer} ${payload}`.trim();
       if (!continued) {
         commands.push(buffer);
         buffer = null;
@@ -2244,6 +2251,8 @@ function reconstructFencedCommands(text) {
       commands.push(payload);
     }
   }
+  if (inFence) throw new Error('unbalanced fence — a block that never closes is refused');
+  if (buffer !== null) throw new Error('dangling continuation at EOF');
   return commands;
 }
 
@@ -2313,6 +2322,24 @@ const REVIEWED_RUNBOOK_COMMANDS = {
   ],
 };
 
+/**
+ * The three sanctioned OPERATION CLASSES a gh command in the inventory may belong to — the
+ * round-15 meta-rule. Anchored both ends; method, endpoint, workflow file, ref and artifact
+ * shape are inside the pattern, so a DELETE under the canonical prefix and an untouched
+ * subcommand (`gh issue close`) both refuse.
+ */
+const SANCTIONED_GH_OPERATIONS = [
+  /^gh api -X PATCH repos\/marciozampiron\/backstage-cba-prep\/environments\/dev\/variables\/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the (plan_only|deploy|abandon) JSON for this decision(, planDigest included)?>'$/,
+  /^gh workflow run release-pilot\.yml --repo marciozampiron\/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=(bind_only|dev_only|abandon) -f correlation_id=<caller-generated id for this (decision|request)>$/,
+  /^gh run download "\$RUN_ID" --repo marciozampiron\/backstage-cba-prep --name (binding|plan|deploy|abandon) --dir <evidence-dir>\/(bind|plan|deploy|abandon)-"\$RUN_ID"$/,
+];
+
+function inventoriedGhOffenses(cmd) {
+  if (!/^gh\b/.test(cmd)) return [];
+  if (SANCTIONED_GH_OPERATIONS.some((re) => re.test(cmd))) return [];
+  return [`inventoried gh command outside the sanctioned operation classes: ${cmd}`];
+}
+
 function runbookCommandDeviations(rel, commands) {
   const expected = REVIEWED_RUNBOOK_COMMANDS[rel];
   if (expected === undefined) return [`${rel} is not in the reviewed command inventory`];
@@ -2330,21 +2357,27 @@ test('ROUND 11-14: every fenced command in every runbook IS its reviewed literal
   const runbooks = fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'));
   const offenses = [];
   for (const rel of runbooks) {
-    offenses.push(...runbookCommandDeviations(`docs/runbooks/${rel}`, reconstructFencedCommands(read(`docs/runbooks/${rel}`))));
+    try {
+      offenses.push(...runbookCommandDeviations(`docs/runbooks/${rel}`, reconstructFencedCommands(read(`docs/runbooks/${rel}`))));
+    } catch (err) {
+      offenses.push(`docs/runbooks/${rel}: ${err.message}`);
+    }
   }
   // Fail-closed in both directions: an inventory entry whose file is gone is stale review.
   for (const rel of Object.keys(REVIEWED_RUNBOOK_COMMANDS)) {
     assert.ok(fs.existsSync(path.join(ROOT, rel)), `stale inventory entry: ${rel}`);
   }
   assert.deepEqual(offenses, [], offenses.join('\n'));
-  // And the INVENTORY itself stays canonical: every dispatch/download names the one repository,
-  // every gate mutation uses the literal canonical path — so an edit that rewrote both a runbook
-  // and this inventory toward a foreign repository still trips a rule that names the pin.
+  // And the INVENTORY itself is bounded: every inventoried gh command must belong to one of the
+  // three sanctioned OPERATION CLASSES, so an edit that rewrote a runbook and this inventory
+  // together still cannot introduce repository administration (round 15: prefix checks let
+  // `gh api -X DELETE repos/<canon>/actions/secrets/…` and `gh issue close` through). Honest
+  // scope, stated plainly: this bounds gh-spelled operations by CLASS; exact cross-field pairing
+  // and non-gh spellings inside the inventory are what independent review of any inventory diff
+  // exists for — the inventory is a reviewed artifact, and this rule is its belt, not its judge.
   for (const cmds of Object.values(REVIEWED_RUNBOOK_COMMANDS)) {
     for (const cmd of cmds) {
-      if (/^gh (workflow run|run download)\b/.test(cmd)) assert.ok(cmd.includes(`--repo ${CANONICAL_REPO}`), cmd);
-      if (/^gh api\b/.test(cmd)) assert.ok(cmd.includes(`repos/${CANONICAL_REPO}/`), cmd);
-      assert.ok(!/^gh (secret|run list|run watch|repo|auth)\b/.test(cmd), cmd);
+      assert.deepEqual(inventoriedGhOffenses(cmd), [], cmd);
     }
   }
 });
@@ -2355,7 +2388,14 @@ test('ROUND 14: identity, not analysis — every demonstrated bypass class devia
   const planText = read(planRel);
   const bindText = read(bindRel);
   const injectIntoFirstFence = (text, line) => text.replace(/```[a-z]*\n/, (m) => `${m}${line}\n`);
-  const deviates = (rel, text) => runbookCommandDeviations(rel, reconstructFencedCommands(text));
+  const deviates = (rel, text) => {
+    try {
+      return runbookCommandDeviations(rel, reconstructFencedCommands(text));
+    } catch (err) {
+      // A refusal of the document IS a deviation: fail-closed, never fail-quiet (round 15).
+      return [err.message];
+    }
+  };
 
   // The real files, unmodified, are clean — so every deviation below is caused by the injection.
   assert.deepEqual(deviates(planRel, planText), []);
@@ -2404,6 +2444,31 @@ test('ROUND 14: identity, not analysis — every demonstrated bypass class devia
   };
   assert.ok(deviates(planRel, appendToLastFence(planText, 'gh secret set PROD')).length > 0);
   assert.ok(deviates(planRel, appendToLastFence(planText, "g'h' secret set PROD")).length > 0);
+
+  // ROUND 15: a dangling continuation cannot vanish. Codex's reproduction — a continuation whose
+  // next line is a comment — used to reconstruct IDENTICALLY to the original document while bash
+  // would join and execute it. Now the comment is payload (shell semantics), so the joined
+  // command deviates; a continuation left open at the fence closer, at EOF, and an unbalanced
+  // fence are refused outright, and the refusal is a deviation.
+  const contComment = appendToLastFence(planText, "g'h' secret set PROD \\\n# continuation content ignored by scanner");
+  assert.ok(deviates(planRel, contComment).length > 0, 'continuation + comment must deviate');
+  const contBlank = appendToLastFence(planText, "g'h' secret set PROD \\\n");
+  assert.ok(deviates(planRel, contBlank).length > 0, 'continuation + blank line must deviate');
+  const contAtClose = appendToLastFence(planText, "g'h' secret set PROD \\");
+  assert.ok(deviates(planRel, contAtClose).length > 0, 'continuation at the fence closer must deviate');
+  const FENCE = '`'.repeat(3);
+  const contAtEof = [planText, `${FENCE}bash`, "g'h' secret set PROD \\"].join('\n');
+  assert.ok(deviates(planRel, contAtEof).length > 0, 'continuation at EOF must deviate');
+  const unbalanced = [planText, `${FENCE}bash`, 'gh secret set PROD'].join('\n');
+  assert.ok(deviates(planRel, unbalanced).length > 0, 'an unbalanced fence must deviate');
+  // …and the real document still reconstructs cleanly, so the refusals are attributable.
+  assert.deepEqual(deviates(planRel, planText), []);
+
+  // ROUND 15 meta: the inventory's own bound is a closed operation-class list, not prefixes.
+  assert.ok(inventoriedGhOffenses(`gh api -X DELETE repos/${CANONICAL_REPO}/actions/secrets/PROD`).length > 0);
+  assert.ok(inventoriedGhOffenses('gh issue close 70').length > 0);
+  assert.ok(inventoriedGhOffenses('gh secret set PROD').length > 0);
+  assert.deepEqual(inventoriedGhOffenses(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>`), []);
 
   // Rounds 12-13 regressions, restated under identity: none of these lines is a reviewed
   // literal, so each deviates wherever it is injected.

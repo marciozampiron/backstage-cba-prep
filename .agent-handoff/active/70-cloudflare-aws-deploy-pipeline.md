@@ -554,6 +554,25 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Design round 15 (Codex, two findings) made the reconstruction itself fail-closed. **A dangling
+continuation can no longer vanish**: the reconstructor used to reset its buffer silently at a
+fence boundary, and skipped blank/comment lines even mid-continuation — so a trailing backslash
+followed by a comment reconstructed IDENTICALLY to the original document while bash would join
+and execute the hidden command. Now the blank/comment skip applies only BETWEEN commands (while a
+continuation is open, whatever follows is payload, per shell semantics); a continuation left open
+at a fence boundary or at EOF, and an unbalanced fence, are refusals — and a refusal counts as a
+deviation, never as a clean document. Codex's exact reproduction, plus continuation+blank,
+continuation-at-closer, continuation-at-EOF and unbalanced-fence, are pinned regressions against
+the real runbook text, with the untouched document asserted clean beside them.
+
+**The inventory's own bound became a closed operation-class list.** The prefix meta-checks let
+`gh api -X DELETE repos/<canon>/actions/secrets/…` and `gh issue close` through; every
+inventoried gh command must now match one of the three sanctioned operation classes, anchored
+both ends, with both reproductions pinned as refusals. The claim is stated at its honest size:
+the rule bounds gh-spelled operations by CLASS — exact cross-field pairing and non-gh spellings
+inside the inventory are what independent review of any inventory diff exists for, the inventory
+being a reviewed artifact and this rule its belt, not its judge.
+
 **THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
 workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
 three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
