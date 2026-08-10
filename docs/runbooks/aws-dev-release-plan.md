@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.13.0
+version: 0.14.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
+specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
 inputs: [the release SHA, the binding artifact's manifest digest, the wave's stack group, a fresh decisionId, a caller-generated correlation id, Zamp's plan_only cloud authorization value]
 outputs: [prepared change sets for the wave, the PLAN_DIGEST, the complete evidence artifact bound to run id and decision]
 gateRequired: true
@@ -34,7 +34,7 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
 3. Zamp has issued the `plan_only` value for THIS decision — mode `plan_only`, which authorizes
    `prepare-change-sets` and NOTHING else (`spec/authority-policy.json`), the manifest digest,
    the wave's stack group, fresh `decisionId`, `planDigest: null`, `approvedAt`/`expiresAt`
-   window of at most one hour (SPEC-DEPLOY-002/009/010/011/019).
+   window of at most one hour (SPEC-DEPLOY-009/010/011/019).
 3a. A correlation id is generated for THIS dispatch with a CSPRNG
    (`cba-70-$(openssl rand -hex 16)`, matching `^cba-70-[0-9a-f]{32}$`) and recorded before it;
    the run name that carries it is `cba-release <mode> <correlationId>` (SPEC-LANE-006).

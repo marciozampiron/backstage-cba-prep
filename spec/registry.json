@@ -520,33 +520,17 @@
     },
     {
       "id": "SPEC-DEPLOY-002",
-      "status": "PROPOSED",
+      "status": "RETIRED",
       "title": "The cloud authorization value satisfies a closed ten-key schema",
       "normativeText": "The cloud authorization value satisfies a closed ten-key schema with `issue` pinned to 70, `mode` in {plan_only, deploy} and a `decisionId` matching its documented shape; any other shape refuses.",
       "normativeSha256": "f1976bdd5095aa52eb4343570279455fe2c7aa884f249b2ebedc3a99b8b71fb6",
-      "anchors": [
-        {
-          "file": "infra/aws/bin/deploy-release.js",
-          "symbol": "checkCloudGate"
-        },
-        {
-          "file": "infra/aws/bin/deploy-release.js",
-          "symbol": "CLOUD_GATE_KEYS"
-        }
-      ],
-      "tests": [
-        {
-          "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
-        }
-      ],
+      "anchors": [],
+      "tests": [],
       "checks": [],
-      "governedPaths": [
-        "infra/aws/bin/deploy-release.js"
-      ],
+      "governedPaths": [],
       "mutationEvidence": "code + tests reviewed, reversion proven",
       "supersedes": [],
-      "supersededBy": null
+      "supersededBy": "SPEC-DEPLOY-019"
     },
     {
       "id": "SPEC-DEPLOY-003",
@@ -956,10 +940,35 @@
       "title": "The cloud authorization value has EXACTLY these ten keys —",
       "normativeText": "The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
       "normativeSha256": "2124339b23aa00f80847d623679b6c59838a1f729821458bbf95a9ca19ccdb8f",
-      "anchors": [],
-      "tests": [],
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "checkCloudGate"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "CLOUD_GATE_KEYS"
+        },
+        {
+          "file": "infra/aws/lib/deploy-preflight.js",
+          "symbol": "manifestBundleDigest"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        },
+        {
+          "file": "test/digest-agreement.test.js",
+          "title": null
+        }
+      ],
       "checks": [],
-      "governedPaths": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js",
+        "infra/aws/lib/deploy-preflight.js"
+      ],
       "mutationEvidence": "none — successor, awaiting its activation commit",
       "supersedes": [
         "SPEC-DEPLOY-002",

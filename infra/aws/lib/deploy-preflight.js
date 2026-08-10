@@ -21,6 +21,7 @@
 // a supplied value to the output. Codex's Slice A review reproduced role-ARN and credential-shaped
 // material in this command's output, which is what these codes replace.
 const { DEFAULT_AUTH_URLS, defaultAuthDomainPrefix, parseExactUrlList, VALID_ENVIRONMENTS } = require('./context');
+const crypto = require('node:crypto');
 
 /** The RFC 2606 reserved TLD the committed pilot placeholder uses. */
 const RESERVED_TLD = 'invalid';
@@ -115,6 +116,7 @@ const CODES = {
   CHANGE_SET_FAILED: 'has a change set in a failed state — a plan that CloudFormation itself rejected cannot be reviewed or executed',
   PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
   PLAN_RENDERING_TOO_LARGE: 'produced a rendering whose evidence record cannot cross the job-output channel complete — evidence is never truncated, so the plan refuses; split the wave and plan again',
+  ABANDON_NOT_IMPLEMENTED: 'names the abandon mode, which the authorization schema defines but no reviewed lane implements yet — nothing was prepared, executed or deleted',
   EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',
   STACK_EXECUTION_FAILED: 'did not reach a healthy terminal state — the execution failed or rolled back; the partial record above is the honest state',
 };
@@ -331,7 +333,46 @@ function evaluatePreflight({ environment, context = {}, domainProbe = null } = {
   };
 }
 
+/**
+ * §6b `bundle` framing over ONE record — the CommonJS TWIN of `framedBundleDigest` in
+ * src/lib/authority-policy.js (ESM, unreachable from this CJS tree). The envelopes MUST agree
+ * byte for byte; test/digest-agreement.test.js proves both implementations produce identical
+ * digests over shared fixtures, so drift between the twins is a red build, not a latent fork.
+ */
+function framedBundleDigestCjs({ producer, name, mediaType, content }) {
+  const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+  const doc = {
+    digestKind: 'bundle',
+    version: 1,
+    producer,
+    records: [{
+      name,
+      mediaType,
+      bytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    }],
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(doc), 'utf8').digest('hex');
+}
+
+/**
+ * The manifest digest the cloud gate names (SPEC-DEPLOY-019, §8a): the §6b bundle digest over
+ * the CANONICAL serialization of the complete closed manifest — keys deep-sorted so the digest
+ * is a property of the manifest's CONTENT, not of whichever writer serialized it. The envelope
+ * is pinned here, once: producer, record name and media type are part of the digested bytes.
+ */
+function manifestBundleDigest(manifest, deepSortKeysFn) {
+  return framedBundleDigestCjs({
+    producer: 'cba-release-binding',
+    name: 'binding-manifest',
+    mediaType: 'application/json',
+    content: JSON.stringify(deepSortKeysFn(manifest)),
+  });
+}
+
 module.exports = {
+  framedBundleDigestCjs,
+  manifestBundleDigest,
   PROBE,
   CODES,
   PREFIX_MAX,

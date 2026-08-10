@@ -198,6 +198,7 @@ jobs:
     outputs:
       context_digest: ${{ steps.preflight.outputs.context_digest }}
       manifest: ${{ steps.preflight.outputs.manifest }}
+      manifest_digest: ${{ steps.preflight.outputs.manifest_digest }}
     defaults:
       run:
         working-directory: infra/aws
@@ -256,6 +257,15 @@ jobs:
           digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-dev.json")
           echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-dev.json")" >> "$GITHUB_OUTPUT"
+          # SPEC-DEPLOY-019: the §6b bundle digest of the COMPLETE manifest — what a plan_only
+          # authorization must name. Computed by the same pinned envelope the entrypoint
+          # recomputes at the gate, so the two can never drift apart silently.
+          manifest_digest=$(node -e '
+            const { manifestBundleDigest } = require("./lib/deploy-preflight");
+            const { deepSortKeys } = require("./bin/deploy-release");
+            process.stdout.write(manifestBundleDigest(require(process.argv[1]), deepSortKeys));
+          ' "$RUNNER_TEMP/preflight-dev.json")
+          echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------------------------
   # BIND STAGE — SPEC-LANE-005/006, SPEC-RUN-006: publish the release's manifest as a STRUCTURED
@@ -277,6 +287,7 @@ jobs:
       - name: Assemble the binding artifact
         env:
           MANIFEST: ${{ needs.dev-preflight.outputs.manifest }}
+          MANIFEST_DIGEST: ${{ needs.dev-preflight.outputs.manifest_digest }}
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
           CORRELATION_ID: ${{ inputs.correlation_id }}
         run: |
@@ -287,8 +298,12 @@ jobs:
             const binding = {
               correlationId: process.env.CORRELATION_ID,
               releaseSha: process.env.RELEASE_SHA,
+              manifestDigest: process.env.MANIFEST_DIGEST,
               manifest,
             };
+            if (!/^[0-9a-f]{64}$/.test(binding.manifestDigest ?? "")) {
+              throw new Error("the binding is the digest birthplace - without it there is nothing for an authorization to name");
+            }
             require("fs").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + "\n");
           ' "$RUNNER_TEMP/binding/binding.json"
       - name: Upload the binding artifact

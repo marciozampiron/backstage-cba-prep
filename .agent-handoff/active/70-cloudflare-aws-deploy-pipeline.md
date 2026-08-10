@@ -554,6 +554,25 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation Slice I4 delivered the successor gate schema — SPEC-DEPLOY-019 is now the code.
+`CLOUD_GATE_KEYS` carries the ten §8a keys: `manifestDigest` replaced `assemblyDigest`, binding
+the COMPLETE closed manifest through one §6b bundle digest RECOMPUTED at the gate from the
+verified manifest (never trusted from the caller); the envelope is pinned once in
+`manifestBundleDigest` (producer `cba-release-binding`, record `binding-manifest`,
+application/json, canonical deep-key-sorted serialization) — a CommonJS twin of the governance
+framing, with `test/digest-agreement.test.js` proving the ESM/CJS implementations digest
+identically over shared fixtures, multibyte included, so a fork between them is a red build. The
+mode enum carries all three modes: an abandon-mode gate is schema-valid (planDigest non-null per
+§8a — it names the DECLINED plan) but refuses as ABANDON_NOT_IMPLEMENTED after full validation
+and provably before any AWS call, until the abandon lane lands. A gate written to the retired
+-002 shape (assemblyDigest) is now an UNKNOWN key — malformed, not half-working. dev-preflight
+computes `manifest_digest` as a job output and the binding artifact embeds it, refusing to exist
+without a well-formed digest (the binding is the digest's birthplace — SPEC-RUN-006 made whole).
+Lifecycle: SPEC-DEPLOY-002 was RETIRED by before-activation absorption (§4) — the tree now
+implements the complete successor, and an id describing code that no longer exists cannot stay
+PROPOSED honestly; -019 holds real anchors; 54 PROPOSED / 2 RETIRED under spec:lint's history
+laws.
+
 Implementation round I3-4 (Codex, 1 MEDIUM) corrected the bound to the channel's NARROWEST hop
 and the arithmetic that mislabeled it. The 450k-UNIT cap fit the job-output store but not the
 single Linux envp entry (MAX_ARG_STRLEN, 128 KiB) that injects the record into the

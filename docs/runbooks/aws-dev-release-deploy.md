@@ -1,10 +1,10 @@
 ---
 id: aws-dev-release-deploy
 kind: runbook
-version: 0.11.0
+version: 0.12.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
-specs: [SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
+specs: [SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
 inputs: [the release SHA, the wave's stack group, the reviewed PLAN_DIGEST from the plan runbook, a fresh decisionId, Zamp's deploy cloud authorization value]
 outputs: [executed change sets for the wave, per-stack results, the complete evidence artifact bound to run id and decision]
 gateRequired: true
@@ -31,7 +31,7 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    `deploy` and `execute-change-sets` and nothing else — it can neither prepare a new plan nor
    delete anything (`spec/authority-policy.json`) — the SAME manifest digest and stack group,
    the reviewed `planDigest`, a FRESH `decisionId` and a fresh ≤1h window
-   (SPEC-DEPLOY-002/009/010/011/019). A digest from any other decision is never reused.
+   (SPEC-DEPLOY-009/010/011/019). A digest from any other decision is never reused.
 3. The plan's change sets still exist. They do NOT expire, and a later plan run does not replace
    them — creating a change set with an existing name fails, so a second plan for the same
    release either failed to prepare or the earlier sets were abandoned. Either way, if another

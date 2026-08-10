@@ -112,7 +112,8 @@ const EXPECTED_WORKFLOW = {
       },
       "outputs": {
         "context_digest": "${{ steps.preflight.outputs.context_digest }}",
-        "manifest": "${{ steps.preflight.outputs.manifest }}"
+        "manifest": "${{ steps.preflight.outputs.manifest }}",
+        "manifest_digest": "${{ steps.preflight.outputs.manifest_digest }}"
       },
       "defaults": {
         "run": {
@@ -172,7 +173,7 @@ const EXPECTED_WORKFLOW = {
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
             "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
           },
-          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n# SPEC-DEPLOY-019: the §6b bundle digest of the COMPLETE manifest — what a plan_only\n# authorization must name. Computed by the same pinned envelope the entrypoint\n# recomputes at the gate, so the two can never drift apart silently.\nmanifest_digest=$(node -e '\n  const { manifestBundleDigest } = require(\"./lib/deploy-preflight\");\n  const { deepSortKeys } = require(\"./bin/deploy-release\");\n  process.stdout.write(manifestBundleDigest(require(process.argv[1]), deepSortKeys));\n' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"manifest_digest=$manifest_digest\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -193,10 +194,11 @@ const EXPECTED_WORKFLOW = {
           "name": "Assemble the binding artifact",
           "env": {
             "MANIFEST": "${{ needs.dev-preflight.outputs.manifest }}",
+            "MANIFEST_DIGEST": "${{ needs.dev-preflight.outputs.manifest_digest }}",
             "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
             "CORRELATION_ID": "${{ inputs.correlation_id }}"
           },
-          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/binding\"\nnode -e '\n  const manifest = JSON.parse(process.env.MANIFEST);\n  const binding = {\n    correlationId: process.env.CORRELATION_ID,\n    releaseSha: process.env.RELEASE_SHA,\n    manifest,\n  };\n  require(\"fs\").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + \"\\n\");\n' \"$RUNNER_TEMP/binding/binding.json\"\n"
+          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/binding\"\nnode -e '\n  const manifest = JSON.parse(process.env.MANIFEST);\n  const binding = {\n    correlationId: process.env.CORRELATION_ID,\n    releaseSha: process.env.RELEASE_SHA,\n    manifestDigest: process.env.MANIFEST_DIGEST,\n    manifest,\n  };\n  if (!/^[0-9a-f]{64}$/.test(binding.manifestDigest ?? \"\")) {\n    throw new Error(\"the binding is the digest birthplace - without it there is nothing for an authorization to name\");\n  }\n  require(\"fs\").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + \"\\n\");\n' \"$RUNNER_TEMP/binding/binding.json\"\n"
         },
         {
           "name": "Upload the binding artifact",
@@ -710,6 +712,21 @@ test('YAML sees exactly the seven reviewed jobs — the round-7 lesson, asserted
   const { wf } = parseWorkflow(raw);
   assert.deepEqual(Object.keys(wf.jobs), ['global-preflight', 'dev-preflight', 'bind-stage', 'dev-stage', 'dev-evidence', 'pilot-preflight', 'pilot-stage']);
   assert.deepEqual(Object.keys(wf), ['name', 'run-name', 'on', 'permissions', 'concurrency', 'jobs']);
+});
+
+test('SLICE I4: the binding carries the manifest digest an authorization must name', () => {
+  const { wf } = parseWorkflow(raw);
+  // dev-preflight computes the §6b bundle digest with the SAME pinned envelope the entrypoint
+  // recomputes at the gate — one implementation pair, drift caught by test/digest-agreement.
+  const evalStep = wf.jobs['dev-preflight'].steps.find((st) => typeof st.run === 'string' && st.run.includes('manifestBundleDigest'));
+  assert.ok(evalStep, 'the preflight evaluator computes manifest_digest');
+  assert.equal(wf.jobs['dev-preflight'].outputs.manifest_digest, '${{ steps.preflight.outputs.manifest_digest }}');
+  // …and the binding artifact embeds it, refusing to exist without a well-formed digest: the
+  // binding is the digest's birthplace (SPEC-RUN-006), so an empty one is a failed bind.
+  const bind = wf.jobs['bind-stage'].steps.find((st) => typeof st.run === 'string' && st.run.includes('binding.json'));
+  assert.equal(bind.env.MANIFEST_DIGEST, '${{ needs.dev-preflight.outputs.manifest_digest }}');
+  assert.ok(bind.run.includes('manifestDigest: process.env.MANIFEST_DIGEST'));
+  assert.ok(bind.run.includes('[0-9a-f]{64}'));
 });
 
 test('SLICE I2: the bind stage terminates the DAG with no cloud authority and a pinned artifact', () => {

@@ -809,12 +809,15 @@ function cloudRun({ describes = fullDescribes(), account = ACCOUNT, stackStatus 
 
 /** A valid deploy-mode cloud gate for THIS manifest: bounded window around GATE_NOW, a decision
  * id, and the digest of the default fake change sets. */
+const { manifestBundleDigest } = require('../lib/deploy-preflight');
+const { deepSortKeys: sortForDigest } = require('../bin/deploy-release');
+
 const gateFor = (manifest, over = {}) =>
   JSON.stringify({
     issue: 70,
     environment: manifest.environment,
     releaseSha: manifest.releaseSha,
-    assemblyDigest: manifest.assemblyDigest,
+    manifestDigest: manifestBundleDigest(manifest, sortForDigest),
     mode: 'deploy',
     decisionId: 'zamp-2026-08-02.b1-deploy-01',
     approvedAt: '2026-08-02T11:50:00Z',
@@ -1204,11 +1207,42 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
     for (const [label, over] of [
       ['another release', { releaseSha: 'b'.repeat(40) }],
       ['another environment', { environment: 'dev' }],
-      ['another assembly', { assemblyDigest: '0'.repeat(64) }],
+      ['another manifest', { manifestDigest: '0'.repeat(64) }],
     ]) {
       const r = attempt(gateFor(manifest, over));
       assert.equal(r.exit, 1, label);
       assert.match(r.output, /CLOUD_GATE_MISMATCH/, label);
+    }
+
+    // SLICE I4 (SPEC-DEPLOY-019): the RETIRED schema's key is now an UNKNOWN key — a gate
+    // written to the -002 shape (assemblyDigest) is malformed, not merely mismatched, so a
+    // stale authoring template cannot half-work.
+    {
+      const old = JSON.parse(gateFor(manifest));
+      delete old.manifestDigest;
+      old.assemblyDigest = manifest.assemblyDigest;
+      const r = attempt(JSON.stringify(old));
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+
+    // SLICE I4: the schema knows `abandon`; the lane does not exist. A fully VALID abandon-mode
+    // gate refuses by name after validation — and provably before any AWS call.
+    {
+      const calls = [];
+      const inner = stubAws();
+      const r = attempt(gateFor(manifest, { mode: 'abandon' }), {
+        run: (args, o) => { calls.push(args[1] ?? args[0]); return inner(args, o); },
+      });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /ABANDON_NOT_IMPLEMENTED/);
+      assert.ok(!calls.some((c) => String(c).includes('change-set')), 'no change-set API may be touched');
+    }
+    // …and abandon must NAME the declined plan: a null planDigest is malformed per §8a.
+    {
+      const r = attempt(gateFor(manifest, { mode: 'abandon', planDigest: null }));
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
     }
 
     // The window, against the INJECTED clock — a gate is a decision with a bounded life, never a

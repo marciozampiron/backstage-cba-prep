@@ -48,18 +48,17 @@ test('CI WIRING: the real registry validates against the real spec document', ()
   assert.equal(registry.entries.length, 56);
   const counts = { PROPOSED: 0, ACTIVE: 0, RETIRED: 0 };
   for (const e of registry.entries) counts[e.status] += 1;
-  // Everything stays PROPOSED until an activation commit satisfies its own predicates (§4);
-  // the one RETIRED id is the before-activation absorption the lifecycle defines.
-  assert.deepEqual(counts, { PROPOSED: 55, ACTIVE: 0, RETIRED: 1 });
-  const retired = registry.entries.find((e) => e.status === 'RETIRED');
-  assert.equal(retired.id, 'SPEC-DEPLOY-020');
-  assert.equal(retired.supersededBy, 'SPEC-DEPLOY-019');
-  // Round I1-2: supersedes is a LIST — -019 replaces -002 on activation AND absorbed -020,
-  // and reciprocity is checkable only when the absorbing side names everything it covers.
+  // Everything stays PROPOSED until an activation commit satisfies its own predicates (§4).
+  // TWO ids are RETIRED by before-activation absorption: -020 (design round 5) and -002
+  // (Slice I4 — the tree now implements the complete successor schema, so an id describing
+  // code that no longer exists cannot stay PROPOSED honestly).
+  assert.deepEqual(counts, { PROPOSED: 54, ACTIVE: 0, RETIRED: 2 });
+  const retiredIds = registry.entries.filter((e) => e.status === 'RETIRED').map((e) => e.id).sort();
+  assert.deepEqual(retiredIds, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
+  for (const id of retiredIds) assert.equal(entry(registry, id).supersededBy, 'SPEC-DEPLOY-019');
+  // Round I1-2: supersedes is a LIST, and reciprocity is checkable only when the absorbing side
+  // names everything it covers.
   assert.deepEqual(entry(registry, 'SPEC-DEPLOY-019').supersedes, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
-  // …and SPEC-DEPLOY-002 is NOT yet retired: that happens in -019's activation commit, not now.
-  assert.equal(entry(registry, 'SPEC-DEPLOY-002').status, 'PROPOSED');
-  assert.equal(entry(registry, 'SPEC-DEPLOY-002').supersededBy, null);
 });
 
 test('CI WIRING: conformance runs clean with zero ACTIVE ids and says so', () => {
@@ -133,13 +132,13 @@ test('the lifecycle law: what ACTIVE must carry, what RETIRED must name', () => 
     setSpec(SOURCES.specMd.replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |'));
     e.tests = e.tests.map((t) => ({ ...t, title: 'some exact test name' }));
   }, /mutationEvidence must be an object|closed key set/);
-  // ACTIVE with no anchors refuses.
+  // ACTIVE with no anchors refuses — anchors stripped in the same mutation, so THIS law is the
+  // one that fires (Slice I4 gave -019 real anchors, so it no longer serves as the fixture).
   expectRejected((r, setSpec) => {
-    const e = activate(r, 'SPEC-DEPLOY-019');
-    setSpec(SOURCES.specMd.replace(
-      '| SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) |',
-      '| SPEC-DEPLOY-019 | ACTIVE (supersedes -002 on activation; absorbs -020) |',
-    ));
+    const e = activate(r, 'SPEC-DEPLOY-001');
+    e.anchors = [];
+    e.governedPaths = [];
+    setSpec(SOURCES.specMd.replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |'));
   }, /ACTIVE with no code anchor/);
   // RETIRED without a successor refuses: retirement is never a quiet delete (§4).
   expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = null; }, /RETIRED without supersededBy/);
@@ -424,25 +423,24 @@ test('ROUND I1-3: the history baseline is never the bytes under validation', () 
 });
 
 test('ROUND I1-3: retiring an ACTIVE id is not a license to rewrite its text', () => {
+  // Synthetic history: -002 ACTIVE in the committed past; the current tree keeps it RETIRED (as
+  // it really is since I4) but with a REWRITTEN text — the exact laundering the law refuses.
   const previous = structuredClone(REGISTRY);
   previous.entries.find((e) => e.id === 'SPEC-DEPLOY-002').status = 'ACTIVE';
   const registry = structuredClone(REGISTRY);
   const ce = registry.entries.find((e) => e.id === 'SPEC-DEPLOY-002');
-  ce.status = 'RETIRED';
-  ce.supersededBy = 'SPEC-DEPLOY-019';
   ce.normativeText = 'a rewritten record';
   ce.normativeSha256 = framedTextDigest(ce.id, ce.normativeText);
   const d19 = registry.entries.find((e) => e.id === 'SPEC-DEPLOY-019');
   d19.status = 'ACTIVE';
-  d19.anchors = [{ file: 'infra/aws/bin/deploy-release.js', symbol: 'checkCloudGate' }];
   d19.tests = [{ file: 'test/fixtures/conform-probe.js', title: 'conform probe: this test passes' }];
   d19.mutationEvidence = { commit: 'a'.repeat(40), patchSha256: 'b'.repeat(64), command: 'npm test', expectedFailure: '1' };
   const specMd = SOURCES.specMd
-    .replace(/^\| SPEC-DEPLOY-002 \| PROPOSED \| [^|]+\|/m, `| SPEC-DEPLOY-002 | RETIRED | ${ce.normativeText} |`)
-    .replace('| SPEC-DEPLOY-019 | PROPOSED (supersedes -002 on activation; absorbs -020) |', '| SPEC-DEPLOY-019 | ACTIVE |');
+    .replace(/^\| SPEC-DEPLOY-002 \| RETIRED[^|]*\| [^|]+\|/m, `| SPEC-DEPLOY-002 | RETIRED | ${ce.normativeText} |`)
+    .replace('| SPEC-DEPLOY-019 | PROPOSED (absorbed -002 and -020) |', '| SPEC-DEPLOY-019 | ACTIVE |');
   assert.throws(
     () => validateSpecRegistry({ registryRaw: JSON.stringify(registry), specMd, fileExists: SOURCES.fileExists, readFile: SOURCES.readFile, previousRegistryRaw: JSON.stringify(previous) }),
-    /text changed during retirement|is not RETIRED naming it back/,
+    /text changed during retirement|is not RETIRED naming it back|RETIRED and its normative text changed/,
   );
 });
 

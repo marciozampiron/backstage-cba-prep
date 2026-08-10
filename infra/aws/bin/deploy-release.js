@@ -58,7 +58,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { describeFailure, PreflightError } = require('../lib/deploy-preflight');
+const { describeFailure, PreflightError, manifestBundleDigest } = require('../lib/deploy-preflight');
 const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_EXECUTION_ORDER, DEPLOYMENT_PLAN_GROUPS, stackNameFor } = require('../lib/context');
 const {
   contextDigest,
@@ -143,9 +143,14 @@ function childEvidence(child) {
   return `child not echoed — exit=${child.status} stdout=${Buffer.byteLength(stdout, 'utf8')}B stderr=${Buffer.byteLength(stderr, 'utf8')}B sha256=${digest}`;
 }
 
-/** The closed shape of Zamp's cloud-execution gate (v2, round 3). Exactly these keys. */
-const CLOUD_GATE_KEYS = ['approvedAt', 'assemblyDigest', 'decisionId', 'environment', 'expiresAt', 'issue', 'mode', 'planDigest', 'releaseSha', 'stacks'];
-const CLOUD_GATE_MODES = ['plan_only', 'deploy'];
+/** The closed shape of Zamp's cloud-execution gate — SPEC-DEPLOY-019's ten keys (§8a), Slice
+ * I4: `manifestDigest` binds the COMPLETE closed manifest (the §6b bundle digest over its
+ * canonical serialization, recomputed here from the VERIFIED manifest — never trusted), where
+ * `assemblyDigest` bound only one field of it. The mode enum carries all three modes the
+ * authorization schema defines; the abandon LANE is a later slice, so an abandon-mode gate is
+ * refused by name after validation, before any effect. */
+const CLOUD_GATE_KEYS = ['approvedAt', 'decisionId', 'environment', 'expiresAt', 'issue', 'manifestDigest', 'mode', 'planDigest', 'releaseSha', 'stacks'];
+const CLOUD_GATE_MODES = ['plan_only', 'deploy', 'abandon'];
 
 /** STRICT RFC3339, UTC only, whole seconds. `Date.parse` alone accepted `2099-01-01` and a
  * space-separated datetime — formats a human would not notice granting a century of authority. */
@@ -232,9 +237,10 @@ function checkCloudGate(raw, manifest, now) {
     || typeof gate.decisionId !== 'string' || !DECISION_ID.test(gate.decisionId)
     || !strictUtcInstant(gate.approvedAt)
     || !strictUtcInstant(gate.expiresAt)
-    // plan_only authorizes no effect, so it names no plan; deploy must name exactly one.
+    // §8a nullability per mode: plan_only names no plan (a non-null value there authorizes a
+    // plan nobody reviewed); deploy and abandon each name exactly the reviewed plan they act on.
     || (gate.mode === 'plan_only' && gate.planDigest !== null)
-    || (gate.mode === 'deploy' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
+    || (gate.mode !== 'plan_only' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
   if (malformed) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
   }
@@ -246,8 +252,15 @@ function checkCloudGate(raw, manifest, now) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_STACKS_INVALID', field: 'stacks' }] };
   }
   const failures = [];
-  for (const key of ['environment', 'releaseSha', 'assemblyDigest']) {
+  for (const key of ['environment', 'releaseSha']) {
     if (gate[key] !== manifest[key]) failures.push({ check: 'GATE', code: 'CLOUD_GATE_MISMATCH', field: key });
+  }
+  // SPEC-DEPLOY-019: the gate binds the WHOLE manifest — environment, region, account, bound
+  // context, stack set, assembly digest — through one recomputed §6b bundle digest. The old
+  // assemblyDigest binding is subsumed: the manifest CONTAINS it, and the manifest itself was
+  // verified against the snapshot before this gate is consulted.
+  if (gate.manifestDigest !== manifestBundleDigest(manifest, deepSortKeys)) {
+    failures.push({ check: 'GATE', code: 'CLOUD_GATE_MISMATCH', field: 'manifestDigest' });
   }
   const approved = Date.parse(gate.approvedAt);
   const expires = Date.parse(gate.expiresAt);
@@ -1123,6 +1136,13 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     evidence.mode = gate.mode;
     evidence.decisionId = gate.decisionId;
     evidence.stacks = [...gate.stacks];
+    // Slice I4: the schema knows all three modes; the abandon LANE does not exist yet. An
+    // abandon-mode gate refuses HERE, by name, after full validation and before any AWS call —
+    // never a silent fall-through into prepare or execute.
+    if (gate.mode === 'abandon') {
+      failures.push({ check: 'GATE', code: 'ABANDON_NOT_IMPLEMENTED', field: 'mode' });
+      return refuse();
+    }
 
   // 5. THE PLAN IS THE CHANGE SETS. plan_only PREPARES one named change set per stack from the
   //    verified snapshot and digests the canonical UNREDACTED describes; deploy re-describes the
