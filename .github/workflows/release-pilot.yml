@@ -99,12 +99,13 @@ on:
         required: true
         type: string
       mode:
-        description: 'bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the deploy path — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
+        description: 'bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the plan/deploy path; abandon deletes the change sets of a DECLINED plan and nothing else — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
         required: true
         type: choice
         options:
           - bind_only
           - dev_only
+          - abandon
 
 permissions:
   contents: read
@@ -340,7 +341,7 @@ jobs:
   dev-stage:
     name: Dev stage — deploy AWS (dev)
     needs: [global-preflight, dev-preflight]
-    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'
+    if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: dev
@@ -390,6 +391,7 @@ jobs:
           MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
           CBA_CLOUD_GATE: ${{ vars.CBA_CLOUD_GATE }}
           CORRELATION_ID: ${{ inputs.correlation_id }}
+          DISPATCH_MODE: ${{ inputs.mode }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
@@ -477,6 +479,7 @@ jobs:
           case "$MODE" in
             plan_only) name=plan.json ;;
             deploy) name=deploy.json ;;
+            abandon) name=abandon.json ;;
             *) name=evidence.json ;;
           esac
           printf '%s\n' "$EVIDENCE" > "$RUNNER_TEMP/evidence/$name"
@@ -496,12 +499,19 @@ jobs:
           path: ${{ runner.temp }}/evidence/deploy.json
           if-no-files-found: error
           retention-days: 90
-      # ROUND I4-2: refusals route by EXCLUSION, not by an empty-mode guess — an abandon-mode
-      # refusal (schema-valid gate, lane not yet implemented) carries mode "abandon", and the
-      # previous `mode == ''` condition silently published nothing for it. Exactly one uploader
-      # matches every mode: plan_only → plan, deploy → deploy, anything else → evidence.
+      - name: Upload the abandon artifact
+        if: ${{ needs.dev-stage.outputs.mode == 'abandon' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abandon
+          path: ${{ runner.temp }}/evidence/abandon.json
+          if-no-files-found: error
+          retention-days: 90
+      # ROUNDS I4-2/I5: refusals route by EXCLUSION, not by an empty-mode guess. Exactly one
+      # uploader matches every mode: plan_only → plan, deploy → deploy, abandon → abandon,
+      # anything else → evidence.
       - name: Upload refusal evidence (any mode without a reviewed artifact name)
-        if: ${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}
+        if: ${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' && needs.dev-stage.outputs.mode != 'abandon' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: evidence

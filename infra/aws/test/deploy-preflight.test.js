@@ -799,6 +799,7 @@ function cloudRun({ describes = fullDescribes(), account = ACCOUNT, stackStatus 
       return { status: 0, stdout: JSON.stringify(body), stderr: '' };
     }
     if (args[0] === 'cloudformation' && args[1] === 'execute-change-set') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'cloudformation' && args[1] === 'delete-change-set') return { status: 0, stdout: '', stderr: '' };
     if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') return { status: 0, stdout: JSON.stringify({ Stacks: [{ StackStatus: stackStatus }] }), stderr: '' };
     return stubAws()(args, opts);
   };
@@ -1226,25 +1227,24 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       assert.match(r.output, /CLOUD_GATE_MALFORMED/);
     }
 
-    // SLICE I4 (guarantee precised in I4-2): the schema knows `abandon`; the lane does not
-    // exist. A fully VALID abandon-mode gate refuses by name after validation — and provably
-    // before any CHANGE-SET API call or mutation; the STS identity reads that precede the gate
-    // check are verification, not effect.
-    {
-      const calls = [];
-      const inner = stubAws();
-      const r = attempt(gateFor(manifest, { mode: 'abandon' }), {
-        run: (args, o) => { calls.push(args[1] ?? args[0]); return inner(args, o); },
-      });
-      assert.equal(r.exit, 1);
-      assert.match(r.output, /ABANDON_NOT_IMPLEMENTED/);
-      assert.ok(!calls.some((c) => String(c).includes('change-set')), 'no change-set API may be touched');
-    }
-    // …and abandon must NAME the declined plan: a null planDigest is malformed per §8a.
+    // SLICE I5: abandon must NAME the declined plan — a null planDigest is malformed per §8a.
     {
       const r = attempt(gateFor(manifest, { mode: 'abandon', planDigest: null }));
       assert.equal(r.exit, 1);
       assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+    // SLICE I5: the run's name must mean what happened — a dispatched lane passes its mode, and
+    // an incoherent gate refuses by name before any change-set API call.
+    for (const [dispatch, gateMode] of [['abandon', 'deploy'], ['abandon', 'plan_only'], ['dev_only', 'abandon']]) {
+      const calls = [];
+      const inner = stubAws();
+      const r = attempt(gateFor(manifest, { mode: gateMode, planDigest: gateMode === 'plan_only' ? null : JSON.parse(gateFor(manifest)).planDigest }), {
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: gateMode, planDigest: gateMode === 'plan_only' ? null : JSON.parse(gateFor(manifest)).planDigest }), DISPATCH_MODE: dispatch },
+        run: (args, o) => { calls.push(args[1] ?? args[0]); return inner(args, o); },
+      });
+      assert.equal(r.exit, 1, `${dispatch} vs ${gateMode}`);
+      assert.match(r.output, /MODE_MISMATCH/, `${dispatch} vs ${gateMode}`);
+      assert.ok(!calls.some((c) => String(c).includes('change-set')), 'no change-set API may be touched');
     }
 
     // The window, against the INJECTED clock — a gate is a decision with a bounded life, never a
@@ -2559,7 +2559,7 @@ test('verify-manifest can check the assembly too, and refuses drift', () => {
 // every halt, and the refusal codes verbatim.
 // -------------------------------------------------------------------------------------------------
 
-const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'outcome', 'refusals', 'rendering'];
+const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'abandoned', 'reportedStackRecords', 'outcome', 'refusals', 'rendering'];
 const CORRELATION = `cba-70-${'a'.repeat(32)}`;
 
 function withArtifact(fn) {
@@ -2850,6 +2850,132 @@ test('EVIDENCE BOUND: the normal fixture fits the real cap with a wide margin', 
       assert.equal(r.exit, 0, r.output);
       const bytes = Buffer.byteLength(fs.readFileSync(artifact, 'utf8'), 'utf8');
       assert.ok(bytes < EVIDENCE_MAX_BYTES / 4, `the four-stack record uses ${bytes} bytes — far from the cap`);
+    });
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// SLICE I5 — the abandon effect (SPEC-RUN-008): delete EXACTLY the declined plan, revalidate at
+// every mutation boundary, and REPORT — never delete — the stack records left behind.
+// -------------------------------------------------------------------------------------------------
+
+test('ABANDON: deletes exactly the declined change sets, in order, and never touches a stack', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun({ stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child — nothing is ever prepared'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(r.executed, false, 'abandon executes nothing');
+      // Exactly the four reviewed sets deleted, in the reviewed order, by immutable id.
+      const deletions = run.of('delete-change-set');
+      assert.equal(deletions.length, 4);
+      assert.equal(run.of('execute-change-set').length, 0, 'abandon EXECUTES nothing');
+      // No DeleteStack exists in this file at all — the record is REPORTED, not removed.
+      assert.equal(run.calls.filter((c) => c.args[1] === 'delete-stack').length, 0);
+      assert.ok(!fs.readFileSync(require.resolve('../bin/deploy-release.js'), 'utf8').includes('delete-stack'), 'the entrypoint must not even contain the DeleteStack verb');
+      assert.match(r.output, /REPORTED \(never deleted\)/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.equal(record.abandoned.length, 4);
+      assert.equal(record.reportedStackRecords.length, 4, 'every REVIEW_IN_PROGRESS record is on the record');
+      assert.deepEqual(record.executed, []);
+    });
+  });
+});
+
+test('ABANDON: a drifted plan refuses as PLAN_CHANGED and NOTHING is deleted', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun();
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', planDigest: 'f'.repeat(64) }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /PLAN_CHANGED/);
+      assert.equal(run.of('delete-change-set').length, 0, 'a surprised operation deletes nothing');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.deepEqual(record.abandoned, []);
+    });
+  });
+});
+
+test('ABANDON: a state error mid-way stops with the honest partial — never a retry', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_DELETE_FAILED/);
+      assert.match(r.output, /Abandoned before the failure: [^.]+\./);
+      assert.equal(deletions, 2, 'the stop is immediate — no third deletion is attempted');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.equal(record.abandoned.length, 1, 'exactly the sets deleted before the surprise');
+      assert.ok(record.refusals.includes('ABANDON_DELETE_FAILED'));
+    });
+  });
+});
+
+test('ABANDON: the window is re-checked before EACH deletion — a lapsed gate stops the remainder', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let clock = Date.parse('2026-08-02T12:00:00Z');
+      let deletions = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            clock = Date.parse('2026-08-02T12:31:00Z'); // the window lapses after the first delete
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => clock,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+      assert.equal(deletions, 1, 'the lapse is caught before the SECOND deletion');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.abandoned.length, 1);
     });
   });
 });

@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.9.0
+version: 0.10.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -13,8 +13,12 @@ cloudMutation: true
 
 # Runbook — dev release, ABANDON a plan that will not execute
 
-> **Status: DESIGN — BLOCKED ON IMPLEMENTATION-PHASE PREREQUISITES.** This runbook cannot be
-> executed until the abandon lane and the `abandon` authorization mode exist. Round 4 of this
+> **Status: PREREQUISITES IMPLEMENTED (Slice I5) — STILL `PLANNED — not executable`.** The
+> abandon lane exists in the reviewed tree: the `abandon` dispatch mode, the abandon-mode
+> authorization in the successor gate schema, digest-bound deletion of exactly the declined
+> plan, per-mutation revalidation, the honest partial on every halt, and the `abandon.json`
+> artifact. What keeps this runbook non-executable is the lane's activation prerequisites and
+> the absence of publication. The history below records why the path was built this way. Round 4 of this
 > design's review rejected the earlier version, correctly, on four counts:
 >
 > 1. **It was unauthorized.** `DeleteChangeSet` and `DeleteStack` were not effects in the closed

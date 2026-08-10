@@ -479,14 +479,29 @@
       "normativeSha256": "21b94372583a0bc6907fa3b254487e9937d60f4fb9760b130a3ce8089ee97db7",
       "anchors": [
         {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "abandon"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        },
+        {
           "file": "docs/runbooks/aws-dev-release-abandon.md",
           "symbol": null
         }
       ],
-      "tests": [],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
       "checks": [],
       "governedPaths": [
-        "docs/runbooks/aws-dev-release-abandon.md"
+        ".github/workflows/release-pilot.yml",
+        "docs/runbooks/aws-dev-release-abandon.md",
+        "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
       "supersedes": [],
@@ -1267,8 +1282,8 @@
       "id": "SPEC-LANE-004",
       "status": "PROPOSED",
       "title": "The dispatch input mode offers only dev_only, so the pilot",
-      "normativeText": "The dispatch input `mode` offers only the reviewed non-pilot set (`bind_only`, `dev_only`), so the pilot jobs' success expressions are unreachable.",
-      "normativeSha256": "8259d68e5150a0d725997f28afcee13aae799fb196026680a5c96f6f894a2e06",
+      "normativeText": "The dispatch input `mode` offers only the reviewed non-pilot set (`bind_only`, `dev_only`, `abandon`), so the pilot jobs' success expressions are unreachable.",
+      "normativeSha256": "a9ebb92064ce0c232665ad27a77321f6177e5378fb89af74e3afc5ce86b31ea5",
       "anchors": [
         {
           "file": ".github/workflows/release-pilot.yml",
@@ -1285,7 +1300,7 @@
       "governedPaths": [
         ".github/workflows/release-pilot.yml"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven (text widened in I2 while PROPOSED — §4 permits it)",
+      "mutationEvidence": "code + tests reviewed, reversion proven (text widened in I2 and I5 while PROPOSED — §4 permits it)",
       "supersedes": [],
       "supersededBy": null
     },

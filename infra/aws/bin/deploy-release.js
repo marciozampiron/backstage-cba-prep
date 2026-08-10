@@ -1015,6 +1015,8 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     planDigest: null,
     changeSets: [],
     executed: [],
+    abandoned: [],
+    reportedStackRecords: [],
     outcome: null,
     refusals: [],
     rendering: null,
@@ -1136,14 +1138,17 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     evidence.mode = gate.mode;
     evidence.decisionId = gate.decisionId;
     evidence.stacks = [...gate.stacks];
-    // Slice I4 (wording precised in I4-2): the schema knows all three modes; the abandon LANE
-    // does not exist yet. An abandon-mode gate refuses HERE, by name, after full validation and
-    // before any CHANGE-SET API call or mutation — the identity reads (STS) that precede the
-    // gate check are part of verification, not of the effect. Never a silent fall-through into
-    // prepare or execute.
-    if (gate.mode === 'abandon') {
-      failures.push({ check: 'GATE', code: 'ABANDON_NOT_IMPLEMENTED', field: 'mode' });
-      return refuse();
+    // Slice I5: the run's NAME must mean what happened (SPEC-LANE-006). The lane passes its
+    // dispatch mode in; a gate whose mode does not correspond refuses by name after full
+    // validation and before any change-set API call — a run titled "abandon" may only delete,
+    // and a run titled "dev_only" may only plan or deploy. Local runs without DISPATCH_MODE
+    // skip the coherence check (there is no run name to be coherent with).
+    if (typeof env.DISPATCH_MODE === 'string' && env.DISPATCH_MODE !== '') {
+      const permitted = env.DISPATCH_MODE === 'abandon' ? ['abandon'] : env.DISPATCH_MODE === 'dev_only' ? ['plan_only', 'deploy'] : [];
+      if (!permitted.includes(gate.mode)) {
+        failures.push({ check: 'GATE', code: 'MODE_MISMATCH', field: 'mode' });
+        return refuse();
+      }
     }
 
   // 5. THE PLAN IS THE CHANGE SETS. plan_only PREPARES one named change set per stack from the
@@ -1242,6 +1247,71 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     const digestOfPlan = planDigestOf(planEntries);
     evidence.planDigest = digestOfPlan;
     evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status }));
+
+    // 5c-abandon (Slice I5, SPEC-RUN-008): delete EXACTLY the declined plan. The recomputed
+    // digest must equal the one the abandon gate names — a drifted, recreated or superseded set
+    // refuses as PLAN_CHANGED and NOTHING is deleted; a surprised operation stops rather than
+    // retries. Account and window are revalidated immediately before EACH deletion
+    // (SPEC-DEPLOY-008/017). Stack records left in REVIEW_IN_PROGRESS are REPORTED, never
+    // deleted — no DeleteStack exists in this file (SPEC-DEPLOY-021).
+    if (gate.mode === 'abandon') {
+      if (digestOfPlan !== gate.planDigest) {
+        failures.push({ check: 'ABANDON', code: 'PLAN_CHANGED', field: 'planDigest' });
+        return refuse();
+      }
+      const abandoned = [];
+      evidence.abandoned = abandoned; // shared reference: every halt carries the honest partial
+      for (const entry of planEntries) {
+        const accountAtEffect = resolveAccountId(run);
+        if (accountAtEffect !== accountAtVerify) {
+          failures.push({ check: 'ABANDON', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
+          const refused = refuse();
+          return { ...refused, output: `${refused.output}\nAbandoned before the halt: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted.` };
+        }
+        if (Date.parse(gate.expiresAt) <= now()) {
+          failures.push({ check: 'ABANDON', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
+          const refused = refuse();
+          return { ...refused, output: `${refused.output}\nAbandoned before the window lapsed: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted.` };
+        }
+        const deletion = run(['cloudformation', 'delete-change-set', '--change-set-name', entry.changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+        if (!deletion || deletion.status !== 0) {
+          failures.push({ check: 'ABANDON', code: 'ABANDON_DELETE_FAILED', field: entry.stackId });
+          const refused = refuse();
+          return { ...refused, output: `${refused.output}\nAbandoned before the failure: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted — a state or conflict error means the world changed, and a surprised operation stops.` };
+        }
+        abandoned.push(entry.stackName);
+      }
+      // REPORT — never delete — the empty stack records a CREATE change set leaves behind. A
+      // record whose status cannot be verified is reported as such: fail-closed reporting.
+      const reported = [];
+      evidence.reportedStackRecords = reported;
+      for (const entry of planEntries) {
+        const described = run(['cloudformation', 'describe-stacks', '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+        if (described && described.status === 0) {
+          let status = null;
+          try {
+            status = JSON.parse(described.stdout)?.Stacks?.[0]?.StackStatus ?? null;
+          } catch {
+            status = null;
+          }
+          if (status === 'REVIEW_IN_PROGRESS') reported.push(entry.stackName);
+          else if (status === null) reported.push(`${entry.stackName} (status unverifiable)`);
+        }
+      }
+      writeEvidence('ABANDONED');
+      return {
+        exit: EXIT.OK,
+        output: [
+          ...header,
+          `  PLAN_DIGEST ${digestOfPlan} (matched the declined plan; decision ${gate.decisionId})`,
+          `Abandoned the declined change sets, in order: ${abandoned.join(', ')}.`,
+          reported.length > 0
+            ? `REPORTED (never deleted): stack record(s) in REVIEW_IN_PROGRESS: ${reported.join(', ')} — resolving them is a separate human decision under its own instrument (SPEC-DEPLOY-021).`
+            : 'No stack record remains in REVIEW_IN_PROGRESS.',
+        ].join('\n'),
+        executed: false,
+      };
+    }
 
     // The plan goes on the record BEFORE any effect — review material must exist before the
     // mutation it authorizes. Rendering is sanitized; the digest was not.

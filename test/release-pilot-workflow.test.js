@@ -48,12 +48,13 @@ const EXPECTED_WORKFLOW = {
           "type": "string"
         },
         "mode": {
-          "description": "bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the deploy path — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented",
+          "description": "bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the plan/deploy path; abandon deletes the change sets of a DECLINED plan and nothing else — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented",
           "required": true,
           "type": "choice",
           "options": [
             "bind_only",
-            "dev_only"
+            "dev_only",
+            "abandon"
           ]
         }
       }
@@ -218,7 +219,7 @@ const EXPECTED_WORKFLOW = {
         "global-preflight",
         "dev-preflight"
       ],
-      "if": "needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'",
+      "if": "needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')",
       "runs-on": "ubuntu-latest",
       "timeout-minutes": 15,
       "environment": "dev",
@@ -281,6 +282,7 @@ const EXPECTED_WORKFLOW = {
             "MANIFEST_JSON": "${{ needs.dev-preflight.outputs.manifest }}",
             "CBA_CLOUD_GATE": "${{ vars.CBA_CLOUD_GATE }}",
             "CORRELATION_ID": "${{ inputs.correlation_id }}",
+            "DISPATCH_MODE": "${{ inputs.mode }}",
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
@@ -314,7 +316,7 @@ const EXPECTED_WORKFLOW = {
             "MODE": "${{ needs.dev-stage.outputs.mode }}",
             "CORRELATION_ID": "${{ inputs.correlation_id }}"
           },
-          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\"\n# ROUND I3-3: transport loss is a RED RUN, never a silent gap. A mode on the record with\n# no evidence output means the channel dropped or suppressed the value AFTER a cloud\n# effect may have happened — the one state that must never pass quietly.\nif [ -n \"$MODE\" ] && [ -z \"$EVIDENCE\" ]; then\n  echo \"::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts\"\n  exit 1\nfi\nif [ -z \"$EVIDENCE\" ]; then\n  echo \"no evidence record was produced (the run refused before the entrypoint); nothing to materialize\"\n  exit 0\nfi\n# The record must arrive INTACT: parseable JSON whose correlation is THIS dispatch's.\nprintf '%s\\n' \"$EVIDENCE\" | node -e '\n  let raw = \"\";\n  process.stdin.on(\"data\", (c) => { raw += c; });\n  process.stdin.on(\"end\", () => {\n    const record = JSON.parse(raw);\n    if (record.schema !== \"cba-release-evidence/1\") throw new Error(\"unexpected evidence schema\");\n    if (record.correlationId !== process.env.CORRELATION_ID) throw new Error(\"evidence correlation does not match this dispatch\");\n  });\n'\ncase \"$MODE\" in\n  plan_only) name=plan.json ;;\n  deploy) name=deploy.json ;;\n  *) name=evidence.json ;;\nesac\nprintf '%s\\n' \"$EVIDENCE\" > \"$RUNNER_TEMP/evidence/$name\"\n"
+          "run": "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/evidence\"\n# ROUND I3-3: transport loss is a RED RUN, never a silent gap. A mode on the record with\n# no evidence output means the channel dropped or suppressed the value AFTER a cloud\n# effect may have happened — the one state that must never pass quietly.\nif [ -n \"$MODE\" ] && [ -z \"$EVIDENCE\" ]; then\n  echo \"::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts\"\n  exit 1\nfi\nif [ -z \"$EVIDENCE\" ]; then\n  echo \"no evidence record was produced (the run refused before the entrypoint); nothing to materialize\"\n  exit 0\nfi\n# The record must arrive INTACT: parseable JSON whose correlation is THIS dispatch's.\nprintf '%s\\n' \"$EVIDENCE\" | node -e '\n  let raw = \"\";\n  process.stdin.on(\"data\", (c) => { raw += c; });\n  process.stdin.on(\"end\", () => {\n    const record = JSON.parse(raw);\n    if (record.schema !== \"cba-release-evidence/1\") throw new Error(\"unexpected evidence schema\");\n    if (record.correlationId !== process.env.CORRELATION_ID) throw new Error(\"evidence correlation does not match this dispatch\");\n  });\n'\ncase \"$MODE\" in\n  plan_only) name=plan.json ;;\n  deploy) name=deploy.json ;;\n  abandon) name=abandon.json ;;\n  *) name=evidence.json ;;\nesac\nprintf '%s\\n' \"$EVIDENCE\" > \"$RUNNER_TEMP/evidence/$name\"\n"
         },
         {
           "name": "Upload the plan artifact",
@@ -339,8 +341,19 @@ const EXPECTED_WORKFLOW = {
           }
         },
         {
+          "name": "Upload the abandon artifact",
+          "if": "${{ needs.dev-stage.outputs.mode == 'abandon' }}",
+          "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+          "with": {
+            "name": "abandon",
+            "path": "${{ runner.temp }}/evidence/abandon.json",
+            "if-no-files-found": "error",
+            "retention-days": 90
+          }
+        },
+        {
           "name": "Upload refusal evidence (any mode without a reviewed artifact name)",
-          "if": "${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}",
+          "if": "${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' && needs.dev-stage.outputs.mode != 'abandon' }}",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "evidence",
@@ -502,7 +515,7 @@ function objectDiff(expected, actual, base = '') {
 
 /** The ONLY success expressions a job may carry; see rounds 2–3 for why the grammar is closed. */
 const IF_GRAMMAR =
-  /^(needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && inputs\.mode == '(dev_then_pilot|dev_only|bind_only)')?|always\(\) && needs\.dev-stage\.result != 'skipped' && needs\.dev-stage\.result != 'cancelled')$/;
+  /^(needs\.[A-Za-z_][\w-]*\.result == 'success'( && needs\.[A-Za-z_][\w-]*\.result == 'success')*( && (inputs\.mode == '(dev_then_pilot|dev_only|bind_only)'|\(inputs\.mode == 'dev_only' \|\| inputs\.mode == 'abandon'\)))?|always\(\) && needs\.dev-stage\.result != 'skipped' && needs\.dev-stage\.result != 'cancelled')$/;
 
 /** Job-level keys that hand execution or environment to something nobody reviewed. */
 const FORBIDDEN_JOB_KEYS = ['uses', 'container', 'services', 'env', 'strategy', 'secrets', 'continue-on-error'];
@@ -543,8 +556,8 @@ export function releaseLaneErrors(text) {
   // O1/O2, the smokes and the live SNS/KMS proof; until then it is refused HERE BY NAME, so the
   // reviewed-object diff cannot be the only thing standing when that edit arrives.
   const modeOptions = on.workflow_dispatch?.inputs?.mode?.options ?? [];
-  if (JSON.stringify(modeOptions) !== JSON.stringify(['bind_only', 'dev_only'])) {
-    errors.push('promotion is mechanically blocked: mode must offer only the reviewed non-pilot set [bind_only, dev_only] until O1/O2, the smokes and the SNS/KMS proof land');
+  if (JSON.stringify(modeOptions) !== JSON.stringify(['bind_only', 'dev_only', 'abandon'])) {
+    errors.push('promotion is mechanically blocked: mode must offer only the reviewed non-pilot set [bind_only, dev_only, abandon] until O1/O2, the smokes and the SNS/KMS proof land');
   }
   // SPEC-LANE-006: the run is identifiable from run metadata alone. The run name is EXACTLY the
   // closed string bin/resolve-run.mjs matches by equality — nothing prepended, nothing appended.
@@ -749,8 +762,9 @@ test('SLICE I2: the bind stage terminates the DAG with no cloud authority and a 
   assert.ok(raw.includes('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'));
   assert.equal(upload.with.name, 'binding');
   assert.equal(upload.with['if-no-files-found'], 'error');
-  // …and dev-stage is reachable ONLY on the deploy mode, so a bind run cannot deploy.
-  assert.equal(wf.jobs['dev-stage'].if, "needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'");
+  // …and dev-stage is reachable ONLY on the effect modes; a bind run can neither plan nor
+  // delete. The ENTRYPOINT then enforces name/effect coherence via DISPATCH_MODE.
+  assert.equal(wf.jobs['dev-stage'].if, "needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')");
 });
 
 test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC capability', () => {
@@ -774,9 +788,9 @@ test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC 
   assert.equal(evidence.if, "always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'");
   // The three uploaders are pinned and carry the reviewed artifact names, keyed on the mode.
   const uploads = evidence.steps.filter((st) => String(st.uses ?? '').startsWith('actions/upload-artifact@'));
-  assert.deepEqual(uploads.map((st) => st.with.name), ['plan', 'deploy', 'evidence']);
+  assert.deepEqual(uploads.map((st) => st.with.name), ['plan', 'deploy', 'abandon', 'evidence']);
   for (const st of uploads) assert.equal(st.uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
-  assert.deepEqual(uploads.map((st) => st.with['if-no-files-found']), ['error', 'error', 'ignore']);
+  assert.deepEqual(uploads.map((st) => st.with['if-no-files-found']), ['error', 'error', 'error', 'ignore']);
   // ROUND I4-2: EXACTLY ONE uploader matches every mode the record can carry — refusals route by
   // EXCLUSION, so an abandon-mode refusal publishes its evidence instead of vanishing. The three
   // pinned conditions are evaluated against the full mode table.
@@ -784,12 +798,14 @@ test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC 
   assert.deepEqual(conditions, [
     "\${{ needs.dev-stage.outputs.mode == 'plan_only' }}",
     "\${{ needs.dev-stage.outputs.mode == 'deploy' }}",
-    "\${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}",
+    "\${{ needs.dev-stage.outputs.mode == 'abandon' }}",
+    "\${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' && needs.dev-stage.outputs.mode != 'abandon' }}",
   ]);
   const selects = (mode) => [
     mode === 'plan_only',
     mode === 'deploy',
-    mode !== 'plan_only' && mode !== 'deploy',
+    mode === 'abandon',
+    mode !== 'plan_only' && mode !== 'deploy' && mode !== 'abandon',
   ];
   for (const mode of ['plan_only', 'deploy', 'abandon', '']) {
     const hits = selects(mode).filter(Boolean).length;
@@ -879,8 +895,9 @@ test('EXECUTED (I3-4): the materializer, run for real near the byte cap, reprodu
       env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: abandonJson, MODE: 'abandon', CORRELATION_ID: correlation },
     });
     assert.equal(abandonRun.status, 0, `${abandonRun.stdout}\n${abandonRun.stderr}`);
-    const abandonFile = fs.readFileSync(join(dir, 'evidence', 'evidence.json'));
-    assert.ok(abandonFile.equals(Buffer.from(`${abandonJson}\n`, 'utf8')), 'the abandon refusal record is materialized under the refusal name');
+    // SLICE I5: abandon has its OWN reviewed name — the runbook digests abandon.json.
+    const abandonFile = fs.readFileSync(join(dir, 'evidence', 'abandon.json'));
+    assert.ok(abandonFile.equals(Buffer.from(`${abandonJson}\n`, 'utf8')), 'the abandon record is materialized under its reviewed name');
 
     // …and the vanish guard bites: a mode with no evidence is a RED run, executed for real.
     const vanished = spawnSync('bash', ['-c', script], {
@@ -912,10 +929,13 @@ test('SLICE I3-2: the file names the workflow produces are the names the runbook
   const materialize = wf.jobs['dev-evidence'].steps.find((st) => typeof st.run === 'string' && st.run.includes('Materialize') === false && st.run.includes('plan.json'));
   assert.ok(materialize.run.includes('plan_only) name=plan.json'));
   assert.ok(materialize.run.includes('deploy) name=deploy.json'));
+  assert.ok(materialize.run.includes('abandon) name=abandon.json'));
   const planRunbook = fs.readFileSync(join(here, '..', 'docs', 'runbooks', 'aws-dev-release-plan.md'), 'utf8');
   const deployRunbook = fs.readFileSync(join(here, '..', 'docs', 'runbooks', 'aws-dev-release-deploy.md'), 'utf8');
+  const abandonRunbook = fs.readFileSync(join(here, '..', 'docs', 'runbooks', 'aws-dev-release-abandon.md'), 'utf8');
   assert.ok(planRunbook.includes('/plan.json'), 'the plan runbook digests plan.json');
   assert.ok(deployRunbook.includes('/deploy.json'), 'the deploy runbook digests deploy.json');
+  assert.ok(abandonRunbook.includes('/abandon.json'), 'the abandon runbook digests abandon.json');
   assert.ok(!planRunbook.includes('evidence.json'), 'the plan runbook must not reference a name the workflow reserves for refusals');
 });
 
@@ -975,7 +995,7 @@ test('SLICE I3-2 MUTATION PROOFS: authority and evidence cannot re-merge', () =>
 
 test('SLICE I2 MUTATION PROOFS: the bind path cannot quietly gain authority or lose its gate', () => {
   // dev-stage losing its mode gate would let a bind_only dispatch deploy.
-  rejects(raw.replace("if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'", "if: needs.dev-preflight.result == 'success'"),
+  rejects(raw.replace("if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')", "if: needs.dev-preflight.result == 'success'"),
     'dev-stage without the mode gate must fail the reviewed-object diff');
   // bind-stage acquiring id-token would fail: permissions are part of the reviewed object, and
   // the OIDC rule counts consumers per job.
@@ -1250,9 +1270,9 @@ test('POSITIVE CONTROL: pinning, inputs, gating and credentials cannot be loosen
   rejects(raw.replace('on:\n  workflow_dispatch:', 'on:\n  push:\n    branches: [main]\n  workflow_dispatch:'), 'an automatic trigger');
   rejects(raw.replace("    if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'", "    if: needs.global-preflight.result == 'success'"), 'pilot entry without the dev stage or the mode');
   rejects(raw.replace('\n    needs: [global-preflight, dev-preflight, dev-stage]', '\n    needs: [global-preflight]'), 'pilot-preflight detached from the dev stage');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), '|| true');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", '    if: always()\n    runs-on'), 'always()');
-  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && inputs.mode == 'dev_only'\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')\n    runs-on", "    if: needs.dev-preflight.result == 'success' || true\n    runs-on"), '|| true');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')\n    runs-on", '    if: always()\n    runs-on'), 'always()');
+  rejects(raw.replace("    if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')\n    runs-on", '    runs-on'), 'a dependency with no explicit success condition');
   rejects(raw.replaceAll('secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN', 'vars.AWS_DEPLOY_PREFLIGHT_ROLE_ARN'), 'the role ARN moved to a variable');
   rejects(raw.replaceAll('          mask-aws-account-id: true\n', ''), 'account-id masking removed');
   rejects(raw.replace('${{ secrets.AWS_DEPLOY_PREFLIGHT_ROLE_ARN }}', `arn:aws:iam::${'9'.repeat(12)}:role/x`), 'a literal IAM ARN');

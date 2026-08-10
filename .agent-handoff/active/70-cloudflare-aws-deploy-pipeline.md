@@ -554,6 +554,24 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation Slice I5 delivered the abandon lane — SPEC-RUN-008 made real, the last mutating
+operation of the dev tier. The dispatch gains mode `abandon` (run-name grammar already knew it);
+dev-stage is reachable on the effect modes and the ENTRYPOINT enforces name/effect coherence via
+DISPATCH_MODE — a run titled abandon may only delete, a dev_only run may only plan or deploy,
+MODE_MISMATCH otherwise, refused before any change-set API call. The abandon effect deletes
+EXACTLY the declined plan: the recomputed digest must equal the one the abandon gate names
+(PLAN_CHANGED refuses with nothing deleted — a drifted, recreated or superseded set is a
+surprise, and a surprised operation stops, never retries); account and window revalidate before
+EACH deletion (honest partial on every halt, shared `abandoned` array in evidence); a state or
+conflict error stops immediately. Stack records left in REVIEW_IN_PROGRESS are REPORTED, never
+deleted — the entrypoint does not even contain the DeleteStack verb, asserted as a meta-test
+(SPEC-DEPLOY-021). Evidence gained the closed `abandoned` and `reportedStackRecords` fields with
+outcome ABANDONED, materialized under the runbook's own name (abandon.json) and published by a
+dedicated pinned uploader — the four-way truth table proves exactly one uploader per mode. The
+abandon runbook's commands were already exactly this contract (dispatch mode=abandon, download
+--name abandon, sha256sum abandon.json — the reviewed command inventory holds unchanged);
+LANE-004's PROPOSED text widened to the reviewed triple; RUN-008 holds real anchors.
+
 Implementation round I4-2 (Codex: 1 MEDIUM, 1 LOW) closed the refusal's last mile and precised a
 guarantee. **Refusals route by EXCLUSION**: the refusal uploader's `mode == ''` condition let an
 abandon-mode refusal materialize evidence.json and publish nothing — the condition is now
