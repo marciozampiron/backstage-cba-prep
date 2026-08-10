@@ -2921,6 +2921,7 @@ test('ABANDON: a state error mid-way stops with the honest partial — never a r
     withArtifact((artifact) => {
       let deletions = 0;
       const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
         onCall: (args) => {
           if (args[1] === 'delete-change-set') {
             deletions += 1;
@@ -2946,6 +2947,8 @@ test('ABANDON: a state error mid-way stops with the honest partial — never a r
       assert.equal(record.outcome, 'REFUSED');
       assert.equal(record.abandoned.length, 1, 'exactly the sets deleted before the surprise');
       assert.ok(record.refusals.includes('ABANDON_DELETE_FAILED'));
+      // ROUND I5-3 (F2): the halt still REPORTS the stack record the deleted prefix left behind.
+      assert.deepEqual(record.reportedStackRecords, [record.abandoned[0]], 'a halt after a deletion reports the prefix — never an empty reporting field');
     });
   });
 });
@@ -2956,6 +2959,7 @@ test('ABANDON: the window is re-checked before EACH deletion — a lapsed gate s
       let clock = Date.parse('2026-08-02T12:00:00Z');
       let deletions = 0;
       const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
         onCall: (args) => {
           if (args[1] === 'delete-change-set') {
             deletions += 1;
@@ -2978,6 +2982,8 @@ test('ABANDON: the window is re-checked before EACH deletion — a lapsed gate s
       assert.equal(deletions, 1, 'the lapse is caught before the SECOND deletion');
       const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
       assert.equal(record.abandoned.length, 1);
+      // ROUND I5-3 (F2): the lapse halt still reports the deleted prefix's stack record.
+      assert.deepEqual(record.reportedStackRecords, record.abandoned, 'the lapse halt reports the deleted prefix');
     });
   });
 });
@@ -3059,6 +3065,120 @@ test('I5-2 REPRO: success → failure → NEW decision → the remainder is remo
       assert.deepEqual(record.alreadyAbsent, [absentName], 'the prefix is on the record as already absent');
       assert.equal(record.reportedStackRecords.length, 4, 'the FULL wave is reported — the absent prefix left its stack record too');
       assert.ok(record.reportedStackRecords.includes(absentName));
+    });
+  });
+});
+
+test('I5-3 REPRO: a SECOND interruption is resumable from the newest artifact ALONE — the chain closes', () => {
+  withRelease((p, asm, manifest) => {
+    const originalRoot = JSON.parse(gateFor(manifest)).planDigest;
+    // The runbook's derivation, from ONE artifact only: the original root is its planDigest; the
+    // absent digests are the canonicalSha256 of every position already gone (previously absent
+    // or deleted by that very run), in the map's group order.
+    const nextGateInputs = (record) => ({
+      planDigest: record.planDigest,
+      absentEntryDigests: record.changeSets
+        .filter((e) => e.status === 'ALREADY_ABSENT' || record.abandoned.includes(e.stackName))
+        .map((e) => e.canonicalSha256),
+    });
+    const runAbandon = ({ describes, over, failAtDeletion }) => {
+      let out;
+      withArtifact((artifact) => {
+        let deletions = 0;
+        const run = cloudRun({
+          describes,
+          stackStatus: 'REVIEW_IN_PROGRESS',
+          onCall: (args) => {
+            if (args[1] === 'delete-change-set') {
+              deletions += 1;
+              if (deletions === failAtDeletion) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+            }
+            return null;
+          },
+        });
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run,
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', ...over }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('abandon spawns no cdk child'),
+        });
+        out = { r, deletions: run.of('delete-change-set').length, record: JSON.parse(fs.readFileSync(artifact, 'utf8')) };
+      });
+      return out;
+    };
+    // RUN 1 (fresh): deletes A, fails at B.
+    const run1 = runAbandon({ describes: fullDescribes(), over: {}, failAtDeletion: 2 });
+    assert.notEqual(run1.r.exit, 0);
+    assert.deepEqual(run1.record.abandoned, [PILOT_STACK_NAMES[0]]);
+    // RUN 2 (first continuation, built from artifact 1): A absent; deletes B, fails at C.
+    const state2 = { ...fullDescribes() };
+    delete state2[PILOT_STACK_NAMES[0]];
+    const run2 = runAbandon({
+      describes: state2,
+      over: { decisionId: 'zamp-2026-08-02.b1-abandon-02', ...nextGateInputs(run1.record) },
+      failAtDeletion: 2,
+    });
+    assert.notEqual(run2.r.exit, 0);
+    assert.deepEqual(run2.record.abandoned, [PILOT_STACK_NAMES[1]]);
+    assert.deepEqual(run2.record.alreadyAbsent, [PILOT_STACK_NAMES[0]]);
+    // F1's discriminating claims, on artifact 2 ALONE: it carries the ORIGINAL root — never the
+    // present-subset digest — and the FULL ordered map, the previously-absent position included.
+    assert.equal(run2.record.planDigest, originalRoot, 'the continuation artifact carries the ORIGINAL root');
+    assert.equal(run2.record.changeSets.length, ORDERED_IDS.length, 'the map covers every position, absent ones included');
+    assert.deepEqual(run2.record.changeSets.map((e) => e.stackName), PILOT_STACK_NAMES, 'the map is in group order');
+    assert.equal(run2.record.changeSets[0].status, 'ALREADY_ABSENT');
+    assert.match(run2.record.changeSets[0].canonicalSha256, /^[0-9a-f]{64}$/);
+    // …and the halt reported the WHOLE gone prefix, previously-absent A included (F2).
+    assert.deepEqual(run2.record.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    // RUN 3 (second continuation, built from artifact 2 ALONE): A and B absent; C and D go.
+    const state3 = { ...state2 };
+    delete state3[PILOT_STACK_NAMES[1]];
+    const run3 = runAbandon({
+      describes: state3,
+      over: { decisionId: 'zamp-2026-08-02.b1-abandon-03', ...nextGateInputs(run2.record) },
+      failAtDeletion: 99,
+    });
+    assert.equal(run3.r.exit, 0, run3.r.output);
+    assert.equal(run3.deletions, 2, 'exactly the remainder is deleted');
+    assert.equal(run3.record.outcome, 'ABANDONED');
+    assert.deepEqual(run3.record.abandoned, [PILOT_STACK_NAMES[2], PILOT_STACK_NAMES[3]]);
+    assert.deepEqual(run3.record.alreadyAbsent, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    assert.equal(run3.record.planDigest, originalRoot);
+    assert.equal(run3.record.reportedStackRecords.length, 4, 'the FULL wave is reported at the close');
+  });
+});
+
+test('I5-3: an absence AFTER the first present entry is a state the lane cannot have produced — refused', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      // Only B (the SECOND position) is absent — an ordered deletion can never leave this shape.
+      const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+      const holed = { ...fullDescribes() };
+      delete holed[PILOT_STACK_NAMES[1]];
+      const run = cloudRun({ describes: holed });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: {
+          PATH: '/usr/bin',
+          CORRELATION_ID: CORRELATION,
+          DISPATCH_MODE: 'abandon',
+          CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', absentEntryDigests: [entryDigestOf(entries[1])] }),
+        },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_NOT_A_PREFIX/);
+      assert.equal(run.of('delete-change-set').length, 0, 'even a root that would close deletes NOTHING outside the prefix law');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.deepEqual(record.abandoned, []);
     });
   });
 });

@@ -554,6 +554,15 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I5-3 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the continuation became
+CLOSED under interruption — every abandon artifact now carries the ORIGINAL root as its
+`planDigest` and the FULL ordered stack → `canonicalSha256` map (`ALREADY_ABSENT` positions
+included), so a second interruption resumes from the newest artifact alone, proven
+fail → fail → third decision → success end to end. Every halt after any progress reports the
+gone prefix's stack records (never an empty reporting field). And absences must form a PREFIX
+of the group order — the lane deletes in order, so a hole after the first present entry refuses
+`ABANDON_NOT_A_PREFIX` with nothing deleted, even when the supplied digests would close the root.
+
 Round I5-2 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the plan digest became a ROOT
 over the ordered per-entry digests, and a PARTIAL abandon became RESUMABLE — a new decision
 carries `absentEntryDigests` (copied from the failed run's `changeSets[].canonicalSha256`), the

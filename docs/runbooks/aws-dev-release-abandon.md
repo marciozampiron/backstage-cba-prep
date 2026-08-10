@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.11.0
+version: 0.12.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -202,15 +202,23 @@ entry of `changeSets[]` carries its own `canonicalSha256` — the per-entry dige
 the plan digest, which is the ROOT over the ordered entry digests (spec §8a, round I5-2).
 
 To remove the remainder, **Zamp** issues a NEW decision (fresh `decisionId`, fresh window) whose
-gate value repeats the SAME `planDigest` and adds `absentEntryDigests`: the `canonicalSha256`
-values of the already-deleted sets, copied from the failed run's artifact, in group order. The
-dispatch and every other step are identical to a fresh abandon. The reviewed entrypoint
-re-describes the group, recomputes each present set's digest, takes each absent position's digest
-from the gate, and proceeds ONLY if the same root emerges — a recreated set, a foreign set, or a
-digest count that does not match the observed absences refuses (`PLAN_CHANGED`,
-`CHANGE_SET_MISSING`) with nothing deleted. The resulting artifact lists the deleted remainder
-under `abandoned`, the prior prefix under `alreadyAbsent`, and the stack records of the WHOLE
-wave — the absent prefix's included — under `reportedStackRecords`.
+gate value is derived from the NEWEST artifact ALONE (round I5-3 — no earlier artifact and no
+memory is consulted): `planDigest` is the artifact's `planDigest`, which is always the ORIGINAL
+root; `absentEntryDigests` are the `canonicalSha256` values of every position already gone —
+entries whose `status` is `ALREADY_ABSENT` plus entries named in `abandoned` — in the map's
+group order. The dispatch and every other step are identical to a fresh abandon. The reviewed
+entrypoint re-describes the group, recomputes each present set's digest, takes each absent
+position's digest from the gate, and proceeds ONLY if the same root emerges — a recreated set, a
+foreign set, or a digest count that does not match the observed absences refuses (`PLAN_CHANGED`,
+`CHANGE_SET_MISSING`) with nothing deleted. Absences must form a PREFIX of the group order: the
+lane deletes in order, so an absence after the first present entry is a state the lane cannot
+have produced, and it refuses `ABANDON_NOT_A_PREFIX` with nothing deleted, even when the digests
+would close the root. The resulting artifact lists the deleted remainder under `abandoned`, the
+prior prefix under `alreadyAbsent`, and the stack records of the WHOLE wave — the absent prefix's
+included — under `reportedStackRecords`; a run halted mid-way still reports the gone prefix's
+records the same way, so no artifact of this lane ever leaves the reporting field silently empty.
+This derivation works on EVERY artifact the lane produces — a halted continuation's included —
+so a second interruption, and any after it, resumes exactly the same way.
 
 There is no third state: a set is either present and re-verified, or absent and vouched for by
 the digest Zamp copied from the evidence. `absentEntryDigests` outside abandon mode, empty,

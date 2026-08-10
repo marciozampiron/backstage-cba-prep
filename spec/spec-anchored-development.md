@@ -315,7 +315,7 @@ runs would claim a guarantee nobody performs.
 | SPEC-RUN-005 | PROPOSED | Every command in a runbook names the actor that performs it, and that actor is permitted to perform it by `spec/authority-policy.json`. | `docs/runbooks/README.md` |
 | SPEC-RUN-006 | PROPOSED | A cloud authorization is authored only after a read-only binding operation has produced the exact manifest and assembly digest it must name. | `docs/runbooks/aws-dev-release-bind.md` |
 | SPEC-RUN-007 | PROPOSED | The evidence of a cloud effect is a complete artifact bound to run id, decisionId, release SHA, stack group and plan digest; a truncated excerpt is not evidence. | `infra/aws/bin/deploy-release.js` (`--artifact-out`), `.github/workflows/release-pilot.yml`, `docs/runbooks/aws-dev-release-plan.md`, `-deploy.md` | `infra/aws/test/deploy-preflight.test.js` | code + tests reviewed in I3/I3-3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN; the record is bounded in UTF-8 BYTES to the NARROWEST hop — 100k bytes, with margin under the single Linux envp entry (MAX_ARG_STRLEN 128 KiB) that injects it into the materializer; every wider hop (the ~1MB job-output store) is satisfied a fortiori — and a plan whose record cannot cross REFUSES (PLAN_RENDERING_TOO_LARGE): evidence is reshaped by named code, never truncated, transport loss is a red run, and the materializer is proven by EXECUTION at near-cap size, byte for byte |
-| SPEC-RUN-008 | PROPOSED | Change sets prepared for a plan that will not execute are deleted under their own authorization; they are never left to expire. | `infra/aws/bin/deploy-release.js` (abandon), `.github/workflows/release-pilot.yml`, `docs/runbooks/aws-dev-release-abandon.md`; round I5-2: a PARTIAL abandon resumes under a NEW decision — the continuation folds the deleted prefix into the same plan-digest root, refuses recreated or foreign sets, and the success → failure → new decision → safe remainder path is proven end to end |
+| SPEC-RUN-008 | PROPOSED | Change sets prepared for a plan that will not execute are deleted under their own authorization; they are never left to expire. | `infra/aws/bin/deploy-release.js` (abandon), `.github/workflows/release-pilot.yml`, `docs/runbooks/aws-dev-release-abandon.md`; round I5-2: a PARTIAL abandon resumes under a NEW decision — the continuation folds the deleted prefix into the same plan-digest root, refuses recreated or foreign sets, and the success → failure → new decision → safe remainder path is proven end to end; round I5-3: absences must form a PREFIX (ABANDON_NOT_A_PREFIX otherwise), every continuation artifact carries the ORIGINAL root and the FULL ordered digest map so a second interruption resumes from the newest artifact alone — proven fail → fail → third decision → success — and every halt after progress reports the gone prefix |
 
 ### 7b. Release-lane invariants — PROPOSED, with conformance evidence that already exists
 
@@ -479,6 +479,17 @@ root must emerge before anything is deleted. A recreated set, a foreign set, an 
 supplied digest, or a leftover digest each kill the root — `PLAN_CHANGED` or
 `CHANGE_SET_MISSING`, and NOTHING is deleted. The stack records of the whole wave, the absent
 prefix's included, are still REPORTED (SPEC-DEPLOY-021).
+
+Round I5-3 closed the law: the absences of a genuine continuation form a **PREFIX** of the group
+order — the lane deletes in order, so an absence after the first present entry is a state this
+operation cannot have produced, and it refuses `ABANDON_NOT_A_PREFIX` with nothing deleted, even
+when the supplied digests would close the root. Every continuation artifact is **self-sufficient
+for the next decision**: its `planDigest` is the ORIGINAL root (never the present-subset digest)
+and its `changeSets[]` is the FULL ordered stack → `canonicalSha256` map, previously-absent
+positions carried as `ALREADY_ABSENT` — so a second interruption, and any after it, resumes from
+the newest artifact alone (SPEC-RUN-007/008). And every halt AFTER any progress still reports the
+gone prefix's stack records — `REVIEW_IN_PROGRESS` by name, inconclusive reads as
+`status unverifiable`, never an empty reporting field.
 
 Per-mode effects are not restated here as prose: they are the partition in the policy file, and a
 value whose mode does not cover the effect being attempted refuses. There is **no cleanup mode**.

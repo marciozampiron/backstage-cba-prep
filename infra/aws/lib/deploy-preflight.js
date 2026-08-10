@@ -117,6 +117,8 @@ const CODES = {
   PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
   PLAN_RENDERING_TOO_LARGE: 'produced a rendering whose evidence record cannot cross the job-output channel complete — evidence is never truncated, so the plan refuses; split the wave and plan again',
   MODE_MISMATCH: 'names a gate mode the dispatched lane does not correspond to — a run titled abandon may only delete, and a dev_only run may only plan or deploy; the run name must mean what happened',
+  ABANDON_NOT_A_PREFIX:
+    'an absence after the first present entry cannot result from the lane\'s ordered deletion — the observed world is not a state this operation produced; nothing was deleted; re-observe under a new decision',
   ABANDON_DELETE_FAILED: 'refused to delete — CloudFormation returned a state or conflict error, which means the world changed between observation and action; a surprised operation stops, it does not retry',
   EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',
   STACK_EXECUTION_FAILED: 'did not reach a healthy terminal state — the execution failed or rolled back; the partial record above is the honest state',

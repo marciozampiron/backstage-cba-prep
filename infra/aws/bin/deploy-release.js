@@ -1294,12 +1294,23 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       const suppliedAbsent = [...(gate.absentEntryDigests ?? [])];
       const alreadyAbsent = [];
       const rootList = [];
+      const fullMap = [];
       const presentByName = new Map(planEntries.map((entry) => [entry.stackName, entry]));
       const absentByName = new Set(absentStacks.map((slot) => slot.stackName));
       let continuationBroken = false;
+      let seenPresent = false;
+      let nonPrefixAbsence = null;
       for (const stackId of orderedStacks) {
         const stackName = stackNameFor(manifest.environment, stackId);
         if (absentByName.has(stackName)) {
+          // ROUND I5-3: the lane deletes IN ORDER, so the absences of a genuine continuation form
+          // a PREFIX. An absence after the first present entry is a state this operation cannot
+          // have produced — a foreign hand or a drifted world — and it refuses with nothing
+          // deleted, before the root is even compared.
+          if (seenPresent) {
+            nonPrefixAbsence = stackId;
+            break;
+          }
           const supplied = suppliedAbsent.shift();
           if (supplied === undefined) {
             continuationBroken = true; // absent set with no digest on the gate: not a continuation
@@ -1307,9 +1318,17 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
           }
           rootList.push(supplied);
           alreadyAbsent.push(stackName);
+          fullMap.push({ stackName, changeSetName, status: 'ALREADY_ABSENT', canonicalSha256: supplied });
         } else if (presentByName.has(stackName)) {
-          rootList.push(entryDigestOf(presentByName.get(stackName)));
+          seenPresent = true;
+          const entry = presentByName.get(stackName);
+          rootList.push(entryDigestOf(entry));
+          fullMap.push({ stackName, changeSetName, status: entry.status, canonicalSha256: entryDigestOf(entry) });
         }
+      }
+      if (nonPrefixAbsence !== null) {
+        failures.push({ check: 'ABANDON', code: 'ABANDON_NOT_A_PREFIX', field: nonPrefixAbsence });
+        return refuse();
       }
       if (continuationBroken || suppliedAbsent.length > 0) {
         failures.push({ check: 'ABANDON', code: 'CHANGE_SET_MISSING', field: 'absentEntryDigests' });
@@ -1320,24 +1339,56 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         failures.push({ check: 'ABANDON', code: 'PLAN_CHANGED', field: 'planDigest' });
         return refuse();
       }
+      // ROUND I5-3: the continuation's artifact must be sufficient to build the NEXT continuation
+      // by itself — it carries the ORIGINAL root (never the present-subset digest) and the FULL
+      // ordered stack → digest map, previously-absent positions included, so a second interruption
+      // still leaves a resumable record (SPEC-RUN-007/008).
+      evidence.planDigest = root;
+      evidence.changeSets = fullMap;
       evidence.alreadyAbsent = alreadyAbsent;
+      // ROUND I5-3: every halt AFTER any progress still reports the prefix's stack records — the
+      // deleted sets left their empty REVIEW_IN_PROGRESS records regardless of how this run ends,
+      // and a read is always safe. Inconclusive queries report as unverifiable, never silence.
+      const reportRecords = (names) => {
+        const reported = [];
+        evidence.reportedStackRecords = reported;
+        for (const stackName of names) {
+          const described = run(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+          if (!described || described.status !== 0) {
+            reported.push(`${stackName} (status unverifiable)`);
+            continue;
+          }
+          let status = null;
+          try {
+            status = JSON.parse(described.stdout)?.Stacks?.[0]?.StackStatus ?? null;
+          } catch {
+            status = null;
+          }
+          if (status === 'REVIEW_IN_PROGRESS') reported.push(stackName);
+          else if (status === null) reported.push(`${stackName} (status unverifiable)`);
+        }
+        return reported;
+      };
       const abandoned = [];
       evidence.abandoned = abandoned; // shared reference: every halt carries the honest partial
       for (const entry of planEntries) {
         const accountAtEffect = resolveAccountId(run);
         if (accountAtEffect !== accountAtVerify) {
           failures.push({ check: 'ABANDON', code: 'ACCOUNT_CHANGED', field: 'targetAccount' });
+          reportRecords([...alreadyAbsent, ...abandoned]);
           const refused = refuse();
           return { ...refused, output: `${refused.output}\nAbandoned before the halt: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted.` };
         }
         if (Date.parse(gate.expiresAt) <= now()) {
           failures.push({ check: 'ABANDON', code: 'CLOUD_GATE_EXPIRED', field: 'expiresAt' });
+          reportRecords([...alreadyAbsent, ...abandoned]);
           const refused = refuse();
           return { ...refused, output: `${refused.output}\nAbandoned before the window lapsed: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted.` };
         }
         const deletion = run(['cloudformation', 'delete-change-set', '--change-set-name', entry.changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
         if (!deletion || deletion.status !== 0) {
           failures.push({ check: 'ABANDON', code: 'ABANDON_DELETE_FAILED', field: entry.stackId });
+          reportRecords([...alreadyAbsent, ...abandoned]);
           const refused = refuse();
           return { ...refused, output: `${refused.output}\nAbandoned before the failure: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted — a state or conflict error means the world changed, and a surprised operation stops.` };
         }
@@ -1347,30 +1398,13 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       // the FULL wave (the already-absent prefix left its records too). ROUND I5-2: EVERY
       // inconclusive query — non-zero exit, timeout, unparseable output — reports the stack as
       // unverifiable; "no record remains" is claimed only when every query answered.
-      const reported = [];
-      evidence.reportedStackRecords = reported;
-      for (const stackId of orderedStacks) {
-        const stackName = stackNameFor(manifest.environment, stackId);
-        const described = run(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
-        if (!described || described.status !== 0) {
-          reported.push(`${stackName} (status unverifiable)`);
-          continue;
-        }
-        let status = null;
-        try {
-          status = JSON.parse(described.stdout)?.Stacks?.[0]?.StackStatus ?? null;
-        } catch {
-          status = null;
-        }
-        if (status === 'REVIEW_IN_PROGRESS') reported.push(stackName);
-        else if (status === null) reported.push(`${stackName} (status unverifiable)`);
-      }
+      const reported = reportRecords(orderedStacks.map((stackId) => stackNameFor(manifest.environment, stackId)));
       writeEvidence('ABANDONED');
       return {
         exit: EXIT.OK,
         output: [
           ...header,
-          `  PLAN_DIGEST ${digestOfPlan} (matched the declined plan; decision ${gate.decisionId})`,
+          `  PLAN_DIGEST ${root} (matched the declined plan; decision ${gate.decisionId})`,
           `Abandoned the declined change sets, in order: ${abandoned.join(', ')}.`,
           reported.length > 0
             ? `REPORTED (never deleted): stack record(s) in REVIEW_IN_PROGRESS: ${reported.join(', ')} — resolving them is a separate human decision under its own instrument (SPEC-DEPLOY-021).`
