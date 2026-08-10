@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I5-2 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the plan digest became a ROOT
+over the ordered per-entry digests, and a PARTIAL abandon became RESUMABLE — a new decision
+carries `absentEntryDigests` (copied from the failed run's `changeSets[].canonicalSha256`), the
+present remainder re-verifies, the absent prefix folds in from the gate, and the same root must
+emerge before anything is deleted (recreated/foreign sets, missing or leftover digests refuse
+with nothing deleted; the whole wave's stack records stay REPORTED). A `MODE_MISMATCH` refusal
+now publishes under the NEUTRAL name — the gate's claimed mode never reaches the record, proven
+reader → materializer → uploader, executed. An inconclusive `describe-stacks` reports `status
+unverifiable` — never a clean bill. Gate schema is now ELEVEN keys (§8a widened while PROPOSED).
+
 Implementation Slice I5 delivered the abandon lane — SPEC-RUN-008 made real, the last mutating
 operation of the dev tier. The dispatch gains mode `abandon` (run-name grammar already knew it);
 dev-stage is reachable on the effect modes and the ENTRYPOINT enforces name/effect coherence via

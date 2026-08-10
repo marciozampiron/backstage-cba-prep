@@ -503,7 +503,7 @@
         "docs/runbooks/aws-dev-release-abandon.md",
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "mutationEvidence": "`infra/aws/bin/deploy-release.js` (abandon), `.github/workflows/release-pilot.yml`, `docs/runbooks/aws-dev-release-abandon.md`; round I5-2: a PARTIAL abandon resumes under a NEW decision — the continuation folds the deleted prefix into the same plan-digest root, refuses recreated or foreign sets, and the success → failure → new decision → safe remainder path is proven end to end",
       "supersedes": [],
       "supersededBy": null
     },
@@ -953,8 +953,8 @@
       "id": "SPEC-DEPLOY-019",
       "status": "PROPOSED",
       "title": "The cloud authorization value has EXACTLY these ten keys —",
-      "normativeText": "The cloud authorization value has EXACTLY these ten keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
-      "normativeSha256": "2124339b23aa00f80847d623679b6c59838a1f729821458bbf95a9ca19ccdb8f",
+      "normativeText": "The cloud authorization value has EXACTLY these eleven keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `absentEntryDigests`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
+      "normativeSha256": "ffe37c51cb8acd684b6b895ad38685f7f0013620a8c670e3a51c0f5e153fe92e",
       "anchors": [
         {
           "file": "infra/aws/bin/deploy-release.js",

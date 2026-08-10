@@ -749,7 +749,7 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
 const GATE_NOW = Date.parse('2026-08-02T12:00:00Z');
 
 /* ---- round-4 harness: the plan IS the change sets ------------------------------------------- */
-const { planDigestOf, canonicalChangeSet, setReviewedStackNames } = require('../bin/deploy-release');
+const { planDigestOf, entryDigestOf, canonicalChangeSet, setReviewedStackNames } = require('../bin/deploy-release');
 
 // Round 11: review material renders a stack name only when THIS deploy computed it, so the
 // direct-call controls declare the same names the entrypoint would.
@@ -825,6 +825,7 @@ const gateFor = (manifest, over = {}) =>
     expiresAt: '2026-08-02T12:30:00Z',
     planDigest: digestOf(fullDescribes()),
     stacks: [...ORDERED_IDS],
+    absentEntryDigests: null,
     ...over,
   });
 
@@ -2559,7 +2560,7 @@ test('verify-manifest can check the assembly too, and refuses drift', () => {
 // every halt, and the refusal codes verbatim.
 // -------------------------------------------------------------------------------------------------
 
-const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'abandoned', 'reportedStackRecords', 'outcome', 'refusals', 'rendering'];
+const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'abandoned', 'alreadyAbsent', 'reportedStackRecords', 'outcome', 'refusals', 'rendering'];
 const CORRELATION = `cba-70-${'a'.repeat(32)}`;
 
 function withArtifact(fn) {
@@ -2621,7 +2622,8 @@ test('EVIDENCE: plan_only writes the closed record — decision-bound, name-only
       assert.equal(record.planDigest, printed[1], 'the artifact digest IS the printed digest');
       assert.equal(record.changeSets.length, 4);
       for (const entry of record.changeSets) {
-        assert.deepEqual(Object.keys(entry).sort(), ['changeSetName', 'stackName', 'status']);
+        assert.deepEqual(Object.keys(entry).sort(), ['canonicalSha256', 'changeSetName', 'stackName', 'status']);
+        assert.match(entry.canonicalSha256, /^[0-9a-f]{64}$/);
         assert.equal(entry.changeSetName, `cba-70-${manifest.releaseSha.slice(0, 12)}`);
       }
       assert.equal(typeof record.rendering, 'string');
@@ -2976,6 +2978,205 @@ test('ABANDON: the window is re-checked before EACH deletion — a lapsed gate s
       assert.equal(deletions, 1, 'the lapse is caught before the SECOND deletion');
       const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
       assert.equal(record.abandoned.length, 1);
+    });
+  });
+});
+
+// ─── ROUND I5-2 ─── the continuation law, the neutral mismatch record, fail-closed reporting ───
+
+test('I5-2: the plan digest is the ROOT over the ordered entry digests — the continuation math', () => {
+  const crypto = require('node:crypto');
+  const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+  const root = crypto.createHash('sha256').update(JSON.stringify(entries.map((e) => entryDigestOf(e))), 'utf8').digest('hex');
+  assert.equal(planDigestOf(entries), root, 'planDigestOf commits to the LIST of entry digests');
+  // Substituting one entry digest moves the root — a recreated set cannot hide in a continuation.
+  const forged = entries.map((e) => entryDigestOf(e));
+  forged[0] = 'f'.repeat(64);
+  assert.notEqual(crypto.createHash('sha256').update(JSON.stringify(forged), 'utf8').digest('hex'), root);
+});
+
+test('I5-2 REPRO: success → failure → NEW decision → the remainder is removed safely, records reported', () => {
+  withRelease((p, asm, manifest) => {
+    // RUN 1: the second deletion fails; exactly one set is gone, the honest partial is recorded.
+    let firstEvidence;
+    withArtifact((artifact) => {
+      let deletions = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      firstEvidence = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(firstEvidence.abandoned.length, 1);
+      assert.match(firstEvidence.changeSets[0].canonicalSha256, /^[0-9a-f]{64}$/, 'the digest a continuation copies is ON the record');
+    });
+    // RUN 2: a NEW decision carries the deleted prefix's digest from the first run's evidence.
+    // The absent set folds into the SAME root; the present remainder is deleted; the stack
+    // record the prefix left behind is still REPORTED.
+    withArtifact((artifact) => {
+      const remaining = { ...fullDescribes() };
+      const absentName = PILOT_STACK_NAMES[0];
+      delete remaining[absentName]; // the prefix is gone from the cloud — describe says ChangeSetNotFound
+      const run = cloudRun({ describes: remaining, stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: {
+          PATH: '/usr/bin',
+          CORRELATION_ID: CORRELATION,
+          DISPATCH_MODE: 'abandon',
+          CBA_CLOUD_GATE: gateFor(manifest, {
+            mode: 'abandon',
+            decisionId: 'zamp-2026-08-02.b1-abandon-02',
+            absentEntryDigests: [firstEvidence.changeSets[0].canonicalSha256],
+          }),
+        },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(run.of('delete-change-set').length, 3, 'exactly the present remainder is deleted');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.equal(record.abandoned.length, 3);
+      assert.deepEqual(record.alreadyAbsent, [absentName], 'the prefix is on the record as already absent');
+      assert.equal(record.reportedStackRecords.length, 4, 'the FULL wave is reported — the absent prefix left its stack record too');
+      assert.ok(record.reportedStackRecords.includes(absentName));
+    });
+  });
+});
+
+test('I5-2: the continuation accepts NO recreated set, NO fresh-gate absence, NO leftover digest', () => {
+  withRelease((p, asm, manifest) => {
+    const attemptAbandon = (describes, over) => {
+      let out;
+      withArtifact((artifact) => {
+        const run = cloudRun({ describes });
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run,
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', ...over }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('abandon spawns no cdk child'),
+        });
+        out = { r, deletions: run.of('delete-change-set').length, record: JSON.parse(fs.readFileSync(artifact, 'utf8')) };
+      });
+      return out;
+    };
+    const minusFirst = { ...fullDescribes() };
+    delete minusFirst[PILOT_STACK_NAMES[0]];
+    // A recreated/foreign prefix: the supplied digest does not fold into the reviewed root.
+    const forged = attemptAbandon(minusFirst, { absentEntryDigests: ['f'.repeat(64)] });
+    assert.notEqual(forged.r.exit, 0);
+    assert.match(forged.r.output, /PLAN_CHANGED/);
+    assert.equal(forged.deletions, 0, 'a dead root deletes NOTHING');
+    // A fresh abandon (no digests) meeting an absent set is not a continuation — it refuses.
+    const fresh = attemptAbandon(minusFirst, {});
+    assert.notEqual(fresh.r.exit, 0);
+    assert.match(fresh.r.output, /CHANGE_SET_MISSING/);
+    assert.equal(fresh.deletions, 0);
+    // A leftover digest — more absences claimed than found — is the same refusal.
+    const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+    const leftover = attemptAbandon(minusFirst, { absentEntryDigests: [entryDigestOf(entries[0]), entryDigestOf(entries[1])] });
+    assert.notEqual(leftover.r.exit, 0);
+    assert.match(leftover.r.output, /CHANGE_SET_MISSING/);
+    assert.equal(leftover.deletions, 0);
+  });
+});
+
+test('I5-2: absentEntryDigests is abandon-only — every other shape is malformed', () => {
+  withRelease((p, asm, manifest) => {
+    const attemptGate = (gate) => {
+      let out;
+      withArtifact((artifact) => {
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run: cloudRun(),
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gate },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: happyExec,
+        });
+        out = r;
+      });
+      return out;
+    };
+    for (const broken of [
+      gateFor(manifest, { absentEntryDigests: ['a'.repeat(64)] }), // deploy mode may not carry it
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: [] }), // empty list is not a continuation
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: ['a'.repeat(64), 'a'.repeat(64)] }), // duplicates
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: ['not-a-digest'] }),
+    ]) {
+      const r = attemptGate(broken);
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+  });
+});
+
+test('I5-2: a MODE_MISMATCH refusal publishes under the NEUTRAL name — never the effect the gate claimed', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('a mismatched run spawns nothing'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /MODE_MISMATCH/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.mode, null, 'the gate\'s claimed mode must NOT reach the record — the artifact routes to evidence.json');
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('MODE_MISMATCH'));
+    });
+  });
+});
+
+test('I5-2: an inconclusive describe-stacks reports UNVERIFIABLE — never "no record remains"', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun({
+        onCall: (args) => (args[1] === 'describe-stacks' ? { status: 254, stdout: '', stderr: 'AccessDenied' } : null),
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.reportedStackRecords.length, 4, 'every query failed — every stack is on the record as unverifiable');
+      for (const line of record.reportedStackRecords) assert.match(line, /\(status unverifiable\)$/);
+      assert.ok(!r.output.includes('No stack record remains'), 'an unanswered question is never a clean bill');
+      assert.match(r.output, /status unverifiable/);
     });
   });
 });

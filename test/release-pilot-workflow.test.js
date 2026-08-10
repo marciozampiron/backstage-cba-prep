@@ -899,6 +899,30 @@ test('EXECUTED (I3-4): the materializer, run for real near the byte cap, reprodu
     const abandonFile = fs.readFileSync(join(dir, 'evidence', 'abandon.json'));
     assert.ok(abandonFile.equals(Buffer.from(`${abandonJson}\n`, 'utf8')), 'the abandon record is materialized under its reviewed name');
 
+    // ROUND I5-2 (Codex F2): a MODE_MISMATCH refusal record carries mode null — the reader (the
+    // EXACT node one-liner the dev-stage step runs) must surface MODE as the empty string, and
+    // the materializer must then land the record as evidence.json, NEVER under the effect the
+    // gate merely claimed. Executed end to end: reader → MODE → materializer → file name.
+    {
+      const readerMatch = raw.match(/mode=\$\(node -e '([^']+)' "\$file"\)/);
+      assert.ok(readerMatch, 'the reader one-liner must exist in the workflow');
+      const mismatchRecord = { ...record, mode: null, decisionId: null, stacks: null, outcome: 'REFUSED', refusals: ['MODE_MISMATCH'], rendering: null };
+      const mismatchJson = JSON.stringify(mismatchRecord, null, 2);
+      const recordFile = join(dir, 'mismatch-evidence.json');
+      fs.writeFileSync(recordFile, mismatchJson);
+      const read = spawnSync('node', ['-e', readerMatch[1], recordFile], { encoding: 'utf8' });
+      assert.equal(read.status, 0, read.stderr);
+      assert.equal(read.stdout, '', 'the reader surfaces a null mode as the EMPTY string — the neutral route');
+      const mismatchRun = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: mismatchJson, MODE: read.stdout, CORRELATION_ID: correlation },
+      });
+      assert.equal(mismatchRun.status, 0, `${mismatchRun.stdout}\n${mismatchRun.stderr}`);
+      const neutral = fs.readFileSync(join(dir, 'evidence', 'evidence.json'));
+      assert.ok(neutral.equals(Buffer.from(`${mismatchJson}\n`, 'utf8')), 'the mismatch record lands under the NEUTRAL name, byte for byte');
+      assert.ok(!fs.existsSync(join(dir, 'evidence', 'deploy.json')), 'and never as deploy.json — the claimed effect does not name the artifact');
+    }
+
     // …and the vanish guard bites: a mode with no evidence is a RED run, executed for real.
     const vanished = spawnSync('bash', ['-c', script], {
       encoding: 'utf8',

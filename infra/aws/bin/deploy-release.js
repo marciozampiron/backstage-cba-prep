@@ -149,7 +149,7 @@ function childEvidence(child) {
  * `assemblyDigest` bound only one field of it. The mode enum carries all three modes the
  * authorization schema defines; the abandon LANE is a later slice, so an abandon-mode gate is
  * refused by name after validation, before any effect. */
-const CLOUD_GATE_KEYS = ['approvedAt', 'decisionId', 'environment', 'expiresAt', 'issue', 'manifestDigest', 'mode', 'planDigest', 'releaseSha', 'stacks'];
+const CLOUD_GATE_KEYS = ['absentEntryDigests', 'approvedAt', 'decisionId', 'environment', 'expiresAt', 'issue', 'manifestDigest', 'mode', 'planDigest', 'releaseSha', 'stacks'];
 const CLOUD_GATE_MODES = ['plan_only', 'deploy', 'abandon'];
 
 /** STRICT RFC3339, UTC only, whole seconds. `Date.parse` alone accepted `2099-01-01` and a
@@ -240,7 +240,16 @@ function checkCloudGate(raw, manifest, now) {
     // §8a nullability per mode: plan_only names no plan (a non-null value there authorizes a
     // plan nobody reviewed); deploy and abandon each name exactly the reviewed plan they act on.
     || (gate.mode === 'plan_only' && gate.planDigest !== null)
-    || (gate.mode !== 'plan_only' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)));
+    || (gate.mode !== 'plan_only' && !(typeof gate.planDigest === 'string' && /^[0-9a-f]{64}$/.test(gate.planDigest)))
+    // ROUND I5-2: absentEntryDigests exists for ONE purpose — resuming a partially-abandoned
+    // plan under a NEW decision. Only abandon may carry it, and then only as null (a fresh
+    // abandon) or a non-empty list of distinct entry digests for the already-deleted prefix.
+    || (gate.mode !== 'abandon' && gate.absentEntryDigests !== null)
+    || (gate.mode === 'abandon' && gate.absentEntryDigests !== null
+      && !(Array.isArray(gate.absentEntryDigests)
+        && gate.absentEntryDigests.length > 0
+        && gate.absentEntryDigests.every((d) => typeof d === 'string' && /^[0-9a-f]{64}$/.test(d))
+        && new Set(gate.absentEntryDigests).size === gate.absentEntryDigests.length));
   if (malformed) {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MALFORMED', field: 'cloudGate' }] };
   }
@@ -301,8 +310,18 @@ function deepSortKeys(value) {
   return value;
 }
 
+/** The digest of ONE canonical entry — the unit an abandon continuation verifies independently. */
+function entryDigestOf(entry) {
+  return crypto.createHash('sha256').update(JSON.stringify(deepSortKeys(entry)), 'utf8').digest('hex');
+}
+
+/** ROUND I5-2: the plan digest is the ROOT over the ORDERED per-entry digests. Committing to the
+ * list of entry digests commits to the entries exactly as strongly as digesting them wholesale —
+ * and it is what makes a partial abandon RESUMABLE: the continuation gate supplies the digests
+ * of the already-deleted prefix, the present remainder is re-described and re-digested, and the
+ * same root must emerge. A recreated or foreign set changes its entry digest and the root dies. */
 function planDigestOf(planEntries) {
-  return crypto.createHash('sha256').update(JSON.stringify(deepSortKeys(planEntries)), 'utf8').digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify(planEntries.map((entry) => entryDigestOf(entry))), 'utf8').digest('hex');
 }
 
 /** One canonical entry per stack, from the UNREDACTED describe-change-set output. */
@@ -1016,6 +1035,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     changeSets: [],
     executed: [],
     abandoned: [],
+    alreadyAbsent: [],
     reportedStackRecords: [],
     outcome: null,
     refusals: [],
@@ -1135,14 +1155,12 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       return refuse();
     }
     const gate = gateCheck.gate;
-    evidence.mode = gate.mode;
-    evidence.decisionId = gate.decisionId;
-    evidence.stacks = [...gate.stacks];
-    // Slice I5: the run's NAME must mean what happened (SPEC-LANE-006). The lane passes its
-    // dispatch mode in; a gate whose mode does not correspond refuses by name after full
-    // validation and before any change-set API call — a run titled "abandon" may only delete,
-    // and a run titled "dev_only" may only plan or deploy. Local runs without DISPATCH_MODE
-    // skip the coherence check (there is no run name to be coherent with).
+    // Slice I5 (evidence ordering fixed in I5-2): the run's NAME must mean what happened
+    // (SPEC-LANE-006). The lane passes its dispatch mode in; a gate whose mode does not
+    // correspond refuses by name after full validation and before any change-set API call — and
+    // BEFORE the gate's mode reaches the evidence record, so a mismatch refusal publishes under
+    // the neutral refusal name, never under the effect the gate merely claimed. Local runs
+    // without DISPATCH_MODE skip the coherence check.
     if (typeof env.DISPATCH_MODE === 'string' && env.DISPATCH_MODE !== '') {
       const permitted = env.DISPATCH_MODE === 'abandon' ? ['abandon'] : env.DISPATCH_MODE === 'dev_only' ? ['plan_only', 'deploy'] : [];
       if (!permitted.includes(gate.mode)) {
@@ -1150,6 +1168,9 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         return refuse();
       }
     }
+    evidence.mode = gate.mode;
+    evidence.decisionId = gate.decisionId;
+    evidence.stacks = [...gate.stacks];
 
   // 5. THE PLAN IS THE CHANGE SETS. plan_only PREPARES one named change set per stack from the
   //    verified snapshot and digests the canonical UNREDACTED describes; deploy re-describes the
@@ -1199,10 +1220,18 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     }
     const cfnEnv = { ...credEnv, AWS_REGION: manifest.region, AWS_DEFAULT_REGION: manifest.region };
     const planEntries = [];
+    const absentStacks = [];
     for (const stackId of orderedStacks) {
       const stackName = stackNameFor(manifest.environment, stackId);
       const described = describePlannedChangeSet(run, cfnEnv, stackName, changeSetName);
       if (described.missing) {
+        // ROUND I5-2: in abandon mode an absent set is a CLASSIFICATION, not (yet) a refusal —
+        // a partially-abandoned plan legitimately has deleted members, and the continuation law
+        // below decides whether their digests were supplied. Every other mode refuses here.
+        if (gate.mode === 'abandon') {
+          absentStacks.push({ stackId, stackName });
+          continue;
+        }
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_MISSING', field: stackId });
         continue;
       }
@@ -1246,7 +1275,9 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     if (failures.length > 0) return refuse();
     const digestOfPlan = planDigestOf(planEntries);
     evidence.planDigest = digestOfPlan;
-    evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status }));
+    // ROUND I5-2: each entry's own digest goes on the record — it is what a continuation's
+    // absentEntryDigests are copied from, and it is not an ARN.
+    evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status, canonicalSha256: entryDigestOf(entry) }));
 
     // 5c-abandon (Slice I5, SPEC-RUN-008): delete EXACTLY the declined plan. The recomputed
     // digest must equal the one the abandon gate names — a drifted, recreated or superseded set
@@ -1255,10 +1286,41 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     // (SPEC-DEPLOY-008/017). Stack records left in REVIEW_IN_PROGRESS are REPORTED, never
     // deleted — no DeleteStack exists in this file (SPEC-DEPLOY-021).
     if (gate.mode === 'abandon') {
-      if (digestOfPlan !== gate.planDigest) {
+      // ROUND I5-2: the CONTINUATION law. The root is recomputed over the FULL reviewed group in
+      // order — present entries re-described and re-digested, absent ones taking their digests
+      // from the gate (copied by Zamp from the prior run's evidence). The same root must emerge:
+      // a recreated set, a foreign set, a missing digest or a leftover digest all kill it, and
+      // NOTHING is deleted on a dead root.
+      const suppliedAbsent = [...(gate.absentEntryDigests ?? [])];
+      const alreadyAbsent = [];
+      const rootList = [];
+      const presentByName = new Map(planEntries.map((entry) => [entry.stackName, entry]));
+      const absentByName = new Set(absentStacks.map((slot) => slot.stackName));
+      let continuationBroken = false;
+      for (const stackId of orderedStacks) {
+        const stackName = stackNameFor(manifest.environment, stackId);
+        if (absentByName.has(stackName)) {
+          const supplied = suppliedAbsent.shift();
+          if (supplied === undefined) {
+            continuationBroken = true; // absent set with no digest on the gate: not a continuation
+            break;
+          }
+          rootList.push(supplied);
+          alreadyAbsent.push(stackName);
+        } else if (presentByName.has(stackName)) {
+          rootList.push(entryDigestOf(presentByName.get(stackName)));
+        }
+      }
+      if (continuationBroken || suppliedAbsent.length > 0) {
+        failures.push({ check: 'ABANDON', code: 'CHANGE_SET_MISSING', field: 'absentEntryDigests' });
+        return refuse();
+      }
+      const root = crypto.createHash('sha256').update(JSON.stringify(rootList), 'utf8').digest('hex');
+      if (root !== gate.planDigest) {
         failures.push({ check: 'ABANDON', code: 'PLAN_CHANGED', field: 'planDigest' });
         return refuse();
       }
+      evidence.alreadyAbsent = alreadyAbsent;
       const abandoned = [];
       evidence.abandoned = abandoned; // shared reference: every halt carries the honest partial
       for (const entry of planEntries) {
@@ -1281,22 +1343,27 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         }
         abandoned.push(entry.stackName);
       }
-      // REPORT — never delete — the empty stack records a CREATE change set leaves behind. A
-      // record whose status cannot be verified is reported as such: fail-closed reporting.
+      // REPORT — never delete — the empty stack records a CREATE change set leaves behind, over
+      // the FULL wave (the already-absent prefix left its records too). ROUND I5-2: EVERY
+      // inconclusive query — non-zero exit, timeout, unparseable output — reports the stack as
+      // unverifiable; "no record remains" is claimed only when every query answered.
       const reported = [];
       evidence.reportedStackRecords = reported;
-      for (const entry of planEntries) {
-        const described = run(['cloudformation', 'describe-stacks', '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
-        if (described && described.status === 0) {
-          let status = null;
-          try {
-            status = JSON.parse(described.stdout)?.Stacks?.[0]?.StackStatus ?? null;
-          } catch {
-            status = null;
-          }
-          if (status === 'REVIEW_IN_PROGRESS') reported.push(entry.stackName);
-          else if (status === null) reported.push(`${entry.stackName} (status unverifiable)`);
+      for (const stackId of orderedStacks) {
+        const stackName = stackNameFor(manifest.environment, stackId);
+        const described = run(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+        if (!described || described.status !== 0) {
+          reported.push(`${stackName} (status unverifiable)`);
+          continue;
         }
+        let status = null;
+        try {
+          status = JSON.parse(described.stdout)?.Stacks?.[0]?.StackStatus ?? null;
+        } catch {
+          status = null;
+        }
+        if (status === 'REVIEW_IN_PROGRESS') reported.push(stackName);
+        else if (status === null) reported.push(`${stackName} (status unverifiable)`);
       }
       writeEvidence('ABANDONED');
       return {
@@ -1414,7 +1481,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, entryDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));
