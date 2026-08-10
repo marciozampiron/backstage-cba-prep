@@ -575,7 +575,8 @@ framing, with `test/digest-agreement.test.js` proving the ESM/CJS implementation
 identically over shared fixtures, multibyte included, so a fork between them is a red build. The
 mode enum carries all three modes: an abandon-mode gate is schema-valid (planDigest non-null per
 §8a — it names the DECLINED plan) but refuses as ABANDON_NOT_IMPLEMENTED after full validation
-and provably before any AWS call, until the abandon lane lands. A gate written to the retired
+and provably before any change-set API call or mutation (the STS identity reads that precede the
+gate check are verification, not effect), until the abandon lane lands. A gate written to the retired
 -002 shape (assemblyDigest) is now an UNKNOWN key — malformed, not half-working. dev-preflight
 computes `manifest_digest` as a job output and the binding artifact embeds it, refusing to exist
 without a well-formed digest (the binding is the digest's birthplace — SPEC-RUN-006 made whole).

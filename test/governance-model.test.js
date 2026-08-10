@@ -2497,6 +2497,23 @@ test('ROUND 14: identity, not analysis — every demonstrated bypass class devia
   assert.ok(deviates(planRel, injectIntoFirstFence(planText, `${cmd}`)).length > 0);
 });
 
+test('ROUND I4-3: the retired over-claim about the abandon refusal cannot return', () => {
+  // I4 claimed the abandon refusal ran "provably before any AWS call"; I4-2 precised it (the STS
+  // identity reads precede the gate check by design), and I4-3 found the stale phrase surviving
+  // in the canonical handoff beside the corrected one — two contradictory guarantees coexisting.
+  // The stale phrasing is refused, finitely, on every surface that states the guarantee.
+  const surfaces = [
+    '.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md',
+    'spec/spec-anchored-development.md',
+    'infra/aws/bin/deploy-release.js',
+    'infra/aws/test/deploy-preflight.test.js',
+  ];
+  const offending = surfaces.filter((rel) => /provably before any AWS call/i.test(read(rel)));
+  assert.deepEqual(offending, [], `stale guarantee wording in: ${offending.join(', ')}`);
+  // POSITIVE CONTROL: the pattern sees the phrase it guards against.
+  assert.ok(/provably before any AWS call/i.test('and provably before any AWS call, until'));
+});
+
 test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {
   // The acceptance binds its stack by DIGEST of an out-of-band value precisely so that no live
   // ARN — account id included — ever enters the tracked policy or its documents. This scan keeps
