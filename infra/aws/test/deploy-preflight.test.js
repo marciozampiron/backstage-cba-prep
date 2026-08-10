@@ -2714,10 +2714,12 @@ test('EVIDENCE: a STACK_EXECUTION_FAILED halt records the STARTED mutation — l
 // (UTF-16 units), so the record is bounded to the channel and an unfittable plan REFUSES.
 // -------------------------------------------------------------------------------------------------
 
-const { boundedEvidence, EVIDENCE_MAX_UTF16 } = require('../bin/deploy-release');
+const { boundedEvidence, EVIDENCE_MAX_BYTES } = require('../bin/deploy-release');
 
 test('EVIDENCE BOUND: the cap is pinned, and boundedEvidence reshapes by NAMED code, never truncates', () => {
-  assert.equal(EVIDENCE_MAX_UTF16, 450_000);
+  // ROUND I3-4: bounded in UTF-8 BYTES with margin under the narrowest hop — a single Linux
+  // envp entry (MAX_ARG_STRLEN, 128 KiB), where the shell dies with E2BIG before any guard.
+  assert.equal(EVIDENCE_MAX_BYTES, 100_000);
   const record = {
     schema: 'cba-release-evidence/1', correlationId: CORRELATION, releaseSha: 'a'.repeat(40),
     environment: 'pilot', mode: 'plan_only', decisionId: 'zamp-1', stacks: ['A', 'B'],
@@ -2726,6 +2728,16 @@ test('EVIDENCE BOUND: the cap is pinned, and boundedEvidence reshapes by NAMED c
   };
   // Fits: untouched — same object, no codes invented.
   assert.deepEqual(boundedEvidence(record, 100_000), record);
+  // ROUND I3-4: the measure is BYTES, not UTF-16 units — a multi-byte rendering whose unit count
+  // fits but whose byte count does not MUST be reshaped (a unit measure undercounts it 3:1).
+  {
+    const multibyte = { ...record, rendering: '…'.repeat(1_000) }; // 1k units, ~3k utf8 bytes
+    const base = Buffer.byteLength(JSON.stringify({ ...record, rendering: '' }, null, 2), 'utf8');
+    const cap = base + 2_000; // fits by units (1k), NOT by bytes (~3k)
+    const shaped = boundedEvidence(multibyte, cap);
+    assert.equal(shaped.rendering, null, 'byte-counted: the multi-byte rendering must be omitted');
+    assert.ok(shaped.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+  }
   // The rendering pushes past the cap: it is REMOVED and said so — never sliced.
   const big = { ...record, rendering: 'x'.repeat(5_000) };
   const shaped = boundedEvidence(big, 2_000);
@@ -2754,7 +2766,7 @@ test('EVIDENCE BOUND: a plan whose record cannot cross the channel REFUSES — s
         now: () => GATE_NOW,
         sleep: () => {},
         exec: () => ({ status: 0, stdout: '', stderr: '' }),
-        evidenceMaxUtf16: 2_000, // a channel this plan cannot fit
+        evidenceMaxBytes: 2_000, // a channel this plan cannot fit
       });
       assert.notEqual(r.exit, 0);
       assert.match(r.output, /PLAN_RENDERING_TOO_LARGE/);
@@ -2777,7 +2789,7 @@ test('EVIDENCE BOUND: a plan whose record cannot cross the channel REFUSES — s
         now: () => GATE_NOW,
         sleep: () => {},
         exec: () => assert.fail('deploy mode spawns no cdk child'),
-        evidenceMaxUtf16: 2_000,
+        evidenceMaxBytes: 2_000,
       });
       assert.equal(r.exit, 0, r.output);
       const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
@@ -2800,8 +2812,8 @@ test('EVIDENCE BOUND: the normal fixture fits the real cap with a wide margin', 
         exec: () => ({ status: 0, stdout: '', stderr: '' }),
       });
       assert.equal(r.exit, 0, r.output);
-      const bytes = fs.readFileSync(artifact, 'utf8').length;
-      assert.ok(bytes < EVIDENCE_MAX_UTF16 / 4, `the four-stack record uses ${bytes} units — far from the cap`);
+      const bytes = Buffer.byteLength(fs.readFileSync(artifact, 'utf8'), 'utf8');
+      assert.ok(bytes < EVIDENCE_MAX_BYTES / 4, `the four-stack record uses ${bytes} bytes — far from the cap`);
     });
   });
 });

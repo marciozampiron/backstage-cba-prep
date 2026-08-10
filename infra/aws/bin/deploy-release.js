@@ -170,13 +170,15 @@ const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
 const CORRELATION_ID_RE = /^cba-70-[0-9a-f]{32}$/;
 
 /**
- * ROUND I3-3: the evidence record travels between jobs as a GitHub job output, and that channel
- * has a documented 1 MB per-job bound, estimated in UTF-16 code units. A record that exceeds the
- * channel does not get truncated — the RUN refuses, because evidence that cannot arrive complete
- * must not be the thing a human reviews. The cap is HALF the platform bound: a margin, not a
- * guess. JavaScript string .length IS UTF-16 code units, so the measurement is the channel's own.
+ * ROUNDS I3-3/4: the evidence record's NARROWEST hop is not the job-output store (a documented
+ * ~1 MB per-job bound) but the single environment entry that injects it into the materializer:
+ * Linux caps one envp string at MAX_ARG_STRLEN (128 KiB), and the shell dies with E2BIG before
+ * any in-script guard can run — round I3-4 reproduced the failure at ~140 KB. The record is
+ * therefore bounded in UTF-8 BYTES (what envp actually counts) with margin under that hop;
+ * every wider hop is satisfied a fortiori. A record that exceeds the channel is never
+ * truncated — the RUN refuses.
  */
-const EVIDENCE_MAX_UTF16 = 450_000;
+const EVIDENCE_MAX_BYTES = 100_000;
 
 /**
  * The transport guarantee, as a pure function: a record that fits passes untouched; a record
@@ -185,7 +187,9 @@ const EVIDENCE_MAX_UTF16 = 450_000;
  * outcome) always fits — every field has a closed grammar with a known bound.
  */
 function boundedEvidence(record, cap) {
-  const fits = (r) => JSON.stringify(r, null, 2).length <= cap;
+  // Measured in UTF-8 BYTES: the narrowest hop (a single envp entry) counts bytes, and a
+  // UTF-16-unit measure undercounts every non-ASCII character (round I3-4).
+  const fits = (r) => Buffer.byteLength(JSON.stringify(r, null, 2), 'utf8') <= cap;
   if (fits(record)) return record;
   const withoutRendering = { ...record, rendering: null, refusals: [...record.refusals, 'EVIDENCE_RENDERING_OMITTED'] };
   if (fits(withoutRendering)) return withoutRendering;
@@ -955,7 +959,7 @@ function snapshotAssembly(srcDir, tmpBase = os.tmpdir()) {
  *
  * @returns {{exit:number, output:string, executed:boolean}}
  */
-function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text), sleep = defaultSleep, evidenceMaxUtf16 = EVIDENCE_MAX_UTF16 } = {}) {
+function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = defaultGit, cdkJsonPath = path.join(__dirname, '..', 'cdk.json'), readFile = fs.readFileSync, env = process.env, tmpBase = os.tmpdir(), now = () => Date.now(), print = (text) => process.stdout.write(text), sleep = defaultSleep, evidenceMaxBytes = EVIDENCE_MAX_BYTES } = {}) {
   let opts;
   try {
     opts = parseArgs(argv);
@@ -1008,7 +1012,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     evidence.refusals = failures.map((f) => f.code);
     // ROUND I3-3: the record is bounded to the TRANSPORT it must survive — never truncated,
     // reshaped by named codes when the cap forces it (the run-level law below refuses first).
-    const bounded = boundedEvidence(evidence, evidenceMaxUtf16);
+    const bounded = boundedEvidence(evidence, evidenceMaxBytes);
     fs.mkdirSync(path.dirname(opts.artifactOut), { recursive: true });
     fs.writeFileSync(opts.artifactOut, `${JSON.stringify(bounded, null, 2)}\n`);
   };
@@ -1237,7 +1241,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       // (they are removable only under an abandon-mode authorization, exactly like a declined
       // plan), the bounded refusal evidence still travels, and no gate can be issued over a
       // rendering nobody could download complete.
-      if (JSON.stringify({ ...evidence, outcome: 'PLAN_PREPARED', refusals: [] }, null, 2).length > evidenceMaxUtf16) {
+      if (Buffer.byteLength(JSON.stringify({ ...evidence, outcome: 'PLAN_PREPARED', refusals: [] }, null, 2), 'utf8') > evidenceMaxBytes) {
         failures.push({ check: 'PLAN', code: 'PLAN_RENDERING_TOO_LARGE', field: 'rendering' });
         evidence.rendering = null;
         const refused = refuse();
@@ -1318,7 +1322,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_UTF16, boundedEvidence, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

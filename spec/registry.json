@@ -467,7 +467,7 @@
         "docs/runbooks/aws-dev-release-plan.md",
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed in I3/I3-3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN; the record is bounded to the job-output channel (450k UTF-16 units, half the platform bound) and a plan whose record cannot cross it REFUSES (PLAN_RENDERING_TOO_LARGE) — evidence is reshaped by named code, never truncated, and transport loss is a red run",
+      "mutationEvidence": "code + tests reviewed in I3/I3-3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN; the record is bounded in UTF-8 BYTES to the NARROWEST hop — 100k bytes, with margin under the single Linux envp entry (MAX_ARG_STRLEN 128 KiB) that injects it into the materializer; every wider hop (the ~1MB job-output store) is satisfied a fortiori — and a plan whose record cannot cross REFUSES (PLAN_RENDERING_TOO_LARGE): evidence is reshaped by named code, never truncated, transport loss is a red run, and the materializer is proven by EXECUTION at near-cap size, byte for byte",
       "supersedes": [],
       "supersededBy": null
     },

@@ -554,6 +554,18 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I3-4 (Codex, 1 MEDIUM) corrected the bound to the channel's NARROWEST hop
+and the arithmetic that mislabeled it. The 450k-UNIT cap fit the job-output store but not the
+single Linux envp entry (MAX_ARG_STRLEN, 128 KiB) that injects the record into the
+materializer — the shell dies with E2BIG before any in-script guard, reproduced at ~140 KB — and
+450k UTF-16 units is up to ~900 KB, not "half of 1 MB". The cap is now EVIDENCE_MAX_BYTES =
+100_000, measured with Buffer.byteLength in UTF-8 (what envp counts); a multi-byte regression
+proves the unit measure would have undercounted 3:1. And the materializer is now proven by
+EXECUTION, as required: the real script runs with a record sized near the cap (~98 KB) and the
+produced plan.json equals the record byte for byte; the foreign-correlation and vanished-evidence
+paths fail for real; and a companion test demonstrates the reason the byte cap exists — a 400 KB
+env entry (legal under the retired cap) cannot even start the shell (E2BIG).
+
 Implementation round I3-3 (Codex, 1 HIGH) proved the transport instead of assuming it. The
 evidence record crosses jobs as a GitHub output — a channel with a documented ~1MB per-job bound
 (UTF-16) that can also suppress values — so three laws landed. (1) The record is BOUNDED to the

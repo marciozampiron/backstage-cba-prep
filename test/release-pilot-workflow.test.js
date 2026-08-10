@@ -795,6 +795,69 @@ test('SLICE I3-3 MUTATION PROOF: removing the vanish guard is refused', () => {
   assert.notDeepEqual(wf, EXPECTED_WORKFLOW);
 });
 
+test('EXECUTED (I3-4): the materializer, run for real near the byte cap, reproduces the record byte for byte', () => {
+  // Round I3-4: the previous assertions inspected YAML text; this one RUNS the script. The
+  // record is sized near the largest the entrypoint accepts (EVIDENCE_MAX_BYTES = 100_000), so
+  // the whole chain — env injection, vanish guard, arrival validation, file write — is proven at
+  // the size that matters, on the same process-limit regime the runner uses.
+  const { wf } = parseWorkflow(raw);
+  const script = wf.jobs['dev-evidence'].steps[0].run;
+  const correlation = `cba-70-${'0'.repeat(32)}`;
+  const record = {
+    schema: 'cba-release-evidence/1',
+    correlationId: correlation,
+    releaseSha: 'a'.repeat(40),
+    environment: 'dev',
+    mode: 'plan_only',
+    decisionId: 'zamp-i3-4-proof',
+    stacks: ['IdentityStack'],
+    planDigest: 'b'.repeat(64),
+    changeSets: [{ stackName: 'CbaStudyCoach-dev-Identity', changeSetName: `cba-70-${'a'.repeat(12)}`, status: 'CREATE_COMPLETE' }],
+    executed: [],
+    outcome: 'PLAN_PREPARED',
+    refusals: [],
+    rendering: 'r'.repeat(98_000),
+  };
+  const evidence = JSON.stringify(record, null, 2);
+  assert.ok(Buffer.byteLength(evidence, 'utf8') > 90_000 && Buffer.byteLength(evidence, 'utf8') <= 100_000, `sized near the cap: ${Buffer.byteLength(evidence, 'utf8')}`);
+  const dir = fs.mkdtempSync(join(os.tmpdir(), 'cba-materialize-'));
+  try {
+    const res = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: evidence, MODE: 'plan_only', CORRELATION_ID: correlation },
+    });
+    assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
+    const produced = fs.readFileSync(join(dir, 'evidence', 'plan.json'));
+    assert.ok(produced.equals(Buffer.from(`${evidence}\n`, 'utf8')), 'the produced file IS the record, byte for byte');
+    // The arrival validation bites: a correlation that is not this dispatch's fails the job.
+    const wrong = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: evidence, MODE: 'plan_only', CORRELATION_ID: `cba-70-${'f'.repeat(32)}` },
+    });
+    assert.notEqual(wrong.status, 0, 'a foreign correlation must fail the materializer');
+    // …and the vanish guard bites: a mode with no evidence is a RED run, executed for real.
+    const vanished = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: '', MODE: 'plan_only', CORRELATION_ID: correlation },
+    });
+    assert.notEqual(vanished.status, 0, 'mode without evidence must fail loudly');
+    assert.match(`${vanished.stdout}${vanished.stderr}`, /vanished in transport/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED (I3-4): the size the OLD cap accepted cannot even start the shell — the byte cap exists for a reason', () => {
+  // Codex's reproduction: a single Linux envp entry is bounded by MAX_ARG_STRLEN (128 KiB); a
+  // ~400 KB record — legal under the retired 450k-UNIT cap — dies with E2BIG before any guard.
+  const res = spawnSync('bash', ['-c', 'true'], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, EVIDENCE: 'x'.repeat(400_000) },
+  });
+  assert.notEqual(res.status, 0, 'the oversized env entry must prevent the process from starting');
+  assert.match(String(res.error?.code ?? res.error ?? ''), /E2BIG/);
+});
+
 test('SLICE I3-2: the file names the workflow produces are the names the runbooks digest', () => {
   // ROUND I3-2 (Codex): the plan runbook digests plan.json and the deploy runbook deploy.json —
   // the workflow must materialize exactly those basenames, keyed on the evidence mode.

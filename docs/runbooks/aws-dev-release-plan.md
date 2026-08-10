@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-plan
 kind: runbook
-version: 0.12.0
+version: 0.13.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-002, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007]
@@ -140,8 +140,9 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
 6. Run resolution returns zero matches after the tenth attempt, or more than one at any point —
    stop (SPEC-LANE-007). Waiting longer is not a remedy for a run that never started, and a
    second run bearing this correlation id is never disambiguated by taking the newer one.
-7. `PLAN_RENDERING_TOO_LARGE` — the wave's evidence record cannot cross the job-output channel
-   complete, so the plan REFUSED after preparation. Evidence is never truncated. The prepared
+7. `PLAN_RENDERING_TOO_LARGE` — the wave's evidence record cannot cross the evidence transport
+   complete (the narrowest hop is a single environment entry, bounded well under the job-output
+   store), so the plan REFUSED after preparation. Evidence is never truncated. The prepared
    change sets REMAIN (a refused plan is a declined plan): remove them under the
    [abandon runbook](aws-dev-release-abandon.md), split the wave into smaller stack groups, and
    plan again.
