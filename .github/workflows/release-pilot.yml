@@ -496,8 +496,12 @@ jobs:
           path: ${{ runner.temp }}/evidence/deploy.json
           if-no-files-found: error
           retention-days: 90
-      - name: Upload refusal evidence (no mode reached the record)
-        if: ${{ needs.dev-stage.outputs.mode == '' }}
+      # ROUND I4-2: refusals route by EXCLUSION, not by an empty-mode guess — an abandon-mode
+      # refusal (schema-valid gate, lane not yet implemented) carries mode "abandon", and the
+      # previous `mode == ''` condition silently published nothing for it. Exactly one uploader
+      # matches every mode: plan_only → plan, deploy → deploy, anything else → evidence.
+      - name: Upload refusal evidence (any mode without a reviewed artifact name)
+        if: ${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: evidence

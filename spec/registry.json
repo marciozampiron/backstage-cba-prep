@@ -969,7 +969,7 @@
         "infra/aws/bin/deploy-release.js",
         "infra/aws/lib/deploy-preflight.js"
       ],
-      "mutationEvidence": "none — successor, awaiting its activation commit",
+      "mutationEvidence": "code + tests reviewed in I4: manifestDigest recomputed from the verified manifest (never trusted), the retired key refused as unknown, abandon-mode gates schema-valid but refused ABANDON_NOT_IMPLEMENTED before any change-set API call or mutation (identity reads precede the gate check by design) until the abandon lane lands",
       "supersedes": [
         "SPEC-DEPLOY-002",
         "SPEC-DEPLOY-020"

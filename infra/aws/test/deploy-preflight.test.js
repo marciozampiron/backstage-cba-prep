@@ -1226,8 +1226,10 @@ test('the cloud gate is required, closed, bound and expiring — every broken fo
       assert.match(r.output, /CLOUD_GATE_MALFORMED/);
     }
 
-    // SLICE I4: the schema knows `abandon`; the lane does not exist. A fully VALID abandon-mode
-    // gate refuses by name after validation — and provably before any AWS call.
+    // SLICE I4 (guarantee precised in I4-2): the schema knows `abandon`; the lane does not
+    // exist. A fully VALID abandon-mode gate refuses by name after validation — and provably
+    // before any CHANGE-SET API call or mutation; the STS identity reads that precede the gate
+    // check are verification, not effect.
     {
       const calls = [];
       const inner = stubAws();

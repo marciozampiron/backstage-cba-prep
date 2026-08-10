@@ -1136,9 +1136,11 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     evidence.mode = gate.mode;
     evidence.decisionId = gate.decisionId;
     evidence.stacks = [...gate.stacks];
-    // Slice I4: the schema knows all three modes; the abandon LANE does not exist yet. An
-    // abandon-mode gate refuses HERE, by name, after full validation and before any AWS call —
-    // never a silent fall-through into prepare or execute.
+    // Slice I4 (wording precised in I4-2): the schema knows all three modes; the abandon LANE
+    // does not exist yet. An abandon-mode gate refuses HERE, by name, after full validation and
+    // before any CHANGE-SET API call or mutation — the identity reads (STS) that precede the
+    // gate check are part of verification, not of the effect. Never a silent fall-through into
+    // prepare or execute.
     if (gate.mode === 'abandon') {
       failures.push({ check: 'GATE', code: 'ABANDON_NOT_IMPLEMENTED', field: 'mode' });
       return refuse();

@@ -554,6 +554,17 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Implementation round I4-2 (Codex: 1 MEDIUM, 1 LOW) closed the refusal's last mile and precised a
+guarantee. **Refusals route by EXCLUSION**: the refusal uploader's `mode == ''` condition let an
+abandon-mode refusal materialize evidence.json and publish nothing — the condition is now
+`mode != 'plan_only' && mode != 'deploy'`, and a truth-table regression proves EXACTLY ONE
+uploader matches every mode the record can carry (plan_only, deploy, abandon, empty), plus an
+executed materializer run proving an abandon REFUSED record lands as evidence.json byte for
+byte. **The wording now matches the order of operations**: the abandon refusal happens after full
+validation and before any CHANGE-SET API call or mutation — the STS identity reads that precede
+the gate check are verification, not effect — stated identically in code comment, test, spec
+evidence column and here.
+
 Implementation Slice I4 delivered the successor gate schema — SPEC-DEPLOY-019 is now the code.
 `CLOUD_GATE_KEYS` carries the ten §8a keys: `manifestDigest` replaced `assemblyDigest`, binding
 the COMPLETE closed manifest through one §6b bundle digest RECOMPUTED at the gate from the

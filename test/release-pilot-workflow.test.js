@@ -339,8 +339,8 @@ const EXPECTED_WORKFLOW = {
           }
         },
         {
-          "name": "Upload refusal evidence (no mode reached the record)",
-          "if": "${{ needs.dev-stage.outputs.mode == '' }}",
+          "name": "Upload refusal evidence (any mode without a reviewed artifact name)",
+          "if": "${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}",
           "uses": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
           "with": {
             "name": "evidence",
@@ -777,6 +777,24 @@ test('SLICE I3-2: evidence leaves the lane ONLY from a job that never held OIDC 
   assert.deepEqual(uploads.map((st) => st.with.name), ['plan', 'deploy', 'evidence']);
   for (const st of uploads) assert.equal(st.uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
   assert.deepEqual(uploads.map((st) => st.with['if-no-files-found']), ['error', 'error', 'ignore']);
+  // ROUND I4-2: EXACTLY ONE uploader matches every mode the record can carry — refusals route by
+  // EXCLUSION, so an abandon-mode refusal publishes its evidence instead of vanishing. The three
+  // pinned conditions are evaluated against the full mode table.
+  const conditions = uploads.map((st) => st.if);
+  assert.deepEqual(conditions, [
+    "\${{ needs.dev-stage.outputs.mode == 'plan_only' }}",
+    "\${{ needs.dev-stage.outputs.mode == 'deploy' }}",
+    "\${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' }}",
+  ]);
+  const selects = (mode) => [
+    mode === 'plan_only',
+    mode === 'deploy',
+    mode !== 'plan_only' && mode !== 'deploy',
+  ];
+  for (const mode of ['plan_only', 'deploy', 'abandon', '']) {
+    const hits = selects(mode).filter(Boolean).length;
+    assert.equal(hits, 1, `mode ${JSON.stringify(mode)} must select exactly one uploader`);
+  }
   // No job downstream of dev-evidence: it is DAG-terminal like bind-stage.
   for (const [name, job] of Object.entries(wf.jobs)) {
     assert.ok(!(job.needs ?? []).includes('dev-evidence'), `${name} must not depend on dev-evidence`);
@@ -852,6 +870,18 @@ test('EXECUTED (I3-4): the materializer, run for real near the byte cap, reprodu
       env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: evidence, MODE: 'plan_only', CORRELATION_ID: `cba-70-${'f'.repeat(32)}` },
     });
     assert.notEqual(wrong.status, 0, 'a foreign correlation must fail the materializer');
+    // ROUND I4-2: an ABANDON-mode refusal record materializes as evidence.json — executed for
+    // real, byte for byte — so the by-exclusion uploader has a file to publish.
+    const abandonRecord = { ...record, mode: 'abandon', outcome: 'REFUSED', refusals: ['ABANDON_NOT_IMPLEMENTED'], rendering: null };
+    const abandonJson = JSON.stringify(abandonRecord, null, 2);
+    const abandonRun = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, RUNNER_TEMP: dir, EVIDENCE: abandonJson, MODE: 'abandon', CORRELATION_ID: correlation },
+    });
+    assert.equal(abandonRun.status, 0, `${abandonRun.stdout}\n${abandonRun.stderr}`);
+    const abandonFile = fs.readFileSync(join(dir, 'evidence', 'evidence.json'));
+    assert.ok(abandonFile.equals(Buffer.from(`${abandonJson}\n`, 'utf8')), 'the abandon refusal record is materialized under the refusal name');
+
     // …and the vanish guard bites: a mode with no evidence is a RED run, executed for real.
     const vanished = spawnSync('bash', ['-c', script], {
       encoding: 'utf8',
