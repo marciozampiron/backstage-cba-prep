@@ -3360,6 +3360,98 @@ test('I5-5 REPRO: an initially-PRESENT response that converges to absence reconc
   });
 });
 
+test('I5-6 REPRO: a calm FINAL read does not erase the deletion glimpsed mid-window — unknown, never presence', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            reconcileReads += 1;
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            // Codex's exact sequence: deleting, transport error, malformed, deleting… and a
+            // final read that looks perfectly calm.
+            if (reconcileReads === 1 || reconcileReads === 4) return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'DELETE_IN_PROGRESS' }), stderr: '' };
+            if (reconcileReads === 2) return { status: 255, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            if (reconcileReads === 3) return { status: 0, stdout: 'this is not json {', stderr: '' };
+            return null; // read 5: the untouched fixture — well-formed, identity-matched, CREATE_COMPLETE
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.equal(reconcileReads, 5, 'the whole window is observed');
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'the tainted window never claims the delete was rejected');
+    });
+  });
+});
+
+test('I5-6 REPRO: a status outside the documented enum is a fact this code cannot claim — unknown, never presence', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            // Every read is well-formed and identity-matched — in a status the enum does not
+            // contain. A blacklist would call this presence; the allowlist refuses to.
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'ARCHIVED' }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'));
+    });
+  });
+});
+
 test('I5-3: an absence AFTER the first present entry is a state the lane cannot have produced — refused', () => {
   withRelease((p, asm, manifest) => {
     withArtifact((artifact) => {

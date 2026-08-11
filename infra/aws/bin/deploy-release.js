@@ -1390,17 +1390,25 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
           // ROUND I5-4/I5-5: a failed delete CALL is an AMBIGUOUS outcome — the service may
           // have accepted the deletion while the transport died — so the lane reconciles by
           // BOUNDED RE-OBSERVATION before recording anything. Round I5-5 (Codex): a successful
-          // describe is NOT proof the delete was rejected — CloudFormation's official statuses
-          // include DELETE_PENDING/DELETE_IN_PROGRESS/DELETE_COMPLETE, and an accepted deletion
-          // passes through them before ChangeSetNotFound. Conclusive proof is therefore:
+          // describe is NOT proof the delete was rejected — an accepted deletion answers
+          // describes through DELETE_PENDING/DELETE_IN_PROGRESS/DELETE_COMPLETE before
+          // ChangeSetNotFound. Round I5-6 (Codex): the WHOLE window testifies, not the final
+          // read — a deletion glimpsed at attempt 2 is not unproven because attempt 5 looked
+          // calm — and presence is an ALLOWLIST over CloudFormation's closed ChangeSetStatus
+          // enum, never "not one of the three deleting states": a status this code does not
+          // know is a fact it cannot claim. Conclusive proof is therefore:
           //   ABSENT  — ChangeSetNotFound, at any attempt (break immediately);
-          //   PRESENT — the FINAL attempt returns a well-formed, identity-matched response in a
-          //             NON-delete status (the set stood still across the whole window);
-          //   anything else at the bound — a deleting status, a malformed response, a diverging
-          //   identity, a transport error — is UNKNOWN, never a guess in either direction.
+          //   PRESENT — EVERY observation of the window is well-formed, identity-matched and in
+          //             a STANDING status (the set provably stood still the whole window);
+          //   anything else — a deleting or unknown status anywhere, a malformed response, a
+          //   diverging identity, a transport error — is UNKNOWN, never a guess.
           const RECONCILE_ATTEMPTS = 5;
+          // The documented enum, partitioned. STANDING proves the set exists with no deletion
+          // progressing (DELETE_FAILED means the service tried and the set REMAINS); the
+          // deleting family and anything unrecognized prove nothing standing.
+          const STANDING_STATUSES = ['CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'FAILED', 'DELETE_FAILED'];
           let observedMissing = false;
-          let observedPresent = false;
+          let stoodStillAllWindow = true;
           for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt += 1) {
             if (attempt > 0) sleep();
             const observed = run(['cloudformation', 'describe-change-set', '--change-set-name', entry.changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
@@ -1418,11 +1426,11 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
             }
             const identityOk = !!parsed && parsed.ChangeSetId === entry.changeSetId;
             const observedStatus = identityOk && typeof parsed.Status === 'string' ? parsed.Status : null;
-            const deleting = observedStatus === 'DELETE_PENDING' || observedStatus === 'DELETE_IN_PROGRESS' || observedStatus === 'DELETE_COMPLETE';
-            // Only the LAST attempt may conclude presence — an early present-looking read can
-            // still converge to absence while the accepted deletion propagates.
-            observedPresent = attempt === RECONCILE_ATTEMPTS - 1 && observedStatus !== null && !deleting;
+            if (observedStatus === null || !STANDING_STATUSES.includes(observedStatus)) {
+              stoodStillAllWindow = false; // one tainted read taints the WHOLE window
+            }
           }
+          const observedPresent = !observedMissing && stoodStillAllWindow;
           if (observedMissing) {
             // The deletion HAPPENED — the record says so, and the run still stops on the
             // transport surprise. The next continuation derives from this artifact alone.

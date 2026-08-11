@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I5-6 (Codex FINDINGS, 1 HIGH, fixed forward): presence became a WHOLE-WINDOW claim
+under a closed-enum ALLOWLIST — every reconciliation read must be well-formed,
+identity-matched and in a STANDING status (`CREATE_PENDING`/`CREATE_IN_PROGRESS`/
+`CREATE_COMPLETE`/`FAILED`/`DELETE_FAILED`); one tainted read taints the window, so a deletion
+glimpsed at attempt 2 is never erased by a calm attempt 5, and a status outside the documented
+enum is a fact the code cannot claim. Proven with Codex's exact mixed sequence
+(deleting/timeout/malformed/deleting/calm-final → `ABANDON_STATE_UNKNOWN`) and an out-of-enum
+status (→ unknown), both with no false `abandoned` and no claimed rejection. Runbook 0.15.0,
+prose only.
+
 Round I5-5 (Codex FINDINGS, 1 HIGH, fixed forward): a status-0 describe is not proof the
 delete was rejected — reconciliation became BOUNDED RE-OBSERVATION (five attempts). Absence
 concludes at any attempt (`ChangeSetNotFound`); presence only at the FINAL attempt, in a

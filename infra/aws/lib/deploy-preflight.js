@@ -118,7 +118,7 @@ const CODES = {
   PLAN_RENDERING_TOO_LARGE: 'produced a rendering whose evidence record cannot cross the job-output channel complete — evidence is never truncated, so the plan refuses; split the wave and plan again',
   MODE_MISMATCH: 'names a gate mode the dispatched lane does not correspond to — a run titled abandon may only delete, and a dev_only run may only plan or deploy; the run name must mean what happened',
   ABANDON_STATE_UNKNOWN:
-    'the delete call failed and bounded re-observation could not prove the set absent or present — a deleting status, a malformed response, a diverging identity or a transport error at the bound; recorded as neither deleted nor present; read-only reconciliation of the named set is required before a new decision',
+    'the delete call failed and bounded re-observation could not prove the set absent or present — presence requires an UNBROKEN window of well-formed, identity-matched observations in a standing status from the closed enum, and any deleting or unknown status, malformed response, diverging identity or transport error taints it; recorded as neither deleted nor present; read-only reconciliation of the named set is required before a new decision',
   ABANDON_NOT_A_PREFIX:
     'an absence after the first present entry cannot result from the lane\'s ordered deletion — the observed world is not a state this operation produced; nothing was deleted; re-observe under a new decision',
   ABANDON_DELETE_FAILED: 'refused to delete — CloudFormation returned a state or conflict error, which means the world changed between observation and action; a surprised operation stops, it does not retry',
