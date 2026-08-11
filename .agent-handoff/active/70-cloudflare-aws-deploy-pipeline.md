@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I7-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): the policy no longer forbids the very
+role I7 seated — the blanket `mayNever` term was NARROWED to `any-authority-bearing-role` in
+the vocabulary, the never-grantable set, both policy twins and every consuming test; the old
+guard test was retitled to forbid AUTHORITY (approval, gate, risk, review-of-record, operational
+permission) without denying the seated read-only role; and a coexistence regression keeps the
+retired blanket term from ever returning to any canonical surface while the persona is seated
+(string split so the test cannot satisfy its own scan — which caught the first draft of a
+validator comment carrying the literal). A literal consumer of the policy now reads one
+consistent statement: the persona has its seat, and authority is what it may never have.
+
 Slice I7 (authorized by Zamp, verbatim `ZAMP_APROVED`, 2026-08-11; Codex
 IMPLEMENTATION_REQUEST): the Gemini Spec Auditor persona is SEATED — §10's protocol and
 authority-policy amendments, atomic across every canonical surface. The protocol's actor table,

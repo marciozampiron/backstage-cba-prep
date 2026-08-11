@@ -55,7 +55,9 @@ export const CAPABILITIES = [
   'grant-human-gate',
   'delegate-approval',
   'delegate-merge',
-  'any-workflow-or-governance-role',
+  // Round I7-2: the blanket workflow/governance ban was NARROWED to this — the seated persona
+  // HAS a role in the flow (read-only auditor); what no amendment may ever grant it is AUTHORITY.
+  'any-authority-bearing-role',
 ];
 
 /**
@@ -76,7 +78,9 @@ export const NEVER_GRANTABLE = [
   'grant-human-gate',
   'delegate-approval',
   'delegate-merge',
-  'any-workflow-or-governance-role',
+  // Round I7-2: the blanket workflow/governance ban was NARROWED to this — the seated persona
+  // HAS a role in the flow (read-only auditor); what no amendment may ever grant it is AUTHORITY.
+  'any-authority-bearing-role',
 ];
 
 /**
@@ -113,7 +117,7 @@ const EXPECTED_ACTORS = {
     // (invoke-paid-model-audit), and the report is that effect's output.
     role: 'read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind',
     may: [],
-    mayNever: ['accept-risk', 'access-secrets', 'any-workflow-or-governance-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push'],
+    mayNever: ['accept-risk', 'access-secrets', 'any-authority-bearing-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push'],
   },
 };
 

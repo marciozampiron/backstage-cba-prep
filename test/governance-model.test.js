@@ -367,11 +367,15 @@ test('the canonical flow appears in the contract and is not contradicted', () =>
 
 /* ================= 2. Gemini has no workflow role ================= */
 
-test('Gemini holds no collaboration, publication or governance role', () => {
+test('the Gemini persona holds no AUTHORITY — approval, gate, risk, review-of-record and every operational permission stay denied', () => {
+  // Round I7-2: the persona IS seated (read-only semantic auditor) — that role is not denied
+  // here. What this guard forbids is any surface PAIRING Gemini with an authority verb without
+  // a negation on the same clause: the seated role's own lines all negate (read-only, never,
+  // no authority), so they pass; a line that grants would fail.
   assertNoPermission(
     /\bgemini\b/i,
     /\b(review(s|er|ing)?|approve[sd]?|approval|publish(es|ing)?|prepare[sd]?|execute[sd]?|operat(e|es|or)|push(es)?|merge[sd]?|deploy(s)?|gate|governance|workflow)\b/i,
-    'Gemini must hold no workflow, publication or governance role',
+    'Gemini must hold no authority: no approval, gate, risk acceptance, review-of-record or operational permission',
   );
 });
 
@@ -2908,7 +2912,7 @@ test('SLICE I7: every canonical surface seats the SAME Gemini persona — read-o
   // The policy twin: the exact seated standing — an empty may is the LAW, not an omission.
   assert.equal(POLICY.actors.gemini.role, 'read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind');
   assert.deepEqual(POLICY.actors.gemini.may, []);
-  for (const cap of ['accept-risk', 'access-secrets', 'any-workflow-or-governance-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push']) {
+  for (const cap of ['accept-risk', 'access-secrets', 'any-authority-bearing-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push']) {
     assert.ok(POLICY.actors.gemini.mayNever.includes(cap), `gemini.mayNever must include ${cap}`);
   }
   // The paid invocation stays Zamp's effect under the spend document — the persona spends nothing.
@@ -2925,4 +2929,22 @@ test('SLICE I7: the validator refuses a Gemini that gains any grant or a reworde
   expectRejected((p) => {
     p.actors.gemini.mayNever = p.actors.gemini.mayNever.filter((c) => c !== 'grant-human-gate');
   }, /gemini/);
+});
+
+// ─── ROUND I7-2 ── the seated role and the broad ban must never coexist again ─────────────────
+test('ROUND I7-2: the retired blanket term cannot return while the persona is seated', () => {
+  // The finding: a policy that seats a read-only auditor while forbidding "any workflow or
+  // governance role" contradicts itself — a literal consumer must conclude the persona may not
+  // exercise its own seat. The blanket term was NARROWED to authority ('any-authority-bearing-
+  // role'); this regression keeps the two states from ever coexisting again. The string is
+  // split so this test's own source cannot satisfy the scan it performs.
+  const retired = 'any-workflow-or-' + 'governance-role';
+  for (const rel of ['spec/authority-policy.json', 'src/lib/authority-policy.js', PROTOCOL, 'AGENTS.md', 'spec/agents/gemini-spec-auditor.md']) {
+    assert.ok(!read(rel).includes(retired), `${rel} must not carry the retired blanket ban "${retired}" — the seated persona HAS a role; what it may never have is authority`);
+  }
+  // …and the narrowed term is REAL, in the vocabulary and on the actor, never grantable.
+  assert.ok(POLICY.actors.gemini.mayNever.includes('any-authority-bearing-role'));
+  assert.ok(!POLICY.actors.gemini.may.includes('any-authority-bearing-role'));
+  const persona = read('spec/agents/gemini-spec-auditor.md');
+  assert.match(persona, /Status: SEATED \(Slice I7\)/, 'the persona stays seated while the ban stays narrowed');
 });

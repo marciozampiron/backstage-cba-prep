@@ -82,7 +82,7 @@
       "mayNever": [
         "accept-risk",
         "access-secrets",
-        "any-workflow-or-governance-role",
+        "any-authority-bearing-role",
         "author-cloud-authorization",
         "authorize-spend",
         "deploy",
