@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.13.0
+version: 0.14.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -227,9 +227,13 @@ There is no third state in the GATE: a set is either present and re-verified, or
 vouched for by the digest Zamp copied from the evidence. `absentEntryDigests` outside abandon
 mode, empty, duplicated or malformed is refused as `CLOUD_GATE_MALFORMED`.
 
-One RUN outcome, however, is deliberately three-way (round I5-4): a failed delete call is
+One RUN outcome, however, is deliberately three-way (rounds I5-4/I5-5): a failed delete call is
 ambiguous — the service may have accepted the deletion while the transport died — so the lane
-reconciles with one bounded read before recording anything. A set proven absent is recorded in
+reconciles by bounded re-observation (five attempts) before recording anything. A successful
+describe does not prove the delete was rejected: an accepted deletion passes through
+`DELETE_PENDING`/`DELETE_IN_PROGRESS`/`DELETE_COMPLETE` before `ChangeSetNotFound`, so absence
+concludes at any attempt, presence only at the final one — in a well-formed, identity-matched,
+NON-delete status — and everything else at the bound is unknown. A set proven absent is recorded in
 `abandoned` (the run still stops on the transport surprise, and the derivation above works
 unchanged). A set proven present is a plain `ABANDON_DELETE_FAILED` with no deletion claimed.
 When the reconciliation read is itself inconclusive, the artifact says `ABANDON_STATE_UNKNOWN`

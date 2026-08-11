@@ -3266,6 +3266,100 @@ test('I5-4 REPRO: a timeout with an INCONCLUSIVE observation claims neither stat
   });
 });
 
+test('I5-5 REPRO: timeout then a SUSTAINED DELETE_IN_PROGRESS — unknown, never a claimed rejection, and the polling is bounded', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            // The accepted deletion is propagating: the describe SUCCEEDS, in a deleting status.
+            reconcileReads += 1;
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'DELETE_IN_PROGRESS' }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      // A status-0 describe in a DELETING state is NOT proof the delete was rejected.
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      assert.equal(reconcileReads, 5, 'the re-observation is BOUNDED — five attempts, then the honest unknown');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'a deleting status never claims the delete was rejected');
+      const unknownEntry = record.changeSets.find((e) => e.stackName === PILOT_STACK_NAMES[1]);
+      assert.match(unknownEntry.canonicalSha256, /^[0-9a-f]{64}$/, 'the digest stays on the map for the post-reconciliation derivation');
+    });
+  });
+});
+
+test('I5-5 REPRO: an initially-PRESENT response that converges to absence reconciles to ABANDONED', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            reconcileReads += 1;
+            // Two reads still see the set standing — then the accepted deletion lands.
+            if (reconcileReads <= 2) return null; // the stub answers with the present fixture
+            return { status: 254, stdout: '', stderr: 'ChangeSetNotFound' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0, 'the transport surprise still stops the run');
+      assert.match(r.output, /PROVABLY ABSENT/);
+      assert.equal(reconcileReads, 3, 'absence concludes the moment it is proven — no further polling');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // An early present-looking read did NOT freeze the verdict: the deletion is on the record.
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.deepEqual(record.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.ok(!record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+    });
+  });
+});
+
 test('I5-3: an absence AFTER the first present entry is a state the lane cannot have produced — refused', () => {
   withRelease((p, asm, manifest) => {
     withArtifact((artifact) => {

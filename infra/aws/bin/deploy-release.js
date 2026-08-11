@@ -1387,14 +1387,42 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         }
         const deletion = run(['cloudformation', 'delete-change-set', '--change-set-name', entry.changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
         if (!deletion || deletion.status !== 0) {
-          // ROUND I5-4: a failed delete CALL is an AMBIGUOUS outcome — the service may have
-          // accepted the deletion while the transport died. One bounded read reconciles before
-          // anything is recorded, because the record drives the next decision: a set claimed
-          // deleted that is not would authorize skipping a live set, and a set deleted but not
-          // claimed would mechanically block every later continuation.
-          const observed = run(['cloudformation', 'describe-change-set', '--change-set-name', entry.changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
-          const observedMissing = !!observed && observed.status !== 0 && /ChangeSetNotFound|does not exist/i.test(`${observed.stderr || ''}${observed.stdout || ''}`);
-          const observedPresent = !!observed && observed.status === 0;
+          // ROUND I5-4/I5-5: a failed delete CALL is an AMBIGUOUS outcome — the service may
+          // have accepted the deletion while the transport died — so the lane reconciles by
+          // BOUNDED RE-OBSERVATION before recording anything. Round I5-5 (Codex): a successful
+          // describe is NOT proof the delete was rejected — CloudFormation's official statuses
+          // include DELETE_PENDING/DELETE_IN_PROGRESS/DELETE_COMPLETE, and an accepted deletion
+          // passes through them before ChangeSetNotFound. Conclusive proof is therefore:
+          //   ABSENT  — ChangeSetNotFound, at any attempt (break immediately);
+          //   PRESENT — the FINAL attempt returns a well-formed, identity-matched response in a
+          //             NON-delete status (the set stood still across the whole window);
+          //   anything else at the bound — a deleting status, a malformed response, a diverging
+          //   identity, a transport error — is UNKNOWN, never a guess in either direction.
+          const RECONCILE_ATTEMPTS = 5;
+          let observedMissing = false;
+          let observedPresent = false;
+          for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt += 1) {
+            if (attempt > 0) sleep();
+            const observed = run(['cloudformation', 'describe-change-set', '--change-set-name', entry.changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+            if (!!observed && observed.status !== 0 && /ChangeSetNotFound|does not exist/i.test(`${observed.stderr || ''}${observed.stdout || ''}`)) {
+              observedMissing = true;
+              break;
+            }
+            let parsed = null;
+            if (!!observed && observed.status === 0) {
+              try {
+                parsed = JSON.parse(observed.stdout);
+              } catch {
+                parsed = null;
+              }
+            }
+            const identityOk = !!parsed && parsed.ChangeSetId === entry.changeSetId;
+            const observedStatus = identityOk && typeof parsed.Status === 'string' ? parsed.Status : null;
+            const deleting = observedStatus === 'DELETE_PENDING' || observedStatus === 'DELETE_IN_PROGRESS' || observedStatus === 'DELETE_COMPLETE';
+            // Only the LAST attempt may conclude presence — an early present-looking read can
+            // still converge to absence while the accepted deletion propagates.
+            observedPresent = attempt === RECONCILE_ATTEMPTS - 1 && observedStatus !== null && !deleting;
+          }
           if (observedMissing) {
             // The deletion HAPPENED — the record says so, and the run still stops on the
             // transport surprise. The next continuation derives from this artifact alone.

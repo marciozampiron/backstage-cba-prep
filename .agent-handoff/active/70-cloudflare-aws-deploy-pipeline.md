@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I5-5 (Codex FINDINGS, 1 HIGH, fixed forward): a status-0 describe is not proof the
+delete was rejected — reconciliation became BOUNDED RE-OBSERVATION (five attempts). Absence
+concludes at any attempt (`ChangeSetNotFound`); presence only at the FINAL attempt, in a
+well-formed, identity-matched (`ChangeSetId`), NON-delete status; a deleting status
+(`DELETE_PENDING`/`DELETE_IN_PROGRESS`/`DELETE_COMPLETE`), a malformed response, a diverging
+identity or a transport error at the bound is `ABANDON_STATE_UNKNOWN`. Proven both ways:
+sustained `DELETE_IN_PROGRESS` → unknown at the bound (never a claimed rejection, polling
+counted at exactly five), and present-then-absent → abandoned (an early present-looking read
+never freezes the verdict). Runbook 0.14.0, prose only.
+
 Round I5-4 (Codex FINDINGS, 1 HIGH, fixed forward): an ambiguous delete outcome no longer
 breaks the newest-artifact derivation — a failed delete call reconciles by ONE bounded read
 before anything is recorded. Provably absent → recorded in `abandoned` (the run still stops on
