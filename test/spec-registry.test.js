@@ -48,11 +48,11 @@ test('CI WIRING: the real registry validates against the real spec document', ()
   assert.equal(registry.entries.length, 56);
   const counts = { PROPOSED: 0, ACTIVE: 0, RETIRED: 0 };
   for (const e of registry.entries) counts[e.status] += 1;
-  // Everything stays PROPOSED until an activation commit satisfies its own predicates (§4).
-  // TWO ids are RETIRED by before-activation absorption: -020 (design round 5) and -002
-  // (Slice I4 — the tree now implements the complete successor schema, so an id describing
-  // code that no longer exists cannot stay PROPOSED honestly).
-  assert.deepEqual(counts, { PROPOSED: 54, ACTIVE: 0, RETIRED: 2 });
+  // Slice I8: the first activation batch — everything else stays PROPOSED until its own
+  // activation commit satisfies its own predicates (§4). TWO ids are RETIRED by
+  // before-activation absorption: -020 (design round 5) and -002 (Slice I4).
+  assert.deepEqual(counts, { PROPOSED: 52, ACTIVE: 2, RETIRED: 2 });
+  assert.deepEqual(registry.entries.filter((e) => e.status === 'ACTIVE').map((e) => e.id).sort(), ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']);
   const retiredIds = registry.entries.filter((e) => e.status === 'RETIRED').map((e) => e.id).sort();
   assert.deepEqual(retiredIds, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
   for (const id of retiredIds) assert.equal(entry(registry, id).supersededBy, 'SPEC-DEPLOY-019');
@@ -61,9 +61,17 @@ test('CI WIRING: the real registry validates against the real spec document', ()
   assert.deepEqual(entry(registry, 'SPEC-DEPLOY-019').supersedes, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
 });
 
-test('CI WIRING: conformance runs clean with zero ACTIVE ids and says so', () => {
-  const report = runConformance(validateSpecRegistry(SOURCES));
-  assert.deepEqual(report, { activeCount: 0, results: [], ok: true });
+test('CI WIRING: conformance sees the ACTIVE set, and the zero-ACTIVE honesty path stays exact', () => {
+  // Slice I8: the real registry now carries 2 ACTIVE ids with 4 named tests — EXECUTING them is
+  // spec:conform's job (it runs in the battery and in CI); this unit asserts the shape without
+  // spawning nested suites. The zero-ACTIVE honesty message stays proven on the same machinery
+  // by filtering the ACTIVE set out.
+  const registry = validateSpecRegistry(SOURCES);
+  const active = registry.entries.filter((e) => e.status === 'ACTIVE');
+  assert.deepEqual(active.map((e) => e.id).sort(), ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']);
+  assert.equal(active.flatMap((e) => e.tests).length, 4, 'four named tests are what conformance enforces');
+  const zeroActive = runConformance({ entries: registry.entries.filter((e) => e.status !== 'ACTIVE') });
+  assert.deepEqual(zeroActive, { activeCount: 0, results: [], ok: true });
 });
 
 test('the id law: format, uniqueness, and never-reused ids', () => {
@@ -641,8 +649,11 @@ test('ROUND I1-3: a check that mutates the tree invalidates the verdict', () => 
           if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') return 'false\n';
           if (args[0] === 'rev-list') return `${COMMIT}\n`; // proven root — no baseline
           if (args[0] === 'ls-tree') return `100644 blob abc\t${args[args.length - 1]}\n`;
-          if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return SOURCES.registryRaw;
-          if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return SOURCES.specMd;
+          // Slice I8: this proof is about the DIRTY-tree refusal, not about running children —
+          // feed a zero-ACTIVE view of the same sources so no child ever spawns and the
+          // boundary refusal is what the run must hit.
+          if (args[0] === 'show' && args[1] === `${COMMIT}:${REGISTRY_PATH}`) return SOURCES.registryRaw.replaceAll('"status": "ACTIVE"', '"status": "PROPOSED"');
+          if (args[0] === 'show' && args[1] === `${COMMIT}:${SPEC_PATH}`) return SOURCES.specMd.replaceAll('| ACTIVE |', '| PROPOSED |');
           if (args[0] === 'cat-file') return '';
           if (args[0] === 'show') return SOURCES.readFile(args[1].split(':').slice(1).join(':'));
           throw new Error(`unexpected: ${args.join(' ')}`);
