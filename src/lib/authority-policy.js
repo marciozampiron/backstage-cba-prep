@@ -108,9 +108,12 @@ const EXPECTED_ACTORS = {
     mayNever: ['delegate-approval', 'delegate-merge'],
   },
   gemini: {
-    role: 'none in this workflow',
+    // Slice I7: the persona is SEATED — and seated as NOTHING BUT an auditor. may stays empty
+    // on purpose: the persona performs no effect; Zamp performs the paid invocation
+    // (invoke-paid-model-audit), and the report is that effect's output.
+    role: 'read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind',
     may: [],
-    mayNever: ['any-workflow-or-governance-role'],
+    mayNever: ['accept-risk', 'access-secrets', 'any-workflow-or-governance-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push'],
   },
 };
 

@@ -1,7 +1,7 @@
 ---
 id: spec-conformance-audit
 kind: runbook
-version: 0.3.0
+version: 0.4.0
 owner: Opus
 humanApprover: Zamp
 specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005, SPEC-GOV-006, SPEC-GOV-007, SPEC-GOV-008, SPEC-GOV-009, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005, SPEC-RUN-001]
@@ -13,10 +13,11 @@ cloudMutation: false
 
 # Runbook — spec conformance audit
 
-> **Status: DESIGN — the mechanical layers do not exist yet.** Every command below is
-> `PLANNED — not executable`; nothing in this runbook is to be run in the current phase. The
-> runbook exists now so the audit flow is reviewed BEFORE the tooling is built
-> (SPEC-AUDIT-001).
+> **Status: MECHANICAL LAYERS IMPLEMENTED (Slice I1); PERSONA SEATED (Slice I7) — the
+> semantic stage stays gated.** The linter and conformance commands exist and run locally with
+> zero ACTIVE ids enforced so far. The semantic stage requires Zamp's per-run spend
+> authorization (`invoke-paid-model-audit`) and is not to be run otherwise; nothing in this
+> runbook is standing permission (SPEC-AUDIT-001/005).
 
 The order is fixed and is the point: **mechanical first, semantics second, independent review
 third, human decision last.** No stage substitutes another. The audit stages are read-only over

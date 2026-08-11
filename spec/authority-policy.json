@@ -77,12 +77,25 @@
       ]
     },
     "gemini": {
-      "role": "none in this workflow",
+      "role": "read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind",
       "may": [],
       "mayNever": [
-        "any-workflow-or-governance-role"
+        "accept-risk",
+        "access-secrets",
+        "any-workflow-or-governance-role",
+        "author-cloud-authorization",
+        "authorize-spend",
+        "deploy",
+        "grant-human-gate",
+        "implement",
+        "invoke-paid-service",
+        "merge",
+        "operate-artifact",
+        "perform-cloud-effect",
+        "prepare-artifact",
+        "push"
       ],
-      "note": "Remains a supported model provider for authoring and a supported tutoring CLI. Product functionality, not a workflow role."
+      "note": "Produces only the SPEC_AUDIT_REPORT v1 document artifact (VERDICT: PASS | FINDINGS | INCOMPLETE; always AUTHORITY: none) as information for Codex and Zamp — it never substitutes the independent review. The paid invocation is performed by Zamp under a per-run spend-authorization (invoke-paid-model-audit). Gemini also remains a supported model provider for authoring and a supported tutoring CLI — product functionality, distinct from the persona."
     }
   },
   "documents": {
@@ -305,6 +318,8 @@
     "AGENTS.md": [
       "Reports findings or recommends a gate.",
       "- Zamp — approval, risk acceptance and merge authority.",
+      "- Gemini — carries the seated Gemini Spec Auditor persona (Slice I7): a read-only semantic auditor with no authority of any kind; its only output is the SPEC_AUDIT_REPORT v1 document artifact, information for Codex and Zamp — never an approval, never a review of record, never a gate, never a substitute for the independent review.",
+      "The paid invocation is performed by Zamp under a per-run spend authorization.",
       "Two gates, not one. A review scope manifest bounds what may be prepared and authorizes nothing.",
       "The execution gate is the HUMAN_GATE_GRANTED itself — written after review because it names the artifact's digest — supplied as CBA_EXECUTION_GATE and validated by the artifact both before the operator confirmation and again immediately before the push.",
       "- The publish gate is authored by the human outside the task worktree (for example /tmp/cba-gate-<issue>.json).",
@@ -312,11 +327,14 @@
     ],
     ".agent-handoff/MESSAGE-PROTOCOL.md": [
       "| Codex (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and read-only review; reports findings or recommends a gate |",
+      "| Gemini (Gemini Spec Auditor persona) | Read-only semantic auditor | No authority of any kind — its only output is the SPEC_AUDIT_REPORT v1 document artifact (PASS \\| FINDINGS \\| INCOMPLETE, always AUTHORITY: none), information for Codex and Zamp; it never approves, never serves as review of record, never grants or shapes any gate, never accepts risk, never implements, edits, publishes, pushes, merges or deploys, and never substitutes Codex's independent review; the paid invocation is performed by Zamp under a per-run spend authorization |",
+      "Since Slice I7 it also carries the Gemini Spec Auditor persona ([spec/agents/gemini-spec-auditor.md](../spec/agents/gemini-spec-auditor.md)): a read-only semantic auditor with no authority of any kind, whose only output is the SPEC_AUDIT_REPORT v1 document artifact — never a canonical envelope, never a review of record, never a gate.",
       "| GATE_RECOMMENDATION | Codex | Zamp | Recommendation only; never a gate |",
       "Two gates, not one. The review scope manifest (/tmp/cba-scope-<n>.json, passed as --gate) bounds what may be prepared and is read and validated at preparation — never consumed; idempotent consumption is #91 Stage B.",
       "The execution gate is the HUMAN_GATE_GRANTED itself: written after review, it names the digest of the artifact plus the exact ordered SHAs and a bounded expiry, and the artifact reads and validates it at run time via CBA_EXECUTION_GATE, never as --gate.",
       "It is a separate closed nine-key schema, not the review scope plus extras.",
-      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose."
+      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose.",
+      "- a message type, sender, receiver or next owner must never diverge from §3; - the Gemini persona must never hold an authority-bearing role — no approval, no review of record, no gate, no risk acceptance, no publication, merge, deploy or governance; it audits read-only and reports only; - Codex must never be instructed to implement, prepare, publish, push, merge or deploy; - Opus must never be permitted to self-review, self-approve, merge, deploy, push main, force-push or administer the repository; - Zamp must never be described as implementation executor or script operator; - REVIEW_APPROVED, or a generic approval, must never be treated as a publication gate; - a bare-path publication instruction must never be offered as supported; - a template must never omit exact SHAs, status, next owner, prohibited actions, evidence or residual risks."
     ],
     ".agent-handoff/README.md": [
       "| #91 Stage A — agent-publish | Validates a gate against local state, prints the plan, stops. |",
@@ -564,6 +582,7 @@
       "| A Zamp-authored riskAcceptance record (thirteen closed keys: digests of the exact residual and of Zamp's verbatim statement, one-stack/one-decision coverage, clock-evaluated expiry) before any executable cleanup procedure | A boolean flip is not a risk decision, and a free-text record is not an enforceable one; the runtime consumer must re-check expiry and coverage immediately before the effect | SPEC-DEPLOY-022 |"
     ],
     "spec/agents/gemini-spec-auditor.md": [
+      "The report remains a > document artifact — never a canonical protocol envelope — and every paid invocation still > requires Zamp's per-run spend authorization.",
       "The Gemini Spec Auditor reads those results plus the artifacts themselves and hunts what a mechanical pass cannot see: a spec sentence whose implementation satisfies the letter and misses the intent, an invariant with no test that could ever fail, a code path the spec never contemplated, two SPEC-IDs that quietly contradict each other.",
       "- A model invocation is a paid call, and Zamp performs it. invoke-paid-model-audit is a policy effect authorized by the spend-authorization document and performed by Zamp (spec/authority-policy.json); invoke-paid-service stays in Opus's and Codex's mayNever."
     ],
@@ -576,7 +595,7 @@
       "| Rollback | How to return to the last known-good state, and what \"known-good\" means for this operation. If rollback itself mutates cloud state, it depends on its own cloud authorization and says so. |"
     ],
     "docs/runbooks/spec-conformance-audit.md": [
-      "--- id: spec-conformance-audit kind: runbook version: 0.3.0 owner: Opus humanApprover: Zamp specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005, SPEC-GOV-006, SPEC-GOV-007, SPEC-GOV-008, SPEC-GOV-009, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005, SPEC-RUN-001] inputs: [the audited commit's full SHA, the spec registry at that SHA, the mechanical reports for that SHA, Zamp's per-run spend authorization for the semantic stage] outputs: [a SPEC_AUDIT_REPORT v1 document bound to the audited SHA] gateRequired: true cloudMutation: false ---",
+      "--- id: spec-conformance-audit kind: runbook version: 0.4.0 owner: Opus humanApprover: Zamp specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005, SPEC-GOV-006, SPEC-GOV-007, SPEC-GOV-008, SPEC-GOV-009, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005, SPEC-RUN-001] inputs: [the audited commit's full SHA, the spec registry at that SHA, the mechanical reports for that SHA, Zamp's per-run spend authorization for the semantic stage] outputs: [a SPEC_AUDIT_REPORT v1 document bound to the audited SHA] gateRequired: true cloudMutation: false ---",
       "gateRequired: true refers to one dependency only: the semantic stage invokes a model service, which is a paid call, and each run needs Zamp's explicit spend authorization (SPEC-AUDIT-005 — the registry assigns the spend rule to that id; SPEC-AUDIT-003 is the input-binding rule).",
       "Zamp's spend authorization for THIS run exists, with the model, profile and cost ceiling it covers (SPEC-AUDIT-004/005).",
       "The Gemini Spec Auditor persona runs per [spec/agents/gemini-spec-auditor.md](../../spec/agents/gemini-spec-auditor.md) — pinned model and limits, digested input bundle, tools disabled — and produces a SPEC_AUDIT_REPORT v1.",

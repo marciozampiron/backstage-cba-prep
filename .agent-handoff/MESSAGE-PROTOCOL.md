@@ -15,7 +15,7 @@ Architecture and the publication mechanism itself live in
 | **Opus** (Claude Opus 5) | Implementation executor and publication operator | Implements, tests, commits fix-forward, prepares the reviewed script, and executes the exact verified bytes **only** after Codex review and an explicit Zamp gate |
 | **Codex** (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and **read-only** review; reports findings or recommends a gate |
 | **Zamp** | LT/CEO/CTO | Accepts residual risk, grants the exact publication gate, authorizes cloud/spend separately, and **decides and performs the merge** |
-| **Gemini** | — | **No role** in implementation, review, approval, publication, merge, deploy or governance |
+| **Gemini** (Gemini Spec Auditor persona) | Read-only semantic auditor | **No authority of any kind** — its only output is the SPEC_AUDIT_REPORT v1 document artifact (PASS \| FINDINGS \| INCOMPLETE, always `AUTHORITY: none`), information for Codex and Zamp; it never approves, never serves as review of record, never grants or shapes any gate, never accepts risk, never implements, edits, publishes, pushes, merges or deploys, and never substitutes Codex's independent review; the paid invocation is performed by Zamp under a per-run spend authorization |
 
 **Opus may never** self-review, self-approve, amend/rebase/squash reviewed commits, push `main`,
 force-push, merge, deploy, administer the repository, access secrets, or invoke a paid service
@@ -27,8 +27,13 @@ push, merge, deploy, or grant the human gate.
 **Zamp** does not need to execute the publication script; Zamp approves and merges.
 
 **Gemini** remains a supported **model provider** for question authoring (`src/lib/llm.js`,
-`src/commands/generate.js`) and a supported CLI for tutoring. That is product functionality and is
-untouched by this contract. Gemini simply never appears as a workflow actor.
+`src/commands/generate.js`) and a supported CLI for tutoring — product functionality, untouched
+by this contract. Since Slice I7 it also carries the **Gemini Spec Auditor persona**
+([`spec/agents/gemini-spec-auditor.md`](../spec/agents/gemini-spec-auditor.md)): a read-only
+semantic auditor with no authority of any kind, whose only output is the SPEC_AUDIT_REPORT v1
+document artifact — never a canonical envelope, never a review of record, never a gate. The
+audit order is fixed: the mechanical layers first, then the semantic audit, then Codex's
+independent review, then Zamp's decision — the audit informs and never replaces review.
 
 ## 2. Canonical flow
 
@@ -119,7 +124,7 @@ The suite additionally holds these prohibitions, each phrased as one so the docu
 forbidden thing as though it were permitted:
 
 - a message type, sender, receiver or next owner must never diverge from §3;
-- Gemini must never hold a collaboration, publication or governance role;
+- the Gemini persona must never hold an authority-bearing role — no approval, no review of record, no gate, no risk acceptance, no publication, merge, deploy or governance; it audits read-only and reports only;
 - Codex must never be instructed to implement, prepare, publish, push, merge or deploy;
 - Opus must never be permitted to self-review, self-approve, merge, deploy, push `main`, force-push
   or administer the repository;

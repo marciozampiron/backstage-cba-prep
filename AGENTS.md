@@ -41,9 +41,13 @@ Collaboration rules:
     executes the publication script, pushes, merges, deploys, or grants the human gate.
   - **Zamp** — approval, risk acceptance and merge authority. Grants the exact publication gate and
     decides and performs the merge. Does not need to execute the publication script.
-  - **Gemini** — no role in implementation, review, approval, publication, merge, deploy or
-    governance. It remains a supported model provider for authoring and a supported tutoring CLI;
-    that is product functionality, not a workflow role.
+  - **Gemini** — carries the seated **Gemini Spec Auditor persona** (Slice I7): a read-only
+    semantic auditor with no authority of any kind; its only output is the SPEC_AUDIT_REPORT v1
+    document artifact, information for Codex and Zamp — never an approval, never a review of
+    record, never a gate, never a substitute for the independent review. The paid invocation is
+    performed by Zamp under a per-run spend authorization. Gemini also remains a supported model
+    provider for authoring and a supported tutoring CLI; that is product functionality, distinct
+    from the persona.
 
   **Two gates, not one.** A *review scope* manifest bounds what may be prepared and authorizes
   nothing. The *execution gate* is the `HUMAN_GATE_GRANTED` itself — written after review because it

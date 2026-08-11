@@ -2886,3 +2886,43 @@ test('SLICE I6-2: the annotation migration inventory is FINITE and every expecte
     }
   }
 });
+
+// ─── SLICE I7 ─────────────────────────────────────────────────────────────────────────────────
+// The Gemini Spec Auditor persona is SEATED — and seated as NOTHING BUT an auditor. These two
+// tests are the discriminants Codex required: every canonical surface declares the SAME role
+// with no contradiction, and the policy validator refuses a Gemini that gains any grant or a
+// reworded standing.
+test('SLICE I7: every canonical surface seats the SAME Gemini persona — read-only, no authority', () => {
+  const protocol = read(PROTOCOL);
+  assert.match(protocol, /Read-only semantic auditor/);
+  assert.match(protocol, /SPEC_AUDIT_REPORT v1 document artifact/);
+  assert.match(protocol, /mechanical layers first, then the semantic audit, then Codex/);
+  const agents = read('AGENTS.md');
+  assert.match(agents, /Gemini Spec Auditor persona/);
+  assert.match(agents, /SPEC_AUDIT_REPORT v1/);
+  const persona = read('spec/agents/gemini-spec-auditor.md');
+  assert.match(persona, /Status: SEATED \(Slice I7\)/);
+  assert.match(persona, /VERDICT: PASS \| FINDINGS \| INCOMPLETE/);
+  assert.match(persona, /AUTHORITY: none/);
+  assert.match(read('docs/runbooks/spec-conformance-audit.md'), /PERSONA SEATED \(Slice I7\)/);
+  // The policy twin: the exact seated standing — an empty may is the LAW, not an omission.
+  assert.equal(POLICY.actors.gemini.role, 'read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind');
+  assert.deepEqual(POLICY.actors.gemini.may, []);
+  for (const cap of ['accept-risk', 'access-secrets', 'any-workflow-or-governance-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push']) {
+    assert.ok(POLICY.actors.gemini.mayNever.includes(cap), `gemini.mayNever must include ${cap}`);
+  }
+  // The paid invocation stays Zamp's effect under the spend document — the persona spends nothing.
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+});
+
+test('SLICE I7: the validator refuses a Gemini that gains any grant or a reworded standing', () => {
+  expectRejected((p) => {
+    p.actors.gemini.may = ['validate'];
+  }, /gemini/);
+  expectRejected((p) => {
+    p.actors.gemini.role = 'semantic reviewer';
+  }, /gemini/);
+  expectRejected((p) => {
+    p.actors.gemini.mayNever = p.actors.gemini.mayNever.filter((c) => c !== 'grant-human-gate');
+  }, /gemini/);
+});

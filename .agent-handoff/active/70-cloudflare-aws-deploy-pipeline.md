@@ -554,6 +554,21 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Slice I7 (authorized by Zamp, verbatim `ZAMP_APROVED`, 2026-08-11; Codex
+IMPLEMENTATION_REQUEST): the Gemini Spec Auditor persona is SEATED — §10's protocol and
+authority-policy amendments, atomic across every canonical surface. The protocol's actor table,
+AGENTS.md, spec/authority-policy.json AND its validator twin (src/lib/authority-policy.js)
+now state the same standing: read-only semantic auditor, `may: []` ON PURPOSE (the persona
+performs no effect — Zamp performs the paid invocation under a per-run spend-authorization,
+`invoke-paid-model-audit`), an explicit fourteen-item mayNever, and the sole output
+SPEC_AUDIT_REPORT v1 as a document artifact deliberately OUTSIDE the protocol's closed message
+set (never `TYPE:`-labeled, never REVIEW_APPROVED, never a gate, never a substitute for Codex).
+The audit order is fixed in the protocol: mechanical → semantic → Codex → Zamp. The persona
+file's status is SEATED with constraints unchanged; the audit runbook (0.4.0) records the
+mechanical layers as implemented and the semantic stage as gated. Two discriminant governance
+tests landed: same-role-everywhere consistency, and the validator refusing a Gemini that gains
+any grant, loses a prohibition, or rewords its standing. No Gemini call was made in this slice.
+
 Round I6-2 (Codex FINDINGS, 1 MEDIUM, fixed forward at a6366c5020e14b6264e9c0a6bb1dfa3bb1dbfabe):
 the I6 envelope had overclaimed markdown coverage — 12 ids across 13 registry-declared anchor
 points lacked bracketed references (SPEC-GOV-001..009 in the spec's §3/§4/§5/§6b/§6c;
