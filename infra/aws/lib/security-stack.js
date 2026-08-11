@@ -1,3 +1,4 @@
+// [SPEC-IAM-001]
 // Security stack (#53): encodes the #54 IAM/OIDC model from
 // docs/architecture/aws-bootstrap-and-oidc.md — the GitHub OIDC identity provider and the
 // blueprint-refresh Bedrock role. That doc's policy JSON is the source of truth; this stack must

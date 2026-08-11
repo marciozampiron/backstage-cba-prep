@@ -76,11 +76,13 @@ const DEPLOY_CONTEXT_KEYS = [
 // entrypoint passes exactly that set with `--exclusively`. Every stack the app constructs must be
 // classified here — a discovery test refuses an unclassified stack, so a new stack can neither
 // ride into the deploy effect nor silently fall out of it without joining a list through review.
+// [SPEC-DEPLOY-015]
 const DEPLOYABLE_STACK_IDS = Object.freeze(['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack']);
 // Excluded each for a stated reason — not "not yet": SecurityStack is the account-global
 // foundation (OIDC provider + GitHub roles), deployed only by the human operator under the #66
 // scoped bootstrap; AiOrchestrationStack is a deferred placeholder with no reviewed deployment
 // decision behind it.
+// [SPEC-DEPLOY-015]
 const EXCLUDED_STACK_IDS = Object.freeze(['AiOrchestrationStack', 'SecurityStack']);
 
 // PER-ENVIRONMENT release bootstraps (#70 Slice B1 round 4). One qualifier — one toolkit stack,
@@ -103,6 +105,7 @@ const DEPLOYMENT_EXECUTION_ORDER = Object.freeze(['IdentityStack', 'DataStack', 
 // executed before the next can be planned), and the full set for steady state, where every
 // export already exists. A discovery test walks the REAL CDK dependency graph and refuses any
 // cross-stack edge that violates the wave order.
+// [SPEC-DEPLOY-004]
 const DEPLOYMENT_PLAN_GROUPS = Object.freeze([
   Object.freeze(['IdentityStack', 'DataStack']),
   Object.freeze(['ApiStack']),

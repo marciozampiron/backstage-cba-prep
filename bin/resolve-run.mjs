@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /**
+ * [SPEC-LANE-007]
  * Resolve ONE workflow run by its complete, closed run name — the canonical procedure of
  * docs/runbooks/README.md, as a reviewed executable instead of a loop pasted into a terminal.
  *

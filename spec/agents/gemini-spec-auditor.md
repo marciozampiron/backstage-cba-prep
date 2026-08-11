@@ -7,6 +7,8 @@
 > Until then, Gemini's protocol standing is exactly what the protocol says today. Nothing in
 > this file is an instruction to run anything now.
 
+Anchored ids: [SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005]
+
 ## 1. What it is
 
 A **read-only semantic auditor** for [Spec-Anchored Development](../spec-anchored-development.md).

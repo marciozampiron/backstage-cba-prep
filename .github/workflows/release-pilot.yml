@@ -1,3 +1,4 @@
+# [SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-LANE-004, SPEC-RUN-007, SPEC-RUN-008]
 # Release orchestrator (#70) — release identity, preflight, binding, gates and the DEV deploy.
 # SLICE B1 + I2: the dev stage deploys AWS through the sanctioned entrypoint, and `bind_only`
 # publishes the release manifest as a structured artifact without entering any mutating stage.
@@ -85,6 +86,7 @@ name: Release Pilot
 # The run's NAME carries the caller's correlation id (SPEC-LANE-006): a run must be identifiable
 # from run metadata alone, BEFORE any artifact can be downloaded — bin/resolve-run.mjs matches
 # this exact closed string by equality.
+# [SPEC-LANE-006]
 run-name: cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}
 
 on:
@@ -94,6 +96,7 @@ on:
         description: 'Full 40-character commit SHA to release; must be an ancestor of main'
         required: true
         type: string
+      # [SPEC-LANE-006]
       correlation_id:
         description: 'Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact'
         required: true
@@ -276,6 +279,7 @@ jobs:
   # contains no OIDC consumer — it cannot prepare or execute anything, whatever the Environment
   # holds at any instant of the run. Evidence is read from the artifact, never scraped from logs.
   # ---------------------------------------------------------------------------------------------
+  # [SPEC-LANE-005, SPEC-LANE-006]
   bind-stage:
     name: Bind — publish the release manifest as evidence (no cloud authority)
     needs: [global-preflight, dev-preflight]

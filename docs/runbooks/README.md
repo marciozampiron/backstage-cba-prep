@@ -51,6 +51,7 @@ reading like an instruction. Where the performer is Zamp, the runbook says Zamp.
 
 ## Frontmatter — required, closed
 
+[SPEC-RUN-003, SPEC-RUN-004]
 YAML frontmatter with EXACTLY these keys, in this order:
 
 ```yaml

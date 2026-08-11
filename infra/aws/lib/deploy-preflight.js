@@ -366,6 +366,7 @@ function framedBundleDigestCjs({ producer, name, mediaType, content }) {
  * is a property of the manifest's CONTENT, not of whichever writer serialized it. The envelope
  * is pinned here, once: producer, record name and media type are part of the digested bytes.
  */
+// [SPEC-DEPLOY-019]
 function manifestBundleDigest(manifest, deepSortKeysFn) {
   return framedBundleDigestCjs({
     producer: 'cba-release-binding',

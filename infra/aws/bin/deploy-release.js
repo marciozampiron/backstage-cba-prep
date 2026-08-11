@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// [SPEC-DEPLOY-001, SPEC-DEPLOY-008, SPEC-DEPLOY-011, SPEC-DEPLOY-013, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018]
 // The ONE sanctioned deployment entrypoint (#70 Slice A) — verification and deployment bound BY
 // CONSTRUCTION, not by workflow choreography.
 //
@@ -84,6 +85,7 @@ function parseArgs(argv) {
     else if (a === '--release-sha') out.releaseSha = argv[++i];
     else if (a === '--region') out.region = argv[++i];
     else if (a === '--assembly') out.assembly = argv[++i];
+    // [SPEC-RUN-007]
     else if (a === '--artifact-out') out.artifactOut = argv[++i];
     else if (a === '--help' || a === '-h') out.help = true;
     // The offending token is not echoed: argv can hold a mistyped secret.
@@ -133,6 +135,7 @@ function defaultExec(args, env) {
  * a digest, so the operator can correlate the failure with the runner's own protected logs
  * without the release lane reproducing a single byte of it.
  */
+// [SPEC-DEPLOY-007]
 function childEvidence(child) {
   // ROUND 12: the streams are FRAMED, not concatenated — (stdout "ab", stderr "c") and
   // (stdout "a", stderr "bc") produced the same digest before, so evidence could not be
@@ -149,6 +152,7 @@ function childEvidence(child) {
  * `assemblyDigest` bound only one field of it. The mode enum carries all three modes the
  * authorization schema defines; the abandon LANE is a later slice, so an abandon-mode gate is
  * refused by name after validation, before any effect. */
+// [SPEC-DEPLOY-019]
 const CLOUD_GATE_KEYS = ['absentEntryDigests', 'approvedAt', 'decisionId', 'environment', 'expiresAt', 'issue', 'manifestDigest', 'mode', 'planDigest', 'releaseSha', 'stacks'];
 const CLOUD_GATE_MODES = ['plan_only', 'deploy', 'abandon'];
 
@@ -159,6 +163,7 @@ const STRICT_RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 /** Format AND calendar (round 4): `Date.parse` silently normalizes 2026-02-30 into March — a
  * calendar-invalid instant is not a stricter format, it is a DIFFERENT date than the human
  * wrote. The canonical round-trip refuses anything the calendar itself would rewrite. */
+// [SPEC-DEPLOY-009]
 function strictUtcInstant(v) {
   if (typeof v !== 'string' || !STRICT_RFC3339_UTC.test(v)) return false;
   const ms = Date.parse(v);
@@ -166,6 +171,7 @@ function strictUtcInstant(v) {
 }
 
 /** A gate authorizes a WINDOW, never a standing state: at most one hour approvedAt -> expiresAt. */
+// [SPEC-DEPLOY-010]
 const CLOUD_GATE_MAX_TTL_MS = 60 * 60 * 1000;
 
 /** decisionId names Zamp's one decision, for the audit trail and the EVENTS record. */
@@ -219,6 +225,7 @@ function boundedEvidence(record, cap) {
  *
  * @returns {{gate: object} | {failures: Array<{check:string, code:string, field:string}>}}
  */
+// [SPEC-DEPLOY-019]
 function checkCloudGate(raw, manifest, now) {
   if (raw === undefined || raw === null || String(raw).trim() === '') {
     return { failures: [{ check: 'GATE', code: 'CLOUD_GATE_MISSING', field: 'cloudGate' }] };
@@ -325,6 +332,7 @@ function planDigestOf(planEntries) {
 }
 
 /** One canonical entry per stack, from the UNREDACTED describe-change-set output. */
+// [SPEC-DEPLOY-003]
 function canonicalChangeSet(stackId, stackName, described) {
   const noChanges =
     described.Status === 'FAILED'
@@ -363,6 +371,7 @@ function assumeBootstrapRole(run, { account, region, qualifier, name, session })
 /** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
 const CHANGE_SET_PAGE_LIMIT = 40;
 
+// [SPEC-DEPLOY-012]
 function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
   // ROUND 11: DescribeChangeSet PAGINATES. A first page that carries a NextToken describes only
   // part of the plan, and digesting or reviewing that part would authorize an effect nobody saw.
@@ -442,6 +451,7 @@ function waitForStack(run, credEnv, stackName, { attempts = 120, sleep }) {
  * the digest exists, and `renderPlan` runs the same validator itself rather than trusting its
  * caller to have remembered.
  */
+// [SPEC-DEPLOY-006]
 const REDACT = Object.freeze({
   value: '[redacted]',
   key: '[key-redacted]',
@@ -478,6 +488,7 @@ const PROJECT_TOKEN_EXACT = new RegExp(`^${PROJECT_TOKEN}$`);
  * as easily as a query value. */
 const REVIEWED_URL_PATHS = new Set(['', '/', '/auth/callback', '/login', '/logout', '/oauth2/authorize', '/oauth2/token', '/prod', '/$default']);
 
+// [SPEC-DEPLOY-014]
 function renderHost(host) {
   const lower = host.toLowerCase();
   if (lower === 'localhost' || lower === '127.0.0.1') return host;
@@ -509,6 +520,7 @@ function renderUrl(candidate) {
 
 /** Per-service ARN grammars, ANCHORED: only the exact project-owned identity segment renders, and
  * a resource whose COMPLETE shape a branch does not recognize fails CLOSED. */
+// [SPEC-DEPLOY-014]
 function renderArnResource(service, resource) {
   const whole = () => REDACT.resource;
   if (service === 'iam') {
@@ -794,6 +806,7 @@ function leafSatisfies(value, node) {
  * THE single structural validation: unknown keys, wrong types and out-of-contract enums, at every
  * depth. Violations name the PATH and the reason — never the value, which is not proven public.
  */
+// [SPEC-DEPLOY-005]
 function validateChangeSet(value, node = CHANGE_SET_SCHEMA, path = '$') {
   const out = [];
   if (value === undefined) return out; // an absent optional member
@@ -866,6 +879,7 @@ function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
  * remembered — and it prints `changed` / `unchanged` computed from the RAW values in memory
  * instead of publishing a derivation of them. A response that violates the reviewed schema is
  * not rendered at all: the material says so and names the offending PATHS, never their values. */
+// [SPEC-DEPLOY-006]
 function renderPlan(planEntries) {
   const lines = [];
   const list = (values) => (Array.isArray(values) && values.length > 0 ? values.join(', ') : 'none');
@@ -1279,6 +1293,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     // absentEntryDigests are copied from, and it is not an ARN.
     evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status, canonicalSha256: entryDigestOf(entry) }));
 
+    // [SPEC-RUN-008]
     // 5c-abandon (Slice I5, SPEC-RUN-008): delete EXACTLY the declined plan. The recomputed
     // digest must equal the one the abandon gate names — a drifted, recreated or superseded set
     // refuses as PLAN_CHANGED and NOTHING is deleted; a surprised operation stops rather than

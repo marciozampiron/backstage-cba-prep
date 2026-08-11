@@ -554,6 +554,18 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Slice I6 (authorized by Zamp, verbatim `Zamp_Aproved`, 2026-08-11, after the I5-6
+REVIEW_APPROVED): the `[SPEC-ID]` annotations — §5's third traceability direction made
+greppable. Every PROPOSED id's JS/YAML anchor now carries its bracketed token at the definition
+site (entrypoint file-laws on the header; symbol-laws above their symbols; workflow laws on the
+header, run-name, correlation_id and bind-stage); every markdown anchor is covered by a
+bracketed reference (runbook `specs:` frontmatter already was; the persona and the runbook
+README gained theirs); JSON anchors (authority-policy, IAM policy templates) cannot carry
+comments — the registry's anchor columns remain the mapping there, as §5 states. The linter
+validates every token against the registry (proven: one corrupted id fails spec:lint by name);
+per-anchor presence becomes mandatory only at activation (SPEC-GOV-006). No behavior changed —
+comments only.
+
 Round I5-6 (Codex FINDINGS, 1 HIGH, fixed forward): presence became a WHOLE-WINDOW claim
 under a closed-enum ALLOWLIST — every reconciliation read must be well-formed,
 identity-matched and in a STANDING status (`CREATE_PENDING`/`CREATE_IN_PROGRESS`/
