@@ -1,7 +1,7 @@
 ---
 id: aws-dev-release-abandon
 kind: runbook
-version: 0.12.0
+version: 0.13.0
 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001)
 humanApprover: Zamp
 specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007]
@@ -184,7 +184,10 @@ and not by a lane (SPEC-DEPLOY-021).
    between observation and action, which is the residual race, and a surprised operation
    re-observes under a new decision rather than pushing through. A stop mid-way leaves a PARTIAL
    abandon, and the partial is resumable — see **Resuming a partial abandon** below; the deleted
-   prefix is never re-derived from memory, only from the failed run's artifact.
+   prefix is never re-derived from memory, only from the failed run's artifact. An artifact
+   carrying `ABANDON_STATE_UNKNOWN` requires Zamp's read-only re-observation of the named set
+   before ANY new decision — deriving a gate around an unknown state is guessing with a
+   mutation.
 3. The lane reports that it would delete a stack record — stop and treat it as a defect: no lane
    may perform that effect (SPEC-DEPLOY-021), so reaching that point means the reviewed
    entrypoint no longer matches this contract.
@@ -220,9 +223,22 @@ records the same way, so no artifact of this lane ever leaves the reporting fiel
 This derivation works on EVERY artifact the lane produces — a halted continuation's included —
 so a second interruption, and any after it, resumes exactly the same way.
 
-There is no third state: a set is either present and re-verified, or absent and vouched for by
-the digest Zamp copied from the evidence. `absentEntryDigests` outside abandon mode, empty,
-duplicated or malformed is refused as `CLOUD_GATE_MALFORMED`.
+There is no third state in the GATE: a set is either present and re-verified, or absent and
+vouched for by the digest Zamp copied from the evidence. `absentEntryDigests` outside abandon
+mode, empty, duplicated or malformed is refused as `CLOUD_GATE_MALFORMED`.
+
+One RUN outcome, however, is deliberately three-way (round I5-4): a failed delete call is
+ambiguous — the service may have accepted the deletion while the transport died — so the lane
+reconciles with one bounded read before recording anything. A set proven absent is recorded in
+`abandoned` (the run still stops on the transport surprise, and the derivation above works
+unchanged). A set proven present is a plain `ABANDON_DELETE_FAILED` with no deletion claimed.
+When the reconciliation read is itself inconclusive, the artifact says `ABANDON_STATE_UNKNOWN`
+and claims that set neither deleted nor present: before any new decision, **Zamp** re-observes
+that ONE set read-only (a `describe-change-set` under read-only credentials, or the console) —
+if it is absent, its `canonicalSha256` is on the artifact's `changeSets[]` map and joins
+`absentEntryDigests` in group order; if it is present, the derivation proceeds as usual. The
+re-observation is a READ: it authorizes nothing, mutates nothing, and the new decision is still
+Zamp's alone.
 
 ## Rollback
 

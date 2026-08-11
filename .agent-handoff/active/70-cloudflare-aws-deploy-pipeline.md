@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I5-4 (Codex FINDINGS, 1 HIGH, fixed forward): an ambiguous delete outcome no longer
+breaks the newest-artifact derivation — a failed delete call reconciles by ONE bounded read
+before anything is recorded. Provably absent → recorded in `abandoned` (the run still stops on
+the transport surprise; the chain is proven to close from that artifact alone). Provably present
+→ plain `ABANDON_DELETE_FAILED`, no deletion claimed. Inconclusive → `ABANDON_STATE_UNKNOWN`,
+claiming neither state, the set's digest kept on the map; Zamp re-observes that one set
+read-only before any new decision (runbook 0.13.0, prose only — the fenced command inventory is
+unchanged). No path records a false `abandoned`; no path leaves a continuation mechanically
+blocked.
+
 Round I5-3 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the continuation became
 CLOSED under interruption — every abandon artifact now carries the ORIGINAL root as its
 `planDigest` and the FULL ordered stack → `canonicalSha256` map (`ALREADY_ABSENT` positions

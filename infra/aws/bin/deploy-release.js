@@ -1387,10 +1387,37 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         }
         const deletion = run(['cloudformation', 'delete-change-set', '--change-set-name', entry.changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
         if (!deletion || deletion.status !== 0) {
-          failures.push({ check: 'ABANDON', code: 'ABANDON_DELETE_FAILED', field: entry.stackId });
+          // ROUND I5-4: a failed delete CALL is an AMBIGUOUS outcome — the service may have
+          // accepted the deletion while the transport died. One bounded read reconciles before
+          // anything is recorded, because the record drives the next decision: a set claimed
+          // deleted that is not would authorize skipping a live set, and a set deleted but not
+          // claimed would mechanically block every later continuation.
+          const observed = run(['cloudformation', 'describe-change-set', '--change-set-name', entry.changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: cfnEnv });
+          const observedMissing = !!observed && observed.status !== 0 && /ChangeSetNotFound|does not exist/i.test(`${observed.stderr || ''}${observed.stdout || ''}`);
+          const observedPresent = !!observed && observed.status === 0;
+          if (observedMissing) {
+            // The deletion HAPPENED — the record says so, and the run still stops on the
+            // transport surprise. The next continuation derives from this artifact alone.
+            abandoned.push(entry.stackName);
+            failures.push({ check: 'ABANDON', code: 'ABANDON_DELETE_FAILED', field: entry.stackId });
+            reportRecords([...alreadyAbsent, ...abandoned]);
+            const refused = refuse();
+            return { ...refused, output: `${refused.output}\nThe delete call for ${entry.stackName} failed in transport but the set is PROVABLY ABSENT — recorded as abandoned. Abandoned so far: ${abandoned.join(', ')}. Remaining change sets were NOT deleted — a surprised operation stops.` };
+          }
+          if (observedPresent) {
+            // The deletion did NOT happen — a plain failure, claiming nothing.
+            failures.push({ check: 'ABANDON', code: 'ABANDON_DELETE_FAILED', field: entry.stackId });
+            reportRecords([...alreadyAbsent, ...abandoned]);
+            const refused = refuse();
+            return { ...refused, output: `${refused.output}\nAbandoned before the failure: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted — a state or conflict error means the world changed, and a surprised operation stops.` };
+          }
+          // Neither provable: the state of THIS set is UNKNOWN, and the record must say exactly
+          // that — never a guess in either direction. Its digest stays on the changeSets map, so
+          // once Zamp re-observes read-only, the next decision still derives from this artifact.
+          failures.push({ check: 'ABANDON', code: 'ABANDON_STATE_UNKNOWN', field: entry.stackId });
           reportRecords([...alreadyAbsent, ...abandoned]);
           const refused = refuse();
-          return { ...refused, output: `${refused.output}\nAbandoned before the failure: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Remaining change sets were NOT deleted — a state or conflict error means the world changed, and a surprised operation stops.` };
+          return { ...refused, output: `${refused.output}\nThe delete call for ${entry.stackName} failed AND its state could not be observed — recorded as ABANDON_STATE_UNKNOWN, claimed neither deleted nor present. Abandoned before it: ${abandoned.length === 0 ? 'none' : abandoned.join(', ')}. Read-only reconciliation of ${entry.stackName} is required before a new decision.` };
         }
         abandoned.push(entry.stackName);
       }

@@ -3151,6 +3151,121 @@ test('I5-3 REPRO: a SECOND interruption is resumable from the newest artifact AL
   });
 });
 
+test('I5-4 REPRO: a timeout AFTER an accepted deletion reconciles to ABANDONED — and the chain still closes', () => {
+  withRelease((p, asm, manifest) => {
+    const nextGateInputs = (record) => ({
+      planDigest: record.planDigest,
+      absentEntryDigests: record.changeSets
+        .filter((e) => e.status === 'ALREADY_ABSENT' || record.abandoned.includes(e.stackName))
+        .map((e) => e.canonicalSha256),
+    });
+    let firstRecord;
+    withArtifact((artifact) => {
+      const describesObj = { ...fullDescribes() };
+      let deletions = 0;
+      const run = cloudRun({
+        describes: describesObj,
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              // AWS ACCEPTED the deletion… and then the transport died. The set is gone.
+              delete describesObj[PILOT_STACK_NAMES[1]];
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0, 'the transport surprise still stops the run');
+      assert.match(r.output, /PROVABLY ABSENT/);
+      firstRecord = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // The reconciled record: B was deleted, and the artifact SAYS so — no false claim, no gap.
+      assert.deepEqual(firstRecord.abandoned, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.deepEqual(firstRecord.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]], 'the reconciled set reports its stack record too');
+    });
+    // The continuation derived from that artifact ALONE is NOT mechanically blocked.
+    withArtifact((artifact) => {
+      const remaining = { ...fullDescribes() };
+      delete remaining[PILOT_STACK_NAMES[0]];
+      delete remaining[PILOT_STACK_NAMES[1]];
+      const run = cloudRun({ describes: remaining, stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', decisionId: 'zamp-2026-08-02.b1-abandon-02', ...nextGateInputs(firstRecord) }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[2], PILOT_STACK_NAMES[3]]);
+      assert.deepEqual(record.alreadyAbsent, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    });
+  });
+});
+
+test('I5-4 REPRO: a timeout with an INCONCLUSIVE observation claims neither state — ABANDON_STATE_UNKNOWN', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          // After the failed delete, the reconciliation read itself is inconclusive.
+          if (failedDelete && args[1] === 'describe-change-set') {
+            return { status: 254, stdout: '', stderr: 'Throttling: Rate exceeded' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      assert.match(r.output, /Read-only reconciliation .* is required before a new decision/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // NEVER a false abandoned: only the set deleted BEFORE the ambiguity is claimed.
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]]);
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'the unknown state is its own name, not a claimed failure');
+      assert.deepEqual(record.reportedStackRecords, [PILOT_STACK_NAMES[0]], 'only the PROVEN prefix is reported');
+      // Self-sufficiency survives: the unknown set keeps its digest on the map, so once Zamp
+      // re-observes read-only, the next decision still derives from THIS artifact alone.
+      const unknownEntry = record.changeSets.find((e) => e.stackName === PILOT_STACK_NAMES[1]);
+      assert.match(unknownEntry.canonicalSha256, /^[0-9a-f]{64}$/);
+    });
+  });
+});
+
 test('I5-3: an absence AFTER the first present entry is a state the lane cannot have produced — refused', () => {
   withRelease((p, asm, manifest) => {
     withArtifact((artifact) => {
