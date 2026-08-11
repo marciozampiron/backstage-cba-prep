@@ -554,6 +554,18 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I6-2 (Codex FINDINGS, 1 MEDIUM, fixed forward at a6366c5020e14b6264e9c0a6bb1dfa3bb1dbfabe):
+the I6 envelope had overclaimed markdown coverage — 12 ids across 13 registry-declared anchor
+points lacked bracketed references (SPEC-GOV-001..009 in the spec's §3/§4/§5/§6b/§6c;
+SPEC-RUN-001/002/005 in the runbook README, whose parenthesized mentions are prose, not
+annotations). All 13 now carry tokens, and test/governance-model.test.js gained the FINITE
+migration inventory: the exact bracketed literals of every I6/I6-2 site plus by-count assertions
+for twin tokens — spec:lint proves tokens RESOLVE, the inventory proves they REMAIN. Deliberately
+finite: future PROPOSED ids gain no obligation (SPEC-GOV-006 binds at activation). Proven red on
+token removal; the inventory's own first draft failed on a miscounted twin and was corrected —
+the regression caught its own author. This paragraph was omitted from a6366c50's commit and
+recorded fix-forward in the commit that follows it.
+
 Slice I6 (authorized by Zamp, verbatim `Zamp_Aproved`, 2026-08-11, after the I5-6
 REVIEW_APPROVED): the `[SPEC-ID]` annotations — §5's third traceability direction made
 greppable. Every PROPOSED id's JS/YAML anchor now carries its bracketed token at the definition
