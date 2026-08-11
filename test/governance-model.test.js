@@ -2834,3 +2834,55 @@ test('REGRESSION: an authority claim in a newly governed surface fails the allow
     }
   }
 });
+
+// ─── SLICE I6-2 ───────────────────────────────────────────────────────────────────────────────
+// The [SPEC-ID] annotation MIGRATION is a closed inventory. spec:lint proves existing tokens
+// RESOLVE; it cannot see a token that was silently deleted. This regression pins the exact
+// bracketed literals the I6 migration placed (and the pre-existing frontmatter lists it counts
+// on), file by file — remove or reword one and this fails by name. It is deliberately FINITE:
+// a future PROPOSED id gains no obligation here; per-anchor presence becomes mandatory only at
+// activation (SPEC-GOV-006). Extending this inventory is part of annotating, not automatic.
+test('SLICE I6-2: the annotation migration inventory is FINITE and every expected token is present', () => {
+  const INVENTORY = {
+    'infra/aws/bin/deploy-release.js': [
+      '[SPEC-DEPLOY-001, SPEC-DEPLOY-008, SPEC-DEPLOY-011, SPEC-DEPLOY-013, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018]',
+      '[SPEC-DEPLOY-007]', '[SPEC-DEPLOY-009]', '[SPEC-DEPLOY-010]', '[SPEC-DEPLOY-003]',
+      '[SPEC-DEPLOY-012]', '[SPEC-DEPLOY-005]', '[SPEC-RUN-007]', '[SPEC-RUN-008]',
+    ],
+    'infra/aws/lib/context.js': ['[SPEC-DEPLOY-015]', '[SPEC-DEPLOY-004]'],
+    'infra/aws/lib/deploy-preflight.js': ['[SPEC-DEPLOY-019]'],
+    'bin/resolve-run.mjs': ['[SPEC-LANE-007]'],
+    'infra/aws/lib/security-stack.js': ['[SPEC-IAM-001]'],
+    '.github/workflows/release-pilot.yml': [
+      '[SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-LANE-004, SPEC-RUN-007, SPEC-RUN-008]',
+      '[SPEC-LANE-006]', '[SPEC-LANE-005, SPEC-LANE-006]',
+    ],
+    'docs/runbooks/README.md': ['[SPEC-RUN-001]', '[SPEC-RUN-002]', '[SPEC-RUN-005]', '[SPEC-RUN-003, SPEC-RUN-004]'],
+    'spec/agents/gemini-spec-auditor.md': ['[SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005]'],
+    'spec/spec-anchored-development.md': [
+      '[SPEC-GOV-001]', '[SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005]',
+      '[SPEC-GOV-006, SPEC-GOV-007]', '[SPEC-GOV-004, SPEC-GOV-008]', '[SPEC-GOV-009]',
+    ],
+  };
+  // Sites the migration counts on but did not create: the twin DEPLOY-019 tokens in the
+  // entrypoint and the twin DEPLOY-006/DEPLOY-014 pairs are asserted by COUNT so neither copy
+  // can vanish while the other keeps the include() true.
+  const COUNTS = {
+    'infra/aws/bin/deploy-release.js': [['[SPEC-DEPLOY-019]', 2], ['[SPEC-DEPLOY-006]', 2], ['[SPEC-DEPLOY-014]', 2]],
+    'infra/aws/lib/context.js': [['[SPEC-DEPLOY-015]', 2]],
+    '.github/workflows/release-pilot.yml': [['[SPEC-LANE-006]', 2]],
+  };
+  for (const [file, tokens] of Object.entries(INVENTORY)) {
+    const body = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    for (const token of tokens) {
+      assert.ok(body.includes(token), `${file} must carry ${token} — a silently dropped annotation is drift, not cleanup`);
+    }
+  }
+  for (const [file, pairs] of Object.entries(COUNTS)) {
+    const body = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    for (const [token, expected] of pairs) {
+      const seen = body.split(token).length - 1;
+      assert.equal(seen, expected, `${file} must carry ${token} exactly ${expected} times (saw ${seen})`);
+    }
+  }
+});

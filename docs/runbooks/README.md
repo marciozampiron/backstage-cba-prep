@@ -1,7 +1,7 @@
 # Runbooks — mandatory standard
 
 > **A runbook grants no authority.** It documents HOW an operation is performed, never WHETHER
-> it may be. A runbook that appears to permit something permits nothing (SPEC-RUN-001).
+> it may be. A runbook that appears to permit something permits nothing [SPEC-RUN-001].
 
 ## Four authorizations, never interchangeable
 
@@ -18,7 +18,7 @@ Design rounds 2–3 found these conflated. They are policy DATA in
 
 **Preparing change sets is already cloud mutation** — `plan_only` creates CloudFormation change
 sets and publishes assets — so it depends on a cloud authorization exactly as `deploy` does
-(SPEC-RUN-002).
+[SPEC-RUN-002].
 
 The fourth instrument exists because round 6 found the cleanup effect naming the cloud one,
 which did not authorize it and gave it no mode. It is supplied out of band — never an Environment
@@ -43,7 +43,7 @@ implies another.
 
 ## Every command names its performer
 
-**Each command line states the actor that runs it** (SPEC-RUN-005), and that actor must be
+**Each command line states the actor that runs it** [SPEC-RUN-005], and that actor must be
 permitted to perform the effect by `spec/authority-policy.json`. This is not bookkeeping: the
 policy denies Opus `administer-repository` and `perform-cloud-effect`, so "the operator sets the
 Environment variable" or "the operator dispatches the deploy" would contradict the policy while

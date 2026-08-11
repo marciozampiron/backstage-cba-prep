@@ -570,7 +570,7 @@
     "docs/runbooks/README.md": [
       "| cloud (CBA_CLOUD_GATE) | deploy, prepare-change-sets, execute-change-sets, abandon-change-sets | Zamp |",
       "| stack-record cleanup (out-of-band record) | delete-review-in-progress-stack-record | Zamp, by hand |",
-      "Preparing change sets is already cloud mutation — plan_only creates CloudFormation change sets and publishes assets — so it depends on a cloud authorization exactly as deploy does (SPEC-RUN-002).",
+      "Preparing change sets is already cloud mutation — plan_only creates CloudFormation change sets and publishes assets — so it depends on a cloud authorization exactly as deploy does [SPEC-RUN-002].",
       "A cloud authorization also names its MODE, and the mode fixes the effects exactly — round 5 of the design review found that one instrument covering four effects could not distinguish a plan from an execution:",
       "- humanApprover is always Zamp.",
       "| Rollback | How to return to the last known-good state, and what \"known-good\" means for this operation. If rollback itself mutates cloud state, it depends on its own cloud authorization and says so. |"

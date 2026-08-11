@@ -47,6 +47,8 @@ SPEC  ──anchors──▶  CODE
 
 ## 3. Authority of the spec
 
+[SPEC-GOV-001]
+
 1. **The spec is the contract.** Where an ACTIVE invariant and code disagree, the CODE is wrong —
    or a successor invariant must be PROPOSED and travel the lifecycle (§4). There is no third
    state.
@@ -60,6 +62,8 @@ SPEC  ──anchors──▶  CODE
    editing an ACTIVE invariant's normative text in place.
 
 ## 4. Lifecycle — how "spec first" and "fail-closed CI" coexist
+
+[SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005]
 
 A naive rule — "spec lands first" plus "any divergence fails CI" — deadlocks: the changed spec
 cannot merge while the old code stands. The lifecycle resolves it. Every SPEC-ID carries a
@@ -97,6 +101,8 @@ activation is always atomic with the conformance it claims; and at every commit 
 branch, every ACTIVE id holds — there is no window where CI is red "because the spec moved".
 
 ## 5. SPEC-ID, atomicity and traceability
+
+[SPEC-GOV-006, SPEC-GOV-007]
 
 Format: `SPEC-<AREA>-<NNN>` — `AREA` uppercase (`GOV`, `AUDIT`, `RUN`, `DEPLOY`, `LANE`, `IAM`),
 `NNN` zero-padded. **One invariant, one id**: an id binds exactly one refusable behavior — if
@@ -181,6 +187,8 @@ the normative TEXT of record, and the registry is its machine-readable half.
 
 ### 6b. Digests are framed, and immutability is checked against history
 
+[SPEC-GOV-004, SPEC-GOV-008]
+
 Two rules the #70 rounds already paid for, applied to this system's own artifacts:
 
 1. **Canonical framed serialization, typed — and one framing per KIND of thing.** Every digest
@@ -253,6 +261,8 @@ Two rules the #70 rounds already paid for, applied to this system's own artifact
    the string beside it.
 
 ### 6c. Mutation evidence is a closed record
+
+[SPEC-GOV-009]
 
 "Reviewed in round N" is prose. The registry field is structured, and the linter requires all of
 it before an activation:
