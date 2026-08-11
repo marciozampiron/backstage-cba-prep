@@ -554,6 +554,19 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Slice I8 (first activation batch, per the standing authorization and the post-I7 sequence):
+SPEC-DEPLOY-016 and SPEC-DEPLOY-021 are ACTIVE — the first ids CI enforces. Each activation is
+atomic per §4: exact named tests on the registry (two per id), a closed §6c mutation record
+performed at cee1ac66de42bbf1bed5750142ddfdae8a3abebf with the patch digested as a §6b diff
+document (headSha minted via git stash create, no ref moved, worktree restored and verified
+clean), and the table row moved to ACTIVE in the same commit. Proofs: the deploy-path
+PLAN_CHANGED refusal removed fails exactly the ROUND-4 REPRO test; a DeleteStack call inserted
+into the abandon report loop fails exactly the never-touches-a-stack meta-test. spec:conform
+now RUNS: 2 ACTIVE ids, 4 named tests, all green — and the governed-path predicate is live for
+infra/aws/bin/deploy-release.js and spec/authority-policy.json: their future changes must move
+their conformance evidence. A governance regression pins both activations (status, closed
+record, named tests) so enforcement cannot be quietly switched off.
+
 Round I7-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): the policy no longer forbids the very
 role I7 seated — the blanket `mayNever` term was NARROWED to `any-authority-bearing-role` in
 the vocabulary, the never-grantable set, both policy twins and every consuming test; the old

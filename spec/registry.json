@@ -899,7 +899,7 @@
     },
     {
       "id": "SPEC-DEPLOY-016",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "A plan recomputed at execution time that differs from the",
       "normativeText": "A plan recomputed at execution time that differs from the digest the authorization names refuses as `PLAN_CHANGED`, and no change set executes.",
       "normativeSha256": "866082c01474918992dbe151d78c662e46b7b040b7b9aa99b2e44f959a8ea08d",
@@ -912,14 +912,23 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "ABANDON: a drifted plan refuses as PLAN_CHANGED and NOTHING is deleted"
         }
       ],
       "checks": [],
       "governedPaths": [
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": {
+        "commit": "cee1ac66de42bbf1bed5750142ddfdae8a3abebf",
+        "patchSha256": "a1590bfad03b73ef0dfbf87fe2c0900cc48d6180aea473df2a631614ed843274",
+        "command": "node --test --test-name-pattern \"drift refuses as PLAN_CHANGED\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: \"ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED\" (the deploy-path PLAN_CHANGED refusal removed; §6b diff headSha 001ae8a14c0b18e712395711d705d08bb9a1931d)"
+      },
       "supersedes": [],
       "supersededBy": null
     },
@@ -1033,7 +1042,7 @@
     },
     {
       "id": "SPEC-DEPLOY-021",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "Deleting the empty stack record a CREATE change set leaves",
       "normativeText": "Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision.",
       "normativeSha256": "3c7ed19f287c502ae3936b05c592507270c84ba16b5cd81d8c842708730260ff",
@@ -1041,19 +1050,32 @@
         {
           "file": "spec/authority-policy.json",
           "symbol": "delete-review-in-progress-stack-record"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "abandon"
         }
       ],
       "tests": [
         {
           "file": "test/governance-model.test.js",
-          "title": null
+          "title": "the authority policy states the invariants as data, not prose"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "ABANDON: deletes exactly the declined change sets, in order, and never touches a stack"
         }
       ],
       "checks": [],
       "governedPaths": [
         "spec/authority-policy.json"
       ],
-      "mutationEvidence": "policy data + test reviewed in this commit; no lane may perform it",
+      "mutationEvidence": {
+        "commit": "cee1ac66de42bbf1bed5750142ddfdae8a3abebf",
+        "patchSha256": "988134a9e6d8b2ae7a1c843b5387effcc867c4ba7b484e22527e586e34345260",
+        "command": "node --test --test-name-pattern \"never touches a stack\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: \"ABANDON: deletes exactly the declined change sets, in order, and never touches a stack\" (a DeleteStack call inserted into the abandon report loop; §6b diff headSha 9b4f57bf83ec719cc2c27cbd63316d6ec96862e0)"
+      },
       "supersedes": [],
       "supersededBy": null
     },

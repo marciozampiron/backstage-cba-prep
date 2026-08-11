@@ -2948,3 +2948,16 @@ test('ROUND I7-2: the retired blanket term cannot return while the persona is se
   const persona = read('spec/agents/gemini-spec-auditor.md');
   assert.match(persona, /Status: SEATED \(Slice I7\)/, 'the persona stays seated while the ban stays narrowed');
 });
+
+// ─── SLICE I8 ── the first activations: enforcement is ON and its evidence is closed ──────────
+test('SLICE I8: the first two activations are ACTIVE with closed §6c records — enforcement is on', () => {
+  const reg = JSON.parse(read('spec/registry.json'));
+  for (const id of ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']) {
+    const e = reg.entries.find((x) => x.id === id);
+    assert.equal(e.status, 'ACTIVE', `${id} must stay ACTIVE — enforcement is never quietly switched off`);
+    assert.deepEqual(Object.keys(e.mutationEvidence).sort(), ['command', 'commit', 'expectedFailure', 'patchSha256']);
+    assert.match(e.mutationEvidence.commit, /^[0-9a-f]{40}$/);
+    assert.match(e.mutationEvidence.patchSha256, /^[0-9a-f]{64}$/);
+    assert.ok(e.tests.length >= 2 && e.tests.every((t) => typeof t.title === 'string' && t.title.length > 0), `${id} names its exact tests`);
+  }
+});
