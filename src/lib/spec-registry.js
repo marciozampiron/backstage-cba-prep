@@ -328,8 +328,23 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
         // of brackets embrace a parenthesized prose mention across lines (caught in this
         // round's own reversion proof).
         const tokenRe = new RegExp(`\\[[^\\[\\]\\n]*\\b${id}\\b[^\\[\\]\\n]*\\]`);
-        if (!tokenRe.test(String(readFile(anchor.file)))) {
-          fail(`${id} is ACTIVE but ${anchor.file} carries no bracketed [${id}] annotation (§5 third direction).`);
+        const content = String(readFile(anchor.file));
+        // Round I8-3: the token binds to the ANCHOR'S SITE, not to the file — two anchors in
+        // one file are two obligations, and a distant token satisfies neither for the other.
+        // A symbol anchor needs the token structurally adjacent: on an occurrence's own line
+        // or within the ten lines above one. A file-level anchor (symbol null) is an
+        // obligation of the whole file, which any single-line token in it satisfies.
+        if (anchor.symbol === null) {
+          if (!tokenRe.test(content)) {
+            fail(`${id} is ACTIVE but ${anchor.file} carries no bracketed [${id}] annotation (§5 third direction).`);
+          }
+        } else {
+          const lines = content.split('\n');
+          const adjacent = lines.some((ln, i) => ln.includes(anchor.symbol)
+            && (tokenRe.test(ln) || lines.slice(Math.max(0, i - 10), i).some((above) => tokenRe.test(above))));
+          if (!adjacent) {
+            fail(`${id} is ACTIVE but anchor ${anchor.file}::${anchor.symbol} has no [${id}] token structurally adjacent to the symbol (same line or the ten lines above an occurrence) (§5 third direction).`);
+          }
         }
         const covered = entry.governedPaths.some((g) => (g.endsWith('/') ? anchor.file.startsWith(g) : anchor.file === g));
         if (!covered) {

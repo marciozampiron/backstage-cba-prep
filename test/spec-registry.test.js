@@ -86,6 +86,11 @@ test('ROUND I8-2: an ACTIVE anchor without its token, or outside its own governe
     const e = entry(r, 'SPEC-DEPLOY-021');
     e.governedPaths = e.governedPaths.filter((g) => g !== 'infra/aws/bin/deploy-release.js');
   }, /outside its own governedPaths/);
+  // ROUND I8-3 (Codex's exact reproduction): a SECOND anchor in the SAME file, unannotated at
+  // its own site, must refuse — the abandon block's distant token is not childEvidence's.
+  expectRejected((r) => {
+    entry(r, 'SPEC-DEPLOY-021').anchors.push({ file: 'infra/aws/bin/deploy-release.js', symbol: 'childEvidence' });
+  }, /childEvidence has no .SPEC-DEPLOY-021. token structurally adjacent/);
 });
 
 test('the id law: format, uniqueness, and never-reused ids', () => {
@@ -120,8 +125,13 @@ test('the table-agreement law fails in BOTH directions', () => {
     e.normativeText = 'a quietly different sentence';
     e.normativeSha256 = framedTextDigest(e.id, e.normativeText);
   }, /normative text disagrees/);
-  // …status drift is drift…
-  expectRejected((r) => { entry(r, 'SPEC-GOV-001').status = 'ACTIVE'; }, /status disagrees|ACTIVE with no test anchor/);
+  // …status drift is drift… (I8-3: the flipped id gets a token-satisfied file-level anchor so
+  // the per-anchor annotation law — which validates first — is not what this case proves)
+  expectRejected((r) => {
+    const e = entry(r, 'SPEC-GOV-001');
+    e.status = 'ACTIVE';
+    e.anchors = [{ file: 'spec/spec-anchored-development.md', symbol: null }];
+  }, /status disagrees|ACTIVE with no test anchor/);
   // …a registry id the tables never defined…
   expectRejected((r) => {
     const clone = structuredClone(entry(r, 'SPEC-GOV-001'));

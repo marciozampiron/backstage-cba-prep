@@ -554,6 +554,16 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I8-3 (Codex FINDINGS, 1 MEDIUM, fixed forward): the annotation law now binds the token
+to the ANCHOR'S SITE, not to the file — a symbol anchor requires its id's token on an
+occurrence's own line or within the ten lines above one; a file-level anchor (symbol null)
+remains an obligation of the whole file. Codex's exact reproduction is the new refusing
+discriminant: a second anchor in the same file (childEvidence), unannotated at its own site,
+refuses even though the abandon block's token exists at distance. Live proof: relocating
+-021's token from the abandon block to the file header refuses by name. One fixture followed
+the law (the table-agreement status-drift case now grants its transient ACTIVE a
+token-satisfied file-level anchor, so the case keeps proving table drift, not annotation).
+
 Round I8-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): SPEC-DEPLOY-021's traceability was
 completed — the abandon block carries its bracketed token beside SPEC-RUN-008's, the
 entrypoint joined the id's own governedPaths, the human table lists both anchors and both
