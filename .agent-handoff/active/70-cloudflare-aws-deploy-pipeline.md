@@ -554,6 +554,17 @@ spellings, the three cartesian swaps, a silent command removal, and all eight pr
 each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
 every dispatch/download/API path, no administrative subcommand ever inventoried).
 
+Round I8-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): SPEC-DEPLOY-021's traceability was
+completed — the abandon block carries its bracketed token beside SPEC-RUN-008's, the
+entrypoint joined the id's own governedPaths, the human table lists both anchors and both
+tests, and the abandon meta-test now proves the annotation's presence as executable evidence.
+The GENERIC law landed in the validator: every non-JSON anchor of an ACTIVE id must carry the
+id's own single-line bracketed token AND be covered by one of the id's own governedPaths —
+refusing discriminants for both directions, plus live reversion proofs. The proof run caught a
+real defect in the law's first draft: the token regex could span lines, letting any distant
+bracket pair embrace a parenthesized prose mention — tightened to a single-line bracket group
+before commit, with the trap recorded in the validator comment.
+
 Slice I8 (first activation batch, per the standing authorization and the post-I7 sequence):
 SPEC-DEPLOY-016 and SPEC-DEPLOY-021 are ACTIVE — the first ids CI enforces. Each activation is
 atomic per §4: exact named tests on the registry (two per id), a closed §6c mutation record

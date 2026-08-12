@@ -317,6 +317,25 @@ export function validateSpecRegistry({ registryRaw, specMd, fileExists, readFile
           }
         }
       }
+      // Round I8-2: an ACTIVE id's traceability is complete or it is not ACTIVE — every
+      // non-JSON anchor carries the id's own bracketed token (JSON cannot hold comments; the
+      // registry stays the map there), and every non-JSON anchor is covered by one of the id's
+      // OWN governedPaths, so the conformance-evidence predicate travels with the code.
+      for (const anchor of entry.anchors) {
+        if (anchor.file.endsWith('.json')) continue;
+        if (readFile === null) fail(`${id} is ACTIVE with non-JSON anchors but no readFile accessor was provided to verify them.`);
+        // A token is a SINGLE-LINE bracket group — a loose class would let any distant pair
+        // of brackets embrace a parenthesized prose mention across lines (caught in this
+        // round's own reversion proof).
+        const tokenRe = new RegExp(`\\[[^\\[\\]\\n]*\\b${id}\\b[^\\[\\]\\n]*\\]`);
+        if (!tokenRe.test(String(readFile(anchor.file)))) {
+          fail(`${id} is ACTIVE but ${anchor.file} carries no bracketed [${id}] annotation (§5 third direction).`);
+        }
+        const covered = entry.governedPaths.some((g) => (g.endsWith('/') ? anchor.file.startsWith(g) : anchor.file === g));
+        if (!covered) {
+          fail(`${id} is ACTIVE but anchor ${anchor.file} is outside its own governedPaths — the governed-path predicate must travel with every anchor (§6).`);
+        }
+      }
       if (entry.tests.length === 0) fail(`${id} is ACTIVE with no test anchor (SPEC-GOV-006).`);
       if (entry.tests.some((t) => t.title === null)) {
         fail(`${id} is ACTIVE but a test names only a file; ACTIVE requires the exact tests that fail when the invariant breaks (§5).`);

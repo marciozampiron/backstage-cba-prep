@@ -2851,7 +2851,7 @@ test('SLICE I6-2: the annotation migration inventory is FINITE and every expecte
     'infra/aws/bin/deploy-release.js': [
       '[SPEC-DEPLOY-001, SPEC-DEPLOY-008, SPEC-DEPLOY-011, SPEC-DEPLOY-013, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018]',
       '[SPEC-DEPLOY-007]', '[SPEC-DEPLOY-009]', '[SPEC-DEPLOY-010]', '[SPEC-DEPLOY-003]',
-      '[SPEC-DEPLOY-012]', '[SPEC-DEPLOY-005]', '[SPEC-RUN-007]', '[SPEC-RUN-008]',
+      '[SPEC-DEPLOY-012]', '[SPEC-DEPLOY-005]', '[SPEC-RUN-007]', '[SPEC-RUN-008]', '[SPEC-DEPLOY-021]',
     ],
     'infra/aws/lib/context.js': ['[SPEC-DEPLOY-015]', '[SPEC-DEPLOY-004]'],
     'infra/aws/lib/deploy-preflight.js': ['[SPEC-DEPLOY-019]'],

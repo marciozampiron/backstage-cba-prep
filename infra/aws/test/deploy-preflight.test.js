@@ -2882,7 +2882,10 @@ test('ABANDON: deletes exactly the declined change sets, in order, and never tou
       assert.equal(run.of('execute-change-set').length, 0, 'abandon EXECUTES nothing');
       // No DeleteStack exists in this file at all — the record is REPORTED, not removed.
       assert.equal(run.calls.filter((c) => c.args[1] === 'delete-stack').length, 0);
-      assert.ok(!fs.readFileSync(require.resolve('../bin/deploy-release.js'), 'utf8').includes('delete-stack'), 'the entrypoint must not even contain the DeleteStack verb');
+      const entrypointSource = fs.readFileSync(require.resolve('../bin/deploy-release.js'), 'utf8');
+      assert.ok(!entrypointSource.includes('delete-stack'), 'the entrypoint must not even contain the DeleteStack verb');
+      // ROUND I8-2: the ACTIVE id's annotation is part of the evidence this test guards.
+      assert.ok(entrypointSource.includes('[SPEC-DEPLOY-021]'), 'the abandon block carries its ACTIVE annotation token');
       assert.match(r.output, /REPORTED \(never deleted\)/);
       const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
       assert.equal(record.outcome, 'ABANDONED');

@@ -1293,7 +1293,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
     // absentEntryDigests are copied from, and it is not an ARN.
     evidence.changeSets = planEntries.map((entry) => ({ stackName: entry.stackName, changeSetName, status: entry.status, canonicalSha256: entryDigestOf(entry) }));
 
-    // [SPEC-RUN-008]
+    // [SPEC-RUN-008] [SPEC-DEPLOY-021]
     // 5c-abandon (Slice I5, SPEC-RUN-008): delete EXACTLY the declined plan. The recomputed
     // digest must equal the one the abandon gate names — a drifted, recreated or superseded set
     // refuses as PLAN_CHANGED and NOTHING is deleted; a surprised operation stops rather than

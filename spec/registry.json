@@ -1068,7 +1068,8 @@
       ],
       "checks": [],
       "governedPaths": [
-        "spec/authority-policy.json"
+        "spec/authority-policy.json",
+        "infra/aws/bin/deploy-release.js"
       ],
       "mutationEvidence": {
         "commit": "cee1ac66de42bbf1bed5750142ddfdae8a3abebf",

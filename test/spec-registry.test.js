@@ -74,6 +74,20 @@ test('CI WIRING: conformance sees the ACTIVE set, and the zero-ACTIVE honesty pa
   assert.deepEqual(zeroActive, { activeCount: 0, results: [], ok: true });
 });
 
+test('ROUND I8-2: an ACTIVE anchor without its token, or outside its own governedPaths, refuses', () => {
+  // The gap Codex found in I8: -021 activated with a new JS anchor that had no bracketed token
+  // and no governedPath coverage — complete traceability is an ACTIVATION predicate, not a
+  // convention. Both directions of the generic law, proven refusing:
+  expectRejected((r) => {
+    // an anchor pointing at a real non-JSON file that carries no [SPEC-DEPLOY-021] token
+    entry(r, 'SPEC-DEPLOY-021').anchors.push({ file: 'bin/resolve-run.mjs', symbol: null });
+  }, /carries no bracketed .SPEC-DEPLOY-021. annotation/);
+  expectRejected((r) => {
+    const e = entry(r, 'SPEC-DEPLOY-021');
+    e.governedPaths = e.governedPaths.filter((g) => g !== 'infra/aws/bin/deploy-release.js');
+  }, /outside its own governedPaths/);
+});
+
 test('the id law: format, uniqueness, and never-reused ids', () => {
   expectRejected((r) => { entry(r, 'SPEC-GOV-001').id = 'SPEC-GOV-1'; }, /does not match/);
   expectRejected((r) => { entry(r, 'SPEC-GOV-001').id = 'SPEC-NEW-001'; }, /does not match/);
@@ -720,7 +734,7 @@ test('ROUND I1-5: a swap AFTER the first guard is caught at that child boundary'
   const COMMIT = 'a'.repeat(40);
   const REL = 'test/fixtures/tmp-exec-probe.sh';
   const ABS = path.join(ROOT, REL);
-  const AUDITED = '#!/usr/bin/env bash\nexit 0\n';
+  const AUDITED = '#!/usr/bin/env bash\n# [SPEC-GOV-001]\nexit 0\n'; // token: the I8-2 law validates before the boundary this test probes
   const registryRaw = JSON.stringify({
     $comment: ['x'], version: 1,
     entries: [{
