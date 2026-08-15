@@ -1317,6 +1317,114 @@ test('a failing prepare child refuses the run — no change sets, no plan, no ef
   });
 });
 
+test('SPEC-DEPLOY-009: strict RFC3339 UTC instants — invalid calendar, offsets and non-canonical forms refuse; the canonical instant passes', () => {
+  withRelease((p, asm, manifest) => {
+    const attempt = (over) =>
+      runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { CBA_CLOUD_GATE: gateFor(manifest, over) },
+        now: () => GATE_NOW,
+        exec: () => assert.fail('a malformed instant must never spawn a child'),
+      });
+    // The adversarial matrix of the batch-2 activation (Codex): every non-canonical form of an
+    // instant is CLOUD_GATE_MALFORMED — never parsed leniently, never normalized.
+    for (const [label, value] of [
+      ['invalid calendar date', '2026-02-30T10:00:00Z'],
+      ['offset instead of Z', '2026-08-02T11:50:00+00:00'],
+      ['negative offset', '2026-08-02T08:50:00-03:00'],
+      ['fractional seconds', '2026-08-02T11:50:00.000Z'],
+      ['unpadded month-day', '2026-8-2T11:50:00Z'],
+      ['space separator', '2026-08-02 11:50:00Z'],
+      ['no timezone at all', '2026-08-02T11:50:00'],
+      ['lowercase z', '2026-08-02T11:50:00z'],
+    ]) {
+      const r = attempt({ approvedAt: value });
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/, label);
+    }
+    // …and the canonical instant is the ONE accepted form: the default gate reaches past the
+    // gate check entirely (its failure, if any, is not the gate's shape).
+    const ok = attempt({});
+    assert.ok(!/CLOUD_GATE_MALFORMED/.test(ok.output), 'the canonical UTC instant must pass the shape check');
+  });
+});
+
+test('SPEC-DEPLOY-010: the window law — approvedAt inclusive, expiresAt exclusive, the one-hour TTL ceiling exact', () => {
+  withRelease((p, asm, manifest) => {
+    const attempt = (over, nowIso) =>
+      runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { CBA_CLOUD_GATE: gateFor(manifest, over) },
+        now: () => Date.parse(nowIso),
+        exec: () => assert.fail('a lapsed or premature window must never spawn a child'),
+      });
+    // now == approvedAt is INSIDE the window (inclusive start)…
+    const atStart = attempt({}, '2026-08-02T11:50:00Z');
+    assert.ok(!/CLOUD_GATE_EXPIRED|CLOUD_GATE_NOT_YET_VALID/.test(atStart.output), 'now == approvedAt is authorized');
+    // …now < approvedAt is not yet valid…
+    const early = attempt({}, '2026-08-02T11:49:59Z');
+    assert.equal(early.exit, 1);
+    assert.match(early.output, /CLOUD_GATE_NOT_YET_VALID/);
+    // …and now == expiresAt is OUTSIDE (exclusive end): a window is a half-open interval.
+    const atEnd = attempt({}, '2026-08-02T12:30:00Z');
+    assert.equal(atEnd.exit, 1);
+    assert.match(atEnd.output, /CLOUD_GATE_EXPIRED/);
+    // TTL of exactly one hour is the ceiling — accepted…
+    const exactHour = attempt({ approvedAt: '2026-08-02T11:50:00Z', expiresAt: '2026-08-02T12:50:00Z' }, '2026-08-02T12:00:00Z');
+    assert.ok(!/CLOUD_GATE_MALFORMED|CLOUD_GATE_TTL/.test(exactHour.output), 'exactly 1h TTL is legal');
+    // …one second beyond is refused.
+    const overHour = attempt({ approvedAt: '2026-08-02T11:50:00Z', expiresAt: '2026-08-02T12:50:01Z' }, '2026-08-02T12:00:00Z');
+    assert.equal(overHour.exit, 1);
+    assert.match(overHour.output, /CLOUD_GATE_MALFORMED|CLOUD_GATE_TTL/);
+  });
+});
+
+test('SPEC-DEPLOY-019: the closed gate schema — absent and unknown keys, wrong types, per-mode nullability and incompatible effects refuse', () => {
+  withRelease((p, asm, manifest) => {
+    const attempt = (gateValue, envOver = {}) =>
+      runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { CBA_CLOUD_GATE: gateValue, ...envOver },
+        now: () => GATE_NOW,
+        exec: () => assert.fail('a malformed gate must never spawn a child'),
+      });
+    const base = JSON.parse(gateFor(manifest));
+    // Absent key: each of the eleven, removed one at a time, refuses.
+    for (const key of Object.keys(base)) {
+      const broken = { ...base };
+      delete broken[key];
+      const r = attempt(JSON.stringify(broken));
+      assert.equal(r.exit, 1, `absent ${key}`);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/, `absent ${key}`);
+    }
+    // Unknown key refuses — the schema is a sorted key-set equality, not a subset check.
+    const extra = attempt(JSON.stringify({ ...base, note: 'x' }));
+    assert.match(extra.output, /CLOUD_GATE_MALFORMED/);
+    // Wrong type refuses.
+    const wrongType = attempt(JSON.stringify({ ...base, issue: '70' }));
+    assert.match(wrongType.output, /CLOUD_GATE_MALFORMED/);
+    // Per-mode nullability: plan_only with a plan digest, and deploy without one, both refuse.
+    const planWithDigest = attempt(gateFor(manifest, { mode: 'plan_only' }));
+    assert.match(planWithDigest.output, /CLOUD_GATE_MALFORMED/);
+    const deployNoDigest = attempt(gateFor(manifest, { planDigest: null }));
+    assert.match(deployNoDigest.output, /CLOUD_GATE_MALFORMED/);
+    // Mode outside the enum refuses.
+    const badMode = attempt(gateFor(manifest, { mode: 'cleanup' }));
+    assert.match(badMode.output, /CLOUD_GATE_MALFORMED/);
+    // Incompatible effect: a run dispatched as abandon carrying a deploy-mode gate refuses by
+    // name — the mode/effect binding half of the law.
+    const mismatched = attempt(gateFor(manifest), { DISPATCH_MODE: 'abandon' });
+    assert.equal(mismatched.exit, 1);
+    assert.match(mismatched.output, /MODE_MISMATCH/);
+  });
+});
+
 test('ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED', () => {
   withRelease((p, asm, manifest) => {
     // Run 1 — plan_only over live state A: the change sets and their digest go on the record.

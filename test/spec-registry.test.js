@@ -51,8 +51,8 @@ test('CI WIRING: the real registry validates against the real spec document', ()
   // Slice I8: the first activation batch — everything else stays PROPOSED until its own
   // activation commit satisfies its own predicates (§4). TWO ids are RETIRED by
   // before-activation absorption: -020 (design round 5) and -002 (Slice I4).
-  assert.deepEqual(counts, { PROPOSED: 52, ACTIVE: 2, RETIRED: 2 });
-  assert.deepEqual(registry.entries.filter((e) => e.status === 'ACTIVE').map((e) => e.id).sort(), ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']);
+  assert.deepEqual(counts, { PROPOSED: 49, ACTIVE: 5, RETIRED: 2 });
+  assert.deepEqual(registry.entries.filter((e) => e.status === 'ACTIVE').map((e) => e.id).sort(), ['SPEC-DEPLOY-009', 'SPEC-DEPLOY-010', 'SPEC-DEPLOY-016', 'SPEC-DEPLOY-019', 'SPEC-DEPLOY-021']);
   const retiredIds = registry.entries.filter((e) => e.status === 'RETIRED').map((e) => e.id).sort();
   assert.deepEqual(retiredIds, ['SPEC-DEPLOY-002', 'SPEC-DEPLOY-020']);
   for (const id of retiredIds) assert.equal(entry(registry, id).supersededBy, 'SPEC-DEPLOY-019');
@@ -68,10 +68,19 @@ test('CI WIRING: conformance sees the ACTIVE set, and the zero-ACTIVE honesty pa
   // by filtering the ACTIVE set out.
   const registry = validateSpecRegistry(SOURCES);
   const active = registry.entries.filter((e) => e.status === 'ACTIVE');
-  assert.deepEqual(active.map((e) => e.id).sort(), ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']);
-  assert.equal(active.flatMap((e) => e.tests).length, 4, 'four named tests are what conformance enforces');
+  assert.deepEqual(active.map((e) => e.id).sort(), ['SPEC-DEPLOY-009', 'SPEC-DEPLOY-010', 'SPEC-DEPLOY-016', 'SPEC-DEPLOY-019', 'SPEC-DEPLOY-021']);
+  assert.equal(active.flatMap((e) => e.tests).length, 12, 'twelve named tests are what conformance enforces after batch 2');
   const zeroActive = runConformance({ entries: registry.entries.filter((e) => e.status !== 'ACTIVE') });
   assert.deepEqual(zeroActive, { activeCount: 0, results: [], ok: true });
+});
+
+test('BATCH 2 (#115): SPEC-DEPLOY-019 metadata counts ELEVEN keys — the ten-key form cannot return', () => {
+  // Codex (batch-2 review, LOW): the title is not normative text, but it is canonical registry
+  // metadata a human audit reads — a stale count misdescribes an ACTIVE requirement.
+  const e = entry(REGISTRY, 'SPEC-DEPLOY-019');
+  assert.ok(!/ten keys/.test(e.title), 'the pre-I5-2 ten-key phrasing must not return to the title');
+  assert.match(e.title, /eleven keys/);
+  assert.match(e.normativeText, /eleven keys/);
 });
 
 test('ROUND I8-2: an ACTIVE anchor without its token, or outside its own governedPaths, refuses', () => {
@@ -173,14 +182,15 @@ test('the lifecycle law: what ACTIVE must carry, what RETIRED must name', () => 
     setSpec(SOURCES.specMd.replace('| SPEC-DEPLOY-001 | PROPOSED |', '| SPEC-DEPLOY-001 | ACTIVE |'));
   }, /ACTIVE with no code anchor/);
   // RETIRED without a successor refuses: retirement is never a quiet delete (§4).
-  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = null; }, /RETIRED without supersededBy/);
+  // Batch 2: with -019 now ACTIVE, §4 atomicity (the successor's reciprocity) may fire first.
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = null; }, /RETIRED without supersededBy|not RETIRED naming it back/);
   // A dangling supersession refuses in either field.
-  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-DEPLOY-099'; }, /references unregistered id/);
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-DEPLOY-099'; }, /references unregistered id|not RETIRED naming it back/);
   expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = ['SPEC-DEPLOY-098']; }, /references unregistered id|does not name/);
   expectRejected((r) => { entry(r, 'SPEC-DEPLOY-019').supersedes = ['SPEC-DEPLOY-019']; }, /cannot reference itself/);
   // ROUND I1-2 (Codex's exact reproduction): a supersededBy aimed at an unrelated id refuses,
   // because supersession is reciprocal or it is nothing.
-  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-GOV-001'; }, /does not name SPEC-DEPLOY-020 back/);
+  expectRejected((r) => { entry(r, 'SPEC-DEPLOY-020').supersededBy = 'SPEC-GOV-001'; }, /does not name SPEC-DEPLOY-020 back|not RETIRED naming it back/);
 });
 
 test('anchors and governed paths must exist in the tree being linted', () => {
@@ -302,7 +312,7 @@ test('ROUND I1-2: the historical laws — nothing deleted, ACTIVE immutable, RET
       const e = r.entries.find((x) => x.id === 'SPEC-DEPLOY-020');
       e.status = 'PROPOSED';
       e.supersededBy = null;
-    }), /was RETIRED and changed status|RETIRED without supersededBy|status disagrees/);
+    }), /was RETIRED and changed status|RETIRED without supersededBy|status disagrees|not RETIRED naming it back/);
   }
 });
 

@@ -709,7 +709,7 @@
     },
     {
       "id": "SPEC-DEPLOY-009",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "An authorization instant is accepted only as strict RFC3339 UTC",
       "normativeText": "An authorization instant is accepted only as strict RFC3339 UTC that round-trips through the calendar; a normalized or offset instant refuses.",
       "normativeSha256": "b2fce656ce528b77f97a842ff6ac546bd4090bac4d39dc71e20a65b94ff2a6d2",
@@ -722,20 +722,29 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-009: strict RFC3339 UTC instants — invalid calendar, offsets and non-canonical forms refuse; the canonical instant passes"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the cloud gate is required, closed, bound and expiring — every broken form refuses before any child"
         }
       ],
       "checks": [],
       "governedPaths": [
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "728c204d4c82b89104acf949b9f9e9777cd70a239437908a5f9c466001e86eae",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-009\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -009 test (a lenient Date.parse fast-path added to strictUtcInstant; §6b diff headSha c39c90a03928e08ca4801d8fd149505012bbe2db)"
+      },
       "supersedes": [],
       "supersededBy": null
     },
     {
       "id": "SPEC-DEPLOY-010",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "An authorization is valid only while approvedAt ≤ now <",
       "normativeText": "An authorization is valid only while `approvedAt` ≤ now < `expiresAt`, with `expiresAt − approvedAt` at most one hour.",
       "normativeSha256": "be366a8862983038c421d44a55b8ab5cb625cabc97cfb1d9d6101988c6f9c675",
@@ -748,14 +757,23 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-010: the window law — approvedAt inclusive, expiresAt exclusive, the one-hour TTL ceiling exact"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the window is re-checked before EVERY mutation — a lapse mid-sequence stops with the honest record"
         }
       ],
       "checks": [],
       "governedPaths": [
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "11463af0a5e037142bc591a3da335aeefd5d34ae3ddfebfc7ea189b68e19d451",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-010\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -010 test (CLOUD_GATE_MAX_TTL_MS doubled to 2h; §6b diff headSha ffe0406503a61965e8e256ab6c18c4bcf682a2c3)"
+      },
       "supersedes": [],
       "supersededBy": null
     },
@@ -960,8 +978,8 @@
     },
     {
       "id": "SPEC-DEPLOY-019",
-      "status": "PROPOSED",
-      "title": "The cloud authorization value has EXACTLY these ten keys —",
+      "status": "ACTIVE",
+      "title": "The cloud authorization value has EXACTLY these eleven keys —",
       "normativeText": "The cloud authorization value has EXACTLY these eleven keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `absentEntryDigests`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
       "normativeSha256": "ffe37c51cb8acd684b6b895ad38685f7f0013620a8c670e3a51c0f5e153fe92e",
       "anchors": [
@@ -981,11 +999,19 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-019: the closed gate schema — absent and unknown keys, wrong types, per-mode nullability and incompatible effects refuse"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the cloud gate is required, closed, bound and expiring — every broken form refuses before any child"
         },
         {
           "file": "test/digest-agreement.test.js",
-          "title": null
+          "title": "the ESM and CJS bundle framings agree on every fixture, multibyte included"
+        },
+        {
+          "file": "test/digest-agreement.test.js",
+          "title": "the manifest digest is a property of CONTENT, not of key order or writer whitespace"
         }
       ],
       "checks": [],
@@ -993,7 +1019,12 @@
         "infra/aws/bin/deploy-release.js",
         "infra/aws/lib/deploy-preflight.js"
       ],
-      "mutationEvidence": "code + tests reviewed in I4: manifestDigest recomputed from the verified manifest (never trusted), the retired key refused as unknown, abandon-mode gates schema-valid but refused ABANDON_NOT_IMPLEMENTED before any change-set API call or mutation (identity reads precede the gate check by design) until the abandon lane lands",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "ce9d4e27a7fba2df38db9bfd87461723cb04ddf777028840a2165d60851d2bc5",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-019\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -019 test (the sorted key-set equality weakened to an always-true subset check; the first splice broke module load and was REDONE cleanly; §6b diff headSha 938cc285c38b764b745dd7b36191faf55227f2d0)"
+      },
       "supersedes": [
         "SPEC-DEPLOY-002",
         "SPEC-DEPLOY-020"
