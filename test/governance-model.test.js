@@ -2507,7 +2507,7 @@ test('ROUND I4-3: the retired over-claim about the abandon refusal cannot return
   // in the canonical handoff beside the corrected one — two contradictory guarantees coexisting.
   // The stale phrasing is refused, finitely, on every surface that states the guarantee.
   const surfaces = [
-    '.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md',
+    '.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md',
     'spec/spec-anchored-development.md',
     'infra/aws/bin/deploy-release.js',
     'infra/aws/test/deploy-preflight.test.js',
@@ -2757,12 +2757,12 @@ test('the #70 handoff carries both deploy preflight conditions #69 registered ag
   // #69 registered two binding conditions on #70 and then closed. A transfer that keeps the domain
   // DECISION but drops the preflight loses them silently: deciding the origin makes the values
   // knowable, supplying and verifying them is what clears the deploy.
-  const text = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+  const text = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
   assert.deepEqual(preflightContractErrors(text), [], 'the real #70 handoff must satisfy the contract');
 });
 
 test('POSITIVE CONTROL: the preflight contract rejects each way it can be hollowed out', () => {
-  const text = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+  const text = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
   const rejects = (mutated, why) => {
     assert.notDeepEqual(preflightContractErrors(mutated), [], `must be rejected: ${why}`);
   };

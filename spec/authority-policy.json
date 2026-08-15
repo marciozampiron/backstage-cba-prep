@@ -233,7 +233,7 @@
     ".agent-handoff/active/91-role-separated-publication.md",
     ".agent-handoff/done/67-cloudflare-opennext-stage-b.md",
     ".agent-handoff/done/75-smoke-cleanup-contract.md",
-    ".agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md",
+    ".agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md",
     ".agent-handoff/done/106-dependabot-high-remediation.md",
     ".agent-handoff/publish-gates/example.gate.json",
     "src/commands/agent-check.js",
@@ -279,7 +279,7 @@
       ".agent-handoff/active/91-role-separated-publication.md",
       ".agent-handoff/done/67-cloudflare-opennext-stage-b.md",
       ".agent-handoff/done/75-smoke-cleanup-contract.md",
-      ".agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md",
+      ".agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md",
       ".agent-handoff/done/106-dependabot-high-remediation.md",
       ".agent-handoff/publish-gates/example.gate.json",
       "src/commands/agent-check.js",
@@ -467,7 +467,7 @@
     ],
     ".agent-handoff/done/67-cloudflare-opennext-stage-b.md": [],
     ".agent-handoff/done/75-smoke-cleanup-contract.md": [],
-    ".agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md": [
+    ".agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md": [
       "The 6 high Dependabot alerts — REMEDIATED by upgrade in #106 (PR #107, merged 3583aeda), zero risk acceptance, 0 high open.",
       "The Codex round-2 review of Slice B1 required, and the correction delivered: the deploy effect is a CLOSED stack set the manifest names (v5 target.stacks — Api/Data/Identity/Observability, with --exclusively, never --all; SecurityStack and AiOrchestrationStack classified excluded and a discovery test refusing unclassified stacks); releases serialize on the literal release-dev concurrency group; the deployment authority is delivered in code (SecurityStack GithubDeployRole, Environment-subject trust, boundary-pinned via the extended #66 exec policy, only the three CDK bootstrap roles assumable) under the canonical secret name AWS_DEPLOY_ROLE_ARN; every job carries timeout-minutes (preflights 5, deploy 15); CDK child output is captured and sanitized by shape; and the entrypoint requires Zamp's per-release cloud gate (CBA_CLOUD_GATE: exact release + assembly digest + diff_only/deploy mode + expiry) and puts the cdk diff plan on the record before any effect.",
       "The semantic layer is the Gemini Spec Auditor persona, which reads and reports only: it holds no authority of any kind, never approves anything, never accepts risk, never touches code or spec, and never runs any effect.",

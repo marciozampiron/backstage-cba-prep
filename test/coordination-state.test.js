@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const read = (rel) => readFileSync(join(here, '..', rel), 'utf8');
 
 const CURRENT = read('.agent-handoff/CURRENT.md');
-const H70 = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+const H70 = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
 const D106 = read('.agent-handoff/done/106-dependabot-high-remediation.md');
 
 test('CURRENT.md carries exactly the resolved prerequisite state, with no stale contradiction', () => {
