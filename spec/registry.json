@@ -978,7 +978,7 @@
     },
     {
       "id": "SPEC-DEPLOY-019",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "The cloud authorization value has EXACTLY these ten keys —",
       "normativeText": "The cloud authorization value has EXACTLY these eleven keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `absentEntryDigests`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
       "normativeSha256": "ffe37c51cb8acd684b6b895ad38685f7f0013620a8c670e3a51c0f5e153fe92e",
@@ -999,11 +999,19 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-019: the closed gate schema — absent and unknown keys, wrong types, per-mode nullability and incompatible effects refuse"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the cloud gate is required, closed, bound and expiring — every broken form refuses before any child"
         },
         {
           "file": "test/digest-agreement.test.js",
-          "title": null
+          "title": "the ESM and CJS bundle framings agree on every fixture, multibyte included"
+        },
+        {
+          "file": "test/digest-agreement.test.js",
+          "title": "the manifest digest is a property of CONTENT, not of key order or writer whitespace"
         }
       ],
       "checks": [],
@@ -1011,7 +1019,12 @@
         "infra/aws/bin/deploy-release.js",
         "infra/aws/lib/deploy-preflight.js"
       ],
-      "mutationEvidence": "code + tests reviewed in I4: manifestDigest recomputed from the verified manifest (never trusted), the retired key refused as unknown, abandon-mode gates schema-valid but refused ABANDON_NOT_IMPLEMENTED before any change-set API call or mutation (identity reads precede the gate check by design) until the abandon lane lands",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "ce9d4e27a7fba2df38db9bfd87461723cb04ddf777028840a2165d60851d2bc5",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-019\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -019 test (the sorted key-set equality weakened to an always-true subset check; the first splice broke module load and was REDONE cleanly; §6b diff headSha 938cc285c38b764b745dd7b36191faf55227f2d0)"
+      },
       "supersedes": [
         "SPEC-DEPLOY-002",
         "SPEC-DEPLOY-020"
