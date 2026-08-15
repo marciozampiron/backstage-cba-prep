@@ -1,7 +1,7 @@
 // Deploy preflight (#70 Slice A) — PREFLIGHT-1 and PREFLIGHT-2, as PURE evaluation.
 //
 // #69 registered two binding conditions against #70 and then closed. They are recorded in
-// `.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md` and implemented here.
+// `.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md` and implemented here.
 //
 // WHY THIS FILE HAS NO I/O. Every verdict is a function of observations, exactly like
 // `src/lib/observability-gate.js`: the adversarial controls are ordinary unit tests, and no test

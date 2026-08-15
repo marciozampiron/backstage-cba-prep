@@ -19,8 +19,34 @@ const here = dirname(fileURLToPath(import.meta.url));
 const read = (rel) => readFileSync(join(here, '..', rel), 'utf8');
 
 const CURRENT = read('.agent-handoff/CURRENT.md');
-const H70 = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+const H70 = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
 const D106 = read('.agent-handoff/done/106-dependabot-high-remediation.md');
+
+test('#70 closeout: every canonical surface states the FINAL state — never the active one', () => {
+  // Codex (closeout review, MEDIUM): the move alone left CURRENT.md claiming an open issue with
+  // owners and an implementation in flight. These are finite refusals of the stale claims and
+  // finite requirements of the final ones.
+  for (const stale of ['#70 OPEN', 'active/70-cloudflare-aws-deploy-pipeline.md', 'assigned and in implementation', 'Still open under #70', '#70 also owns', 'Current work: **#70**', 'two active owners', 'Slice B1 (dev AWS deploy) is in implementation']) {
+    assert.ok(!CURRENT.includes(stale), `CURRENT.md must not claim: ${stale}`);
+  }
+  for (const required of ['PR #110', '4bb91ca', 'DELIVERED AND MERGED', 'NO deploy, NO QA', 'Current work: **#111**', 'One active handoff remains: #91']) {
+    assert.ok(CURRENT.includes(required), `CURRENT.md must state: ${required}`);
+  }
+  assert.match(H70, /^# Done:/, 'the done/ handoff opens as Done');
+  assert.ok(H70.includes('FINAL STATUS (2026-08-15): DELIVERED AND MERGED'));
+  assert.ok(H70.includes('no QA ran'));
+  // The newest event leads the log: the closeout block appears before the previously-newest one.
+  const events = read('.agent-handoff/EVENTS.md');
+  const closing = events.indexOf('## 2026-08-15 — #70 delivered, published and merged');
+  const prior = events.indexOf('## 2026-08-09');
+  assert.ok(closing >= 0, 'the closing event must exist');
+  assert.ok(prior >= 0, 'the prior newest event must exist');
+  assert.ok(closing < prior, 'newest entries go at the top');
+  // Live surfaces never point at the removed path (historical logs in EVENTS/done are exempt).
+  for (const rel of ['.agent-handoff/CURRENT.md', '.agent-handoff/decisions/70-spec-anchored-design-accepted.md', 'infra/aws/lib/deploy-preflight.js']) {
+    assert.ok(!read(rel).includes('.agent-handoff/active/70-cloudflare'), `${rel} must reference done/, not the removed active/ path`);
+  }
+});
 
 test('CURRENT.md carries exactly the resolved prerequisite state, with no stale contradiction', () => {
   // The stale side. Each of these sentences described the pre-2026-08-02 state; reintroducing any
@@ -45,7 +71,6 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
     'whose only entry is `main`',
     'requires `marciozampiron` as reviewer',
     '6 HIGH Dependabot alerts are **RESOLVED**',
-    'Slice B1 (dev AWS deploy through the sanctioned entrypoint) is in implementation',
     'No AWS\nor Cloudflare deployment has happened yet',
     'can_admins_bypass: true',
     'prevent_self_review: false',
@@ -54,13 +79,13 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
   }
 });
 
-test('the active #70 handoff agrees: decision closed, highs done, real gates still standing', () => {
+test('the done #70 handoff agrees: decision closed, highs done, real gates still standing', () => {
   for (const stale of [
     'The open decision: custom domain',
     'The 6 high Dependabot alerts on the default branch must be fixed',
     'The custom-domain decision, since the CORS list',
   ]) {
-    assert.equal(H70.includes(stale), false, `active/70 reintroduces a stale state: "${stale}"`);
+    assert.equal(H70.includes(stale), false, `done/70 reintroduces a stale state: "${stale}"`);
   }
   for (const resolved of [
     'The origin decision is CLOSED: the pilot uses `workers.dev`',
@@ -70,7 +95,7 @@ test('the active #70 handoff agrees: decision closed, highs done, real gates sti
     'prevent_self_review: false',
     'NOT non-bypassable',
   ]) {
-    assert.equal(H70.includes(resolved), true, `active/70 lost the resolved state: "${resolved}"`);
+    assert.equal(H70.includes(resolved), true, `done/70 lost the resolved state: "${resolved}"`);
   }
   // What must REMAIN open is as load-bearing as what closed: the SNS/KMS proof and the deploy-time
   // preflights are the standing gates, and losing them would overstate the resolution.

@@ -35,8 +35,8 @@ product/security owner approves a documented reconciliation.
    scope bounds preparation and authorizes nothing; the execution gate — supplied as
    `CBA_EXECUTION_GATE`, closed-schema, bounded to 12 hours — is validated by the artifact before the
    operator confirmation and again immediately before the push. Codex reviews read-only and never implements, prepares, executes, pushes, merges or
-   deploys. Zamp approves and decides and performs the merge. Gemini has no workflow or governance
-   role. The script may do exactly two remote things — push the reviewed commit by SHA to
+   deploys. Zamp approves and decides and performs the merge. Gemini holds the seated read-only Gemini Spec Auditor persona — it audits and reports only,
+   with no authority: never an approval, a gate, a risk acceptance or any operational permission. The script may do exactly two remote things — push the reviewed commit by SHA to
    `task/<issue>-<slug>` without force, and create or reuse one pull request. It may never merge,
    deploy, push an integration branch, force-push, rewrite history, administer the repository or
    branch protection, handle secrets, or invoke a paid service.

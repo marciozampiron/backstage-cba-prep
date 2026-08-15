@@ -365,7 +365,7 @@ test('the canonical flow appears in the contract and is not contradicted', () =>
   assert.match(read(PROTOCOL), /Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides\/performs merge/);
 });
 
-/* ================= 2. Gemini has no workflow role ================= */
+/* ============ 2. Gemini has no AUTHORITY-BEARING role (the seat is read-only) ============ */
 
 test('the Gemini persona holds no AUTHORITY — approval, gate, risk, review-of-record and every operational permission stay denied', () => {
   // Round I7-2: the persona IS seated (read-only semantic auditor) — that role is not denied
@@ -2507,7 +2507,7 @@ test('ROUND I4-3: the retired over-claim about the abandon refusal cannot return
   // in the canonical handoff beside the corrected one — two contradictory guarantees coexisting.
   // The stale phrasing is refused, finitely, on every surface that states the guarantee.
   const surfaces = [
-    '.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md',
+    '.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md',
     'spec/spec-anchored-development.md',
     'infra/aws/bin/deploy-release.js',
     'infra/aws/test/deploy-preflight.test.js',
@@ -2757,12 +2757,12 @@ test('the #70 handoff carries both deploy preflight conditions #69 registered ag
   // #69 registered two binding conditions on #70 and then closed. A transfer that keeps the domain
   // DECISION but drops the preflight loses them silently: deciding the origin makes the values
   // knowable, supplying and verifying them is what clears the deploy.
-  const text = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+  const text = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
   assert.deepEqual(preflightContractErrors(text), [], 'the real #70 handoff must satisfy the contract');
 });
 
 test('POSITIVE CONTROL: the preflight contract rejects each way it can be hollowed out', () => {
-  const text = read('.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md');
+  const text = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
   const rejects = (mutated, why) => {
     assert.notDeepEqual(preflightContractErrors(mutated), [], `must be rejected: ${why}`);
   };
@@ -2917,6 +2917,11 @@ test('SLICE I7: every canonical surface seats the SAME Gemini persona — read-o
   }
   // The paid invocation stays Zamp's effect under the spend document — the persona spends nothing.
   assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+  // Closeout round 3 (Codex F2): the security BASELINE is the sixth surface — the pre-#110
+  // sentence denied any Gemini role and contradicted the seat; it must state the persona.
+  const baseline = read('spec/security-rules.md');
+  assert.match(baseline, /seated read-only Gemini Spec Auditor persona/);
+  assert.ok(!baseline.includes('Gemini has no workflow or governance'), 'the pre-seating denial cannot return');
 });
 
 test('SLICE I7: the validator refuses a Gemini that gains any grant or a reworded standing', () => {
