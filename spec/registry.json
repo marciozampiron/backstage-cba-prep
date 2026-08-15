@@ -979,7 +979,7 @@
     {
       "id": "SPEC-DEPLOY-019",
       "status": "ACTIVE",
-      "title": "The cloud authorization value has EXACTLY these ten keys —",
+      "title": "The cloud authorization value has EXACTLY these eleven keys —",
       "normativeText": "The cloud authorization value has EXACTLY these eleven keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `absentEntryDigests`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
       "normativeSha256": "ffe37c51cb8acd684b6b895ad38685f7f0013620a8c670e3a51c0f5e153fe92e",
       "anchors": [

@@ -74,6 +74,15 @@ test('CI WIRING: conformance sees the ACTIVE set, and the zero-ACTIVE honesty pa
   assert.deepEqual(zeroActive, { activeCount: 0, results: [], ok: true });
 });
 
+test('BATCH 2 (#115): SPEC-DEPLOY-019 metadata counts ELEVEN keys — the ten-key form cannot return', () => {
+  // Codex (batch-2 review, LOW): the title is not normative text, but it is canonical registry
+  // metadata a human audit reads — a stale count misdescribes an ACTIVE requirement.
+  const e = entry(REGISTRY, 'SPEC-DEPLOY-019');
+  assert.ok(!/ten keys/.test(e.title), 'the pre-I5-2 ten-key phrasing must not return to the title');
+  assert.match(e.title, /eleven keys/);
+  assert.match(e.normativeText, /eleven keys/);
+});
+
 test('ROUND I8-2: an ACTIVE anchor without its token, or outside its own governedPaths, refuses', () => {
   // The gap Codex found in I8: -021 activated with a new JS anchor that had no bracketed token
   // and no governedPath coverage — complete traceability is an ACTIVATION predicate, not a
