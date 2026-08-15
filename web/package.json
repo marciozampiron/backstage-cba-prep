@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CBA Web MVP — deterministic learner loop, slices 1-4b (#39-#43 / #11): drill loop, mock exam, review missed + deterministic coach, persistence boundary, learner identity. Learner surface + thin route adapters over the shared BFF service (services/bff, #76). Not a root workspace.",
+  "description": "CBA Web MVP \u2014 deterministic learner loop, slices 1-4b (#39-#43 / #11): drill loop, mock exam, review missed + deterministic coach, persistence boundary, learner identity. Learner surface + thin route adapters over the shared BFF service (services/bff, #76). Not a root workspace.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
