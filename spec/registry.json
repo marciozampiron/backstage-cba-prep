@@ -709,7 +709,7 @@
     },
     {
       "id": "SPEC-DEPLOY-009",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "An authorization instant is accepted only as strict RFC3339 UTC",
       "normativeText": "An authorization instant is accepted only as strict RFC3339 UTC that round-trips through the calendar; a normalized or offset instant refuses.",
       "normativeSha256": "b2fce656ce528b77f97a842ff6ac546bd4090bac4d39dc71e20a65b94ff2a6d2",
@@ -722,14 +722,23 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-009: strict RFC3339 UTC instants — invalid calendar, offsets and non-canonical forms refuse; the canonical instant passes"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the cloud gate is required, closed, bound and expiring — every broken form refuses before any child"
         }
       ],
       "checks": [],
       "governedPaths": [
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "728c204d4c82b89104acf949b9f9e9777cd70a239437908a5f9c466001e86eae",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-009\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -009 test (a lenient Date.parse fast-path added to strictUtcInstant; §6b diff headSha c39c90a03928e08ca4801d8fd149505012bbe2db)"
+      },
       "supersedes": [],
       "supersededBy": null
     },
