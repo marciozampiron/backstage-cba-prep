@@ -1,3 +1,4 @@
+// [SPEC-IAM-001]
 // Security stack (#53): encodes the #54 IAM/OIDC model from
 // docs/architecture/aws-bootstrap-and-oidc.md — the GitHub OIDC identity provider and the
 // blueprint-refresh Bedrock role. That doc's policy JSON is the source of truth; this stack must
@@ -5,7 +6,7 @@
 // parameters, so no real account id ever appears in the repo or the synthesized template.
 const { Stack, ArnFormat, CfnOutput } = require('aws-cdk-lib');
 const iam = require('aws-cdk-lib/aws-iam');
-const { getContext, parseArnList } = require('./context');
+const { getContext, parseArnList, RELEASE_BOOTSTRAP_QUALIFIERS } = require('./context');
 const { applyFoundationTags } = require('./tags');
 
 const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com';
@@ -101,8 +102,57 @@ class SecurityStack extends Stack {
       }),
     );
 
+    // --- GitHub Actions deploy role (#70 Slice B1) ---------------------------------------------
+    // The deployment authority the release lane assumes via OIDC — publish its ARN as the
+    // Environment-scoped secret AWS_DEPLOY_ROLE_ARN (canonical name, security-rules.md §6 /
+    // design §3). Trust is pinned to the GitHub ENVIRONMENT subject, not a branch: only a run
+    // that passed the Environment's protection rules can mint a token with this sub. Least
+    // privilege is structural: the role itself can ONLY assume the three CDK bootstrap roles
+    // (deploy, file-publishing, lookup — no image-publishing: this app builds no container
+    // assets), so its ceiling is whatever the #66-scoped bootstrap execution allows, and the
+    // operator-managed boundary (bootstrap/policies/gha-deploy-boundary.template.json) caps it
+    // at exactly that even if this inline policy ever widens. The scoped CloudFormation exec
+    // policy pins iam:CreateRole for this role name to that boundary and denies boundary
+    // tampering, mirroring the BedrockRefreshRole pattern above.
+    const environment = ctx('environment', 'pilot');
+    const deployBoundaryArn = ctx(
+      'ghaDeployBoundaryArn',
+      `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-${environment}`,
+    );
+    // THIS TIER'S release bootstrap roles (per-environment qualifier, lib/context.js): the dev
+    // deploy role can assume only cdk-cbardev-* — it cannot execute a pilot change, and neither
+    // tier can reach the #66 SecurityStack bootstrap (hnb659fds) at all.
+    const releaseQualifier = RELEASE_BOOTSTRAP_QUALIFIERS[environment];
+    const cdkBootstrapRoleArn = (name) =>
+      `arn:${this.partition}:iam::${this.account}:role/cdk-${releaseQualifier}-${name}-role-${this.account}-${this.region}`;
+
+    const deployRole = new iam.Role(this, 'GithubDeployRole', {
+      roleName: `cba-study-coach-gha-deploy-${environment}`,
+      description:
+        'GitHub Actions release lane (#70): assumes the CDK bootstrap roles to deploy the closed environment stack set through bin/deploy-release.js. No direct service permissions.',
+      permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, 'GhaDeployBoundary', deployBoundaryArn),
+      assumedBy: new iam.WebIdentityPrincipal(providerArn, {
+        StringEquals: {
+          [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
+          [`${GITHUB_OIDC_HOST}:sub`]: `repo:${githubRepo}:environment:${environment}`,
+        },
+      }),
+    });
+
+    deployRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'AssumeCdkBootstrapRolesOnly',
+        actions: ['sts:AssumeRole'],
+        resources: [
+          cdkBootstrapRoleArn('deploy'),
+          cdkBootstrapRoleArn('file-publishing'),
+          cdkBootstrapRoleArn('lookup'),
+        ],
+      }),
+    );
+
     // --- Conventions + outputs -----------------------------------------------------------------
-    applyFoundationTags(this, ctx('environment', 'pilot'));
+    applyFoundationTags(this, environment);
 
     new CfnOutput(this, 'BedrockRefreshRoleArn', {
       value: role.roleArn,
@@ -111,6 +161,10 @@ class SecurityStack extends Stack {
     new CfnOutput(this, 'GithubOidcProviderArn', {
       value: providerArn,
       description: 'Account-global GitHub OIDC provider (reuse via -c githubOidcProviderArn=...)',
+    });
+    new CfnOutput(this, 'GithubDeployRoleArn', {
+      value: deployRole.roleArn,
+      description: `Publish as the ${environment} Environment secret AWS_DEPLOY_ROLE_ARN`,
     });
   }
 }

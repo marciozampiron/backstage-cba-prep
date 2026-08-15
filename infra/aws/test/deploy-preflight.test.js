@@ -318,7 +318,7 @@ test('the manifest carries the closed schema, the region, the assembly digest, a
   assert.equal(manifest.releaseSha, SHA);
   assert.equal(manifest.environment, 'pilot');
   assert.equal(manifest.region, 'us-east-1');
-  assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE });
+  assert.deepEqual(manifest.target, { service: MANIFEST_TARGET_SERVICE, stacks: ['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack'] });
   assert.match(manifest.contextDigest, /^[0-9a-f]{64}$/);
   assert.match(manifest.assemblyDigest, /^[0-9a-f]{64}$/);
   assert.deepEqual(manifest.boundContextKeys, [...BOUND_CONTEXT_KEYS].sort());
@@ -444,8 +444,16 @@ test('the NESTED manifest schema is closed too — the exact round-3 forgeries a
     ['a preflight claimed as failed', { ...manifest, preflight: { PREFLIGHT_1: 'fail', PREFLIGHT_2: 'pass' } }],
     ['an additional preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass', PREFLIGHT_3: 'pass' } }],
     ['a missing preflight claim', { ...manifest, preflight: { PREFLIGHT_1: 'pass' } }],
-    ['the target service rewritten', { ...manifest, target: { service: 'cloudflare' } }],
-    ['an extra target key', { ...manifest, target: { service: MANIFEST_TARGET_SERVICE, extra: true } }],
+    ['the target service rewritten', { ...manifest, target: { ...manifest.target, service: 'cloudflare' } }],
+    ['an extra target key', { ...manifest, target: { ...manifest.target, extra: true } }],
+    // The stack SET is part of the closed shape (Slice B1 review): a widened, narrowed, reordered
+    // or absent set is a forgery — `--all` semantics cannot be smuggled back in through the data.
+    ['the stack set widened with SecurityStack', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks, 'SecurityStack'] } }],
+    ['the stack set widened with a future stack', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks, 'AiOrchestrationStack'] } }],
+    ['the stack set narrowed', { ...manifest, target: { ...manifest.target, stacks: manifest.target.stacks.slice(1) } }],
+    ['the stack set reordered', { ...manifest, target: { ...manifest.target, stacks: [...manifest.target.stacks].reverse() } }],
+    ['the stack set emptied', { ...manifest, target: { ...manifest.target, stacks: [] } }],
+    ['the stack set removed', { ...manifest, target: { service: manifest.target.service } }],
     ['the assembly digest removed', (() => { const { assemblyDigest: _, ...rest } = manifest; return rest; })()],
     ['a malformed assembly digest', { ...manifest, assemblyDigest: 'zz' }],
   ]) {
@@ -737,40 +745,173 @@ function withRelease(fn, { assemblyFiles = ASSEMBLY_FILES } = {}) {
   return withDir(assemblyFiles, (asm) => withManifest(manifest, (p) => fn(p, asm, manifest)));
 }
 
-test('deploy-release deploys the VERIFIED ASSEMBLY in the VERIFIED REGION — both by construction', () => {
-  withRelease((p, asm) => {
-    const execs = [];
+/** The tests' frozen clock: every gate window is bounded, so `now` is always injected. */
+const GATE_NOW = Date.parse('2026-08-02T12:00:00Z');
+
+/* ---- round-4 harness: the plan IS the change sets ------------------------------------------- */
+const { planDigestOf, entryDigestOf, canonicalChangeSet, setReviewedStackNames } = require('../bin/deploy-release');
+
+// Round 11: review material renders a stack name only when THIS deploy computed it, so the
+// direct-call controls declare the same names the entrypoint would.
+setReviewedStackNames(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'].map((id) => `cba-study-coach-pilot-${id.replace(/Stack$/, '').toLowerCase()}`));
+
+/** The reviewed execution order and this (pilot) manifest's CloudFormation stack names. */
+const ORDERED_IDS = ['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack'];
+const PILOT_STACK_NAMES = ORDERED_IDS.map((id) => `cba-study-coach-pilot-${id.replace(/Stack$/, '').toLowerCase()}`);
+
+/** One fake describe-change-set body per stack — poisonable and overridable per test. The
+ * change-set ARN carries a compliant per-stack UUID (round 15: the positional contract demands
+ * changeSet/<name>/<uuid>, so the stack identity lives in the uuid's final group). */
+const CS_UUID = (stackName) => `00000000-0000-0000-0000-${String(PILOT_STACK_NAMES.indexOf(stackName) + 1).padStart(12, '0')}`;
+const CS_ARN = (stackName) => `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/${CS_UUID(stackName)}`;
+const describedFor = (stackName, over = {}) => ({
+  ChangeSetId: CS_ARN(stackName),
+  Status: 'CREATE_COMPLETE',
+  ExecutionStatus: 'AVAILABLE',
+  Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'BffFunction', ResourceType: 'AWS::Lambda::Function' } }],
+  ...over,
+});
+const fullDescribes = (over = {}) =>
+  Object.fromEntries(PILOT_STACK_NAMES.map((n) => [n, describedFor(n, over[n] || {})]));
+
+/** The digest EXACTLY as production computes it: canonical entries over UNREDACTED describes. */
+const digestOf = (describes) =>
+  planDigestOf(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], describes[PILOT_STACK_NAMES[i]])));
+
+/** A cloud stub covering sts (identity + assume-role) and cloudformation (describe/execute/poll).
+ * Records every call; `onCall` may intercept and return a response. */
+function cloudRun({ describes = fullDescribes(), account = ACCOUNT, stackStatus = 'UPDATE_COMPLETE', onCall } = {}) {
+  const calls = [];
+  const fn = (args, opts) => {
+    calls.push({ args, opts });
+    if (onCall) {
+      const intercepted = onCall(args, calls);
+      if (intercepted) return intercepted;
+    }
+    if (args[0] === 'sts' && args[1] === 'get-caller-identity') return { status: 0, stdout: JSON.stringify({ Account: account }), stderr: '' };
+    if (args[0] === 'sts' && args[1] === 'assume-role') {
+      return { status: 0, stdout: JSON.stringify({ Credentials: { AccessKeyId: 'ASIATESTKEY', SecretAccessKey: 'secret', SessionToken: 'token' } }), stderr: '' };
+    }
+    if (args[0] === 'cloudformation' && args[1] === 'describe-change-set') {
+      const stackName = args[args.indexOf('--stack-name') + 1];
+      const body = describes[stackName];
+      if (!body) return { status: 254, stdout: '', stderr: 'ChangeSetNotFound' };
+      return { status: 0, stdout: JSON.stringify(body), stderr: '' };
+    }
+    if (args[0] === 'cloudformation' && args[1] === 'execute-change-set') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'cloudformation' && args[1] === 'delete-change-set') return { status: 0, stdout: '', stderr: '' };
+    if (args[0] === 'cloudformation' && args[1] === 'describe-stacks') return { status: 0, stdout: JSON.stringify({ Stacks: [{ StackStatus: stackStatus }] }), stderr: '' };
+    return stubAws()(args, opts);
+  };
+  fn.calls = calls;
+  fn.of = (verb) => calls.filter((c) => c.args[1] === verb);
+  return fn;
+}
+
+/** A valid deploy-mode cloud gate for THIS manifest: bounded window around GATE_NOW, a decision
+ * id, and the digest of the default fake change sets. */
+const { manifestBundleDigest } = require('../lib/deploy-preflight');
+const { deepSortKeys: sortForDigest } = require('../bin/deploy-release');
+
+const gateFor = (manifest, over = {}) =>
+  JSON.stringify({
+    issue: 70,
+    environment: manifest.environment,
+    releaseSha: manifest.releaseSha,
+    manifestDigest: manifestBundleDigest(manifest, sortForDigest),
+    mode: 'deploy',
+    decisionId: 'zamp-2026-08-02.b1-deploy-01',
+    approvedAt: '2026-08-02T11:50:00Z',
+    expiresAt: '2026-08-02T12:30:00Z',
+    planDigest: digestOf(fullDescribes()),
+    stacks: [...ORDERED_IDS],
+    absentEntryDigests: null,
+    ...over,
+  });
+
+/** Prepare-child executor that succeeds; deploy mode spawns no cdk child at all. */
+const happyExec = () => ({ status: 0, stdout: '', stderr: '' });
+
+/** Options shared by every happy deploy-mode invocation. */
+const deployOpts = (manifest, over = {}) => ({
+  run: cloudRun(),
+  git: happyGit(),
+  cdkJsonPath: CDK_JSON,
+  env: { CBA_CLOUD_GATE: gateFor(manifest) },
+  now: () => GATE_NOW,
+  sleep: () => {},
+  exec: () => assert.fail('deploy mode spawns no cdk child — the plan was prepared under plan_only'),
+  ...over,
+});
+
+test('plan_only PREPARES the closed change sets from the SNAPSHOT; deploy EXECUTES exactly them', () => {
+  // Part A — plan_only: the ONE moment change sets may be created. The cdk child prepares (never
+  // executes) one named change set per stack, from the private snapshot, in the reviewed
+  // dependency order, with --exclusively — never --all, never SecurityStack.
+  withRelease((p, asm, manifest) => {
+    const prepares = [];
+    const run = cloudRun();
     const r = runDeployRelease(releaseArgs(p, asm), {
-      run: stubAws(),
+      run,
       git: happyGit(),
       cdkJsonPath: CDK_JSON,
-      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2' },
+      env: { PATH: '/usr/bin', AWS_REGION: 'us-west-2', AWS_DEFAULT_REGION: 'us-west-2', CDK_DEFAULT_REGION: 'us-west-2', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
       exec: (args, childEnv) => {
-        execs.push({ args, childEnv });
-        // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child would run. The
+        prepares.push({ args, childEnv });
+        // ROUND-5 REPRO (check/use): mutate the ORIGINAL assembly while the child runs. The
         // snapshot the child was handed must still carry the verified digest.
         fs.writeFileSync(path.join(asm, 'asset.abc123', 'index.mjs'), 'export const handler = () => "evil";');
         const snapDigest = require('../bin/deploy-preflight').assemblyDigest(args[args.indexOf('--app') + 1]);
-        execs[execs.length - 1].snapDigest = snapDigest.digest;
-        return { status: 0 };
+        prepares[prepares.length - 1].snapDigest = snapDigest.digest;
+        return { status: 0, stdout: '', stderr: '' };
       },
     });
     assert.equal(r.exit, 0, r.output);
-    assert.equal(execs.length, 1, 'exactly one deploy');
-    const { args, childEnv } = execs[0];
-    // The child deploys a PRIVATE SNAPSHOT via --app — never the original mutable path, never
-    // source. The check-to-use window on the original directory is what round 5 closed.
-    assert.deepEqual(args.slice(0, 5), ['cdk', 'deploy', '--all', '--require-approval', 'never']);
-    assert.equal(args[5], '--app');
-    const appPath = args[6];
+    assert.equal(r.executed, false, 'plan_only performs no effect');
+    assert.equal(prepares.length, 1, 'exactly one prepare child');
+    const { args, childEnv } = prepares[0];
+    assert.deepEqual(args.slice(0, 3), ['cdk', 'deploy', '--method=prepare-change-set']);
+    assert.deepEqual(args.slice(3, 5), ['--change-set-name', `cba-70-${manifest.releaseSha.slice(0, 12)}`]);
+    assert.deepEqual(args.slice(5, 10), ['--exclusively', ...ORDERED_IDS], 'the reviewed EXECUTION order, closed');
+    assert.equal(args.includes('--all'), false, '--all must never reach a child');
+    assert.equal(args.includes('SecurityStack'), false, 'the foundation is outside the release blast radius');
+    const appPath = args[args.indexOf('--app') + 1];
     assert.notEqual(appPath, asm, 'the original assembly path must never be reopened by the child');
-    // ROUND-4 REPRO 2 (region): the ambient environment said us-west-2 everywhere; the verified
-    // region is imposed on every variable the CDK or the SDK reads.
     assert.equal(childEnv.AWS_REGION, 'us-east-1');
     assert.equal(childEnv.AWS_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.CDK_DEFAULT_REGION, 'us-east-1');
     assert.equal(childEnv.PATH, '/usr/bin', 'the rest of the environment passes through');
-    assert.equal(execs[0].snapDigest, capturedManifest().assemblyDigest, 'the deployed snapshot carries the verified digest even after the original was mutated');
+    assert.equal(prepares[0].snapDigest, manifest.assemblyDigest, 'the prepared snapshot carries the verified digest even after the original was mutated');
+    assert.match(r.output, /PLAN_DIGEST [0-9a-f]{64}/);
+    // The change sets were described under the ASSUMED tier deploy role, never executed.
+    const assume = run.of('assume-role');
+    assert.equal(assume.length, 1);
+    assert.match(assume[0].args[assume[0].args.indexOf('--role-arn') + 1], /cdk-cbarpil-deploy-role/, "this tier's qualifier, nobody else's");
+    assert.equal(run.of('describe-change-set').length, 4);
+    assert.equal(run.of('execute-change-set').length, 0, 'plan_only executes NOTHING');
+  });
+
+  // Part B — deploy: NO cdk child at all. The reviewed change sets are re-described, the digest
+  // must match the gate, and exactly those change-set ids execute, in order, under the assumed
+  // role with the verified region imposed.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.executed, true);
+    const executes = run.of('execute-change-set');
+    assert.deepEqual(
+      executes.map((c) => c.args[c.args.indexOf('--change-set-name') + 1]),
+      PILOT_STACK_NAMES.map(CS_ARN),
+      'exactly the reviewed change-set ids, in the reviewed order',
+    );
+    for (const call of [...executes, ...run.of('describe-change-set')]) {
+      assert.equal(call.opts?.env?.AWS_ACCESS_KEY_ID, 'ASIATESTKEY', 'CloudFormation calls run under the assumed tier role');
+      assert.equal(call.opts?.env?.AWS_REGION, 'us-east-1', 'the verified region is imposed on the AWS CLI too');
+    }
+    assert.match(r.output, /matched the gate; decision zamp-2026-08-02\.b1-deploy-01/);
   });
 });
 
@@ -996,10 +1137,1294 @@ test('deploy-release refuses identity mismatches and a failing child honestly', 
     assert.equal(noAccount.exit, 1);
     assert.match(noAccount.output, /ACCOUNT_UNRESOLVED/);
 
-    const childFails = runDeployRelease(releaseArgs(p, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 3 }) });
-    assert.equal(childFails.exit, 1, 'a failing child must not read as a deployed release');
-    assert.equal(childFails.executed, true);
+    // A refused EXECUTION is honest, never a deployed release: CloudFormation refuses a change
+    // set whose stack moved after preparation, and that refusal surfaces as EXECUTE_FAILED with
+    // the partial record — the round-4 stale-execution shape.
+    const run = cloudRun({ onCall: (args) => (args[1] === 'execute-change-set' ? { status: 254, stdout: '', stderr: 'ChangeSet is stale; the stack was modified' } : null) });
+    const staleExec = runDeployRelease(releaseArgs(p, asm), deployOpts(capturedManifest(), { run }));
+    assert.equal(staleExec.exit, 1, 'a refused execution must not read as a deployed release');
+    assert.equal(staleExec.executed, false);
+    assert.match(staleExec.output, /EXECUTE_FAILED/);
+    assert.match(staleExec.output, /Executed before the failure: none/);
+    assert.equal(run.of('execute-change-set').length, 1, 'the refusal stops the sequence');
   });
+});
+
+test('the cloud gate is required, closed, bound and expiring — every broken form refuses before any child', () => {
+  withRelease((p, asm, manifest) => {
+    const attempt = (gateValue, opts = {}) =>
+      runDeployRelease(releaseArgs(p, asm), {
+        run: stubAws(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: gateValue === undefined ? {} : { CBA_CLOUD_GATE: gateValue },
+        now: () => GATE_NOW,
+        exec: () => assert.fail('a run without a valid gate must never spawn a child'),
+        ...opts,
+      });
+
+    // Absence, in every trivial disguise, is MISSING — never a default.
+    for (const [label, value] of [['unset', undefined], ['empty', ''], ['whitespace', '   ']]) {
+      const r = attempt(value);
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MISSING/, label);
+    }
+
+    // The shape is CLOSED: exactly the nine keys, issue 70, a known mode, a decision id, STRICT
+    // RFC3339 UTC instants, and a plan digest matching the mode. `Date.parse` alone accepted
+    // `2099-01-01` and a space-separated datetime — the exact round-3 reproductions refuse here.
+    const good = JSON.parse(gateFor(manifest));
+    for (const [label, mangled] of [
+      ['not JSON', 'not json'],
+      ['an array', '[]'],
+      ['an extra key', JSON.stringify({ ...good, extra: 1 })],
+      ['a missing key', JSON.stringify((() => { const { mode: _, ...rest } = good; return rest; })())],
+      ['a foreign issue', JSON.stringify({ ...good, issue: 71 })],
+      ['an unknown mode', JSON.stringify({ ...good, mode: 'deploy_all' })],
+      ['a non-string expiry', JSON.stringify({ ...good, expiresAt: 9999999999 })],
+      ['an unparseable expiry', JSON.stringify({ ...good, expiresAt: 'sometime soon' })],
+      ['a date-only expiry (round-3 repro)', JSON.stringify({ ...good, expiresAt: '2099-01-01' })],
+      ['a space-separated expiry (round-3 repro)', JSON.stringify({ ...good, expiresAt: '2026-08-02 12:30:00' })],
+      ['an offset expiry — UTC Z only', JSON.stringify({ ...good, expiresAt: '2026-08-02T12:30:00+00:00' })],
+      ['a date-only approval', JSON.stringify({ ...good, approvedAt: '2026-08-02' })],
+      ['a missing decision id', JSON.stringify({ ...good, decisionId: '' })],
+      ['a malformed decision id', JSON.stringify({ ...good, decisionId: 'a b c' })],
+      ['a deploy gate with no plan digest', JSON.stringify({ ...good, planDigest: null })],
+      ['a deploy gate with a malformed plan digest', JSON.stringify({ ...good, planDigest: 'zz' })],
+      ['a plan_only gate naming a plan', JSON.stringify({ ...good, mode: 'plan_only' })],
+      ['the retired diff_only mode', JSON.stringify({ ...good, mode: 'diff_only' })],
+      // F5 (round 4): Date.parse silently normalizes calendar-invalid instants into other dates.
+      ['a calendar-invalid day (2026-02-30)', JSON.stringify({ ...good, expiresAt: '2026-02-30T12:10:00Z' })],
+      ['a calendar-invalid month', JSON.stringify({ ...good, expiresAt: '2026-13-01T12:10:00Z' })],
+      ['a calendar-invalid approval (April 31st)', JSON.stringify({ ...good, approvedAt: '2026-04-31T11:50:00Z' })],
+      ['fractional seconds (whole seconds only)', JSON.stringify({ ...good, expiresAt: '2026-08-02T12:30:00.500Z' })],
+    ]) {
+      const r = attempt(mangled);
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/, label);
+    }
+
+    // The gate binds by VALUE: another release, another environment or another assembly is a
+    // re-aim, and a re-aimed authorization authorizes nothing.
+    for (const [label, over] of [
+      ['another release', { releaseSha: 'b'.repeat(40) }],
+      ['another environment', { environment: 'dev' }],
+      ['another manifest', { manifestDigest: '0'.repeat(64) }],
+    ]) {
+      const r = attempt(gateFor(manifest, over));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_MISMATCH/, label);
+    }
+
+    // SLICE I4 (SPEC-DEPLOY-019): the RETIRED schema's key is now an UNKNOWN key — a gate
+    // written to the -002 shape (assemblyDigest) is malformed, not merely mismatched, so a
+    // stale authoring template cannot half-work.
+    {
+      const old = JSON.parse(gateFor(manifest));
+      delete old.manifestDigest;
+      old.assemblyDigest = manifest.assemblyDigest;
+      const r = attempt(JSON.stringify(old));
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+
+    // SLICE I5: abandon must NAME the declined plan — a null planDigest is malformed per §8a.
+    {
+      const r = attempt(gateFor(manifest, { mode: 'abandon', planDigest: null }));
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+    // SLICE I5: the run's name must mean what happened — a dispatched lane passes its mode, and
+    // an incoherent gate refuses by name before any change-set API call.
+    for (const [dispatch, gateMode] of [['abandon', 'deploy'], ['abandon', 'plan_only'], ['dev_only', 'abandon']]) {
+      const calls = [];
+      const inner = stubAws();
+      const r = attempt(gateFor(manifest, { mode: gateMode, planDigest: gateMode === 'plan_only' ? null : JSON.parse(gateFor(manifest)).planDigest }), {
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: gateMode, planDigest: gateMode === 'plan_only' ? null : JSON.parse(gateFor(manifest)).planDigest }), DISPATCH_MODE: dispatch },
+        run: (args, o) => { calls.push(args[1] ?? args[0]); return inner(args, o); },
+      });
+      assert.equal(r.exit, 1, `${dispatch} vs ${gateMode}`);
+      assert.match(r.output, /MODE_MISMATCH/, `${dispatch} vs ${gateMode}`);
+      assert.ok(!calls.some((c) => String(c).includes('change-set')), 'no change-set API may be touched');
+    }
+
+    // The window, against the INJECTED clock — a gate is a decision with a bounded life, never a
+    // standing authorization. An old gate REPRESENTED on a later run is the same refusal.
+    const expired = attempt(gateFor(manifest), { now: () => Date.parse('2026-08-02T12:30:00Z') });
+    assert.equal(expired.exit, 1);
+    assert.match(expired.output, /CLOUD_GATE_EXPIRED/);
+    const yesterdays = attempt(gateFor(manifest, { approvedAt: '2026-08-01T11:50:00Z', expiresAt: '2026-08-01T12:30:00Z' }));
+    assert.equal(yesterdays.exit, 1, 'a stale gate re-presented the next day authorizes nothing');
+    assert.match(yesterdays.output, /CLOUD_GATE_EXPIRED/);
+    const future = attempt(gateFor(manifest, { approvedAt: '2026-08-02T12:10:00Z', expiresAt: '2026-08-02T12:40:00Z' }));
+    assert.equal(future.exit, 1);
+    assert.match(future.output, /CLOUD_GATE_NOT_YET_VALID/);
+    // TTL ceiling: a century, a two-hour window, and an inverted window are each refused — the
+    // 2099-style standing authorization the review reproduced can no longer be expressed.
+    for (const [label, over] of [
+      ['a century', { expiresAt: '2099-01-01T00:00:00Z' }],
+      ['two hours', { expiresAt: '2026-08-02T13:51:00Z' }],
+      ['inverted', { expiresAt: '2026-08-02T11:00:00Z' }],
+    ]) {
+      const r = attempt(gateFor(manifest, over));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CLOUD_GATE_TTL_EXCEEDED/, label);
+    }
+    const stillOpen = attempt(gateFor(manifest), { run: cloudRun(), sleep: () => {}, now: () => Date.parse('2026-08-02T12:29:59Z') });
+    assert.equal(stillOpen.exit, 0, stillOpen.output);
+  });
+});
+
+test('plan_only puts the change sets on the record and deploys NOTHING', () => {
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(r.executed, false, 'a plan_only run performs no effect');
+    assert.equal(run.of('execute-change-set').length, 0, 'no change set may execute');
+    assert.match(r.output, /PLAN ONLY/);
+    assert.match(r.output, /PLAN_DIGEST [0-9a-f]{64}/);
+    assert.match(r.output, /BffFunction/, 'the plan rendering is on the record for review');
+    const digest = r.output.match(/PLAN_DIGEST ([0-9a-f]{64})/)[1];
+    assert.equal(digest, digestOf(fullDescribes()), 'the recorded digest is the digest of the UNREDACTED canonical describes');
+  });
+});
+
+test('a failing prepare child refuses the run — no change sets, no plan, no effect', () => {
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: () => ({ status: 1, stdout: '', stderr: 'prepare exploded' }),
+    });
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /PLAN_PREPARE_FAILED/);
+    assert.equal(run.of('assume-role').length, 0, 'no role is assumed for a plan that failed to prepare');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED', () => {
+  withRelease((p, asm, manifest) => {
+    // Run 1 — plan_only over live state A: the change sets and their digest go on the record.
+    const describesA = fullDescribes();
+    const reviewed = runDeployRelease(releaseArgs(p, asm), {
+      run: cloudRun({ describes: describesA }),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(reviewed.exit, 0, reviewed.output);
+    const namedDigest = reviewed.output.match(/PLAN_DIGEST ([0-9a-f]{64})/)[1];
+    assert.equal(namedDigest, digestOf(describesA));
+
+    // Run 2 — deploy naming that digest, but the change sets were RECREATED (new immutable ids):
+    // same shapes, different world. Nothing executes.
+    const describesB = fullDescribes();
+    for (const name of PILOT_STACK_NAMES) describesB[name].ChangeSetId = describesB[name].ChangeSetId.replace(/[0-9a-f]{12}$/, 'aaaaaaaaaaaa');
+    const run = cloudRun({ describes: describesB });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: namedDigest }) } }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /PLAN_CHANGED/);
+    assert.equal(run.of('execute-change-set').length, 0, 'a drifted plan must never execute');
+
+    // Re-reviewed — a fresh plan_only over the new world, a gate naming ITS digest — executes.
+    const rerun = cloudRun({ describes: describesB });
+    const rereviewed = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run: rerun, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describesB) }) } }));
+    assert.equal(rereviewed.exit, 0, rereviewed.output);
+    assert.equal(rerun.of('execute-change-set').length, 4);
+  });
+});
+
+test('ROUND-4/5 REPRO: principals cannot collide in the digest AND stay visibly distinguishable in review', () => {
+  // Round 4: two plans differing only in an ARN principal sanitized to the same text and the
+  // same SHA-256 — the digest now covers the UNREDACTED canonical describes. Round 5: pure
+  // redaction ALSO made them indistinguishable to the human — the rendering now fingerprints
+  // every identifier, so Zamp SEES that two principals differ (and can recognize a known one by
+  // its stable fingerprint) while the log never carries the identifier itself.
+  const principal = (arn) => fullDescribes({
+    [PILOT_STACK_NAMES[0]]: {
+      Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'Pool', ResourceType: 'AWS::Cognito::UserPool', Details: [{ Target: { Attribute: 'Properties', Name: 'AdminCreateUserConfig' }, CausingEntity: arn }] } }],
+    },
+  });
+  // Round 6: the expected deploy role versus an attacker's role — Zamp must be able to CLASSIFY
+  // them, not merely tell two opaque hashes apart. Structure stays verbatim (service, region,
+  // resource path — repository-public names); only the ACCOUNT is pseudonymized, at 128 bits.
+  const expectedRole = `arn:aws:iam::${ACCOUNT}:role/cba-study-coach-gha-deploy-dev`;
+  const attackerRole = `arn:aws:iam::${ACCOUNT}:role/evil-admin`;
+  const planA = principal(expectedRole);
+  const planB = principal(attackerRole);
+  assert.notEqual(digestOf(planA), digestOf(planB), 'different principals MUST produce different plan digests');
+  const { renderPlan } = require('../bin/deploy-release');
+  const render = (d) => renderPlan(ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], d[PILOT_STACK_NAMES[i]])));
+  assert.notEqual(render(planA), render(planB), 'different principals MUST render distinguishably');
+  assert.match(render(planA), /arn:aws:iam::\[account-redacted\]:role\/cba-study-coach-gha-deploy-dev/, 'the EXPECTED principal is classifiable by its visible path');
+  assert.match(render(planB), /arn:aws:iam::\[account-redacted\]:role\/evil-admin/, 'an ATTACKER principal is exposed by its visible path — not hidden behind an opaque hash');
+  for (const rendering of [render(planA), render(planB)]) {
+    assert.equal(rendering.includes(ACCOUNT), false, 'the rendering never carries the account id');
+    assert.match(rendering, /Properties\.AdminCreateUserConfig/, 'the changed property is named — semantics, not just identity');
+  }
+  // 128-bit pseudonyms: no feasible collision surface, stable across renderings.
+  assert.equal(render(planA), render(principal(expectedRole)), 'pseudonyms are stable across renderings');
+
+  // End to end: a gate naming plan A refuses when the world holds plan B.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun({ describes: planB });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(planA) }) } }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /PLAN_CHANGED/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-4 REPRO: the window lapses during the FINAL account resolution — the effect never starts', () => {
+  withRelease((p, asm, manifest) => {
+    // now() is consumed at the gate check, then per mutation. The third STS resolution is slow:
+    // by the time the per-mutation check runs, the window has lapsed. Account FIRST, clock LAST.
+    const instants = [Date.parse('2026-08-02T12:00:00Z')];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run,
+      now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z'),
+    }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+    assert.match(r.output, /Executed before the window lapsed: none/);
+    assert.equal(run.of('execute-change-set').length, 0, 'no mutation may start after the window lapsed');
+  });
+});
+
+test('the window is re-checked before EVERY mutation — a lapse mid-sequence stops with the honest record', () => {
+  withRelease((p, asm, manifest) => {
+    // Valid at the gate check and for the first two executions; lapsed before the third.
+    const instants = [
+      Date.parse('2026-08-02T12:00:00Z'), // gate check
+      Date.parse('2026-08-02T12:05:00Z'), // before execute #1
+      Date.parse('2026-08-02T12:10:00Z'), // before execute #2
+      Date.parse('2026-08-02T12:31:00Z'), // before execute #3 — lapsed
+    ];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, now: () => instants.shift() ?? Date.parse('2026-08-02T12:31:00Z') }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+    assert.equal(run.of('execute-change-set').length, 2, 'exactly the in-window executions happened');
+    assert.match(r.output, /Executed before the window lapsed: cba-study-coach-pilot-identity, cba-study-coach-pilot-data/);
+    assert.match(r.output, /Remaining change sets were NOT executed/);
+  });
+});
+
+test('the plan is EMITTED before the effect, the account is re-resolved at the mutation boundary, and NO_CHANGES skips', () => {
+  withRelease((p, asm, manifest) => {
+    const order = [];
+    let stsCalls = 0;
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[1]]: { Status: 'FAILED', StatusReason: "The submitted information didn't contain changes." },
+    });
+    const run = cloudRun({
+      describes,
+      onCall: (args) => {
+        if (args[0] === 'sts' && args[1] === 'get-caller-identity') {
+          stsCalls += 1;
+          return { status: 0, stdout: JSON.stringify({ Account: ACCOUNT }), stderr: '' };
+        }
+        if (args[1] === 'execute-change-set') order.push(`execute:${args[args.indexOf('--change-set-name') + 1]}`);
+        return null;
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) },
+      print: (text) => order.push('print'),
+    }));
+    assert.equal(r.exit, 0, r.output);
+    // Review material exists BEFORE the mutation it authorizes; the NO_CHANGES stack never executes.
+    assert.deepEqual(order, ['print', `execute:${CS_ARN('cba-study-coach-pilot-identity')}`, `execute:${CS_ARN('cba-study-coach-pilot-api')}`, `execute:${CS_ARN('cba-study-coach-pilot-observability')}`]);
+    assert.equal(stsCalls, 3, 'identity at verification, immediately after, and at the mutation boundary — account FIRST, clock LAST');
+  });
+});
+
+test('a reviewed plan that no longer EXISTS refuses — expired or deleted change sets are not re-prepared', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    delete describes[PILOT_STACK_NAMES[2]]; // the ApiStack change set vanished
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_MISSING/);
+    assert.equal(run.of('execute-change-set').length, 0, 'deploy mode NEVER creates change sets — that is plan_only, under review');
+  });
+});
+
+test('ROUND-5: the gate names a REVIEWED plan group — waves for a fresh tier, and nothing else', () => {
+  withRelease((p, asm, manifest) => {
+    // Wave 1 (Identity + Data): prepare, describe, digest and execute EXACTLY those two stacks —
+    // this is how a fresh tier deploys, wave by wave, each under its own gate, because a change
+    // set whose Fn::ImportValue producers are unexecuted cannot even be created.
+    const wave1 = ['IdentityStack', 'DataStack'];
+    const wave1Names = PILOT_STACK_NAMES.slice(0, 2);
+    const wave1Digest = planDigestOf(wave1.map((id, i) => canonicalChangeSet(id, wave1Names[i], fullDescribes()[wave1Names[i]])));
+    const prepares = [];
+    const run = cloudRun();
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null, stacks: wave1 }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: (args) => { prepares.push(args); return { status: 0, stdout: '', stderr: '' }; },
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.deepEqual(prepares[0].slice(5, 8), ['--exclusively', 'IdentityStack', 'DataStack'], 'the prepare covers the WAVE, nothing more');
+    assert.equal(run.of('describe-change-set').length, 2, 'only the wave is described');
+    assert.match(r.output, new RegExp(`PLAN_DIGEST ${wave1Digest}`), 'the digest covers exactly the wave');
+
+    // And a deploy-mode gate for that wave executes exactly those two change sets.
+    const run2 = cloudRun();
+    const r2 = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run: run2,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { stacks: wave1, planDigest: wave1Digest }) },
+    }));
+    assert.equal(r2.exit, 0, r2.output);
+    assert.deepEqual(
+      run2.of('execute-change-set').map((c) => c.args[c.args.indexOf('--change-set-name') + 1]),
+      wave1Names.map(CS_ARN),
+    );
+
+    // Anything outside the closed group list authorizes nothing: a lone consumer stack, a
+    // foundation smuggle, a reordered full set, an empty set.
+    for (const [label, stacks] of [
+      ['a lone producer subset', ['DataStack']],
+      ['a foundation smuggle', ['SecurityStack', 'ApiStack']],
+      ['a reordered full set', ['ObservabilityStack', 'ApiStack', 'DataStack', 'IdentityStack']],
+      ['an empty set', []],
+      ['a non-array', 'IdentityStack'],
+    ]) {
+      const bad = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+        run: cloudRun(),
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null, stacks }) },
+        exec: () => assert.fail(`${label} must never reach a prepare`),
+      }));
+      assert.equal(bad.exit, 1, label);
+      assert.match(bad.output, /CLOUD_GATE_STACKS_INVALID/, label);
+    }
+  });
+});
+
+test('ROUND-5: an UNAVAILABLE change set never receives a reviewable digest — in either mode', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[2]]: { ExecutionStatus: 'OBSOLETE' },
+    });
+    // plan_only refuses: an obsolete set must be re-prepared, not put on the record.
+    const planned = runDeployRelease(releaseArgs(p, asm), {
+      run: cloudRun({ describes }),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(planned.exit, 1);
+    assert.match(planned.output, /CHANGE_SET_UNAVAILABLE/);
+    assert.equal(planned.output.includes('PLAN_DIGEST'), false, 'no digest may exist for an unexecutable plan');
+    // deploy refuses BEFORE the digest comparison could even bless it.
+    const run = cloudRun({ describes });
+    const deployed = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) } }));
+    assert.equal(deployed.exit, 1);
+    assert.match(deployed.output, /CHANGE_SET_UNAVAILABLE/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-5: property values are RETRIEVED and the semantics render reviewably', () => {
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes({
+      [PILOT_STACK_NAMES[0]]: {
+        Changes: [{
+          Type: 'Resource',
+          ResourceChange: {
+            Action: 'Modify',
+            LogicalResourceId: 'BffFunction',
+            ResourceType: 'AWS::Lambda::Function',
+            Replacement: 'False',
+            Details: [{ Target: { Attribute: 'Properties', Name: 'MemorySize', RequiresRecreation: 'Never', BeforeValue: '512', AfterValue: '1024' } }],
+          },
+        }],
+      },
+    });
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(r.exit, 0, r.output);
+    // The describes asked CloudFormation for the property values — without the flag there is
+    // nothing semantic to review, only an opaque change-set id.
+    for (const call of run.of('describe-change-set')) {
+      assert.ok(call.args.includes('--include-property-values'), 'property values must be retrieved');
+    }
+    assert.match(r.output, /Properties\.MemorySize/, 'the changed property is named');
+    // Round 13: BeforeValue/AfterValue are content, and a deterministic marker over content is an
+    // offline guessing oracle. The DELTA is computed in memory and stated as a flag; both values
+    // render as the same constant redaction, so nothing derived from them is published.
+    assert.match(r.output, /value: changed \(before \[redacted\], after \[redacted\]\)/, 'the delta is stated without publishing the values');
+  });
+});
+
+test('ROUND-7: endpoint identities are classifiable — the expected origin and an attacker origin read in clear', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // The first label of a workers.dev host IS the decision Zamp reviews (the approved pilot
+  // origin, the Cognito callbacks, CORS). Both origins must read VERBATIM — visibly different
+  // identities, not two opaque hashes reproducing the round-5 defect for endpoints.
+  const expected = fingerprintSanitize('CallbackURLs: https://cba-study-coach-pilot.workers.dev/auth/callback');
+  const attacker = fingerprintSanitize('CallbackURLs: https://evil.workers.dev/auth/callback');
+  assert.match(expected, /https:\/\/cba-study-coach-pilot\.workers\.dev\/auth\/callback/, 'the EXPECTED origin reads in clear');
+  assert.match(attacker, /https:\/\/evil\.workers\.dev\/auth\/callback/, 'an ATTACKER origin is exposed in clear — classifiable at sight');
+  assert.notEqual(expected, attacker);
+  // The project-chosen Cognito auth domain is decision-bearing too.
+  assert.match(
+    fingerprintSanitize('https://cba-study-coach-dev.auth.us-east-1.amazoncognito.com/login'),
+    /cba-study-coach-dev\.auth\.us-east-1\.amazoncognito\.com/,
+  );
+  // A hostname NO reviewed decision produced is visibly classifiable as unexpected — never
+  // rendered verbatim (it may itself be an exfiltration vector), never silently hash-blended.
+  const unknown = fingerprintSanitize('https://exfil.attacker.example/collect');
+  assert.match(unknown, /\[unexpected-host-redacted\]/);
+  assert.equal(unknown.includes('attacker.example'), false);
+  // Generated execute-api labels stay pseudonymized — the service domain stays legible.
+  const api = fingerprintSanitize('https://ab12cd34.execute-api.us-east-1.amazonaws.com/prod');
+  assert.equal(api.includes('ab12cd34'), false);
+  assert.match(api, /\[api-id-redacted\]\.execute-api\.us-east-1\.amazonaws\.com\/prod/);
+});
+
+test('ROUND-7: generated identifiers and query values never render — names this project chose always do', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // KMS key UUIDs are generated, not repository-public.
+  const kms = fingerprintSanitize(`arn:aws:kms:us-east-1:${ACCOUNT}:key/12345678-1234-1234-1234-1234567890ab`);
+  assert.equal(kms.includes('12345678-1234-1234-1234-1234567890ab'), false, 'a key UUID must never render');
+  assert.match(kms, /key\/\[key-id-redacted\]/);
+  // API Gateway api ids are generated.
+  const api = fingerprintSanitize('arn:aws:apigateway:us-east-1::/apis/a1b2c3d4/routes/xyz9876');
+  assert.equal(api.includes('a1b2c3d4'), false, 'an api id must never render');
+  assert.equal(api.includes('xyz9876'), false, 'a route id must never render');
+  // CloudFormation stack ids are generated; the stack NAME is project-chosen and must stay.
+  const cfn = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/deadbeef-1234-1234-1234-abcdefabcdef`);
+  assert.equal(cfn.includes('deadbeef-1234-1234-1234-abcdefabcdef'), false, 'a stack id must never render');
+  assert.match(cfn, /stack\/cba-study-coach-dev-api\/\[id-redacted\]/, 'the project-chosen stack name stays classifiable');
+  // URL query values carry tokens — stripped, with the stripping visible. (Round 9 also
+  // pseudonymizes the unreviewed /reset path: secrets ride path segments as easily.)
+  const url = fingerprintSanitize('https://x.workers.dev/reset?token=secret-value');
+  assert.equal(url.includes('secret-value'), false, 'a query token must never render');
+  assert.match(url, /\/\[path-redacted\]\?\[query-redacted\]/);
+  // A free-standing UUID (outside any ARN) is generated material too.
+  assert.equal(fingerprintSanitize('key id 12345678-1234-1234-1234-1234567890ab').includes('1234567890ab'), false);
+  // And an UNKNOWN service's resource is pseudonymized whole — unknown is not proven public.
+  const foreign = fingerprintSanitize(`arn:aws:someservice:us-east-1:${ACCOUNT}:widget/private-name`);
+  assert.equal(foreign.includes('private-name'), false);
+  assert.match(foreign, /\[resource-redacted\]/);
+  // IAM role paths remain verbatim — that is the round-6 contract, unchanged.
+  assert.match(fingerprintSanitize(`arn:aws:iam::${ACCOUNT}:role/evil-admin`), /role\/evil-admin/);
+});
+
+test('ROUND-8: no suffix allowlist — service membership proves nothing, format rules decide', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // The exact round-8 reproductions, in order. A bucket-style or ELB-style amazonaws host is
+  // not proven public by its suffix — outside the exact reviewed families, hosts are unexpected.
+  const bucketHost = fingerprintSanitize('https://secret-bucket.s3.us-east-1.amazonaws.com/obj');
+  assert.equal(bucketHost.includes('secret-bucket'), false, 'a bucket-style host must never render');
+  assert.match(bucketHost, /\[unexpected-host-redacted\]/);
+  const elbHost = fingerprintSanitize('https://generated-id.elb.us-east-1.amazonaws.com/health');
+  assert.equal(elbHost.includes('generated-id'), false, 'an ELB-style host must never render');
+  // S3 object keys are content hashes and internal paths — never public, whoever owns the
+  // bucket; foreign bucket NAMES are not public either. The project asset bucket stays legible.
+  const foreignObject = fingerprintSanitize('arn:aws:s3:::private-bucket/asset-secret-hash');
+  assert.equal(foreignObject.includes('private-bucket'), false);
+  assert.equal(foreignObject.includes('asset-secret-hash'), false);
+  assert.match(foreignObject, /\[bucket-redacted\]\/\[object-key-redacted\]/);
+  const ownAsset = fingerprintSanitize(`arn:aws:s3:::cdk-cbardev-assets-${ACCOUNT}-us-east-1/abc123hash.zip`);
+  assert.match(ownAsset, /cdk-cbardev-assets-\[account-redacted\]-us-east-1/, 'the project asset bucket stays classifiable');
+  assert.equal(ownAsset.includes(ACCOUNT), false, 'the account inside it does not');
+  assert.equal(ownAsset.includes('abc123hash'), false, 'object keys never render, even ours');
+  // SSM parameter paths are not public by default — exactly the bootstrap-version parameters are.
+  const privateParam = fingerprintSanitize(`arn:aws:ssm:us-east-1:${ACCOUNT}:parameter/prod/private/name`);
+  assert.equal(privateParam.includes('prod/private/name'), false, 'a parameter path must never render');
+  assert.match(
+    fingerprintSanitize(`arn:aws:ssm:us-east-1:${ACCOUNT}:parameter/cdk-bootstrap/cbardev/version`),
+    /parameter\/cdk-bootstrap\/cbardev\/version/,
+    'the reviewed bootstrap parameter stays legible',
+  );
+  // STS: the ROLE path is principal material and stays; the caller-chosen session never renders.
+  const sts = fingerprintSanitize(`arn:aws:sts::${ACCOUNT}:assumed-role/cba-study-coach-gha-deploy-dev/covert-session-name`);
+  assert.match(sts, /assumed-role\/cba-study-coach-gha-deploy-dev\/\[session-redacted\]/);
+  assert.equal(sts.includes('covert-session-name'), false);
+  // Data-plane services: project-named resources stay; anything else pseudonymizes whole.
+  assert.match(fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:cba-study-coach-dev-bff`), /function:cba-study-coach-dev-bff/);
+  assert.equal(fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:foreign-fn`).includes('foreign-fn'), false);
+});
+
+test('ROUND-8: URLs go through the STRUCTURED parser — credentials, IPv6 and ports cannot ride past it', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // Userinfo: credentials NEVER appear — the whole URL becomes a classifiable marker.
+  const credentialed = fingerprintSanitize('https://user:supersecret@evil.example/collect');
+  assert.equal(credentialed.includes('supersecret'), false, 'a password must never render');
+  assert.equal(credentialed.includes('evil.example'), false);
+  assert.match(credentialed, /\[credentialed-url-redacted\]/);
+  // IPv6 literal with a token: the ad hoc regex never matched it and printed everything.
+  const ipv6 = fingerprintSanitize('https://[2001:db8::1]/?token=secret');
+  assert.equal(ipv6.includes('secret'), false, 'the token must never render');
+  assert.equal(ipv6.includes('2001:db8'), false, 'an IP-literal host is not decision-bearing');
+  assert.match(ipv6, /\[unexpected-host-redacted\]\/\?\[query-redacted\]/);
+  // Ports survive as structure; query still strips; the decision-bearing host stays — and the
+  // round-9 contract pseudonymizes the unreviewed path too: secrets ride path segments.
+  assert.match(fingerprintSanitize('https://x.workers.dev:8443/reset?token=s'), /https:\/\/x\.workers\.dev:8443\/\[path-redacted\]\?\[query-redacted\]/);
+  // Fragments are query-class material.
+  assert.match(fingerprintSanitize('https://x.workers.dev/page#access_token=abc'), /\?\[query-redacted\]/);
+  assert.equal(fingerprintSanitize('https://x.workers.dev/page#access_token=abc').includes('access_token'), false);
+});
+
+test('ROUND-9: values are classified as FIELDS — no outer scanner decides what the parsers see', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // 1. Any scheme reaches the classifier: the round-8 scanner recognized only http(s), and a
+  // postgres URL with credentials sailed past it whole.
+  const pg = fingerprintSanitize('postgres://user:supersecret@db.internal/cba');
+  assert.equal(pg.includes('supersecret'), false, 'credentials in a non-http URL must never render');
+  assert.equal(pg.includes('db.internal'), false);
+  assert.match(pg, /\[credentialed-url-redacted\]/);
+  // 2. A backslash cannot cut the candidate and strand the query outside it: the token goes to
+  // the WHATWG parser whole (which treats \ as / in special schemes) — the token never renders.
+  const backslash = fingerprintSanitize('https://evil.example\\?token=supersecret');
+  assert.equal(backslash.includes('supersecret'), false, 'a backslash-smuggled query must never render');
+  // 3-4. Paths are DATA unless a reviewed decision produces that exact shape — under an
+  // unexpected host AND under the approved workers.dev origin alike.
+  const foreignPath = fingerprintSanitize('https://evil.example/reset/supersecret-token');
+  assert.equal(foreignPath.includes('supersecret-token'), false, 'a path secret must never render');
+  const ownPath = fingerprintSanitize('https://cba-study-coach-pilot.workers.dev/reset/supersecret-token');
+  assert.equal(ownPath.includes('supersecret-token'), false, 'an approved host does not bless an unreviewed path');
+  assert.match(ownPath, /https:\/\/cba-study-coach-pilot\.workers\.dev\/\[path-redacted\]/, 'the host stays classifiable; the path does not leak');
+  // The reviewed shapes still read in clear.
+  assert.match(fingerprintSanitize('https://cba-study-coach-pilot.workers.dev/auth/callback'), /\/auth\/callback$/);
+});
+
+test('ROUND-9: anchored per-service grammars — one project-named segment never blesses the rest', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  // 5. A Lambda ALIAS is caller-chosen data riding behind the project-named function.
+  const lambda = fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:function:cba-study-coach-dev-bff:covert-alias`);
+  assert.equal(lambda.includes('covert-alias'), false, 'a lambda alias must never render');
+  assert.match(lambda, /function:cba-study-coach-dev-bff:\[qualifier-redacted\]/, 'the project-owned identity segment stays');
+  // 6. A LOG STREAM is generated material behind the project-named group.
+  const logs = fingerprintSanitize(`arn:aws:logs:us-east-1:${ACCOUNT}:log-group:/aws/lambda/cba-study-coach-dev-bff:log-stream:generated-secret-stream`);
+  assert.equal(logs.includes('generated-secret-stream'), false, 'a log stream must never render');
+  assert.match(logs, /log-group:\/aws\/lambda\/cba-study-coach-dev-bff:log-stream:\[stream-redacted\]/);
+  // 7. A Cognito GROUP behind the pool id is unreviewed trailing material.
+  const cognito = fingerprintSanitize(`arn:aws:cognito-idp:us-east-1:${ACCOUNT}:userpool/us-east-1_ABCdef123/group/covert-group`);
+  assert.equal(cognito.includes('covert-group'), false, 'a cognito group must never render');
+  assert.match(cognito, /userpool\/us-east-1_\[pool-id-redacted\]\/\[path-redacted\]/);
+  // 8. An API Gateway V1 path is outside the reviewed v2 grammar — the whole resource fails
+  // closed, exactly like every known-service branch whose complete shape does not match.
+  const v1 = fingerprintSanitize('arn:aws:apigateway:us-east-1::/restapis/abc123/deployments/xyz');
+  assert.equal(v1.includes('restapis'), false, 'a v1 path is not proven public');
+  assert.match(v1, /\[resource-redacted\]/);
+  // Fail-closed inside known services: a cognito shape the grammar does not recognize, and a
+  // foreign lambda resource, each pseudonymize WHOLE — never return the original.
+  const badPool = fingerprintSanitize(`arn:aws:cognito-idp:us-east-1:${ACCOUNT}:identityprovider/covert-idp`);
+  assert.equal(badPool.includes('covert-idp'), false);
+  const badLambda = fingerprintSanitize(`arn:aws:lambda:us-east-1:${ACCOUNT}:layer:covert-layer:3`);
+  assert.equal(badLambda.includes('covert-layer'), false);
+  // The account embedded in a verbatim-blessed segment still pseudonymizes: residual passes run
+  // over classifier output too.
+  const bucket = fingerprintSanitize(`arn:aws:s3:::cdk-cbardev-assets-${ACCOUNT}-us-east-1/key.zip`);
+  assert.equal(bucket.includes(ACCOUNT), false, 'the account inside a bucket name must never render');
+  assert.match(bucket, /cdk-cbardev-assets-\[account-redacted\]-us-east-1\/\[object-key-redacted\]/);
+});
+
+test('ROUND-10: renderPlan carries the COMPLETE change — destructive policy is visible, no field selected away', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const withPolicy = (policyAction) => [canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        PolicyAction: policyAction,
+        Scope: ['Properties'],
+        LogicalResourceId: 'Table',
+        PhysicalResourceId: 'cba-study-coach-pilot-simulation',
+        ResourceType: 'AWS::DynamoDB::Table',
+        ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/11111111-2222-3333-4444-555555555555`,
+        ModuleInfo: { TypeHierarchy: 'AWS::Module', LogicalIdHierarchy: 'Mod' },
+        Details: [{ Target: { Attribute: 'Properties', Name: 'BillingMode' }, Evaluation: 'Static', ChangeSource: 'DirectModification' }],
+      },
+    }],
+  }))];
+  // The exact round-10 reproduction: two plans differing ONLY in the destructive policy must
+  // render differently, and each must NAME the policy it authorizes.
+  const retain = renderPlan(withPolicy('Retain'));
+  const del = renderPlan(withPolicy('Delete'));
+  assert.notEqual(retain, del, 'a different destructive policy must change the review material');
+  assert.match(retain, /\[policy: Retain\]/);
+  assert.match(del, /\[policy: Delete\]/);
+  // Every officially defined field the round-9 summary dropped now reaches the human, because
+  // the WHOLE ResourceChange renders — no hand-picked subset to fall behind the API.
+  for (const field of ['PolicyAction', 'Scope', 'PhysicalResourceId', 'ChangeSetId', 'ModuleInfo', 'Evaluation', 'ChangeSource', 'Details', 'LogicalResourceId', 'ResourceType']) {
+    assert.ok(del.includes(field), `${field} must appear in the review material`);
+  }
+  assert.match(del, /full change set \(sanitized\)/);
+  // ROUND 13 replaces the obsolete round-10 control: a field nobody reviewed no longer becomes
+  // an opaque key the material carries — it REFUSES, and renderPlan says so by path, because an
+  // unreviewed field can change what an approval means.
+  const future = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], {
+    Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Add', LogicalResourceId: 'X', ResourceType: 'AWS::DynamoDB::Table', SomeFutureField: 'Retain' } }],
+  }))]);
+  assert.match(future, /NOT RENDERED/, 'an unreviewed field must refuse, never render');
+  assert.match(future, /\$\.Changes\[0\]\.ResourceChange\.SomeFutureField: field is not in the reviewed schema/);
+});
+
+test('ROUND-10: strings fail CLOSED — serialized JSON, map keys and punctuation-wrapped values cannot leak', () => {
+  const { renderPlan, fingerprintSanitize } = require('../bin/deploy-release');
+  const SECRET = 'supersecret';
+  const credentialed = `https://user:${SECRET}@evil.example/private`;
+  const entries = [canonicalChangeSet('ApiStack', PILOT_STACK_NAMES[2], describedFor(PILOT_STACK_NAMES[2], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        LogicalResourceId: 'Fn',
+        ResourceType: 'AWS::Lambda::Function',
+        Details: [{
+          Target: {
+            Attribute: 'Properties',
+            Name: 'Environment',
+            // BeforeValue/AfterValue are STRINGS in the AWS contract — a serialized object hides
+            // structure from a value walker unless it is parsed and walked.
+            BeforeValue: JSON.stringify({ endpoint: credentialed }),
+            AfterValue: JSON.stringify({ [credentialed]: 'x' }),
+          },
+        }],
+        // A sensitive URL used as a KEY, and one wrapped in punctuation inside a value.
+        BeforeContext: JSON.stringify({ [credentialed]: { note: `endpoint=(${credentialed})` } }),
+        AfterContext: `endpoint=(${credentialed})`,
+      },
+    }],
+  }))];
+  const rendered = renderPlan(entries);
+  assert.equal(rendered.includes(SECRET), false, 'no secret may survive anywhere in the material');
+  assert.equal(rendered.includes('evil.example'), false);
+  // Rounds 12-13: a content carrier renders as ONE constant redaction — the credentialed URL,
+  // the key it hid behind and the punctuation around it vanish together, and the redaction is
+  // not derived from the value, so it cannot be tested offline against candidates.
+  assert.match(rendered, /value: changed \(before \[redacted\], after \[redacted\]\)/);
+  // Directly, too: as a bare value, as a key, and wrapped in punctuation.
+  assert.equal(fingerprintSanitize(`endpoint=(${credentialed})`).includes(SECRET), false, 'punctuation must not hide a URL from the classifier');
+  assert.equal(fingerprintSanitize(JSON.stringify({ [credentialed]: 1 })).includes(SECRET), false);
+  // An unparseable context is not proven safe: it goes through the fail-closed scalar rules.
+  assert.equal(fingerprintSanitize(`{"broken": "${credentialed}"`).includes(SECRET), false);
+  // ROUND 13: an unknown scalar is a CONSTANT redaction. The round-10/11 markers were
+  // sha256(prefix + value) — a published, deterministic derivation of the very value they hid,
+  // testable offline against candidates. Two different unknown values now render IDENTICALLY;
+  // where the human needs the delta, renderPlan states `changed` from the raw values in memory.
+  const a = fingerprintSanitize('some-unknown-value');
+  assert.equal(a, '[redacted]');
+  assert.equal(a, fingerprintSanitize('other-unknown-value'), 'no derivation of a value is published');
+  const { createHash } = require('node:crypto');
+  const oracle = createHash('sha256').update('cba-pseudonym:supersecret', 'utf8').digest('hex').slice(0, 32);
+  assert.equal(fingerprintSanitize('supersecret').includes(oracle), false, 'the reproduced oracle must not appear');
+  // ROUND 11 retires the round-10 free-form allowance: in a FREE position nothing renders,
+  // because a format proves nothing about content. The very same values read in clear when they
+  // sit in their KNOWN FIELD and pass that field's validator — field, then value, never shape.
+  const free = fingerprintSanitize('AWS::Lambda::Function Modify Retain 512 us-east-1 cba-study-coach-dev-bff');
+  for (const word of ['AWS::Lambda::Function', 'Modify', 'Retain', '512', 'cba-study-coach-dev-bff']) {
+    assert.equal(free.includes(word), false, `"${word}" must not render in a free position`);
+  }
+  const { sanitizeBySchema: bySchema, CHANGE_SET_SCHEMA } = require('../bin/deploy-release');
+  const change = (rc) => bySchema({ Changes: [{ Type: 'Resource', ResourceChange: rc }] }, CHANGE_SET_SCHEMA).Changes[0].ResourceChange;
+  assert.deepEqual(
+    change({ Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' }),
+    { Action: 'Modify', PolicyAction: 'Retain', ResourceType: 'AWS::Lambda::Function', LogicalResourceId: 'BffFunction' },
+  );
+  // And a value outside its position's vocabulary is a marker even in the right position.
+  assert.match(change({ Action: 'Exfiltrate' }).Action, /^\[redacted\]$/);
+
+  // ROUND 12 retires the round-10 walk: a parsed blob let its own internal NAMES claim schema
+  // trust, so content carriers are opaque now — one deterministic marker for the whole value,
+  // never parsed. Reading callback URLs out of a property value is no longer how origins are
+  // reviewed: PREFLIGHT-1 validates the exact auth URLs and the manifest's contextDigest binds
+  // them to the release, BEFORE any change set exists.
+  const { sanitizeBySchema } = require('../bin/deploy-release');
+  const target = { kind: 'object', fields: { BeforeValue: { kind: 'opaque' }, AfterValue: { kind: 'opaque' } } };
+  const escapedApproved = '{"endpoint":"https:\\/\\/cba-study-coach-pilot.workers.dev\\/auth\\/callback"}';
+  const opaqueApproved = sanitizeBySchema({ BeforeValue: escapedApproved }, target).BeforeValue;
+  assert.match(opaqueApproved, /^\[redacted\]$/, 'a content carrier renders as one marker, never parsed');
+  const escapedCredentialed = `{"endpoint":"https:\\/\\/user:${SECRET}@evil.example\\/x"}`;
+  const opaqueSecret = sanitizeBySchema({ AfterValue: escapedCredentialed }, target).AfterValue;
+  assert.equal(opaqueSecret.includes(SECRET), false);
+  // ROUND 13: the two render IDENTICALLY, on purpose — a value-derived marker was an offline
+  // guessing oracle. Whether the value moved is stated as a flag computed in memory instead.
+  assert.equal(opaqueApproved, opaqueSecret, 'content carriers share one constant redaction');
+});
+
+test('ROUND-10: the CloudFormation ARN grammar is complete — an extra suffix fails closed', () => {
+  const { fingerprintSanitize } = require('../bin/deploy-release');
+  const uuid = '11111111-2222-3333-4444-555555555555';
+  // The reviewed shape: stack/<project-chosen name>/<generated id>.
+  const exact = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/${uuid}`);
+  assert.match(exact, /stack\/cba-study-coach-dev-api\/\[id-redacted\]/);
+  // Round 10: anything trailing the id used to survive because the check merely looked for an
+  // emitted [id# marker. The complete grammar refuses the whole resource instead.
+  const suffixed = fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-dev-api/${uuid}/covert-suffix`);
+  assert.equal(suffixed.includes('covert-suffix'), false, 'a trailing segment must never render');
+  assert.match(suffixed, /\[resource-redacted\]/);
+  // A foreign stack name pseudonymizes; a nested-but-unsupported shape fails closed.
+  assert.equal(fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/foreign-stack/${uuid}`).includes('foreign-stack'), false);
+  assert.match(fingerprintSanitize(`arn:aws:cloudformation:us-east-1:${ACCOUNT}:stackset/x/y/z`), /\[resource-redacted\]/);
+});
+
+test('ROUND-11: the change set\'s executable semantics are in the digest AND named in the material', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const base = (over) => describedFor(PILOT_STACK_NAMES[1], {
+    Parameters: [{ ParameterKey: 'AuthDomainPrefix', ParameterValue: 'super-secret-prefix' }],
+    ...over,
+  });
+  // The exact round-11 reproduction: two plans whose ONLY difference lives outside `Changes`.
+  const planA = base({ Capabilities: ['CAPABILITY_NAMED_IAM'], OnStackFailure: 'DELETE', NotificationARNs: [`arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts`], Tags: [{ Key: 'Project', Value: 'CBAStudyCoach' }] });
+  const planB = base({ OnStackFailure: 'ROLLBACK', RollbackConfiguration: { MonitoringTimeInMinutes: 15, RollbackTriggers: [{ Arn: `arn:aws:cloudwatch:us-east-1:${ACCOUNT}:alarm:cba-study-coach-pilot-api-5xx`, Type: 'AWS::CloudWatch::Alarm' }] }, Tags: [{ Key: 'Project', Value: 'Other' }] });
+  const entryA = canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], planA);
+  const entryB = canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], planB);
+  assert.notEqual(planDigestOf([entryA]), planDigestOf([entryB]), 'capabilities, failure behaviour, rollback and tags MUST bind the gate');
+  const renderedA = renderPlan([entryA]);
+  const renderedB = renderPlan([entryB]);
+  assert.notEqual(renderedA, renderedB, 'and they must be visible to the human, not only to the digest');
+  // Named explicitly — a reader must not have to infer DELETE-on-failure from a resource diff.
+  assert.match(renderedA, /on-failure: DELETE/);
+  assert.match(renderedA, /capabilities: CAPABILITY_NAMED_IAM/);
+  assert.match(renderedB, /on-failure: ROLLBACK/);
+  assert.match(renderedB, /rollback: monitoring 15 min/);
+  assert.match(renderedA, /notifications: arn:aws:sns:[^\n]*cba-study-coach-pilot-operational-alerts/);
+  assert.match(renderedB, /triggers .*alarm:cba-study-coach-pilot-api-5xx/);
+  // Parameter NAMES are schema and read in clear; parameter VALUES are content and never do.
+  assert.match(renderedA, /parameters: AuthDomainPrefix=\[redacted\]/);
+  assert.equal(renderedA.includes('super-secret-prefix'), false);
+  // Tag values are content too — the KEY is schema, the value is not.
+  assert.equal(renderedA.includes('CBAStudyCoach'), false, 'a tag value is content, whatever it says');
+  assert.match(renderedA, /tags: Project=\[redacted\]/);
+});
+
+test('ROUND-11: DescribeChangeSet pagination is consumed, or the plan refuses', () => {
+  withRelease((p, asm, manifest) => {
+    // A change set whose description spans three pages: every page's changes must reach the
+    // plan, and the assembled body must carry no cursor.
+    const pages = new Map();
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        const token = args.includes('--next-token') ? args[args.indexOf('--next-token') + 1] : null;
+        const seen = (pages.get(stackName) ?? 0) + 1;
+        pages.set(stackName, seen);
+        const body = describedFor(stackName, {
+          Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: `R${seen}`, ResourceType: 'AWS::DynamoDB::Table' } }],
+        });
+        if (token === null) return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page2' }), stderr: '' };
+        if (token === 'page2') return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page3' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify(body), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: happyExec,
+    });
+    assert.equal(r.exit, 0, r.output);
+    assert.equal(run.of('describe-change-set').length, 12, 'three pages per stack, four stacks');
+    assert.match(r.output, /R1/);
+    assert.match(r.output, /R3/, 'the LAST page reaches the material — a partial plan is not the plan');
+    assert.equal(r.output.includes('NextToken'), false, 'no cursor survives into the reviewed body');
+  });
+
+  // A description that never stops paginating authorizes nothing.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), NextToken: 'always-more' }), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_PAGINATION_UNCONSUMED/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-11: the fail-open formats are closed — numbers, keys, identifiers, project prefixes', () => {
+  const { fingerprintSanitize, sanitizeBySchema, CHANGE_SET_SCHEMA } = require('../bin/deploy-release');
+  const walk = (v) => sanitizeBySchema(v, CHANGE_SET_SCHEMA);
+  const rc = (r) => walk({ Changes: [{ Type: 'Resource', ResourceChange: r }] }).Changes[0].ResourceChange;
+  // The five round-11 reproductions, each verbatim before.
+  assert.match(fingerprintSanitize('111122223333'), /^\[redacted\]$/, 'an account id is a numeric string');
+  assert.match(fingerprintSanitize('123456'), /^\[redacted\]$/, 'a numeric string proves nothing');
+  assert.match(Object.keys(walk({ supersecret: 'x' }))[0], /^\[key-redacted\]$/, 'a key outside the position is content');
+  assert.match(rc({ PhysicalResourceId: 'supersecret' }).PhysicalResourceId, /^\[redacted\]$/, 'a physical id is generated or arbitrary');
+  // A physical id is pseudonymized WHOLE — including when it takes the shape of an ARN, which
+  // the ARN grammar would otherwise render segment by segment. The field decides, not the shape:
+  // CloudFormation fills this from the resource, and no grammar bound to it is worth the
+  // assumption unless it is bound to the ResourceType as well.
+  const arnPhysical = rc({ PhysicalResourceId: `arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts` }).PhysicalResourceId;
+  assert.match(arnPhysical, /^\[redacted\]$/, 'an ARN-shaped physical id must not ride the ARN grammar');
+  assert.equal(arnPhysical.includes('operational-alerts'), false);
+  assert.match(fingerprintSanitize('cba-study-coach-supersecret'), /^\[redacted\]$/, 'our prefix does not bless an arbitrary suffix');
+  // Only REAL JSON numbers stay numbers; the string form does not.
+  assert.equal(walk({ Changes: [{ HookInvocationCount: 3 }] }).Changes[0].HookInvocationCount, 3);
+  assert.match(walk({ Changes: [{ HookInvocationCount: '3' }] }).Changes[0].HookInvocationCount, /^\[redacted\]$/);
+  // A stack name renders only when THIS deploy computed it — not because it looks like ours.
+  assert.equal(walk({ StackName: PILOT_STACK_NAMES[0] }).StackName, PILOT_STACK_NAMES[0]);
+  assert.match(walk({ StackName: 'cba-study-coach-pilot-impostor' }).StackName, /^\[redacted\]$/);
+});
+
+test('ROUND-12: parsed content cannot claim schema trust by naming itself', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const SECRET = 'supersecret';
+  // The exact round-12 reproduction: content carriers holding the very key names the schema
+  // trusts SOMEWHERE — Key, Name, ParameterKey, LogicalResourceId, Arn. Position decides now,
+  // and inside a content carrier there is no position to claim.
+  const hostile = JSON.stringify({
+    Key: SECRET,
+    Name: SECRET,
+    ParameterKey: SECRET,
+    LogicalResourceId: SECRET,
+    Arn: `arn:aws:iam::${ACCOUNT}:role/covert-admin`,
+    Capabilities: ['CAPABILITY_NAMED_IAM'],
+  });
+  const entry = canonicalChangeSet('ApiStack', PILOT_STACK_NAMES[2], describedFor(PILOT_STACK_NAMES[2], {
+    Changes: [{
+      Type: 'Resource',
+      ResourceChange: {
+        Action: 'Modify',
+        LogicalResourceId: 'Fn',
+        ResourceType: 'AWS::Lambda::Function',
+        BeforeContext: hostile,
+        AfterContext: hostile,
+        Details: [{ Target: { Attribute: 'Properties', Name: 'Environment', BeforeValue: hostile, AfterValue: hostile } }],
+      },
+    }],
+  }));
+  const rendered = renderPlan([entry]);
+  assert.equal(rendered.includes(SECRET), false, 'a schema NAME inside content must not render its value');
+  assert.equal(rendered.includes('covert-admin'), false, 'an internal Arn must not reach the ARN grammar');
+  assert.equal(rendered.includes('CAPABILITY_NAMED_IAM'), false, 'nor may content claim the change set\'s own vocabulary');
+  // Each carrier is ONE constant redaction — no parsing, so no internal name to trust, and no
+  // derivation of the content to test offline.
+  assert.match(rendered, /value: (un)?changed \(before \[redacted\], after \[redacted\]\)/);
+  // The SAME names still read in clear at their real positions, so the material stays reviewable.
+  assert.match(rendered, /Modify {2}AWS::Lambda::Function {2}Fn/);
+  assert.match(rendered, /Properties\.Environment/);
+});
+
+test('ROUND-12: interpretation-changing fields are named — deployment mode and drift', () => {
+  const { renderPlan } = require('../bin/deploy-release');
+  const withMode = (over) => canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], describedFor(PILOT_STACK_NAMES[1], over));
+  const revert = withMode({ DeploymentMode: 'REVERT_DRIFT', StackDriftStatus: 'DRIFTED' });
+  const inSync = withMode({ StackDriftStatus: 'IN_SYNC' });
+  assert.notEqual(planDigestOf([revert]), planDigestOf([inSync]), 'mode and drift bind the gate');
+  const renderedRevert = renderPlan([revert]);
+  assert.match(renderedRevert, /deployment-mode: REVERT_DRIFT/, 'REVERT_DRIFT must be distinguishable at sight');
+  assert.match(renderedRevert, /drift: DRIFTED/);
+  assert.match(renderPlan([inSync]), /deployment-mode: unspecified {3}drift: IN_SYNC/);
+  // ROUND 13: `REVERT_DRIFT` is the ONLY documented value — the round-12 schema invented
+  // `STANDARD`. A mode outside the contract REFUSES the plan; it is not rendered as a marker.
+  const invented = renderPlan([withMode({ DeploymentMode: 'STANDARD' })]);
+  assert.match(invented, /NOT RENDERED/);
+  assert.match(invented, /\$\.DeploymentMode: value is outside the reviewed contract/);
+});
+
+test('ROUND-12: a field the reviewed schema does not describe REFUSES the plan', () => {
+  withRelease((p, asm, manifest) => {
+    // A service-level field nobody reviewed can change what an approval means. The lane stops
+    // and a human extends the schema — it never becomes an opaque key the material hides.
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[2]] = { ...describes[PILOT_STACK_NAMES[2]], SomeNewSemantic: 'REVERT_EVERYTHING' };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(run.of('execute-change-set').length, 0, 'nothing executes under an unreviewed schema');
+  });
+  // The refusal reaches nested positions too — depth is not a hiding place.
+  const { validateChangeSet } = require('../bin/deploy-release');
+  assert.deepEqual(validateChangeSet(describedFor(PILOT_STACK_NAMES[0])), [], 'the reviewed shape passes');
+  assert.deepEqual(
+    validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', Details: [{ Target: { Attribute: 'Properties', Sneaky: 'x' } }] } }] }),
+    ['$.Changes[0].ResourceChange.Details[0].Target.Sneaky: field is not in the reviewed schema'],
+  );
+});
+
+test('ROUND-12: child evidence FRAMES the streams — concatenation collisions are gone', () => {
+  const { childEvidence } = require('../bin/deploy-release');
+  // The exact reproduction: same concatenation, different streams.
+  const a = childEvidence({ status: 1, stdout: 'ab', stderr: 'c' });
+  const b = childEvidence({ status: 1, stdout: 'a', stderr: 'bc' });
+  assert.notEqual(a, b, 'the stream boundary must be part of the evidence');
+  // The DIGEST itself must carry the framing — not only the byte counts printed beside it, or a
+  // reader comparing digests across runs would still see two different failures as one.
+  const digestOf = (evidence) => evidence.match(/sha256=([0-9a-f]{64})/)[1];
+  assert.notEqual(digestOf(a), digestOf(b), 'the digest must distinguish the streams, not just their sizes');
+  // The framing is visible, not only digested — an operator correlates by stream sizes too.
+  assert.match(a, /stdout=2B stderr=1B/);
+  assert.match(b, /stdout=1B stderr=2B/);
+  // And the exit code is framed as well: same bytes, different status, different digest.
+  assert.notEqual(childEvidence({ status: 1, stdout: 'x', stderr: '' }), childEvidence({ status: 2, stdout: 'x', stderr: '' }));
+});
+
+/** A change set exercising EVERY member of the current DescribeChangeSet contract, drift-aware
+ * ones included, transcribed from the CloudFormation API reference. It is the fixture that keeps
+ * the reviewed schema honest: if the schema drifts from the documented API, this refuses. */
+const FULL_API_DESCRIBE = (stackName) => ({
+  ChangeSetName: 'cba-70-abcdef123456',
+  ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/11111111-2222-3333-4444-555555555555`,
+  StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/${stackName}/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+  StackName: stackName,
+  ParentChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/parent/22222222-3333-4444-5555-666666666666`,
+  RootChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/root/33333333-4444-5555-6666-777777777777`,
+  CreationTime: '2026-08-07T10:00:00.000000+00:00',
+  Description: 'a description CloudFormation echoes back',
+  Status: 'CREATE_COMPLETE',
+  StatusReason: 'because',
+  ExecutionStatus: 'AVAILABLE',
+  OnStackFailure: 'ROLLBACK',
+  Capabilities: ['CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND'],
+  IncludeNestedStacks: true,
+  ImportExistingResources: false,
+  DeploymentMode: 'REVERT_DRIFT',
+  StackDriftStatus: 'DRIFTED',
+  NotificationARNs: [`arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts`],
+  RollbackConfiguration: {
+    MonitoringTimeInMinutes: 15,
+    RollbackTriggers: [{ Arn: `arn:aws:cloudwatch:us-east-1:${ACCOUNT}:alarm:cba-study-coach-pilot-api-5xx`, Type: 'AWS::CloudWatch::Alarm' }],
+  },
+  Parameters: [{ ParameterKey: 'AuthDomainPrefix', ParameterValue: 'secret-value', UsePreviousValue: false, ResolvedValue: 'resolved-secret' }],
+  Tags: [{ Key: 'Project', Value: 'CBAStudyCoach' }, { Key: 'aws:cloudformation:stack-name', Value: stackName }],
+  Changes: [{
+    Type: 'Resource',
+    HookInvocationCount: 2,
+    ResourceChange: {
+      Action: 'SyncWithActual',
+      PolicyAction: 'ReplaceAndSnapshot',
+      LogicalResourceId: 'BffFunction',
+      PhysicalResourceId: 'cba-study-coach-pilot-bff',
+      ResourceType: 'AWS::Lambda::Function',
+      Replacement: 'Conditional',
+      Scope: ['Properties', 'Tags'],
+      ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/nested/44444444-5555-6666-7777-888888888888`,
+      ModuleInfo: { TypeHierarchy: 'AWS::First::Example::MODULE', LogicalIdHierarchy: 'ModuleLogicalId' },
+      BeforeContext: '{"Properties":{"MemorySize":512}}',
+      AfterContext: '{"Properties":{"MemorySize":1024}}',
+      PreviousDeploymentContext: '{"Properties":{"MemorySize":256}}',
+      ResourceDriftStatus: 'MODIFIED',
+      ResourceDriftIgnoredAttributes: [{ Path: '/Properties/WriteOnly', Reason: 'WRITE_ONLY_PROPERTY' }, { Path: '/Properties/Managed', Reason: 'MANAGED_BY_AWS' }],
+      Details: [{
+        Evaluation: 'Static',
+        ChangeSource: 'NoModification',
+        CausingEntity: `arn:aws:iam::${ACCOUNT}:role/cba-study-coach-gha-deploy-pilot`,
+        Target: {
+          Attribute: 'Properties',
+          Name: 'MemorySize',
+          RequiresRecreation: 'Conditionally',
+          AttributeChangeType: 'SyncWithActual',
+          Path: '/Properties/MemorySize',
+          BeforeValue: '512',
+          AfterValue: '1024',
+          BeforeValueFrom: 'ACTUAL_STATE',
+          AfterValueFrom: 'TEMPLATE',
+          Drift: { ActualValue: '512', PreviousValue: '256', DriftDetectionTimestamp: '2026-08-07T09:00:00.000000+00:00' },
+        },
+      }],
+    },
+  }],
+});
+
+test('ROUND-13: the reviewed schema matches the documented API — a full drift-aware response validates and renders', () => {
+  const { renderPlan, validateChangeSet } = require('../bin/deploy-release');
+  const body = FULL_API_DESCRIBE(PILOT_STACK_NAMES[2]);
+  assert.deepEqual(validateChangeSet(body), [], 'every documented member must be in the reviewed schema');
+  const rendered = renderPlan([canonicalChangeSet('ApiStack', PILOT_STACK_NAMES[2], body)]);
+  assert.equal(rendered.includes('NOT RENDERED'), false);
+  // The drift-aware semantics are NAMED, not inferred.
+  assert.match(rendered, /deployment-mode: REVERT_DRIFT {3}drift: DRIFTED/);
+  assert.match(rendered, /SyncWithActual {2}AWS::Lambda::Function {2}BffFunction/);
+  assert.match(rendered, /\[resource-drift: MODIFIED\]/);
+  assert.match(rendered, /\[SyncWithActual\]/);
+  assert.match(rendered, /before from ACTUAL_STATE, after from TEMPLATE/);
+  assert.match(rendered, /drift: actual differs from previous deployment/);
+  assert.match(rendered, /drift ignored: \[redacted\] \(WRITE_ONLY_PROPERTY\)/);
+  assert.match(rendered, /value: changed \(before \[redacted\], after \[redacted\]\)/);
+  // And content never rides along: parameter values, contexts and physical ids stay redacted.
+  for (const secret of ['secret-value', 'resolved-secret', 'MemorySize":512', 'a description CloudFormation echoes back', 'because']) {
+    assert.equal(rendered.includes(secret), false, `${secret} must not render`);
+  }
+});
+
+test('ROUND-13: validation is structural — wrong types and out-of-contract enums refuse, not just unknown names', () => {
+  const { validateChangeSet, renderPlan } = require('../bin/deploy-release');
+  // The exact round-13 reproductions: both produced `unknown: []` before.
+  assert.deepEqual(validateChangeSet({ Changes: 'not-an-array' }), ['$.Changes: expected a list']);
+  assert.deepEqual(
+    validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Action: 'SOMETHING_NEW' } }] }),
+    ['$.Changes[0].ResourceChange.Action: value is outside the reviewed contract'],
+  );
+  // Types are checked at every kind of position.
+  assert.deepEqual(validateChangeSet({ IncludeNestedStacks: 'true' }), ['$.IncludeNestedStacks: value does not satisfy the boolean contract']);
+  assert.deepEqual(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: '15' } }), ['$.RollbackConfiguration.MonitoringTimeInMinutes: value does not satisfy the integer contract']);
+  assert.deepEqual(validateChangeSet({ RollbackConfiguration: [] }), ['$.RollbackConfiguration: expected an object']);
+  assert.deepEqual(validateChangeSet({ CreationTime: 'yesterday' }), ['$.CreationTime: value does not satisfy the instant contract']);
+  // A violation NEVER reports the value — only the path and the reason.
+  assert.equal(validateChangeSet({ Description: 'x', StatusReason: 'y', Changes: [{ Type: 'NotAType' }] })[0].includes('NotAType'), false);
+
+  // End to end: the plan refuses before any digest exists, and renderPlan refuses on its own.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[0]] = { ...describes[PILOT_STACK_NAMES[0]], Changes: 'not-an-array' };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+  const rendered = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], { ...describedFor(PILOT_STACK_NAMES[1]), Changes: 'not-an-array' })]);
+  assert.match(rendered, /NOT RENDERED/, 'renderPlan validates what it is handed, it does not trust the caller');
+  assert.match(rendered, /\$\.Changes: expected a list/);
+});
+
+test('ROUND-13: redaction is CONSTANT — no published derivation of any observed value', () => {
+  const { fingerprintSanitize, renderPlan, REDACT } = require('../bin/deploy-release');
+  const { createHash } = require('node:crypto');
+  // The exact reproduction: the round-12 marker for `supersecret` was sha256("cba-pseudonym:…").
+  const oracle = createHash('sha256').update('cba-pseudonym:supersecret', 'utf8').digest('hex').slice(0, 32);
+  const body = describedFor(PILOT_STACK_NAMES[1], {
+    Parameters: [{ ParameterKey: 'Secret', ParameterValue: 'supersecret' }],
+    Tags: [{ Key: 'Project', Value: 'supersecret' }],
+    Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: 'T', ResourceType: 'AWS::DynamoDB::Table', PhysicalResourceId: 'supersecret', BeforeContext: 'supersecret' } }],
+  });
+  const rendered = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], body)]);
+  assert.equal(rendered.includes('supersecret'), false);
+  assert.equal(rendered.includes(oracle), false, 'the reproduced oracle must not appear');
+  // No hex-shaped token of ANY length that could be a derivation is emitted by the redactor.
+  assert.equal(/#[0-9a-f]{8,}\]/.test(rendered), false, 'no value-derived marker may survive anywhere');
+  // Every redaction is one of the reviewed CONSTANTS.
+  for (const marker of rendered.match(/\[[a-z-]+\]/g) ?? []) {
+    assert.ok(Object.values(REDACT).includes(marker), `${marker} must be a reviewed constant`);
+  }
+  // Two different secrets render identically — that IS the property: no candidate test exists.
+  assert.equal(fingerprintSanitize('supersecret'), fingerprintSanitize('anothersecret'));
+});
+
+test('ROUND-14: null is a state, opaque is a string, integers carry their documented bounds', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The exact round-14 reproductions — every one produced `violations: []` before.
+  assert.deepEqual(validateChangeSet({ Changes: null }), ['$.Changes: null is not a documented state for this field']);
+  assert.deepEqual(
+    validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Action: null, Details: null } }] }),
+    ['$.Changes[0].ResourceChange.Action: null is not a documented state for this field', '$.Changes[0].ResourceChange.Details: null is not a documented state for this field'],
+  );
+  assert.deepEqual(
+    validateChangeSet({ Parameters: [{ ParameterKey: 'X', ParameterValue: { secret: 'x' } }] }),
+    ['$.Parameters[0].ParameterValue: expected a scalar'],
+    'an object smuggled where the contract says string is malformed, not deeper content',
+  );
+  assert.deepEqual(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: -1.5 } }), ['$.RollbackConfiguration.MonitoringTimeInMinutes: value does not satisfy the integer contract']);
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 0.5 }] }), ['$.Changes[0].HookInvocationCount: value does not satisfy the integer contract']);
+  // The documented bounds, exactly: 0..180 and 1..100; and non-string opaque forms all refuse.
+  assert.equal(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: 181 } }).length, 1);
+  assert.equal(validateChangeSet({ RollbackConfiguration: { MonitoringTimeInMinutes: 0 } }).length, 0);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 0 }] }).length, 1);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: 100 }] }).length, 0);
+  for (const bad of [42, true, ['x']]) {
+    assert.equal(validateChangeSet({ Description: bad }).length, 1, `opaque must be a string, got ${JSON.stringify(bad)}`);
+  }
+  // The ONE documented nullable: HookInvocationCount ("is either null … or contains the number").
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', HookInvocationCount: null }] }), []);
+
+  // END TO END: a page whose Changes is null must refuse BEFORE the digest — the pagination
+  // merge normalizes null into [], so the raw page is what carries the evidence.
+  withRelease((p, asm, manifest) => {
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), Changes: null }), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('PLAN_DIGEST'), false, 'no digest may exist for a malformed response');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-14: ARN-typed fields demand strict ARNs — the permissive reference is only CausingEntity', () => {
+  const { validateChangeSet, renderPlan } = require('../bin/deploy-release');
+  // The exact round-14 reproduction: it validated AND published `supersecret` before.
+  const repro = {
+    Status: 'CREATE_COMPLETE',
+    ExecutionStatus: 'AVAILABLE',
+    Changes: [],
+    ChangeSetId: 'supersecret',
+    StackId: 'supersecret',
+    NotificationARNs: ['supersecret'],
+  };
+  assert.deepEqual(validateChangeSet(repro), [
+    '$.ChangeSetId: value does not satisfy the arnReference contract',
+    '$.StackId: value does not satisfy the arnReference contract',
+    '$.NotificationARNs[0]: value does not satisfy the arnReference contract',
+  ]);
+  // renderPlan refuses it on its own — the value never reaches the material.
+  const rendered = renderPlan([canonicalChangeSet('DataStack', PILOT_STACK_NAMES[1], repro)]);
+  assert.match(rendered, /NOT RENDERED/);
+  assert.equal(rendered.includes('supersecret'), false);
+  // Lineage and trigger ARNs are ARN-typed too.
+  assert.equal(validateChangeSet({ ParentChangeSetId: 'not-an-arn' }).length, 1);
+  assert.equal(validateChangeSet({ RollbackConfiguration: { RollbackTriggers: [{ Arn: 'not-an-arn', Type: 'AWS::CloudWatch::Alarm' }] } }).length, 1);
+  assert.equal(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { ChangeSetId: 'not-an-arn' } }] }).length, 1);
+  // CausingEntity keeps its documented latitude: a parameter or logical name is legitimate.
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Details: [{ CausingEntity: 'KeyPairName' }] } }] }), []);
+  // END TO END: the repro refuses before any digest or execution.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[0]] = { ...describes[PILOT_STACK_NAMES[0]], ChangeSetId: 'supersecret' };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('supersecret'), false, 'the value must never surface anywhere in the refusal');
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-15: a page is validated BEFORE any transformation — non-iterable Changes refuse, never throw', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The exact reproduction: Changes: {} passed the null mask and THREW at the spread, killing
+  // the lane outside the fail-closed contract with no structured evidence at all.
+  for (const [label, changes] of [['an object', {}], ['a number', 42], ['a boolean', true]]) {
+    assert.deepEqual(validateChangeSet({ Changes: changes }), ['$.Changes: expected a list'], label);
+    withRelease((p, asm, manifest) => {
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] !== 'describe-change-set') return null;
+          const stackName = args[args.indexOf('--stack-name') + 1];
+          return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), Changes: changes }), stderr: '' };
+        },
+      });
+      // A malformed child must produce the STRUCTURED refusal — an uncaught TypeError is a
+      // crash, not a refusal, and it leaves no CHANGE_SET_SCHEMA_UNKNOWN evidence behind.
+      const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/, label);
+      assert.equal(r.output.includes('PLAN_DIGEST'), false, 'no digest may exist');
+      assert.equal(run.of('execute-change-set').length, 0);
+    });
+  }
+});
+
+test('ROUND-15: ARN contracts are POSITIONAL — the right service and resource shape, or refusal', () => {
+  const { validateChangeSet } = require('../bin/deploy-release');
+  // The five reproductions — every one returned zero violations before.
+  for (const [label, body] of [
+    ['empty mandatory components', { ChangeSetId: 'arn:::::supersecret' }],
+    ['an SNS topic where a change set belongs', { ChangeSetId: `arn:aws:sns:us-east-1:${ACCOUNT}:not-a-change-set` }],
+    ['an IAM role where a stack belongs', { StackId: `arn:aws:iam::${ACCOUNT}:role/not-a-stack` }],
+    ['an IAM role where an SNS topic belongs', { NotificationARNs: [`arn:aws:iam::${ACCOUNT}:role/not-a-topic`] }],
+    ['an S3 bucket where an alarm belongs', { RollbackConfiguration: { RollbackTriggers: [{ Arn: 'arn:aws:s3:::not-an-alarm', Type: 'AWS::CloudWatch::Alarm' }] } }],
+  ]) {
+    assert.equal(validateChangeSet(body).length, 1, label);
+  }
+  // The compliant shapes still validate — this contract refuses semantics, not the API.
+  assert.deepEqual(validateChangeSet({
+    ChangeSetId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:changeSet/cba-70-abcdef123456/11111111-2222-3333-4444-555555555555`,
+    StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/cba-study-coach-pilot-api/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+    NotificationARNs: [`arn:aws:sns:us-east-1:${ACCOUNT}:cba-study-coach-pilot-operational-alerts`],
+    RollbackConfiguration: { RollbackTriggers: [{ Arn: `arn:aws:cloudwatch:us-east-1:${ACCOUNT}:alarm:cba-study-coach-pilot-api-5xx`, Type: 'AWS::CloudWatch::Alarm' }] },
+  }), []);
+  // ENTITY_REFERENCE keeps its latitude ONLY at CausingEntity.
+  assert.deepEqual(validateChangeSet({ Changes: [{ Type: 'Resource', ResourceChange: { Details: [{ CausingEntity: 'KeyPairName' }] } }] }), []);
+  // END TO END: a wrong-service change-set id refuses before any digest, value surfacing nowhere.
+  withRelease((p, asm, manifest) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[0]] = { ...describes[PILOT_STACK_NAMES[0]], ChangeSetId: `arn:aws:sns:us-east-1:${ACCOUNT}:supersecret-topic` };
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+    assert.equal(r.output.includes('supersecret-topic'), false);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-11: unstructured child text is NEVER echoed — one policy, evidence instead of prose', () => {
+  const { childEvidence } = require('../bin/deploy-release');
+  const POISONS = [
+    'postgres://user:supersecret@db.internal/cba',
+    'arn:aws:iam::111122223333:role/cba-study-coach-gha-deploy-dev',
+    'https://abc123xyz.execute-api.us-east-1.amazonaws.com/',
+    'us-east-1_AbCdEf123',
+    '111122223333',
+  ];
+  // The evidence is a stable code, a byte count and a digest — correlatable with the runner's own
+  // protected logs, reproducing not one byte of the child's text.
+  const evidence = childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] });
+  for (const poison of POISONS) assert.equal(evidence.includes(poison), false, poison);
+  assert.match(evidence, /child not echoed — exit=1 stdout=\d+B stderr=\d+B sha256=[0-9a-f]{64}/);
+  // Deterministic: the same bytes always produce the same digest, different bytes do not.
+  assert.equal(evidence, childEvidence({ status: 1, stdout: POISONS.join('\n'), stderr: POISONS[0] }));
+  assert.notEqual(evidence, childEvidence({ status: 1, stdout: 'other', stderr: '' }));
+
+  // END TO END on the real PLAN_PREPARE_FAILED path: a prepare child that spews credentials
+  // must leave the refusal carrying evidence only — this is the path that reaches CI logs.
+  withRelease((p, asm, manifest) => {
+    const r = runDeployRelease(releaseArgs(p, asm), {
+      run: cloudRun(),
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: () => ({ status: 1, stdout: `deploying...\n${POISONS.join(' ')}`, stderr: POISONS[0] }),
+    });
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /PLAN_PREPARE_FAILED/);
+    for (const poison of POISONS) assert.equal(r.output.includes(poison), false, `${poison} must never reach the refusal output`);
+    assert.match(r.output, /child not echoed — exit=1 stdout=\d+B stderr=\d+B sha256=[0-9a-f]{64}/);
+    assert.equal(r.output.includes('deploying...'), false, 'not even benign-looking child prose is reproduced');
+  });
+
+  // The deploy path has no cdk child at all, so there is nothing else that could echo one.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'bin', 'deploy-release.js'), 'utf8');
+  assert.equal(/stdout \|\| ''}\\n\$\{[a-z]*\.stderr/.test(source), false, 'no path may compose child text into output');
 });
 
 test('deploy-release usage errors are distinguishable and never echo the offending token', () => {
@@ -1052,7 +2477,7 @@ test('the snapshot preserves the executable bit, so an honest executable asset d
     assert.equal(r.exit, 0, r.output);
     const manifest = JSON.parse(written[0]);
     withManifest(manifest, (mp) => {
-      const rel = runDeployRelease(releaseArgs(mp, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, exec: () => ({ status: 0 }) });
+      const rel = runDeployRelease(releaseArgs(mp, asm), deployOpts(manifest));
       assert.equal(rel.exit, 0, rel.output);
     });
   });
@@ -1063,10 +2488,15 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
   const assertEmpty = (label) => assert.deepEqual(fs.readdirSync(tmpBase), [], `${label} must leave no snapshot behind`);
   try {
     // Success.
-    withRelease((p2, asm) => {
-      const r = runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 0 }) });
+    withRelease((p2, asm, manifest) => {
+      const r = runDeployRelease(releaseArgs(p2, asm), deployOpts(manifest, { tmpBase }));
       assert.equal(r.exit, 0, r.output);
       assertEmpty('success');
+    });
+    // A cloud-gate refusal happens AFTER the snapshot exists — it must clean up too.
+    withRelease((p2, asm) => {
+      runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => assert.fail('must not exec') });
+      assertEmpty('a missing-gate refusal');
     });
     // Digest mismatch.
     withRelease(
@@ -1097,8 +2527,11 @@ test('ROUND-6 REPRO: snapshots never outlive the run — every refusal path clea
       });
       assertEmpty('an account-swap refusal');
 
-      runDeployRelease(releaseArgs(p2, asm), { run: stubAws(), git: happyGit(), cdkJsonPath: CDK_JSON, env: {}, tmpBase, exec: () => ({ status: 3 }) });
-      assertEmpty('a failing child');
+      runDeployRelease(releaseArgs(p2, asm), deployOpts(capturedManifest(), {
+        tmpBase,
+        run: cloudRun({ onCall: (args) => (args[1] === 'execute-change-set' ? { status: 254, stdout: '', stderr: 'stale' } : null) }),
+      }));
+      assertEmpty('a refused execution');
     });
   } finally {
     fs.rmSync(tmpBase, { recursive: true, force: true });
@@ -1118,4 +2551,1056 @@ test('verify-manifest can check the assembly too, and refuses drift', () => {
     },
     { assemblyFiles: { ...ASSEMBLY_FILES, 'DataStack.template.json': '{"Resources":{"Other":1}}' } },
   );
+});
+
+// -------------------------------------------------------------------------------------------------
+// SLICE I3 — the closed evidence record (SPEC-RUN-007, SPEC-DEPLOY-006/018, SPEC-LANE-006).
+// Evidence is an artifact tied to a DECISION: correlation id proven before anything runs, change
+// sets by NAME (an id is an ARN and never enters evidence), the honest partial `executed` list on
+// every halt, and the refusal codes verbatim.
+// -------------------------------------------------------------------------------------------------
+
+const EVIDENCE_KEYS = ['schema', 'correlationId', 'releaseSha', 'environment', 'mode', 'decisionId', 'stacks', 'planDigest', 'changeSets', 'executed', 'abandoned', 'alreadyAbsent', 'reportedStackRecords', 'outcome', 'refusals', 'rendering'];
+const CORRELATION = `cba-70-${'a'.repeat(32)}`;
+
+function withArtifact(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-evidence-'));
+  try {
+    fn(path.join(dir, 'nested', 'evidence.json'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('EVIDENCE: --artifact-out without a well-formed CORRELATION_ID refuses before anything runs', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      for (const bad of [undefined, '', 'nope', `cba-70-${'a'.repeat(31)}`, `cba-70-${'A'.repeat(32)}`, ` ${CORRELATION}`]) {
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run: () => assert.fail('no aws call may run'),
+          git: () => assert.fail('no git call may run'),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', ...(bad === undefined ? {} : { CORRELATION_ID: bad }), CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('no child may run'),
+        });
+        assert.notEqual(r.exit, 0, JSON.stringify(bad));
+        assert.match(r.output, /CORRELATION_MALFORMED/);
+        assert.equal(fs.existsSync(artifact), false, 'unattributable evidence must not be written');
+      }
+    });
+  });
+});
+
+test('EVIDENCE: plan_only writes the closed record — decision-bound, name-only, ARN-free', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const raw = fs.readFileSync(artifact, 'utf8');
+      const record = JSON.parse(raw);
+      assert.deepEqual(Object.keys(record).sort(), [...EVIDENCE_KEYS].sort(), 'the record is CLOSED');
+      assert.equal(record.schema, 'cba-release-evidence/1');
+      assert.equal(record.correlationId, CORRELATION);
+      assert.equal(record.releaseSha, manifest.releaseSha);
+      assert.equal(record.environment, 'pilot');
+      assert.equal(record.mode, 'plan_only');
+      assert.equal(record.outcome, 'PLAN_PREPARED');
+      assert.deepEqual(record.refusals, []);
+      assert.deepEqual(record.executed, []);
+      assert.match(record.planDigest, /^[0-9a-f]{64}$/);
+      const printed = r.output.match(/PLAN_DIGEST ([0-9a-f]{64})/);
+      assert.equal(record.planDigest, printed[1], 'the artifact digest IS the printed digest');
+      assert.equal(record.changeSets.length, 4);
+      for (const entry of record.changeSets) {
+        assert.deepEqual(Object.keys(entry).sort(), ['canonicalSha256', 'changeSetName', 'stackName', 'status']);
+        assert.match(entry.canonicalSha256, /^[0-9a-f]{64}$/);
+        assert.equal(entry.changeSetName, `cba-70-${manifest.releaseSha.slice(0, 12)}`);
+      }
+      assert.equal(typeof record.rendering, 'string');
+      assert.ok(record.rendering.length > 0, 'the rendering travels with the plan evidence');
+      // SPEC-DEPLOY-006: no LIVE ARN may enter evidence. The rendering legitimately carries
+      // redacted ARN skeletons (reviewed IAM principal paths render verbatim with the account
+      // replaced), so the law is: no ARN bearing a REAL 12-digit account anywhere, and outside
+      // the rendering no ARN of any shape at all.
+      assert.equal(/arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:[0-9]{12}:/.test(raw), false, 'no account-bearing ARN may enter evidence');
+      const withoutRendering = JSON.stringify({ ...record, rendering: null });
+      assert.equal(/\barn:aws/i.test(withoutRendering), false, 'outside the rendering, evidence is ARN-free entirely');
+    });
+  });
+});
+
+test('EVIDENCE: deploy writes DEPLOYED with the executed names; a mid-wave halt records the honest partial', () => {
+  // Success: all four executed, by NAME.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun();
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.mode, 'deploy');
+      assert.equal(record.outcome, 'DEPLOYED');
+      assert.equal(record.executed.length, 4);
+      assert.ok(record.executed.every((name) => typeof name === 'string' && !/\barn:aws/i.test(name)));
+    });
+  });
+  // Halt after the first execution: REFUSED, the named code, and EXACTLY the executed prefix.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let executes = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'execute-change-set') {
+            executes += 1;
+            if (executes === 2) return { status: 254, stdout: '', stderr: 'ChangeSet is stale' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('EXECUTE_FAILED'), JSON.stringify(record.refusals));
+      assert.equal(record.executed.length, 1, 'the honest partial: exactly what ran before the halt');
+    });
+  });
+});
+
+test('EVIDENCE: without --artifact-out the entrypoint behaves exactly as before and writes nothing', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease(releaseArgs(p, asm), {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(fs.existsSync(artifact), false);
+    });
+  });
+});
+
+test('EVIDENCE: a STACK_EXECUTION_FAILED halt records the STARTED mutation — log and artifact agree', () => {
+  // ROUND I3-2 (Codex): execute-change-set was ACCEPTED, then the stack failed to stabilize. The
+  // artifact must carry that stack in `executed` — a mutation that began is on the record.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let waits = 0;
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] === 'describe-stacks') {
+            waits += 1;
+            if (waits >= 1) return { status: 0, stdout: JSON.stringify({ Stacks: [{ StackStatus: 'UPDATE_ROLLBACK_COMPLETE' }] }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /STACK_EXECUTION_FAILED/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('STACK_EXECUTION_FAILED'));
+      assert.equal(record.executed.length, 1, 'the started mutation is ON the record');
+      // …and the output names exactly the same set — log and artifact can no longer disagree.
+      const printed = r.output.match(/Executed before the failure: ([^.]+)\./);
+      assert.deepEqual(printed[1].split(', '), record.executed);
+    });
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// ROUND I3-3 — the transport is proven, never assumed: job outputs carry a documented ~1MB bound
+// (UTF-16 units), so the record is bounded to the channel and an unfittable plan REFUSES.
+// -------------------------------------------------------------------------------------------------
+
+const { boundedEvidence, EVIDENCE_MAX_BYTES } = require('../bin/deploy-release');
+
+test('EVIDENCE BOUND: the cap is pinned, and boundedEvidence reshapes by NAMED code, never truncates', () => {
+  // ROUND I3-4: bounded in UTF-8 BYTES with margin under the narrowest hop — a single Linux
+  // envp entry (MAX_ARG_STRLEN, 128 KiB), where the shell dies with E2BIG before any guard.
+  assert.equal(EVIDENCE_MAX_BYTES, 100_000);
+  const record = {
+    schema: 'cba-release-evidence/1', correlationId: CORRELATION, releaseSha: 'a'.repeat(40),
+    environment: 'pilot', mode: 'plan_only', decisionId: 'zamp-1', stacks: ['A', 'B'],
+    planDigest: 'b'.repeat(64), changeSets: [{ stackName: 'A', changeSetName: 'c', status: 'CREATE_COMPLETE' }],
+    executed: [], outcome: 'PLAN_PREPARED', refusals: [], rendering: 'small',
+  };
+  // Fits: untouched — same object, no codes invented.
+  assert.deepEqual(boundedEvidence(record, 100_000), record);
+  // ROUND I3-4: the measure is BYTES, not UTF-16 units — a multi-byte rendering whose unit count
+  // fits but whose byte count does not MUST be reshaped (a unit measure undercounts it 3:1).
+  {
+    const multibyte = { ...record, rendering: '…'.repeat(1_000) }; // 1k units, ~3k utf8 bytes
+    const base = Buffer.byteLength(JSON.stringify({ ...record, rendering: '' }, null, 2), 'utf8');
+    const cap = base + 2_000; // fits by units (1k), NOT by bytes (~3k)
+    const shaped = boundedEvidence(multibyte, cap);
+    assert.equal(shaped.rendering, null, 'byte-counted: the multi-byte rendering must be omitted');
+    assert.ok(shaped.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+  }
+  // The rendering pushes past the cap: it is REMOVED and said so — never sliced.
+  const big = { ...record, rendering: 'x'.repeat(5_000) };
+  const shaped = boundedEvidence(big, 2_000);
+  assert.equal(shaped.rendering, null);
+  assert.ok(shaped.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+  assert.ok(JSON.stringify(shaped, null, 2).length <= 2_000);
+  assert.ok(!JSON.stringify(shaped).includes('xxx'), 'no fragment of the rendering survives — omitted, not truncated');
+  // Pathological caps drop the variable-length lists too, by code — force the third branch by
+  // capping just below the without-rendering size.
+  const withoutRendering = boundedEvidence(big, 2_000);
+  const belowCore = JSON.stringify(withoutRendering, null, 2).length - 1;
+  const tiny = boundedEvidence(big, belowCore);
+  assert.ok(tiny.refusals.includes('EVIDENCE_CHANNEL_OVERFLOW'));
+  assert.deepEqual(tiny.changeSets, []);
+  assert.deepEqual(tiny.stacks, []);
+});
+
+test('EVIDENCE BOUND: a plan whose record cannot cross the channel REFUSES — sets remain, evidence travels', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+        evidenceMaxBytes: 2_000, // a channel this plan cannot fit
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /PLAN_RENDERING_TOO_LARGE/);
+      assert.match(r.output, /change sets REMAIN/, 'the post-effect state is stated, not hidden');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('PLAN_RENDERING_TOO_LARGE'));
+      assert.equal(record.rendering, null);
+      assert.ok(fs.readFileSync(artifact, 'utf8').length <= 2_000 + 1, 'the refusal evidence itself fits the channel');
+    });
+  });
+  // …and a deploy record — which carries no rendering — still crosses the same narrow channel.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('deploy mode spawns no cdk child'),
+        evidenceMaxBytes: 2_000,
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'DEPLOYED');
+      assert.ok(!record.refusals.includes('EVIDENCE_RENDERING_OMITTED'));
+    });
+  });
+});
+
+test('EVIDENCE BOUND: the normal fixture fits the real cap with a wide margin', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => ({ status: 0, stdout: '', stderr: '' }),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const bytes = Buffer.byteLength(fs.readFileSync(artifact, 'utf8'), 'utf8');
+      assert.ok(bytes < EVIDENCE_MAX_BYTES / 4, `the four-stack record uses ${bytes} bytes — far from the cap`);
+    });
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// SLICE I5 — the abandon effect (SPEC-RUN-008): delete EXACTLY the declined plan, revalidate at
+// every mutation boundary, and REPORT — never delete — the stack records left behind.
+// -------------------------------------------------------------------------------------------------
+
+test('ABANDON: deletes exactly the declined change sets, in order, and never touches a stack', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun({ stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child — nothing is ever prepared'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(r.executed, false, 'abandon executes nothing');
+      // Exactly the four reviewed sets deleted, in the reviewed order, by immutable id.
+      const deletions = run.of('delete-change-set');
+      assert.equal(deletions.length, 4);
+      assert.equal(run.of('execute-change-set').length, 0, 'abandon EXECUTES nothing');
+      // No DeleteStack exists in this file at all — the record is REPORTED, not removed.
+      assert.equal(run.calls.filter((c) => c.args[1] === 'delete-stack').length, 0);
+      const entrypointSource = fs.readFileSync(require.resolve('../bin/deploy-release.js'), 'utf8');
+      assert.ok(!entrypointSource.includes('delete-stack'), 'the entrypoint must not even contain the DeleteStack verb');
+      // ROUND I8-2: the ACTIVE id's annotation is part of the evidence this test guards.
+      assert.ok(entrypointSource.includes('[SPEC-DEPLOY-021]'), 'the abandon block carries its ACTIVE annotation token');
+      assert.match(r.output, /REPORTED \(never deleted\)/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.equal(record.abandoned.length, 4);
+      assert.equal(record.reportedStackRecords.length, 4, 'every REVIEW_IN_PROGRESS record is on the record');
+      assert.deepEqual(record.executed, []);
+    });
+  });
+});
+
+test('ABANDON: a drifted plan refuses as PLAN_CHANGED and NOTHING is deleted', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun();
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', planDigest: 'f'.repeat(64) }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /PLAN_CHANGED/);
+      assert.equal(run.of('delete-change-set').length, 0, 'a surprised operation deletes nothing');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.deepEqual(record.abandoned, []);
+    });
+  });
+});
+
+test('ABANDON: a state error mid-way stops with the honest partial — never a retry', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_DELETE_FAILED/);
+      assert.match(r.output, /Abandoned before the failure: [^.]+\./);
+      assert.equal(deletions, 2, 'the stop is immediate — no third deletion is attempted');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.equal(record.abandoned.length, 1, 'exactly the sets deleted before the surprise');
+      assert.ok(record.refusals.includes('ABANDON_DELETE_FAILED'));
+      // ROUND I5-3 (F2): the halt still REPORTS the stack record the deleted prefix left behind.
+      assert.deepEqual(record.reportedStackRecords, [record.abandoned[0]], 'a halt after a deletion reports the prefix — never an empty reporting field');
+    });
+  });
+});
+
+test('ABANDON: the window is re-checked before EACH deletion — a lapsed gate stops the remainder', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let clock = Date.parse('2026-08-02T12:00:00Z');
+      let deletions = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            clock = Date.parse('2026-08-02T12:31:00Z'); // the window lapses after the first delete
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => clock,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /CLOUD_GATE_EXPIRED/);
+      assert.equal(deletions, 1, 'the lapse is caught before the SECOND deletion');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.abandoned.length, 1);
+      // ROUND I5-3 (F2): the lapse halt still reports the deleted prefix's stack record.
+      assert.deepEqual(record.reportedStackRecords, record.abandoned, 'the lapse halt reports the deleted prefix');
+    });
+  });
+});
+
+// ─── ROUND I5-2 ─── the continuation law, the neutral mismatch record, fail-closed reporting ───
+
+test('I5-2: the plan digest is the ROOT over the ordered entry digests — the continuation math', () => {
+  const crypto = require('node:crypto');
+  const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+  const root = crypto.createHash('sha256').update(JSON.stringify(entries.map((e) => entryDigestOf(e))), 'utf8').digest('hex');
+  assert.equal(planDigestOf(entries), root, 'planDigestOf commits to the LIST of entry digests');
+  // Substituting one entry digest moves the root — a recreated set cannot hide in a continuation.
+  const forged = entries.map((e) => entryDigestOf(e));
+  forged[0] = 'f'.repeat(64);
+  assert.notEqual(crypto.createHash('sha256').update(JSON.stringify(forged), 'utf8').digest('hex'), root);
+});
+
+test('I5-2 REPRO: success → failure → NEW decision → the remainder is removed safely, records reported', () => {
+  withRelease((p, asm, manifest) => {
+    // RUN 1: the second deletion fails; exactly one set is gone, the honest partial is recorded.
+    let firstEvidence;
+    withArtifact((artifact) => {
+      let deletions = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      firstEvidence = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(firstEvidence.abandoned.length, 1);
+      assert.match(firstEvidence.changeSets[0].canonicalSha256, /^[0-9a-f]{64}$/, 'the digest a continuation copies is ON the record');
+    });
+    // RUN 2: a NEW decision carries the deleted prefix's digest from the first run's evidence.
+    // The absent set folds into the SAME root; the present remainder is deleted; the stack
+    // record the prefix left behind is still REPORTED.
+    withArtifact((artifact) => {
+      const remaining = { ...fullDescribes() };
+      const absentName = PILOT_STACK_NAMES[0];
+      delete remaining[absentName]; // the prefix is gone from the cloud — describe says ChangeSetNotFound
+      const run = cloudRun({ describes: remaining, stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: {
+          PATH: '/usr/bin',
+          CORRELATION_ID: CORRELATION,
+          DISPATCH_MODE: 'abandon',
+          CBA_CLOUD_GATE: gateFor(manifest, {
+            mode: 'abandon',
+            decisionId: 'zamp-2026-08-02.b1-abandon-02',
+            absentEntryDigests: [firstEvidence.changeSets[0].canonicalSha256],
+          }),
+        },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(run.of('delete-change-set').length, 3, 'exactly the present remainder is deleted');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.equal(record.abandoned.length, 3);
+      assert.deepEqual(record.alreadyAbsent, [absentName], 'the prefix is on the record as already absent');
+      assert.equal(record.reportedStackRecords.length, 4, 'the FULL wave is reported — the absent prefix left its stack record too');
+      assert.ok(record.reportedStackRecords.includes(absentName));
+    });
+  });
+});
+
+test('I5-3 REPRO: a SECOND interruption is resumable from the newest artifact ALONE — the chain closes', () => {
+  withRelease((p, asm, manifest) => {
+    const originalRoot = JSON.parse(gateFor(manifest)).planDigest;
+    // The runbook's derivation, from ONE artifact only: the original root is its planDigest; the
+    // absent digests are the canonicalSha256 of every position already gone (previously absent
+    // or deleted by that very run), in the map's group order.
+    const nextGateInputs = (record) => ({
+      planDigest: record.planDigest,
+      absentEntryDigests: record.changeSets
+        .filter((e) => e.status === 'ALREADY_ABSENT' || record.abandoned.includes(e.stackName))
+        .map((e) => e.canonicalSha256),
+    });
+    const runAbandon = ({ describes, over, failAtDeletion }) => {
+      let out;
+      withArtifact((artifact) => {
+        let deletions = 0;
+        const run = cloudRun({
+          describes,
+          stackStatus: 'REVIEW_IN_PROGRESS',
+          onCall: (args) => {
+            if (args[1] === 'delete-change-set') {
+              deletions += 1;
+              if (deletions === failAtDeletion) return { status: 254, stdout: '', stderr: 'InvalidChangeSetStatus' };
+            }
+            return null;
+          },
+        });
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run,
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', ...over }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('abandon spawns no cdk child'),
+        });
+        out = { r, deletions: run.of('delete-change-set').length, record: JSON.parse(fs.readFileSync(artifact, 'utf8')) };
+      });
+      return out;
+    };
+    // RUN 1 (fresh): deletes A, fails at B.
+    const run1 = runAbandon({ describes: fullDescribes(), over: {}, failAtDeletion: 2 });
+    assert.notEqual(run1.r.exit, 0);
+    assert.deepEqual(run1.record.abandoned, [PILOT_STACK_NAMES[0]]);
+    // RUN 2 (first continuation, built from artifact 1): A absent; deletes B, fails at C.
+    const state2 = { ...fullDescribes() };
+    delete state2[PILOT_STACK_NAMES[0]];
+    const run2 = runAbandon({
+      describes: state2,
+      over: { decisionId: 'zamp-2026-08-02.b1-abandon-02', ...nextGateInputs(run1.record) },
+      failAtDeletion: 2,
+    });
+    assert.notEqual(run2.r.exit, 0);
+    assert.deepEqual(run2.record.abandoned, [PILOT_STACK_NAMES[1]]);
+    assert.deepEqual(run2.record.alreadyAbsent, [PILOT_STACK_NAMES[0]]);
+    // F1's discriminating claims, on artifact 2 ALONE: it carries the ORIGINAL root — never the
+    // present-subset digest — and the FULL ordered map, the previously-absent position included.
+    assert.equal(run2.record.planDigest, originalRoot, 'the continuation artifact carries the ORIGINAL root');
+    assert.equal(run2.record.changeSets.length, ORDERED_IDS.length, 'the map covers every position, absent ones included');
+    assert.deepEqual(run2.record.changeSets.map((e) => e.stackName), PILOT_STACK_NAMES, 'the map is in group order');
+    assert.equal(run2.record.changeSets[0].status, 'ALREADY_ABSENT');
+    assert.match(run2.record.changeSets[0].canonicalSha256, /^[0-9a-f]{64}$/);
+    // …and the halt reported the WHOLE gone prefix, previously-absent A included (F2).
+    assert.deepEqual(run2.record.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    // RUN 3 (second continuation, built from artifact 2 ALONE): A and B absent; C and D go.
+    const state3 = { ...state2 };
+    delete state3[PILOT_STACK_NAMES[1]];
+    const run3 = runAbandon({
+      describes: state3,
+      over: { decisionId: 'zamp-2026-08-02.b1-abandon-03', ...nextGateInputs(run2.record) },
+      failAtDeletion: 99,
+    });
+    assert.equal(run3.r.exit, 0, run3.r.output);
+    assert.equal(run3.deletions, 2, 'exactly the remainder is deleted');
+    assert.equal(run3.record.outcome, 'ABANDONED');
+    assert.deepEqual(run3.record.abandoned, [PILOT_STACK_NAMES[2], PILOT_STACK_NAMES[3]]);
+    assert.deepEqual(run3.record.alreadyAbsent, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    assert.equal(run3.record.planDigest, originalRoot);
+    assert.equal(run3.record.reportedStackRecords.length, 4, 'the FULL wave is reported at the close');
+  });
+});
+
+test('I5-4 REPRO: a timeout AFTER an accepted deletion reconciles to ABANDONED — and the chain still closes', () => {
+  withRelease((p, asm, manifest) => {
+    const nextGateInputs = (record) => ({
+      planDigest: record.planDigest,
+      absentEntryDigests: record.changeSets
+        .filter((e) => e.status === 'ALREADY_ABSENT' || record.abandoned.includes(e.stackName))
+        .map((e) => e.canonicalSha256),
+    });
+    let firstRecord;
+    withArtifact((artifact) => {
+      const describesObj = { ...fullDescribes() };
+      let deletions = 0;
+      const run = cloudRun({
+        describes: describesObj,
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              // AWS ACCEPTED the deletion… and then the transport died. The set is gone.
+              delete describesObj[PILOT_STACK_NAMES[1]];
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0, 'the transport surprise still stops the run');
+      assert.match(r.output, /PROVABLY ABSENT/);
+      firstRecord = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // The reconciled record: B was deleted, and the artifact SAYS so — no false claim, no gap.
+      assert.deepEqual(firstRecord.abandoned, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.deepEqual(firstRecord.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]], 'the reconciled set reports its stack record too');
+    });
+    // The continuation derived from that artifact ALONE is NOT mechanically blocked.
+    withArtifact((artifact) => {
+      const remaining = { ...fullDescribes() };
+      delete remaining[PILOT_STACK_NAMES[0]];
+      delete remaining[PILOT_STACK_NAMES[1]];
+      const run = cloudRun({ describes: remaining, stackStatus: 'REVIEW_IN_PROGRESS' });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', decisionId: 'zamp-2026-08-02.b1-abandon-02', ...nextGateInputs(firstRecord) }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'ABANDONED');
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[2], PILOT_STACK_NAMES[3]]);
+      assert.deepEqual(record.alreadyAbsent, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+    });
+  });
+});
+
+test('I5-4 REPRO: a timeout with an INCONCLUSIVE observation claims neither state — ABANDON_STATE_UNKNOWN', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          // After the failed delete, the reconciliation read itself is inconclusive.
+          if (failedDelete && args[1] === 'describe-change-set') {
+            return { status: 254, stdout: '', stderr: 'Throttling: Rate exceeded' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      assert.match(r.output, /Read-only reconciliation .* is required before a new decision/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // NEVER a false abandoned: only the set deleted BEFORE the ambiguity is claimed.
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]]);
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'the unknown state is its own name, not a claimed failure');
+      assert.deepEqual(record.reportedStackRecords, [PILOT_STACK_NAMES[0]], 'only the PROVEN prefix is reported');
+      // Self-sufficiency survives: the unknown set keeps its digest on the map, so once Zamp
+      // re-observes read-only, the next decision still derives from THIS artifact alone.
+      const unknownEntry = record.changeSets.find((e) => e.stackName === PILOT_STACK_NAMES[1]);
+      assert.match(unknownEntry.canonicalSha256, /^[0-9a-f]{64}$/);
+    });
+  });
+});
+
+test('I5-5 REPRO: timeout then a SUSTAINED DELETE_IN_PROGRESS — unknown, never a claimed rejection, and the polling is bounded', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            // The accepted deletion is propagating: the describe SUCCEEDS, in a deleting status.
+            reconcileReads += 1;
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'DELETE_IN_PROGRESS' }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      // A status-0 describe in a DELETING state is NOT proof the delete was rejected.
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      assert.equal(reconcileReads, 5, 'the re-observation is BOUNDED — five attempts, then the honest unknown');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'a deleting status never claims the delete was rejected');
+      const unknownEntry = record.changeSets.find((e) => e.stackName === PILOT_STACK_NAMES[1]);
+      assert.match(unknownEntry.canonicalSha256, /^[0-9a-f]{64}$/, 'the digest stays on the map for the post-reconciliation derivation');
+    });
+  });
+});
+
+test('I5-5 REPRO: an initially-PRESENT response that converges to absence reconciles to ABANDONED', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            reconcileReads += 1;
+            // Two reads still see the set standing — then the accepted deletion lands.
+            if (reconcileReads <= 2) return null; // the stub answers with the present fixture
+            return { status: 254, stdout: '', stderr: 'ChangeSetNotFound' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0, 'the transport surprise still stops the run');
+      assert.match(r.output, /PROVABLY ABSENT/);
+      assert.equal(reconcileReads, 3, 'absence concludes the moment it is proven — no further polling');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      // An early present-looking read did NOT freeze the verdict: the deletion is on the record.
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.deepEqual(record.reportedStackRecords, [PILOT_STACK_NAMES[0], PILOT_STACK_NAMES[1]]);
+      assert.ok(!record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+    });
+  });
+});
+
+test('I5-6 REPRO: a calm FINAL read does not erase the deletion glimpsed mid-window — unknown, never presence', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      let reconcileReads = 0;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            reconcileReads += 1;
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            // Codex's exact sequence: deleting, transport error, malformed, deleting… and a
+            // final read that looks perfectly calm.
+            if (reconcileReads === 1 || reconcileReads === 4) return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'DELETE_IN_PROGRESS' }), stderr: '' };
+            if (reconcileReads === 2) return { status: 255, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            if (reconcileReads === 3) return { status: 0, stdout: 'this is not json {', stderr: '' };
+            return null; // read 5: the untouched fixture — well-formed, identity-matched, CREATE_COMPLETE
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.equal(reconcileReads, 5, 'the whole window is observed');
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'), 'the tainted window never claims the delete was rejected');
+    });
+  });
+});
+
+test('I5-6 REPRO: a status outside the documented enum is a fact this code cannot claim — unknown, never presence', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      let deletions = 0;
+      let failedDelete = false;
+      const run = cloudRun({
+        stackStatus: 'REVIEW_IN_PROGRESS',
+        onCall: (args) => {
+          if (args[1] === 'delete-change-set') {
+            deletions += 1;
+            if (deletions === 2) {
+              failedDelete = true;
+              return { status: 254, stdout: '', stderr: 'Read timeout on endpoint URL' };
+            }
+          }
+          if (failedDelete && args[1] === 'describe-change-set') {
+            // Every read is well-formed and identity-matched — in a status the enum does not
+            // contain. A blacklist would call this presence; the allowlist refuses to.
+            const stackName = args[args.indexOf('--stack-name') + 1];
+            return { status: 0, stdout: JSON.stringify({ ...fullDescribes()[stackName], Status: 'ARCHIVED' }), stderr: '' };
+          }
+          return null;
+        },
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_STATE_UNKNOWN/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.deepEqual(record.abandoned, [PILOT_STACK_NAMES[0]], 'never a false abandoned');
+      assert.ok(record.refusals.includes('ABANDON_STATE_UNKNOWN'));
+      assert.ok(!record.refusals.includes('ABANDON_DELETE_FAILED'));
+    });
+  });
+});
+
+test('I5-3: an absence AFTER the first present entry is a state the lane cannot have produced — refused', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      // Only B (the SECOND position) is absent — an ordered deletion can never leave this shape.
+      const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+      const holed = { ...fullDescribes() };
+      delete holed[PILOT_STACK_NAMES[1]];
+      const run = cloudRun({ describes: holed });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: {
+          PATH: '/usr/bin',
+          CORRELATION_ID: CORRELATION,
+          DISPATCH_MODE: 'abandon',
+          CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', absentEntryDigests: [entryDigestOf(entries[1])] }),
+        },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /ABANDON_NOT_A_PREFIX/);
+      assert.equal(run.of('delete-change-set').length, 0, 'even a root that would close deletes NOTHING outside the prefix law');
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.outcome, 'REFUSED');
+      assert.deepEqual(record.abandoned, []);
+    });
+  });
+});
+
+test('I5-2: the continuation accepts NO recreated set, NO fresh-gate absence, NO leftover digest', () => {
+  withRelease((p, asm, manifest) => {
+    const attemptAbandon = (describes, over) => {
+      let out;
+      withArtifact((artifact) => {
+        const run = cloudRun({ describes });
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run,
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', ...over }) },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: () => assert.fail('abandon spawns no cdk child'),
+        });
+        out = { r, deletions: run.of('delete-change-set').length, record: JSON.parse(fs.readFileSync(artifact, 'utf8')) };
+      });
+      return out;
+    };
+    const minusFirst = { ...fullDescribes() };
+    delete minusFirst[PILOT_STACK_NAMES[0]];
+    // A recreated/foreign prefix: the supplied digest does not fold into the reviewed root.
+    const forged = attemptAbandon(minusFirst, { absentEntryDigests: ['f'.repeat(64)] });
+    assert.notEqual(forged.r.exit, 0);
+    assert.match(forged.r.output, /PLAN_CHANGED/);
+    assert.equal(forged.deletions, 0, 'a dead root deletes NOTHING');
+    // A fresh abandon (no digests) meeting an absent set is not a continuation — it refuses.
+    const fresh = attemptAbandon(minusFirst, {});
+    assert.notEqual(fresh.r.exit, 0);
+    assert.match(fresh.r.output, /CHANGE_SET_MISSING/);
+    assert.equal(fresh.deletions, 0);
+    // A leftover digest — more absences claimed than found — is the same refusal.
+    const entries = ORDERED_IDS.map((id, i) => canonicalChangeSet(id, PILOT_STACK_NAMES[i], fullDescribes()[PILOT_STACK_NAMES[i]]));
+    const leftover = attemptAbandon(minusFirst, { absentEntryDigests: [entryDigestOf(entries[0]), entryDigestOf(entries[1])] });
+    assert.notEqual(leftover.r.exit, 0);
+    assert.match(leftover.r.output, /CHANGE_SET_MISSING/);
+    assert.equal(leftover.deletions, 0);
+  });
+});
+
+test('I5-2: absentEntryDigests is abandon-only — every other shape is malformed', () => {
+  withRelease((p, asm, manifest) => {
+    const attemptGate = (gate) => {
+      let out;
+      withArtifact((artifact) => {
+        const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+          run: cloudRun(),
+          git: happyGit(),
+          cdkJsonPath: CDK_JSON,
+          env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, CBA_CLOUD_GATE: gate },
+          now: () => GATE_NOW,
+          sleep: () => {},
+          exec: happyExec,
+        });
+        out = r;
+      });
+      return out;
+    };
+    for (const broken of [
+      gateFor(manifest, { absentEntryDigests: ['a'.repeat(64)] }), // deploy mode may not carry it
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: [] }), // empty list is not a continuation
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: ['a'.repeat(64), 'a'.repeat(64)] }), // duplicates
+      gateFor(manifest, { mode: 'abandon', absentEntryDigests: ['not-a-digest'] }),
+    ]) {
+      const r = attemptGate(broken);
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CLOUD_GATE_MALFORMED/);
+    }
+  });
+});
+
+test('I5-2: a MODE_MISMATCH refusal publishes under the NEUTRAL name — never the effect the gate claimed', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run: cloudRun(),
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('a mismatched run spawns nothing'),
+      });
+      assert.notEqual(r.exit, 0);
+      assert.match(r.output, /MODE_MISMATCH/);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.mode, null, 'the gate\'s claimed mode must NOT reach the record — the artifact routes to evidence.json');
+      assert.equal(record.outcome, 'REFUSED');
+      assert.ok(record.refusals.includes('MODE_MISMATCH'));
+    });
+  });
+});
+
+test('I5-2: an inconclusive describe-stacks reports UNVERIFIABLE — never "no record remains"', () => {
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const run = cloudRun({
+        onCall: (args) => (args[1] === 'describe-stacks' ? { status: 254, stdout: '', stderr: 'AccessDenied' } : null),
+      });
+      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+        run,
+        git: happyGit(),
+        cdkJsonPath: CDK_JSON,
+        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
+        now: () => GATE_NOW,
+        sleep: () => {},
+        exec: () => assert.fail('abandon spawns no cdk child'),
+      });
+      assert.equal(r.exit, 0, r.output);
+      const record = JSON.parse(fs.readFileSync(artifact, 'utf8'));
+      assert.equal(record.reportedStackRecords.length, 4, 'every query failed — every stack is on the record as unverifiable');
+      for (const line of record.reportedStackRecords) assert.match(line, /\(status unverifiable\)$/);
+      assert.ok(!r.output.includes('No stack record remains'), 'an unanswered question is never a clean bill');
+      assert.match(r.output, /status unverifiable/);
+    });
+  });
 });

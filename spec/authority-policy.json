@@ -34,7 +34,9 @@
         "administer-repository",
         "rewrite-reviewed-history",
         "access-secrets",
-        "invoke-paid-service"
+        "invoke-paid-service",
+        "author-cloud-authorization",
+        "perform-cloud-effect"
       ]
     },
     "codex": {
@@ -53,7 +55,9 @@
         "deploy",
         "grant-human-gate",
         "access-secrets",
-        "invoke-paid-service"
+        "invoke-paid-service",
+        "author-cloud-authorization",
+        "perform-cloud-effect"
       ]
     },
     "zamp": {
@@ -63,6 +67,8 @@
         "grant-execution-gate",
         "accept-risk",
         "authorize-spend",
+        "author-cloud-authorization",
+        "perform-cloud-effect",
         "merge"
       ],
       "mayNever": [
@@ -71,12 +77,25 @@
       ]
     },
     "gemini": {
-      "role": "none in this workflow",
+      "role": "read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind",
       "may": [],
       "mayNever": [
-        "any-workflow-or-governance-role"
+        "accept-risk",
+        "access-secrets",
+        "any-authority-bearing-role",
+        "author-cloud-authorization",
+        "authorize-spend",
+        "deploy",
+        "grant-human-gate",
+        "implement",
+        "invoke-paid-service",
+        "merge",
+        "operate-artifact",
+        "perform-cloud-effect",
+        "prepare-artifact",
+        "push"
       ],
-      "note": "Remains a supported model provider for authoring and a supported tutoring CLI. Product functionality, not a workflow role."
+      "note": "Produces only the SPEC_AUDIT_REPORT v1 document artifact (VERDICT: PASS | FINDINGS | INCOMPLETE; always AUTHORITY: none) as information for Codex and Zamp — it never substitutes the independent review. The paid invocation is performed by Zamp under a per-run spend-authorization (invoke-paid-model-audit). Gemini also remains a supported model provider for authoring and a supported tutoring CLI — product functionality, distinct from the persona."
     }
   },
   "documents": {
@@ -102,6 +121,52 @@
         "push-reviewed-commit-to-task-branch",
         "create-or-reuse-one-pull-request"
       ]
+    },
+    "cloud-authorization": {
+      "writtenBy": "zamp",
+      "writtenWhen": "per decision, before each cloud effect",
+      "suppliedAs": "CBA_CLOUD_GATE",
+      "boundTo": "mode+decisionId+manifestDigest+stacks+planDigest+window",
+      "authorizes": [
+        "deploy",
+        "prepare-change-sets",
+        "execute-change-sets",
+        "abandon-change-sets"
+      ],
+      "modes": {
+        "plan_only": [
+          "prepare-change-sets"
+        ],
+        "deploy": [
+          "deploy",
+          "execute-change-sets"
+        ],
+        "abandon": [
+          "abandon-change-sets"
+        ]
+      }
+    },
+    "spend-authorization": {
+      "writtenBy": "zamp",
+      "writtenWhen": "per paid run",
+      "suppliedAs": "out-of-band record",
+      "boundTo": "model+ceilings",
+      "authorizes": [
+        "invoke-paid-model-audit"
+      ]
+    },
+    "stack-record-authorization": {
+      "writtenBy": "zamp",
+      "writtenWhen": "per stack record, immediately after observing its status",
+      "suppliedAs": "out-of-band record",
+      "boundTo": "issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt",
+      "maxObservationAgeMinutes": 15,
+      "authorizes": [
+        "delete-review-in-progress-stack-record"
+      ],
+      "residualRisk": "TOCTOU: CloudFormation offers no compare-and-delete, so the stack can change between the final re-observation and DeleteStack",
+      "riskAcceptance": null,
+      "executableProcedure": false
     }
   },
   "effects": {
@@ -118,9 +183,30 @@
       "performedBy": "zamp"
     },
     "deploy": {
-      "authorizedBy": "separate-human-gate",
+      "authorizedBy": "cloud-authorization",
       "performedBy": "zamp",
-      "note": "outside the scope of #93; its own human gate"
+      "note": "its own instrument, never the publication gate"
+    },
+    "prepare-change-sets": {
+      "authorizedBy": "cloud-authorization",
+      "performedBy": "zamp"
+    },
+    "execute-change-sets": {
+      "authorizedBy": "cloud-authorization",
+      "performedBy": "zamp"
+    },
+    "invoke-paid-model-audit": {
+      "authorizedBy": "spend-authorization",
+      "performedBy": "zamp"
+    },
+    "abandon-change-sets": {
+      "authorizedBy": "cloud-authorization",
+      "performedBy": "zamp"
+    },
+    "delete-review-in-progress-stack-record": {
+      "authorizedBy": "stack-record-authorization",
+      "performedBy": "zamp",
+      "note": "human-performed only; no automated lane may perform it"
     }
   },
   "governedSurfaces": [
@@ -155,7 +241,18 @@
     "src/commands/agent-publish.js",
     "src/commands/agent-refresh.js",
     "src/lib/human-publish-script.js",
-    "src/lib/publish-gate.js"
+    "src/lib/publish-gate.js",
+    "spec/spec-anchored-development.md",
+    "spec/agents/gemini-spec-auditor.md",
+    "docs/runbooks/README.md",
+    "docs/runbooks/spec-conformance-audit.md",
+    "docs/runbooks/aws-dev-release.md",
+    "docs/runbooks/aws-dev-release-plan.md",
+    "docs/runbooks/aws-dev-release-deploy.md",
+    "docs/runbooks/aws-dev-release-recovery.md",
+    "docs/runbooks/aws-dev-release-bind.md",
+    "docs/runbooks/aws-dev-release-abandon.md",
+    ".agent-handoff/decisions/70-spec-anchored-design-accepted.md"
   ],
   "surfaceClassification": {
     "canonical-authority": [
@@ -190,7 +287,18 @@
       "src/commands/agent-publish.js",
       "src/commands/agent-refresh.js",
       "src/lib/human-publish-script.js",
-      "src/lib/publish-gate.js"
+      "src/lib/publish-gate.js",
+      "spec/spec-anchored-development.md",
+      "spec/agents/gemini-spec-auditor.md",
+      "docs/runbooks/README.md",
+      "docs/runbooks/spec-conformance-audit.md",
+      "docs/runbooks/aws-dev-release.md",
+      "docs/runbooks/aws-dev-release-plan.md",
+      "docs/runbooks/aws-dev-release-deploy.md",
+      "docs/runbooks/aws-dev-release-recovery.md",
+      "docs/runbooks/aws-dev-release-bind.md",
+      "docs/runbooks/aws-dev-release-abandon.md",
+      ".agent-handoff/decisions/70-spec-anchored-design-accepted.md"
     ],
     "link-only": [
       "CLAUDE.md",
@@ -209,6 +317,9 @@
   "allowedAuthorityStatements": {
     "AGENTS.md": [
       "Reports findings or recommends a gate.",
+      "- Zamp — approval, risk acceptance and merge authority.",
+      "- Gemini — carries the seated Gemini Spec Auditor persona (Slice I7): a read-only semantic auditor with no authority of any kind; its only output is the SPEC_AUDIT_REPORT v1 document artifact, information for Codex and Zamp — never an approval, never a review of record, never a gate, never a substitute for the independent review.",
+      "The paid invocation is performed by Zamp under a per-run spend authorization.",
       "Two gates, not one. A review scope manifest bounds what may be prepared and authorizes nothing.",
       "The execution gate is the HUMAN_GATE_GRANTED itself — written after review because it names the artifact's digest — supplied as CBA_EXECUTION_GATE and validated by the artifact both before the operator confirmation and again immediately before the push.",
       "- The publish gate is authored by the human outside the task worktree (for example /tmp/cba-gate-<issue>.json).",
@@ -216,11 +327,14 @@
     ],
     ".agent-handoff/MESSAGE-PROTOCOL.md": [
       "| Codex (OpenAI Codex) | Architect, technical PM, independent technical/security reviewer | Owns architecture, roadmap/board consistency, and read-only review; reports findings or recommends a gate |",
+      "| Gemini (Gemini Spec Auditor persona) | Read-only semantic auditor | No authority of any kind — its only output is the SPEC_AUDIT_REPORT v1 document artifact (PASS \\| FINDINGS \\| INCOMPLETE, always AUTHORITY: none), information for Codex and Zamp; it never approves, never serves as review of record, never grants or shapes any gate, never accepts risk, never implements, edits, publishes, pushes, merges or deploys, and never substitutes Codex's independent review; the paid invocation is performed by Zamp under a per-run spend authorization |",
+      "Since Slice I7 it also carries the Gemini Spec Auditor persona ([spec/agents/gemini-spec-auditor.md](../spec/agents/gemini-spec-auditor.md)): a read-only semantic auditor with no authority of any kind, whose only output is the SPEC_AUDIT_REPORT v1 document artifact — never a canonical envelope, never a review of record, never a gate.",
       "| GATE_RECOMMENDATION | Codex | Zamp | Recommendation only; never a gate |",
       "Two gates, not one. The review scope manifest (/tmp/cba-scope-<n>.json, passed as --gate) bounds what may be prepared and is read and validated at preparation — never consumed; idempotent consumption is #91 Stage B.",
       "The execution gate is the HUMAN_GATE_GRANTED itself: written after review, it names the digest of the artifact plus the exact ordered SHAs and a bounded expiry, and the artifact reads and validates it at run time via CBA_EXECUTION_GATE, never as --gate.",
       "It is a separate closed nine-key schema, not the review scope plus extras.",
-      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose."
+      "Editing any sentence that names the review scope, the execution gate or \"a gate\" therefore requires a human to add it to the policy on purpose.",
+      "- a message type, sender, receiver or next owner must never diverge from §3; - the Gemini persona must never hold an authority-bearing role — no approval, no review of record, no gate, no risk acceptance, no publication, merge, deploy or governance; it audits read-only and reports only; - Codex must never be instructed to implement, prepare, publish, push, merge or deploy; - Opus must never be permitted to self-review, self-approve, merge, deploy, push main, force-push or administer the repository; - Zamp must never be described as implementation executor or script operator; - REVIEW_APPROVED, or a generic approval, must never be treated as a publication gate; - a bare-path publication instruction must never be offered as supported; - a template must never omit exact SHAs, status, next owner, prohibited actions, evidence or residual risks."
     ],
     ".agent-handoff/README.md": [
       "| #91 Stage A — agent-publish | Validates a gate against local state, prints the plan, stops. |",
@@ -239,7 +353,9 @@
       "A generic \"approved\" is not a gate, and the review scope from step 3 authorizes nothing.",
       "A gate whose approver is the operator, or looks like an agent identity, is refused."
     ],
-    ".agent-handoff/CURRENT.md": [],
+    ".agent-handoff/CURRENT.md": [
+      "- Housekeeping: the 6 HIGH Dependabot alerts are RESOLVED — #106 delivered upgrades for all six (PR #107, merged 3583aeda), zero risk acceptance, GitHub closed the alerts automatically."
+    ],
     ".agent-handoff/publish-gates/README.md": [
       "This folder documents the review scope manifest.",
       "It is not the authorization to publish — that is the execution gate, the machine-readable form of a HUMAN_GATE_GRANTED, described below and in [../templates/message.md](../templates/message.md).",
@@ -265,7 +381,9 @@
       "A new commit — including a fix-forward after review — needs a new review scope and a new execution gate, and because the execution gate names the artifact digest, regenerating the artifact invalidates it too.",
       "A gate is validated, never consumed: the same file passes twice."
     ],
-    ".agent-handoff/templates/task.md": [],
+    ".agent-handoff/templates/task.md": [
+      "- Implementation executor and publication operator: Opus - Architect / independent technical and security reviewer (read-only): Codex - Approval, risk acceptance and merge authority: Zamp - Next owner:"
+    ],
     ".agent-handoff/templates/message.md": [
       "GATE_RECOMMENDATION (Codex → Zamp) — a recommendation, never a gate:",
       "The machine-readable form is the execution gate manifest, written outside the worktree and supplied to the artifact as CBA_EXECUTION_GATE:"
@@ -306,7 +424,8 @@
       "Two end-to-end tests build a real temporary git repository and walk the documented protocol: one proves that following it literally produces a script and leaves the worktree clean, and one proves that a gate written into .agent-handoff/publish-gates/ dirties the worktree and is refused."
     ],
     "bin/cli.js": [
-      "${c.bold('Commands:')} exam Run a timed mock exam with per-domain scoring generate Author new questions with an LLM (multi-provider) validate Check the question bank against the schema stats Show bank coverage per domain and competency sync Compare local blueprint weights with the live LF page blueprint Regenerate the domain (spec/blueprint.json) from a source URL via AI audit-sources Check that every question's source URL is reachable review-bank Review semantic answer correctness against cited sources bedrock-check Validate model-tier config (dry-run); --smoke for a paid live test agent-check Check AI orchestration readiness (dry-run); --smoke for a paid live run agent-refresh Check agent handoff state before edit/commit/push (no network) agent-publish Validate a publish gate locally (Stage A: no push, no PR, no merge) agent-human-publish-script Prepare the reviewed publication artifact (prepares only; never runs it) observability-gate Run release gate O1 (structural) or O2 (deployed telemetry) — read-only history Show your past exam attempts and progress help Show this help"
+      "${c.bold('Commands:')} exam Run a timed mock exam with per-domain scoring generate Author new questions with an LLM (multi-provider) validate Check the question bank against the schema stats Show bank coverage per domain and competency sync Compare local blueprint weights with the live LF page blueprint Regenerate the domain (spec/blueprint.json) from a source URL via AI audit-sources Check that every question's source URL is reachable review-bank Review semantic answer correctness against cited sources bedrock-check Validate model-tier config (dry-run); --smoke for a paid live test agent-check Check AI orchestration readiness (dry-run); --smoke for a paid live run agent-refresh Check agent handoff state before edit/commit/push (no network) agent-publish Validate a publish gate locally (Stage A: no push, no PR, no merge) agent-human-publish-script Prepare the reviewed publication artifact (prepares only; never runs it) observability-gate Run release gate O1 (structural) or O2 (deployed telemetry) — read-only history Show your past exam attempts and progress help Show this help",
+      "${c.bold('agent-publish options:')} ${c.gray('(validation only: no push, no PR, no merge, no credential)')} ${c.gray('(only a DECLARED role=executor proceeds; declaration is not authentication — Stage B)')} --role <role> invoking role (or CBA_AGENT_ROLE); architect/reviewer refuse before network --executor <id> invoking agent identity (or CBA_AGENT_ID); must match the gate --gate <path> publish-gate manifest naming the human approver and exact commits ${c.gray('Stage A validates only: it never pushes, opens a PR, merges or uses a credential.')}"
     ],
     ".claude/skills/publication-prepare/SKILL.md": [
       "Covers validating the review scope, generating the /tmp artifact, handing it to Codex, and operating it after Zamp's gate.",
@@ -315,7 +434,8 @@
       "- The review scope is not authorization to operate. It bounds what may be prepared.",
       "The artifact then validates the execution gate against that digest before any effect.",
       "- operate the artifact before an exact HUMAN_GATE_GRANTED bound to its digest, or reproduce its git/gh commands by hand; - approve your own work, or treat REVIEW_APPROVED or a generic \"approved\" as a gate; - push main, force-push, merge, deploy, or change repository settings or branch protection; - chmod +x the artifact, move it into the repository, or write it anywhere but /tmp; - edit a generated artifact.",
-      "If you are told to publish without a gate that names the exact ordered full SHAs, say so and ask for the HUMAN_GATE_GRANTED."
+      "If you are told to publish without a gate that names the exact ordered full SHAs, say so and ask for the HUMAN_GATE_GRANTED.",
+      "Common ones: GATE_EXPIRED (ask for a new gate), COMMIT_SET_DRIFT/HEAD_DRIFT (history changed after review — a new review and gate are needed), REMOTE_BASE_DRIFT (origin/main moved), WORKTREE_DIRTY, WORKTREE_SHARED, GATE_PATH_IN_REPO (the gate must live outside the worktree), GATE_PATH_SYMLINK (pass the real path, not a link), REPO_ORIGIN_MISMATCH or ORIGIN_UNRESOLVED (the repository must be the origin this branch pushes to), OUTPUT_PATH_EXISTS (a previous artifact is still there — ask Zamp to remove it), APPROVER_IS_OPERATOR/APPROVER_NOT_CANONICAL/APPROVER_NOT_HUMAN (only the canonical human approver may approve, and never the operator), SCRIPT_SELF_CHECK_FAILED (a generator defect; report it, do not work around it)."
     ],
     ".claude/skills/security-review/SKILL.md": [],
     ".agents/skills/publication-review/SKILL.md": [
@@ -331,11 +451,14 @@
     ],
     ".agent-handoff/done/82-aws-observability-slices-a-b.md": [],
     ".agent-handoff/done/82-observability-slice-c.md": [],
-    ".agent-handoff/done/85-security-assurance-architecture.md": [],
+    ".agent-handoff/done/85-security-assurance-architecture.md": [
+      "- #89: incident response/risk acceptance/go-live review, Todo, Phase 1."
+    ],
     ".agent-handoff/active/91-role-separated-publication.md": [
       "agent-publish validates a human-authored publish gate against local repository state and prints the plan.",
       "It does not publish, open a pull request, merge, consume a gate, authenticate identity, use a credential or deploy — and it contains no code path that could.",
       "| Gate consumption (replay protection) | Not provided — a gate is validated, never consumed | Stage B |",
+      "What Stage A does enforce locally: declared-role refusal before .env/gate/git (exit 2, both --role x and --role=x, explicit argument beating the environment even when malformed); main never a source branch; task/<issue>-<slug> matching the gated issue; a named human approver; strict RFC3339 timestamps with a 12-hour maximum TTL; a closed manifest schema; reviewedShas equal to commits exactly and in order; base drift, commit-set drift, dirty worktree, shared worktree and origin/main drift; and redaction of caller-supplied values in every refusal.",
       "A test asserts the same gate validates twice, so a future Stage B change must update it deliberately.",
       "- Replay — a gate is validated, never consumed.",
       "It now opens with Stage A being local advisory pre-flight validation only that never publishes, never opens a PR, never consumes a gate and never authenticates identity, and states that publication and merge are human actions until Stage B.",
@@ -344,8 +467,31 @@
     ],
     ".agent-handoff/done/67-cloudflare-opennext-stage-b.md": [],
     ".agent-handoff/done/75-smoke-cleanup-contract.md": [],
-    ".agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md": [],
-    ".agent-handoff/done/106-dependabot-high-remediation.md": [],
+    ".agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md": [
+      "The 6 high Dependabot alerts — REMEDIATED by upgrade in #106 (PR #107, merged 3583aeda), zero risk acceptance, 0 high open.",
+      "The Codex round-2 review of Slice B1 required, and the correction delivered: the deploy effect is a CLOSED stack set the manifest names (v5 target.stacks — Api/Data/Identity/Observability, with --exclusively, never --all; SecurityStack and AiOrchestrationStack classified excluded and a discovery test refusing unclassified stacks); releases serialize on the literal release-dev concurrency group; the deployment authority is delivered in code (SecurityStack GithubDeployRole, Environment-subject trust, boundary-pinned via the extended #66 exec policy, only the three CDK bootstrap roles assumable) under the canonical secret name AWS_DEPLOY_ROLE_ARN; every job carries timeout-minutes (preflights 5, deploy 15); CDK child output is captured and sanitized by shape; and the entrypoint requires Zamp's per-release cloud gate (CBA_CLOUD_GATE: exact release + assembly digest + diff_only/deploy mode + expiry) and puts the cdk diff plan on the record before any effect.",
+      "The semantic layer is the Gemini Spec Auditor persona, which reads and reports only: it holds no authority of any kind, never approves anything, never accepts risk, never touches code or spec, and never runs any effect.",
+      "Publication authorization and cloud authorization are now two named instruments, both Zamp's, never interchangeable — and preparing change sets is classified as cloud mutation.",
+      "The audit became reproducibly bound (report v1: commit, base, diff, spec, bundle and persona digests; pinned model and ceilings; INCOMPLETE is never a weaker PASS) and honestly priced: the semantic stage is a paid call and each run needs Zamp's separate spend authorization.",
+      "Performers are named on every command, and the three authorization kinds — publication, cloud, spend — are now POLICY DATA validated by the closed-schema validator, with prepare-change-sets and invoke-paid-model-audit as first-class effects and Opus explicitly denied both author-cloud-authorization and perform-cloud-effect.",
+      "The stack-record cleanup effect had no authorization anyone could issue: it named the cloud instrument, which neither listed it nor gave it a mode, so it read as authorized and no value could authorize it.",
+      "The effect got its own instrument, stack-record-authorization: out-of-band like the spend one, never an Environment variable, because the hazard being managed is acting on a stale observation.",
+      "(Round 8 replaced the boolean this paragraph originally named with the closed riskAcceptance record.)",
+      "The governed vocabulary now collects sentences about the cleanup instrument and about risk acceptance, closing the same \"governed in name only\" gap round 3 found.",
+      "Risk acceptance became a record, not a boolean: riskAccepted: false could be flipped together with executableProcedure in one edit, and nothing in the data said what an acceptance must contain.",
+      "The policy now carries riskAcceptance: null, and the validator refuses any non-null value that is not a closed record — acceptedBy (must be zamp, the only holder of accept-risk), decisionId, finding, justification, compensatingControls, acceptedAt, reviewBy, expiresAt (strict UTC, ordered; an acceptance with no expiry is not an acceptance) and boundToEffect (an effect the instrument authorizes).",
+      "The first mutation now names its repository. Round 10 pinned reads and dispatch; the gh api PATCH that installs CBA_CLOUD_GATE still said repos/<owner>/<repo>, and a hasty fill-in mutates a foreign Environment before the canonical dispatch would fail.",
+      "Slice I7 (authorized by Zamp, verbatim ZAMP_APROVED, 2026-08-11; Codex IMPLEMENTATION_REQUEST): the Gemini Spec Auditor persona is SEATED — §10's protocol and authority-policy amendments, atomic across every canonical surface.",
+      "The protocol's actor table, AGENTS.md, spec/authority-policy.json AND its validator twin (src/lib/authority-policy.js) now state the same standing: read-only semantic auditor, may: [] ON PURPOSE (the persona performs no effect — Zamp performs the paid invocation under a per-run spend-authorization, invoke-paid-model-audit), an explicit fourteen-item mayNever, and the sole output SPEC_AUDIT_REPORT v1 as a document artifact deliberately OUTSIDE the protocol's closed message set (never TYPE:-labeled, never REVIEW_APPROVED, never a gate, never a substitute for Codex).",
+      "A gate written to the retired -002 shape (assemblyDigest) is now an UNKNOWN key — malformed, not half-working.",
+      "THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the workflow header: (1) the per-tier release bootstraps (aws-bootstrap-and-oidc.md step 12): three operator-managed policies per tier + cdk bootstrap --qualifier cbardev|cbarpil --toolkit-stack-name cba-release-toolkit-<env>; (2) provision cba-study-coach-gha-deploy-dev + its boundary (Zamp creates the policy outside CloudFormation) via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as the dev Environment secret AWS_DEPLOY_ROLE_ARN; (3) populate the dev Environment secrets and variables (read-only inspection on 2026-08-02 found ZERO of each); (4) per release, set CBA_CLOUD_GATE — naming the reviewed plan group (a wave on a fresh tier; the full set in steady state): first plan_only, which prepares that group's change sets and emits PLAN_DIGEST; then deploy naming that digest inside a ≤1h window — wave by wave until the tier exists.",
+      "- Assignment, approval, risk acceptance, gate and merge authority: Zamp.",
+      "- ~~The 6 high Dependabot alerts~~ — COMPLETED (#106, PR #107, zero risk acceptance; 0 high open)."
+    ],
+    ".agent-handoff/done/106-dependabot-high-remediation.md": [
+      "All six were remediated by version upgrades — no risk acceptance was used — plus one extra dev-only fix of the same advisory that surfaced during the work.",
+      "- Approval, risk acceptance, gate and merge authority: Zamp."
+    ],
     ".agent-handoff/publish-gates/example.gate.json": [],
     "src/commands/agent-check.js": [],
     "src/commands/agent-human-publish-script.js": [
@@ -368,6 +514,7 @@
     "src/commands/agent-refresh.js": [],
     "src/lib/human-publish-script.js": [
       "/ Refuse a gate whose approver is the operator.",
+      "Only the canonical human approver may approve publication.', ); } if (norm(approver) !== norm(CANONICAL_APPROVER)) { fail( 'APPROVER_NOT_CANONICAL', 'The gate approver is not the canonical approval authority.",
       "The subshell inherits stdin, so the typed operator confirmation still works, and it // exports the digest the artifact requires its execution gate to name.",
       "return [ '(', s=$(cat ${shQuote(outputPath)}), if [ \"$(printf '%s\\\\n' \"$s\" | sha256sum | cut -d' ' -f1)\" = ${shQuote(digest)} ]; then, // The digest is exported so the artifact can require the execution gate to name these exact // bytes.",
       "command -v jq >/dev/null 2>&1 || die \"jq is required to validate the execution gate\"",
@@ -409,6 +556,93 @@
       "Ask the human owner for a new gate.'); if (nowMs < approvedAt) fail('GATE_NOT_YET_VALID', 'The publish gate is not valid yet.');",
       "A gate is not transferable.); }",
       "// --- replay: NOT prevented by Stage A --- advisories.push('Stage A does not consume a gate: the same file validates again."
+    ],
+    "spec/spec-anchored-development.md": [
+      "- The Gemini Spec Auditor ([spec/agents/gemini-spec-auditor.md](agents/gemini-spec-auditor.md)) covers what a mechanical pass cannot see.",
+      "That residue is exactly the Gemini Spec Auditor's charter, followed by Codex's independent review.",
+      "| SPEC-AUDIT-005 | PROPOSED | Each paid audit run happens under its own spend authorization, issued by Zamp and covering that run only. | spec/agents/gemini-spec-auditor.md §4 |",
+      "| SPEC-RUN-002 | PROPOSED | A document that mutates cloud state declares cloudMutation: true and depends on a cloud authorization; preparing a CloudFormation change set is cloud mutation. | docs/runbooks/README.md |",
+      "| SPEC-RUN-003 | PROPOSED | Runbook frontmatter carries exactly the closed key set, humanApprover is always Zamp, and cloudMutation: true implies gateRequired: true. | docs/runbooks/README.md |",
+      "| SPEC-RUN-006 | PROPOSED | A cloud authorization is authored only after a read-only binding operation has produced the exact manifest and assembly digest it must name. | docs/runbooks/aws-dev-release-bind.md |",
+      "| SPEC-DEPLOY-002 | RETIRED (never ACTIVE; supersededBy SPEC-DEPLOY-019) | The cloud authorization value satisfies a closed ten-key schema with issue pinned to 70, mode in {plan_only, deploy} and a decisionId matching its documented shape; any other shape refuses. | — | — | absorbed before activation (§4) in I4: the tree now implements the complete successor schema, and an id describing code that no longer exists cannot stay PROPOSED honestly |",
+      "| SPEC-DEPLOY-019 | PROPOSED (absorbed -002 and -020) | The cloud authorization value has EXACTLY these eleven keys — issue, mode, decisionId, releaseSha, environment, manifestDigest, stacks, planDigest, absentEntryDigests, approvedAt, expiresAt — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's mode, refuses. | infra/aws/bin/deploy-release.js (checkCloudGate, CLOUD_GATE_KEYS) | infra/aws/test/deploy-preflight.test.js | code + tests reviewed in I4: manifestDigest recomputed from the verified manifest (never trusted), the retired key refused as unknown, abandon-mode gates schema-valid but refused ABANDON_NOT_IMPLEMENTED before any change-set API call or mutation (identity reads precede the gate check by design) until the abandon lane lands |",
+      "| SPEC-DEPLOY-020 | RETIRED (never ACTIVE; supersededBy SPEC-DEPLOY-019) | The cloud authorization schema carries an abandon mode, and an abandon run executes no change set and prepares none. | — | — | none — absorbed into SPEC-DEPLOY-019 before activation (§4) |",
+      "| SPEC-DEPLOY-022 | PROPOSED | The stack-record cleanup decision is a closed nine-key value (§8b): each key holds its exact grammar, stackId is a positionally validated CloudFormation stack ARN whose embedded region, account and name EQUAL the record's region, account and stackName, and the decision is valid only while observedAt <= now < observedAt + 15 minutes, a future instant refusing. The performer re-observes the same identity, status and window immediately before deleting. The activation commit must contain the instance parser and its adversarial tests, and that parser must re-check — immediately before the effect — that the acceptance is unexpired at that moment, that the §6b bundle digest it recomputes over the presented cleanup value equals coversCleanupAuthorizationSha256, and that the value's decisionId equals coversCleanupDecisionId. The residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records acceptance as the closed riskAcceptance record — a boolean is not a decision, and a free-text record is not an enforceable one. | spec/authority-policy.json (stack-record-authorization) | test/governance-model.test.js | policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists |",
+      "| cloud (cloud-authorization, CBA_CLOUD_GATE) | deploy, prepare-change-sets, execute-change-sets, abandon-change-sets | Zamp |",
+      "| spend (spend-authorization, out-of-band record) | invoke-paid-model-audit | Zamp |",
+      "| stack-record cleanup (stack-record-authorization, out-of-band record) | delete-review-in-progress-stack-record | Zamp, by hand (§8b) |",
+      "- The performer is policy, not convention. perform-cloud-effect and author-cloud-authorization are capabilities Zamp holds and Opus and Codex are explicitly denied.",
+      "Folding it into CBA_CLOUD_GATE would have been worse: that variable is read by a LANE, and the one property this effect must keep is that no automation can consume a value permitting it.",
+      "It therefore has its own closed instrument, stack-record-authorization: written by Zamp, per stack record, AFTER observing that record's status; supplied the way the spend instrument is — an out-of-band record with nothing to read it.",
+      "Round 9: a free-text record is not an enforceable one. riskAccepted: false could be flipped alongside executableProcedure in a single edit; and the first record shape could have ridden on an unrelated finding, a different stack's decision, or an expiry that existed only as prose.",
+      "The policy carries riskAcceptance: null, and the validator refuses any non-null value that is not a CLOSED record with exactly these thirteen keys:",
+      "Round 11 pinned the envelope so two framings of the same value cannot both be \"compatible\": cleanupAuthorizationDigest(value) in [src/lib/authority-policy.js](../src/lib/authority-policy.js) serializes exactly the nine keys in the exported CLEANUP_VALUE_KEY_ORDER (a permuted input digests identically; a changed key digests differently), record name literally stack-record-authorization-value, mediaType: \"application/json\", producer: \"zamp\".",
+      "executableProcedure: true over riskAcceptance: null refuses.",
+      "Making it executable requires something this design cannot supply and must not simulate: Zamp's explicit, written acceptance of the residual TOCTOU risk, recorded as the closed riskAcceptance record described below.",
+      "Until that record exists, riskAcceptance is null in [authority-policy.json](authority-policy.json), the effect is expressible and unperformable, and a runbook that acquired a command for it would be a finding against this section (SEC-GOV-01, SEC-IAM-01).",
+      "| An out-of-band stack-record-authorization record, never an Environment variable, plus no lane capable of deleting a stack record and an execution policy that does not grant cloudformation:DeleteStack to a lane | DeleteStack takes no expected-status precondition and the release lock binds only this repository's lanes, so an observed REVIEW_IN_PROGRESS cannot constrain the delete that follows it | SPEC-DEPLOY-021 |",
+      "| A Zamp-authored riskAcceptance record (thirteen closed keys: digests of the exact residual and of Zamp's verbatim statement, one-stack/one-decision coverage, clock-evaluated expiry) before any executable cleanup procedure | A boolean flip is not a risk decision, and a free-text record is not an enforceable one; the runtime consumer must re-check expiry and coverage immediately before the effect | SPEC-DEPLOY-022 |"
+    ],
+    "spec/agents/gemini-spec-auditor.md": [
+      "The report remains a > document artifact — never a canonical protocol envelope — and every paid invocation still > requires Zamp's per-run spend authorization.",
+      "The Gemini Spec Auditor reads those results plus the artifacts themselves and hunts what a mechanical pass cannot see: a spec sentence whose implementation satisfies the letter and misses the intent, an invariant with no test that could ever fail, a code path the spec never contemplated, two SPEC-IDs that quietly contradict each other.",
+      "- A model invocation is a paid call, and Zamp performs it. invoke-paid-model-audit is a policy effect authorized by the spend-authorization document and performed by Zamp (spec/authority-policy.json); invoke-paid-service stays in Opus's and Codex's mayNever."
+    ],
+    "docs/runbooks/README.md": [
+      "| cloud (CBA_CLOUD_GATE) | deploy, prepare-change-sets, execute-change-sets, abandon-change-sets | Zamp |",
+      "| stack-record cleanup (out-of-band record) | delete-review-in-progress-stack-record | Zamp, by hand |",
+      "Preparing change sets is already cloud mutation — plan_only creates CloudFormation change sets and publishes assets — so it depends on a cloud authorization exactly as deploy does [SPEC-RUN-002].",
+      "A cloud authorization also names its MODE, and the mode fixes the effects exactly — round 5 of the design review found that one instrument covering four effects could not distinguish a plan from an execution:",
+      "- humanApprover is always Zamp.",
+      "| Rollback | How to return to the last known-good state, and what \"known-good\" means for this operation. If rollback itself mutates cloud state, it depends on its own cloud authorization and says so. |"
+    ],
+    "docs/runbooks/spec-conformance-audit.md": [
+      "--- id: spec-conformance-audit kind: runbook version: 0.4.0 owner: Opus humanApprover: Zamp specs: [SPEC-GOV-001, SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005, SPEC-GOV-006, SPEC-GOV-007, SPEC-GOV-008, SPEC-GOV-009, SPEC-AUDIT-001, SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005, SPEC-RUN-001] inputs: [the audited commit's full SHA, the spec registry at that SHA, the mechanical reports for that SHA, Zamp's per-run spend authorization for the semantic stage] outputs: [a SPEC_AUDIT_REPORT v1 document bound to the audited SHA] gateRequired: true cloudMutation: false ---",
+      "gateRequired: true refers to one dependency only: the semantic stage invokes a model service, which is a paid call, and each run needs Zamp's explicit spend authorization (SPEC-AUDIT-005 — the registry assigns the spend rule to that id; SPEC-AUDIT-003 is the input-binding rule).",
+      "Zamp's spend authorization for THIS run exists, with the model, profile and cost ceiling it covers (SPEC-AUDIT-004/005).",
+      "The Gemini Spec Auditor persona runs per [spec/agents/gemini-spec-auditor.md](../../spec/agents/gemini-spec-auditor.md) — pinned model and limits, digested input bundle, tools disabled — and produces a SPEC_AUDIT_REPORT v1.",
+      "- The spend authorization for the run is closed out — it covered that run only."
+    ],
+    "docs/runbooks/aws-dev-release.md": [
+      "--- id: aws-dev-release kind: index version: 0.4.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-DEPLOY-004, SPEC-DEPLOY-021, SPEC-LANE-002, SPEC-LANE-004, SPEC-RUN-004, SPEC-RUN-006, SPEC-RUN-008] inputs: [the release commit's full SHA (an ancestor of main), the dev Environment configuration, the activation prerequisites from the workflow header] outputs: [a fully released dev tier, one EVENTS.md record per decision] gateRequired: true cloudMutation: true ---",
+      "[Plan](aws-dev-release-plan.md) — prepare the wave's change sets under a plan_only cloud authorization; obtain PLAN_DIGEST and the complete evidence artifact.",
+      "[Deploy](aws-dev-release-deploy.md) — execute exactly the reviewed change sets under a deploy cloud authorization naming the digest."
+    ],
+    "docs/runbooks/aws-dev-release-plan.md": [
+      "--- id: aws-dev-release-plan kind: runbook version: 0.14.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-DEPLOY-001, SPEC-DEPLOY-003, SPEC-DEPLOY-005, SPEC-DEPLOY-006, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-012, SPEC-DEPLOY-013, SPEC-DEPLOY-014, SPEC-DEPLOY-015, SPEC-LANE-001, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007] inputs: [the release SHA, the binding artifact's manifest digest, the wave's stack group, a fresh decisionId, a caller-generated correlation id, Zamp's plan_only cloud authorization value] outputs: [prepared change sets for the wave, the PLAN_DIGEST, the complete evidence artifact bound to run id and decision] gateRequired: true cloudMutation: true ---",
+      "Its > authorization instrument is the cloud authorization (CBA_CLOUD_GATE, plan_only), never > the publication one.",
+      "Zamp sets the cloud authorization on the dev Environment (repository administration and a cloud instrument — both outside Opus's policy capabilities):",
+      "- After the decision concludes (digest reviewed, or stopped), Zamp clears the CBA_CLOUD_GATE variable — a live value must not linger past its decision."
+    ],
+    "docs/runbooks/aws-dev-release-deploy.md": [
+      "--- id: aws-dev-release-deploy kind: runbook version: 0.12.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-DEPLOY-003, SPEC-DEPLOY-007, SPEC-DEPLOY-008, SPEC-DEPLOY-009, SPEC-DEPLOY-010, SPEC-DEPLOY-011, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018, SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-LANE-006, SPEC-LANE-007] inputs: [the release SHA, the wave's stack group, the reviewed PLAN_DIGEST from the plan runbook, a fresh decisionId, Zamp's deploy cloud authorization value] outputs: [executed change sets for the wave, per-stack results, the complete evidence artifact bound to run id and decision] gateRequired: true cloudMutation: true ---",
+      "This > operation executes stacks; its authorization instrument is the cloud authorization > (CBA_CLOUD_GATE, deploy, naming the reviewed PLAN_DIGEST), never the publication one.",
+      "- After the decision concludes, Zamp clears the CBA_CLOUD_GATE variable."
+    ],
+    "docs/runbooks/aws-dev-release-recovery.md": [
+      "--- id: aws-dev-release-recovery kind: runbook version: 0.2.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-DEPLOY-018, SPEC-RUN-004, SPEC-RUN-005, SPEC-RUN-007] inputs: [the halted run's evidence artifact and honest partial record, the prior known-good release SHA for dev, a reviewed read-only AWS profile] outputs: [a recorded assessment and a recorded choice of recovery path] gateRequired: false cloudMutation: false ---",
+      "Design round 3 corrected the metadata — this document mutates nothing and needs no authorization; the corrective effect it points at is a NEW release decision owned by [plan](aws-dev-release-plan.md) and [deploy](aws-dev-release-deploy.md), each with its own cloud authorization.",
+      "- Zamp clears any CBA_CLOUD_GATE value left from the halted decision before the next cycle; this runbook itself sets nothing."
+    ],
+    "docs/runbooks/aws-dev-release-bind.md": [
+      "--- id: aws-dev-release-bind kind: runbook version: 0.9.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-RUN-006, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-005, SPEC-DEPLOY-012, SPEC-LANE-001, SPEC-LANE-005, SPEC-LANE-006, SPEC-LANE-007] inputs: [the release SHA, a caller-generated correlation id, the dev Environment configuration] outputs: [the structured binding artifact carrying the exact manifest and its digest, the terminal run record] gateRequired: false cloudMutation: false ---",
+      "It was not mechanically read-only. Checking that CBA_CLOUD_GATE is absent BEFORE > dispatch binds nothing: dev-stage reads that mutable Environment variable later, so a > value planted during the run would let it prepare change sets.",
+      "Design round 3 found the ordering defect this operation fixes: a plan_only cloud authorization must name the manifest digest, but that digest is produced inside the preflight, after dispatch."
+    ],
+    "docs/runbooks/aws-dev-release-abandon.md": [
+      "--- id: aws-dev-release-abandon kind: runbook version: 0.15.0 owner: Opus # maintains this document only — it authorizes nothing (SPEC-RUN-001) humanApprover: Zamp specs: [SPEC-RUN-008, SPEC-RUN-002, SPEC-RUN-005, SPEC-RUN-007, SPEC-RUN-009, SPEC-DEPLOY-019, SPEC-DEPLOY-021, SPEC-DEPLOY-017, SPEC-LANE-002, SPEC-LANE-006, SPEC-LANE-007] inputs: [the declined plan's binding record, a caller-generated correlation id, Zamp's abandon-mode cloud authorization] outputs: [the change sets deleted, any leftover REVIEW_IN_PROGRESS stack record REPORTED, a structured abandon artifact] gateRequired: true cloudMutation: true ---",
+      "It was unauthorized. DeleteChangeSet and DeleteStack were not effects in the closed > authority matrix, and CBA_CLOUD_GATE had no abandon mode — the operation claimed an > authorization that could not be expressed.",
+      "Round 6 gave that effect its own instrument: > it named cloud-authorization, which did not authorize it and gave it no mode, so it read as > authorized and no value could authorize it.",
+      "It is now stack-record-authorization — an > out-of-band human record, deliberately not an Environment variable, so no lane can consume a > value permitting it (spec §8b).",
+      "Zamp has issued an abandon-mode cloud authorization for THIS decision, bound to the same manifest digest and stack group, with a fresh decisionId and a ≤1h window.",
+      "There is no step here that resolves it, and this runbook offers no command that would. The effect is delete-review-in-progress-stack-record, authorized only by a stack-record-authorization record (spec §8b) whose nine keys name the account, region, stack name, immutable stack ARN, the exact observed status and the instant, valid for fifteen minutes and re-verified immediately before acting.",
+      "Even so, DeleteStack has no compare-and-delete, and that residual is unaccepted: spec/authority-policy.json records riskAcceptance: null and executableProcedure: false — and round 8 made acceptance a closed RECORD (finding, justification, compensating controls, Zamp as owner, review date, expiry), never a boolean a later edit could flip.",
+      "An artifact carrying ABANDON_STATE_UNKNOWN requires Zamp's read-only re-observation of the named set before ANY new decision — deriving a gate around an unknown state is guessing with a mutation.",
+      "- Zamp clears the CBA_CLOUD_GATE value for the abandon decision."
+    ],
+    ".agent-handoff/decisions/70-spec-anchored-design-accepted.md": [
+      "- It authorizes NO cloud effect, secret access or paid call; CBA_CLOUD_GATE, stack-record-authorization and the spend instrument are untouched.",
+      "- The TOCTOU riskAcceptance remains null: delete-review-in-progress-stack-record stays without an executable procedure."
     ]
   }
 }

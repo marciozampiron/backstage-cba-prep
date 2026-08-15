@@ -20,7 +20,9 @@
     "bedrock-check": "node bin/cli.js bedrock-check",
     "agent-check": "node bin/cli.js agent-check",
     "agent-refresh": "node bin/cli.js agent-refresh",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "spec:lint": "node bin/spec-lint.mjs",
+    "spec:conform": "node bin/spec-conform.mjs"
   },
   "engines": {
     "node": ">=20"

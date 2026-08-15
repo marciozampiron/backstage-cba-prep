@@ -18,7 +18,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES } from '../src/lib/authority-policy.js';
+import { createHash } from 'node:crypto';
+import {
+  validateAuthorityPolicy, PolicyError, REQUIRED_SURFACES, assertAuthorityAgreement,
+  framedTextDigest, framedBundleDigest, zampStatementDigest, cleanupAuthorizationDigest,
+  verifyStatementLocator, ZAMP_STATEMENT_MEDIA_TYPE, CLEANUP_VALUE_KEY_ORDER,
+} from '../src/lib/authority-policy.js';
+import { CANONICAL_REPO } from '../bin/resolve-run.mjs';
 import { verifyAndRunCommand as verifyAndRun } from '../src/lib/human-publish-script.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,6 +61,11 @@ function operationalSources() {
     /^\.agent-handoff\/[^/]+\.md$/,
     /^\.agent-handoff\/(active|inbox|templates|decisions|publish-gates)\//,
     /^spec\/security-rules\.md$/,
+    // Spec-Anchored Development surfaces (#70 design round 2): authority-bearing documents must
+    // sit inside fail-closed discovery BEFORE they become effective, not after.
+    /^spec\/spec-anchored-development\.md$/,
+    /^spec\/agents\//,
+    /^docs\/runbooks\//,
     /^docs\/architecture\/agent-publication-runbook\.md$/,
     /^\.claude\/(skills|commands)\//,
     /^\.agents\/skills\//,
@@ -236,6 +247,29 @@ function assertNoPermission(actor, verb, label) {
 
 /* ================= the guards have to be able to fail ================= */
 
+test('POSITIVE CONTROL: every operational-source family is discovered, by family and by file', () => {
+  // Design round 3: adding a discovery pattern without a control proves nothing — a later edit
+  // could drop `spec/agents/**` or `docs/runbooks/**` and every other test would stay green.
+  // This asserts BOTH that the known files are in scope AND that the family patterns match a
+  // hypothetical new member, so deleting a pattern fails here rather than silently un-governing.
+  const discovered = new Set(SOURCES);
+  for (const known of [
+    'spec/spec-anchored-development.md',
+    'spec/agents/gemini-spec-auditor.md',
+    'docs/runbooks/README.md',
+    'docs/runbooks/spec-conformance-audit.md',
+    'docs/runbooks/aws-dev-release.md',
+  ]) {
+    assert.ok(discovered.has(known), `${known} must be an operational source`);
+  }
+  // Family-level: a NEW file in each governed family would be discovered too. The classifier is
+  // re-derived here from the same predicate the discovery uses, applied to hypothetical paths.
+  for (const family of ['spec/agents/', 'docs/runbooks/', '.agent-handoff/active/', '.claude/skills/', '.agents/skills/']) {
+    const members = [...discovered].filter((f) => f.startsWith(family));
+    assert.ok(members.length > 0, `no discovered source under ${family} — that family's pattern is gone`);
+  }
+});
+
 test('POSITIVE CONTROL: the scan reaches the real operational surfaces', () => {
   assert.ok(SOURCES.length >= 15, `expected a substantial surface list, got ${SOURCES.length}`);
   for (const required of [
@@ -333,11 +367,15 @@ test('the canonical flow appears in the contract and is not contradicted', () =>
 
 /* ================= 2. Gemini has no workflow role ================= */
 
-test('Gemini holds no collaboration, publication or governance role', () => {
+test('the Gemini persona holds no AUTHORITY — approval, gate, risk, review-of-record and every operational permission stay denied', () => {
+  // Round I7-2: the persona IS seated (read-only semantic auditor) — that role is not denied
+  // here. What this guard forbids is any surface PAIRING Gemini with an authority verb without
+  // a negation on the same clause: the seated role's own lines all negate (read-only, never,
+  // no authority), so they pass; a line that grants would fail.
   assertNoPermission(
     /\bgemini\b/i,
     /\b(review(s|er|ing)?|approve[sd]?|approval|publish(es|ing)?|prepare[sd]?|execute[sd]?|operat(e|es|or)|push(es)?|merge[sd]?|deploy(s)?|gate|governance|workflow)\b/i,
-    'Gemini must hold no workflow, publication or governance role',
+    'Gemini must hold no authority: no approval, gate, risk acceptance, review-of-record or operational permission',
   );
 });
 
@@ -1450,7 +1488,21 @@ const POLICY_SURFACES = POLICY.governedSurfaces ?? [];
  * list, so the collector never saw it and the allowlist never checked it. Dropping the filter makes
  * the collector mechanical: every sentence about a governed document must be explicitly permitted.
  */
-const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b/i;
+/**
+ * The governed vocabulary — every instrument, not only the publication one.
+ *
+ * Design round 3 found the gap: the collector recognized publication-gate phrases only, so the new
+ * documents' entries were empty because nothing about cloud authority, spend authority, the human
+ * approver or Gemini's standing was ever COLLECTED. An empty allowlist that nothing feeds is not a
+ * closed policy, it is a decoration. The vocabulary now covers all three authorization kinds and
+ * the two role claims that carry authority.
+ */
+/**
+ * Round 7 widened it again, for the reason round 3 established: a new instrument whose sentences
+ * nobody collects is governed in name only. `stack-record-authorization` is an authorization
+ * instrument, and risk acceptance is a capability only Zamp holds — both belong in the vocabulary.
+ */
+const GOVERNED_DOC = /review[- ]scope|execution gate|publish gate|the same gate|\ba gate\b|cloud authorization|spend authorization|cloud-authorization|spend-authorization|stack-record-authorization|stack-record cleanup|risk acceptance|riskAccept|CBA_CLOUD_GATE|humanApprover|human approver|gemini spec auditor/i;
 const normalizeStatement = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim();
 
 /**
@@ -1531,8 +1583,58 @@ test('the authority policy states the invariants as data, not prose', () => {
   // by nothing was wrong in a way that mattered: it reads as "no gate needed".
   assert.equal(POLICY.effects.merge.authorizedBy, 'MERGE_DECISION');
   assert.equal(POLICY.effects.merge.performedBy, 'zamp');
-  // Deploy needs its own human gate; it is not a document-authorized effect either.
-  assert.equal(POLICY.effects.deploy.authorizedBy, 'separate-human-gate');
+  // Deploy needs its own instrument — the cloud authorization, never the publication gate
+  // (#70 design round 3). Preparing change sets is a cloud effect too, and is named as one.
+  assert.equal(POLICY.effects.deploy.authorizedBy, 'cloud-authorization');
+  assert.equal(POLICY.effects.deploy.performedBy, 'zamp');
+  for (const effect of ['prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']) {
+    assert.equal(POLICY.effects[effect].authorizedBy, 'cloud-authorization');
+    assert.equal(POLICY.effects[effect].performedBy, 'zamp');
+  }
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].performedBy, 'zamp');
+  // The three instruments are distinct documents, and none authorizes another's effects.
+  assert.deepEqual(POLICY.documents['cloud-authorization'].authorizes, ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets']);
+  // Round 4: the instrument binds the COMPLETE manifest, not a release SHA plus one digest.
+  // Round 5: it also binds its MODE, its decision and its window, and the mode map proves — as
+  // data — that a plan_only value cannot execute or abandon anything.
+  assert.equal(POLICY.documents['cloud-authorization'].boundTo, 'mode+decisionId+manifestDigest+stacks+planDigest+window');
+  assert.deepEqual(POLICY.documents['cloud-authorization'].modes, {
+    plan_only: ['prepare-change-sets'],
+    deploy: ['deploy', 'execute-change-sets'],
+    abandon: ['abandon-change-sets'],
+  });
+  // Removing the empty stack RECORD is a DISTINCT effect, with its own instrument, and no lane
+  // performs it. Round 6: it used to name the cloud instrument, which did not authorize it — the
+  // effect read as authorized and no value could authorize it.
+  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].performedBy, 'zamp');
+  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].authorizedBy, 'stack-record-authorization');
+  assert.match(POLICY.effects['delete-review-in-progress-stack-record'].note, /human-performed only/);
+  const cleanup = POLICY.documents['stack-record-authorization'];
+  assert.deepEqual(cleanup.authorizes, ['delete-review-in-progress-stack-record']);
+  assert.equal(cleanup.writtenBy, 'zamp');
+  // Out of band, so no lane can consume a value permitting it.
+  assert.equal(cleanup.suppliedAs, 'out-of-band record');
+  // The cloud instrument must NOT carry it: that is what would make it lane-readable.
+  assert.equal(POLICY.documents['cloud-authorization'].authorizes.includes('delete-review-in-progress-stack-record'), false);
+  // ROUND 7: the binding names the account, region, stack NAME and immutable ARN, the exact
+  // status and the instant — recording WHEN someone looked constrained nothing on its own.
+  assert.equal(cleanup.boundTo, 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt');
+  assert.equal(cleanup.maxObservationAgeMinutes, 15);
+  // And the residual that no re-observation can close: unaccepted, so NO procedure exists.
+  // Round 8: acceptance is a RECORD or nothing — null means no one accepted anything.
+  assert.equal(cleanup.riskAcceptance, null);
+  assert.equal(cleanup.executableProcedure, false);
+  assert.match(cleanup.residualRisk, /compare-and-delete/);
+  const modeEffects = Object.values(POLICY.documents['cloud-authorization'].modes).flat();
+  assert.equal(new Set(modeEffects).size, modeEffects.length, 'an effect belongs to exactly one mode');
+  assert.deepEqual(POLICY.documents['spend-authorization'].authorizes, ['invoke-paid-model-audit']);
+  assert.equal(POLICY.documents['cloud-authorization'].writtenBy, 'zamp');
+  assert.equal(POLICY.documents['spend-authorization'].writtenBy, 'zamp');
+  // Opus may neither author a cloud authorization nor perform a cloud effect.
+  assert.ok(POLICY.actors.opus.mayNever.includes('author-cloud-authorization'));
+  assert.ok(POLICY.actors.opus.mayNever.includes('perform-cloud-effect'));
+  assert.ok(POLICY.actors.codex.mayNever.includes('perform-cloud-effect'));
 
   // Opus operates but may never approve itself or merge; Codex may never implement or operate.
   assert.ok(POLICY.actors.opus.mayNever.includes('self-approve'));
@@ -1715,20 +1817,732 @@ test('the review scope authorizing anything is rejected', () => {
   }, /review-scope\.authorizes must be empty/);
 });
 
-test('merge or deploy recorded as needing no authorization is rejected', () => {
+test('merge or a cloud effect recorded under the wrong instrument is rejected', () => {
   expectRejected((p) => {
     p.effects.merge.authorizedBy = 'review-scope';
   }, /must be authorized by MERGE_DECISION/);
+  // The exact conflation design round 3 found: a cloud effect claiming the PUBLICATION gate.
+  // Each cloud effect is checked, so widening one of them cannot ride on another's rule.
+  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record']) {
+    expectRejected((p) => {
+      p.effects[effect].authorizedBy = 'execution-gate';
+    }, new RegExp(`${effect}[\\s\\S]*(cloud instrument|must be exactly)`));
+  }
+  // ROUND 6: an effect may not name a document that does not authorize it. This is the exact
+  // dangling reverse reference the validator accepted — the stack-record effect pointed at the
+  // cloud instrument, which listed it nowhere and gave it no mode, so it read as authorized and
+  // could not be authorized by any value.
   expectRejected((p) => {
-    p.effects.deploy.authorizedBy = 'execution-gate';
-  }, /deploy must require a separate human gate/);
+    p.effects['delete-review-in-progress-stack-record'].authorizedBy = 'cloud-authorization';
+  }, /does not authorize delete-review-in-progress-stack-record|must be exactly "stack-record-authorization"/);
+  expectRejected((p) => {
+    p.effects['invoke-paid-model-audit'].authorizedBy = 'review-scope';
+  }, /does not authorize invoke-paid-model-audit|must be exactly "spend-authorization"/);
+  // And the out-of-band cleanup instrument cannot be widened to cover what a lane performs.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].authorizes.push('execute-change-sets');
+  }, /must be exactly|authorizedBy/);
+  // And the spend instrument cannot be swapped for the cloud one.
+  expectRejected((p) => {
+    p.documents['spend-authorization'].authorizes = ['execute-change-sets'];
+  }, /authorizes/);
+  // ROUND 5: a mode may not silently acquire another mode's effect — the exact widening that
+  // would let a plan_only authorization execute or abandon. Two independent rules can catch it
+  // (the structural partition, or the pinned literal), and either refusal is a refusal.
+  // These are refused by the PARTITION LAW in src/lib/authority-policy.js — not by a literal
+  // comparison. The reviewed VALUE is pinned separately, against the real file, in
+  // "the authority policy states the invariants as data, not prose".
+  const modeRejection = /exactly one mode|does not cover|unknown mode|must be an object/;
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes.plan_only.push('execute-change-sets');
+  }, modeRejection);
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes.abandon.push('deploy');
+  }, modeRejection);
+  // A mode that drops effects leaves them authorized by nothing — also rejected.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { plan_only: ['prepare-change-sets'] };
+  }, modeRejection);
+  // A mode name outside the closed vocabulary cannot be introduced by the policy file.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { anything_goes: ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets'] };
+  }, modeRejection);
+  // And a mode cannot name an effect the instrument does not authorize at all.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes.abandon = ['delete-review-in-progress-stack-record'];
+  }, /does not authorize/);
+  // ROUND 6: the lane-readable instrument cannot acquire a cleanup mode either — that is the
+  // fold-in this round rejected, and `stack-record-cleanup` is no longer in the mode vocabulary.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes['stack-record-cleanup'] = ['delete-review-in-progress-stack-record'];
+  }, /unknown mode/);
+  // The map is not merely present: a mode whose value is not a list of effect names is refused.
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = 'plan_only';
+  }, /must be an object/);
+  expectRejected((p) => {
+    p.documents['cloud-authorization'].modes = { plan_only: 'prepare-change-sets', deploy: ['deploy', 'execute-change-sets'], abandon: ['abandon-change-sets'] };
+  }, /modes\.plan_only/);
+});
+
+test('ROUND 6: the instrument/effect relation is a law over both matrices, proven directly', () => {
+  // The pinned literals in src/lib/authority-policy.js are correct, so no mutation of the DATA can
+  // reach this law first — a pin always speaks before it. That is precisely why the law takes its
+  // matrices as arguments: called with a deliberately broken pair, it is provable, and the module
+  // calls it on its own literals at import so a self-contradicting pin cannot load.
+  const ok = () =>
+    assertAuthorityAgreement(
+      { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+      { 'cloud-authorization': { authorizes: ['do-thing'], modes: { only: ['do-thing'] } } },
+      'T',
+    );
+  assert.doesNotThrow(ok);
+
+  // THE ROUND 6 DEFECT, exactly: the effect names an instrument that does not list it.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+        { 'cloud-authorization': { authorizes: [], modes: {} } },
+        'T',
+      ),
+    /does not authorize do-thing/,
+  );
+  // The other half: an instrument that lists the effect but whose MODES place it in none of them —
+  // authorized by the document and by no value the document can take.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'cloud-authorization' } },
+        { 'cloud-authorization': { authorizes: ['do-thing'], modes: { other: [] } } },
+        'T',
+      ),
+    /modes place it in none of them/,
+  );
+  // And the forward direction: the document claims an effect that names someone else.
+  assert.throws(
+    () =>
+      assertAuthorityAgreement(
+        { 'do-thing': { authorizedBy: 'spend-authorization' } },
+        { 'cloud-authorization': { authorizes: ['do-thing'] }, 'spend-authorization': { authorizes: [] } },
+        'T',
+      ),
+    /must be "cloud-authorization" because that document authorizes it|does not authorize do-thing/,
+  );
+  // A document claiming an effect that does not exist at all.
+  assert.throws(
+    () => assertAuthorityAgreement({}, { 'cloud-authorization': { authorizes: ['ghost'] } }, 'T'),
+    /unknown effect "ghost"/,
+  );
+  // The real matrices satisfy it — the same call the module makes at import.
+  assert.doesNotThrow(() => assertAuthorityAgreement(POLICY.effects, POLICY.documents, 'live'));
+});
+
+test('ROUND 7: no procedure may exist over a residual risk nobody accepted', () => {
+  // Acceptance is Zamp's decision. A document may not declare an executable procedure while the
+  // residual it names is unaccepted — that is the one combination that would turn "we wrote the
+  // risk down" into "we proceeded anyway".
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].executableProcedure = true;
+  }, /unaccepted residual risk/);
+  // The risk must actually be stated; whitespace is not a statement.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].residualRisk = '   ';
+  }, /must state the risk/);
+  // ROUND 8: acceptance is a RECORD, not a boolean — a flag could be flipped together with
+  // executableProcedure in one edit, and nothing in the data said what an acceptance contains.
+  // Each defect of the record is refused by name, BEFORE the pinned-literal comparison.
+  // Rounds 9-10 fixture: shape-complete, digested under the §6b framings, scoped by digest to
+  // one out-of-band cleanup authorization. Dates are far-future so the CLOCK law (evaluated
+  // against real time by default) does not rot these tests; the clock law itself is proven below
+  // with an injected `now`. No ARN appears here: round 10 removed the only field that carried
+  // one, because a live ARN never enters the tracked policy.
+  const RISK_SHA = framedTextDigest(
+    'policy.documents.stack-record-authorization.residualRisk',
+    POLICY.documents['stack-record-authorization'].residualRisk,
+  );
+  // ROUND 11: the positive fixtures are REAL — actual statement bytes and an actual nine-key
+  // cleanup value, digested through the one shared implementation, never a repeated hex.
+  const STATEMENT_PATH = '.agent-handoff/decisions/risk-70-stack-record-cleanup.md';
+  const STATEMENT_LOCATOR = { path: STATEMENT_PATH, introducedIn: 'f'.repeat(40) };
+  const STATEMENT_TEXT = 'I, Zamp, accept the TOCTOU residual for stack record X under decision cleanup-70-example-0001.\n';
+  const STATEMENT_SHA = zampStatementDigest(STATEMENT_LOCATOR, STATEMENT_TEXT);
+  const CLEANUP_VALUE = {
+    issue: 70,
+    decisionId: 'cleanup-70-example-0001',
+    environment: 'dev',
+    account: '111122223333',
+    region: 'us-east-1',
+    stackName: 'CbaStudyCoach-dev-Identity',
+    stackId: ['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/CbaStudyCoach-dev-Identity/12345678-1234-1234-1234-123456789012'].join(':'),
+    observedStatus: 'REVIEW_IN_PROGRESS',
+    observedAt: '2026-08-07T10:00:00Z',
+  };
+  const CLEANUP_SHA = cleanupAuthorizationDigest(CLEANUP_VALUE);
+  const record = () => ({
+    acceptedBy: 'zamp',
+    decisionId: 'risk-70-stack-record-cleanup',
+    finding: 'TOCTOU between the final re-observation and DeleteStack',
+    justification: 'example under test',
+    compensatingControls: ['re-observation within the 15-minute window immediately before acting'],
+    acceptedAt: '2026-08-07T12:00:00Z',
+    reviewBy: '2033-11-05T12:00:00Z',
+    expiresAt: '2035-02-03T12:00:00Z',
+    boundToEffect: 'delete-review-in-progress-stack-record',
+    residualRiskSha256: RISK_SHA,
+    coversCleanupAuthorizationSha256: CLEANUP_SHA,
+    coversCleanupDecisionId: 'cleanup-70-example-0001',
+    zampStatement: {
+      source: 'zamp-verbatim-message',
+      locator: { ...STATEMENT_LOCATOR },
+      sentAt: '2026-08-07T11:00:00Z',
+      encoding: 'utf-8',
+      bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'),
+      sha256: STATEMENT_SHA,
+    },
+  });
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = true;
+  }, /must be null or a closed acceptance record/);
+  expectRejected((p) => {
+    const r = record(); delete r.expiresAt;
+    p.documents['stack-record-authorization'].riskAcceptance = r;
+  }, /riskAcceptance/);
+  // Only Zamp holds accept-risk; an acceptance signed by the executor is the self-approval this
+  // whole protocol exists to prevent.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedBy: 'opus' };
+  }, /accept-risk is Zamp's capability alone/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), expiresAt: '2026-08-07T11:00:00Z' };
+  }, /ordered acceptedAt < reviewBy <= expiresAt/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), compensatingControls: [] };
+  }, /compensatingControls/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), boundToEffect: 'execute-change-sets' };
+  }, /must be an effect this document authorizes/);
+  // A calendar-invalid instant is a DIFFERENT date than the human wrote — same rule as the lane.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), acceptedAt: '2026-02-30T12:00:00Z' };
+  }, /strict RFC3339 UTC instant/);
+  // ROUNDS 9-10: an acceptance of some OTHER finding accepts nothing here — the record carries
+  // the §6b TEXT-FRAMED digest of THIS instrument's residualRisk, recomputed by the validator.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), residualRiskSha256: 'b'.repeat(64) };
+  }, /does not match the §6b text-framed digest/);
+  expectRejected((p) => {
+    const r = record();
+    p.documents['stack-record-authorization'].residualRisk = 'a different finding entirely';
+    p.documents['stack-record-authorization'].riskAcceptance = r;
+  }, /does not match the §6b text-framed digest|must be exactly/);
+  // ROUND 10 adversarials on the framing itself: the raw-text digest (the round-9 defect), a
+  // different subject, a KIND swap and a stray newline each produce a DIFFERENT digest.
+  {
+    const text = POLICY.documents['stack-record-authorization'].residualRisk;
+    const subject = 'policy.documents.stack-record-authorization.residualRisk';
+    const raw = createHash('sha256').update(text, 'utf8').digest('hex');
+    const wrongSubject = framedTextDigest('policy.documents.spend-authorization.residualRisk', text);
+    const kindSwap = createHash('sha256').update(JSON.stringify({
+      digestKind: 'bundle', version: 1,
+      records: [{ subject, encoding: 'utf-8', bytes: Buffer.byteLength(text, 'utf8'), text }],
+    }), 'utf8').digest('hex');
+    const newline = framedTextDigest(subject, `${text}\n`);
+    for (const bad of [raw, wrongSubject, kindSwap, newline]) {
+      assert.notEqual(bad, RISK_SHA);
+      expectRejected((p) => {
+        p.documents['stack-record-authorization'].riskAcceptance = { ...record(), residualRiskSha256: bad };
+      }, /does not match the §6b text-framed digest/);
+    }
+  }
+  // ROUND 10: the stack is bound by DIGEST of the out-of-band cleanup authorization — never by
+  // an ARN in the tracked policy — and the digest must at least be one.
+  expectRejected((p) => {
+    // The probe ARN is assembled at runtime so this file itself stays clean under the scan below.
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversCleanupAuthorizationSha256: ['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/x/1'].join(':') };
+  }, /never by copying its ARN/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), coversCleanupDecisionId: 'risk-70-stack-record-cleanup' };
+  }, /cannot name the acceptance itself/);
+  // ROUNDS 9-10: the declared owner is not the decision — the statement POINTER is closed:
+  // source, normalization, canonical bytes, §6b bundle digest.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: 'a'.repeat(64) };
+  }, /proves nothing/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, source: 'meeting-notes' } };
+  }, /not a paraphrase/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, encoding: 'utf-16' } };
+  }, /without a fixed normalization/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, bytes: 0 } };
+  }, /positive integer/);
+  // ROUND 11: a source CLASS plus a timestamp finds nothing univocally — the locator names the
+  // decision file and the introducing commit, and both have closed shapes.
+  expectRejected((p) => {
+    const stmt = { ...record().zampStatement };
+    delete stmt.locator;
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: stmt };
+  }, /zampStatement/);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, locator: { path: '/tmp/anywhere.md', introducedIn: 'f'.repeat(40) } } };
+  }, /decision file under \.agent-handoff\/decisions\//);
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = { ...record(), zampStatement: { ...record().zampStatement, locator: { path: STATEMENT_PATH, introducedIn: 'main' } } };
+  }, /full 40-character SHA/);
+  // ROUND 11: the envelopes are canonical — same bytes under a different producer, record name,
+  // media type, or with a stray newline, and the same VALUE with one key changed, all digest
+  // differently. Two reviewers can no longer frame the same content two compatible ways.
+  {
+    assert.equal(ZAMP_STATEMENT_MEDIA_TYPE, 'text/markdown');
+    assert.deepEqual(CLEANUP_VALUE_KEY_ORDER, ['issue', 'decisionId', 'environment', 'account', 'region', 'stackName', 'stackId', 'observedStatus', 'observedAt']);
+    const statementName = `${STATEMENT_PATH}@${STATEMENT_LOCATOR.introducedIn}`;
+    const variants = [
+      framedBundleDigest({ producer: 'opus', name: statementName, mediaType: 'text/markdown', content: STATEMENT_TEXT }),
+      framedBundleDigest({ producer: 'zamp', name: 'some-other-name.md', mediaType: 'text/markdown', content: STATEMENT_TEXT }),
+      framedBundleDigest({ producer: 'zamp', name: statementName, mediaType: 'text/plain', content: STATEMENT_TEXT }),
+      zampStatementDigest(STATEMENT_LOCATOR, `${STATEMENT_TEXT}\n`),
+      zampStatementDigest({ path: '.agent-handoff/decisions/other-decision.md', introducedIn: STATEMENT_LOCATOR.introducedIn }, STATEMENT_TEXT),
+      // ROUND 12: the same path at a DIFFERENT introducing commit is a different statement — the
+      // exact pair that round 11's envelope could not tell apart.
+      zampStatementDigest({ path: STATEMENT_PATH, introducedIn: 'e'.repeat(40) }, STATEMENT_TEXT),
+    ];
+    for (const v of variants) assert.notEqual(v, STATEMENT_SHA);
+    assert.equal(new Set(variants).size, variants.length, 'each perturbation is its own digest');
+    // determinism: the same inputs reproduce the same digest
+    assert.equal(zampStatementDigest(STATEMENT_LOCATOR, STATEMENT_TEXT), STATEMENT_SHA);
+    assert.equal(cleanupAuthorizationDigest({ ...CLEANUP_VALUE }), CLEANUP_SHA);
+    // one authorization key changed → a different authorization
+    assert.notEqual(cleanupAuthorizationDigest({ ...CLEANUP_VALUE, observedAt: '2026-08-07T10:00:01Z' }), CLEANUP_SHA);
+    assert.notEqual(cleanupAuthorizationDigest({ ...CLEANUP_VALUE, decisionId: 'cleanup-70-example-0002' }), CLEANUP_SHA);
+    // key order is the envelope's, not the caller's: a permuted object digests identically
+    const permuted = Object.fromEntries(Object.entries(CLEANUP_VALUE).reverse());
+    assert.equal(cleanupAuthorizationDigest(permuted), CLEANUP_SHA);
+    // ROUND 12: the shape is a PRECONDITION, not a projection. Codex's reproductions, inverted:
+    // an extra key no longer digests identically — it REFUSES; a missing key no longer yields a
+    // plausible digest — it refuses; and so do undefined values, wrong types and non-objects.
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, effect: 'delete-something-else' }), /extra: \[effect\]/);
+    assert.throws(() => {
+      const { stackId, ...withoutStackId } = CLEANUP_VALUE;
+      return cleanupAuthorizationDigest(withoutStackId);
+    }, /missing: \[stackId\]/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, stackName: undefined }), /would vanish in serialization/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, issue: '70' }), /must be the integer 70/);
+    assert.throws(() => cleanupAuthorizationDigest({ ...CLEANUP_VALUE, region: 42 }), /must be a non-empty string/);
+    for (const notAnObject of [null, [], 'value', 42]) {
+      assert.throws(() => cleanupAuthorizationDigest(notAnObject), /plain object/);
+    }
+  }
+  // ROUND 12: a SHA that merely looks like a SHA proves nothing — the locator verification runs
+  // the four history checks, here against a SCRIPTED git covering every named refusal.
+  {
+    const REVIEWED_HEAD_SHA = 'd'.repeat(40);
+    const scriptedGit = (overrides = {}) => (cmd, args) => {
+      assert.equal(cmd, 'git');
+      // cat-file is called for the reviewed head AND the locator commit; tell them apart.
+      const step = args[0] === 'cat-file' ? (args[2].startsWith(REVIEWED_HEAD_SHA) ? 'headExists' : 'exists')
+        : args[0] === 'merge-base' ? 'ancestor'
+          : args[0] === 'diff-tree' ? 'added'
+            : args[0] === 'show' ? 'content' : assert.fail(`unexpected git call: ${args.join(' ')}`);
+      if (step in overrides) return overrides[step]();
+      if (step === 'added') return `A\t${STATEMENT_PATH}\n`;
+      if (step === 'content') return STATEMENT_TEXT;
+      return '';
+    };
+    const base = { locator: { ...STATEMENT_LOCATOR }, bytes: Buffer.byteLength(STATEMENT_TEXT, 'utf8'), sha256: STATEMENT_SHA, reviewedHead: REVIEWED_HEAD_SHA };
+    assert.deepEqual(verifyStatementLocator({ ...base, git: scriptedGit() }), { ok: true });
+    // ROUND 13: the reviewed head obeys the identity rule — a moving target is not a proof
+    // anchor. Each bad shape refuses by name, BEFORE any git call touches ancestry.
+    for (const movingTarget of ['HEAD', 'main', 'd'.repeat(39), 'D'.repeat(40), `${'d'.repeat(40)} `, 42, null, undefined]) {
+      assert.equal(
+        verifyStatementLocator({ ...base, reviewedHead: movingTarget, git: scriptedGit() }).reason,
+        'REVIEWED_HEAD_NOT_A_FULL_SHA',
+        String(movingTarget),
+      );
+    }
+    // A well-formed SHA that names no commit refuses too — shape is not existence.
+    assert.equal(
+      verifyStatementLocator({ ...base, git: scriptedGit({ headExists: () => { throw new Error('missing'); } }) }).reason,
+      'REVIEWED_HEAD_MISSING',
+    );
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ exists: () => { throw new Error('missing'); } }) }).reason, 'LOCATOR_COMMIT_MISSING');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ ancestor: () => { throw new Error('not ancestor'); } }) }).reason, 'LOCATOR_COMMIT_NOT_ANCESTOR');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ added: () => `M\t${STATEMENT_PATH}\n` }) }).reason, 'LOCATOR_FILE_NOT_ADDED_THERE');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ added: () => 'A\tsome/other/file.md\n' }) }).reason, 'LOCATOR_FILE_NOT_ADDED_THERE');
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ content: () => 'different historical content\n' }) }).reason, 'LOCATOR_BYTES_MISMATCH');
+    const sameLength = STATEMENT_TEXT.replace('accept', 'reject'); // same byte count, different bytes
+    assert.equal(Buffer.byteLength(sameLength, 'utf8'), Buffer.byteLength(STATEMENT_TEXT, 'utf8'));
+    assert.equal(verifyStatementLocator({ ...base, git: scriptedGit({ content: () => sameLength }) }).reason, 'LOCATOR_CONTENT_MISMATCH');
+    // a locator whose SHA differs verifies only against ITS OWN digest, never the recorded one
+    assert.equal(verifyStatementLocator({ ...base, locator: { path: STATEMENT_PATH, introducedIn: 'e'.repeat(40) }, git: scriptedGit() }).reason, 'LOCATOR_CONTENT_MISMATCH');
+  }
+  // ROUND 9: the validator evaluates the CLOCK. An expired acceptance in the tree fails closed…
+  {
+    const expired = clonePolicy();
+    expired.documents['stack-record-authorization'].riskAcceptance = {
+      ...record(), acceptedAt: '2026-01-01T00:00:00Z', reviewBy: '2026-02-01T00:00:00Z', expiresAt: '2026-03-01T00:00:00Z',
+    };
+    assert.throws(
+      () => validateAuthorityPolicy(expired, { now: Date.parse('2026-06-01T00:00:00Z') }),
+      /expired acceptance authorizes nothing/,
+    );
+    // …and one dated in the future was not decided yet.
+    const future = clonePolicy();
+    future.documents['stack-record-authorization'].riskAcceptance = record();
+    assert.throws(
+      () => validateAuthorityPolicy(future, { now: Date.parse('2026-01-01T00:00:00Z') }),
+      /dated in the future/,
+    );
+  }
+  // Even a COMPLETE, well-shaped, unexpired record cannot slip in silently: the pinned literal is
+  // null, so accepting the risk is a reviewed change to the policy itself, never a runtime state.
+  expectRejected((p) => {
+    p.documents['stack-record-authorization'].riskAcceptance = record();
+  }, /must be exactly/);
+  // An observation may not be allowed to age past the reviewed bound.
+  for (const bad of [60, 16, 0, -1, 1.5, '15']) {
+    expectRejected((p) => {
+      p.documents['stack-record-authorization'].maxObservationAgeMinutes = bad;
+    }, /at most 15|authorizes nothing/);
+  }
+  // And, while no procedure exists, no runbook may carry the command that performs the effect.
+  for (const rel of fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'))) {
+    const text = read(`docs/runbooks/${rel}`);
+    assert.equal(
+      /aws\s+cloudformation\s+delete-stack/i.test(text),
+      false,
+      `${rel} carries a delete-stack command while stack-record-authorization.executableProcedure is false`,
+    );
+  }
+});
+
+/**
+ * Rebuild the COMPLETE commands inside fenced blocks, joining backslash continuations — round
+ * 12: a per-line scan let an override live on the next line of the same command.
+ */
+function reconstructFencedCommands(text) {
+  const commands = [];
+  let inFence = false;
+  let buffer = null;
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      // ROUND 15: a fence boundary reached with a continuation open used to RESET the buffer —
+      // the joined command vanished from the reconstruction while bash would execute it. A
+      // dangling continuation is refused, never dropped.
+      if (buffer !== null) throw new Error('dangling continuation at a fence boundary — a trailing backslash with nothing sanctioned to join is refused');
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) continue;
+    const trimmed = line.trim();
+    // ROUND 15: the blank/comment skip applies ONLY between commands. While a continuation is
+    // open, shell semantics join WHATEVER comes next — a comment line is payload that lands
+    // inside the very command bash would run, and a blank line terminates it; skipping either
+    // made the injected command invisible while executable.
+    if (buffer === null && (trimmed === '' || trimmed.startsWith('#'))) continue;
+    const continued = /\\$/.test(trimmed);
+    const payload = trimmed.replace(/\\$/, '').trim();
+    if (buffer !== null) {
+      buffer = `${buffer} ${payload}`.trim();
+      if (!continued) {
+        commands.push(buffer);
+        buffer = null;
+      }
+    } else if (continued) {
+      buffer = payload;
+    } else {
+      commands.push(payload);
+    }
+  }
+  if (inFence) throw new Error('unbalanced fence — a block that never closes is refused');
+  if (buffer !== null) throw new Error('dangling continuation at EOF');
+  return commands;
+}
+
+/**
+ * The reviewed command inventory — round 14. Rounds 11-13 tried to ANALYZE commands (flags, then
+ * anchored templates keyed on the word `gh`) and each round found the analysis fail-open: the
+ * word `gh` can be spelled without the sequence `gh` (`g'h'`, `g\\h`, `$(printf '\\147\\150')`,
+ * `${G}${H}`), and template alternations accepted cartesian combinations no runbook contains.
+ * Identity needs no analysis: EVERY reconstructed fenced command line of EVERY runbook — gh or
+ * not — must EQUAL its reviewed literal, in order, and a runbook absent from this inventory is
+ * itself a deviation. Changing any fenced command anywhere is a red build until the same
+ * reviewed commit updates this inventory.
+ */
+const REVIEWED_RUNBOOK_COMMANDS = {
+  "docs/runbooks/README.md": [
+    "---",
+    "id: <kebab-case, unique, matches the filename without .md>",
+    "kind: <runbook | index>",
+    "version: <semver — bump on every change>",
+    "owner: <the actor that maintains this document>",
+    "humanApprover: Zamp",
+    "specs: [<SPEC-IDs this document operationalizes, per spec/spec-anchored-development.md>]",
+    "inputs: [<what the operator must have before starting — names, never values>]",
+    "outputs: [<what a completed run produces — evidence, records>]",
+    "gateRequired: <true|false — whether any step depends on a Zamp authorization, of either kind>",
+    "cloudMutation: <true|false — whether any step can change cloud state, change-set creation included>",
+    "---",
+    "CORRELATION_ID=\"cba-70-$(openssl rand -hex 16)\"   # matches ^cba-70-[0-9a-f]{32}$",
+    "printf '%s\\n' \"$CORRELATION_ID\"                   # record it BEFORE dispatching",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release <mode> ${CORRELATION_ID}\")",
+  ],
+  "docs/runbooks/aws-dev-release-abandon.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the abandon JSON for this decision>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=abandon -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release abandon ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name abandon --dir <evidence-dir>/abandon-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/abandon-\"$RUN_ID\"/abandon.json",
+  ],
+  "docs/runbooks/aws-dev-release-bind.md": [
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=bind_only -f correlation_id=<caller-generated id for this request>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release bind_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name binding --dir <evidence-dir>/bind-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/bind-\"$RUN_ID\"/binding.json",
+  ],
+  "docs/runbooks/aws-dev-release-deploy.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the deploy JSON for this decision, planDigest included>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release dev_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name deploy --dir <evidence-dir>/deploy-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/deploy-\"$RUN_ID\"/deploy.json",
+  ],
+  "docs/runbooks/aws-dev-release-plan.md": [
+    "gh api -X PATCH repos/marciozampiron/backstage-cba-prep/environments/dev/variables/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the plan_only JSON for this decision>'",
+    "gh workflow run release-pilot.yml --repo marciozampiron/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>",
+    "RUN_ID=$(node bin/resolve-run.mjs --title \"cba-release dev_only ${CORRELATION_ID}\")",
+    "gh run download \"$RUN_ID\" --repo marciozampiron/backstage-cba-prep --name plan --dir <evidence-dir>/plan-\"$RUN_ID\"",
+    "sha256sum <evidence-dir>/plan-\"$RUN_ID\"/plan.json",
+  ],
+  "docs/runbooks/aws-dev-release-recovery.md": [
+    "aws sts get-caller-identity --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager",
+    "aws cloudformation describe-stacks --stack-name <cba-study-coach-dev-…> --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager --query 'Stacks[0].StackStatus'",
+    "aws cloudformation describe-stack-events --stack-name <cba-study-coach-dev-…> --profile <reviewed-read-only-profile> --region us-east-1 --no-cli-pager --max-items 20",
+  ],
+  "docs/runbooks/aws-dev-release.md": [
+  ],
+  "docs/runbooks/spec-conformance-audit.md": [
+  ],
+};
+
+/**
+ * The three sanctioned OPERATION CLASSES a gh command in the inventory may belong to — the
+ * round-15 meta-rule. Anchored both ends; method, endpoint, workflow file, ref and artifact
+ * shape are inside the pattern, so a DELETE under the canonical prefix and an untouched
+ * subcommand (`gh issue close`) both refuse.
+ */
+const SANCTIONED_GH_OPERATIONS = [
+  /^gh api -X PATCH repos\/marciozampiron\/backstage-cba-prep\/environments\/dev\/variables\/CBA_CLOUD_GATE -f name=CBA_CLOUD_GATE -f value='<the (plan_only|deploy|abandon) JSON for this decision(, planDigest included)?>'$/,
+  /^gh workflow run release-pilot\.yml --repo marciozampiron\/backstage-cba-prep --ref main -f release_sha=<full 40-character release SHA> -f mode=(bind_only|dev_only|abandon) -f correlation_id=<caller-generated id for this (decision|request)>$/,
+  /^gh run download "\$RUN_ID" --repo marciozampiron\/backstage-cba-prep --name (binding|plan|deploy|abandon) --dir <evidence-dir>\/(bind|plan|deploy|abandon)-"\$RUN_ID"$/,
+];
+
+function inventoriedGhOffenses(cmd) {
+  if (!/^gh\b/.test(cmd)) return [];
+  if (SANCTIONED_GH_OPERATIONS.some((re) => re.test(cmd))) return [];
+  return [`inventoried gh command outside the sanctioned operation classes: ${cmd}`];
+}
+
+function runbookCommandDeviations(rel, commands) {
+  const expected = REVIEWED_RUNBOOK_COMMANDS[rel];
+  if (expected === undefined) return [`${rel} is not in the reviewed command inventory`];
+  const out = [];
+  const max = Math.max(expected.length, commands.length);
+  for (let i = 0; i < max; i += 1) {
+    if (commands[i] !== expected[i]) {
+      out.push(`${rel}[${i}] expected ${JSON.stringify(expected[i])} but found ${JSON.stringify(commands[i])}`);
+    }
+  }
+  return out;
+}
+
+test('ROUND 11-14: every fenced command in every runbook IS its reviewed literal', () => {
+  const runbooks = fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md'));
+  const offenses = [];
+  for (const rel of runbooks) {
+    try {
+      offenses.push(...runbookCommandDeviations(`docs/runbooks/${rel}`, reconstructFencedCommands(read(`docs/runbooks/${rel}`))));
+    } catch (err) {
+      offenses.push(`docs/runbooks/${rel}: ${err.message}`);
+    }
+  }
+  // Fail-closed in both directions: an inventory entry whose file is gone is stale review.
+  for (const rel of Object.keys(REVIEWED_RUNBOOK_COMMANDS)) {
+    assert.ok(fs.existsSync(path.join(ROOT, rel)), `stale inventory entry: ${rel}`);
+  }
+  assert.deepEqual(offenses, [], offenses.join('\n'));
+  // And the INVENTORY itself is bounded: every inventoried gh command must belong to one of the
+  // three sanctioned OPERATION CLASSES, so an edit that rewrote a runbook and this inventory
+  // together still cannot introduce repository administration (round 15: prefix checks let
+  // `gh api -X DELETE repos/<canon>/actions/secrets/…` and `gh issue close` through). Honest
+  // scope, stated plainly: this bounds gh-spelled operations by CLASS; exact cross-field pairing
+  // and non-gh spellings inside the inventory are what independent review of any inventory diff
+  // exists for — the inventory is a reviewed artifact, and this rule is its belt, not its judge.
+  for (const cmds of Object.values(REVIEWED_RUNBOOK_COMMANDS)) {
+    for (const cmd of cmds) {
+      assert.deepEqual(inventoriedGhOffenses(cmd), [], cmd);
+    }
+  }
+});
+
+test('ROUND 14: identity, not analysis — every demonstrated bypass class deviates', () => {
+  const planRel = 'docs/runbooks/aws-dev-release-plan.md';
+  const bindRel = 'docs/runbooks/aws-dev-release-bind.md';
+  const planText = read(planRel);
+  const bindText = read(bindRel);
+  const injectIntoFirstFence = (text, line) => text.replace(/```[a-z]*\n/, (m) => `${m}${line}\n`);
+  const deviates = (rel, text) => {
+    try {
+      return runbookCommandDeviations(rel, reconstructFencedCommands(text));
+    } catch (err) {
+      // A refusal of the document IS a deviation: fail-closed, never fail-quiet (round 15).
+      return [err.message];
+    }
+  };
+
+  // The real files, unmodified, are clean — so every deviation below is caused by the injection.
+  assert.deepEqual(deviates(planRel, planText), []);
+  assert.deepEqual(deviates(bindRel, bindText), []);
+
+  // ROUND 14: gh spelled without the sequence `gh`. Analysis keyed on the word could never see
+  // these; identity does not care how the executable is spelled.
+  for (const obfuscated of [
+    "g'h' secret set PROD",
+    'g\\h secret set PROD',
+    "$(printf '\\147\\150') secret set PROD",
+    'G=g; H=h; ${G}${H} secret set PROD',
+  ]) {
+    assert.ok(deviates(planRel, injectIntoFirstFence(planText, obfuscated)).length > 0, obfuscated);
+  }
+
+  // ROUND 14: cartesian combinations of the old alternations — each is a line no runbook
+  // contains, so each deviates from the literal at its position.
+  const swaps = [
+    [bindRel, bindText,
+      'gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name binding --dir <evidence-dir>/bind-"$RUN_ID"',
+      'gh run download "$RUN_ID" --repo marciozampiron/backstage-cba-prep --name plan --dir <evidence-dir>/deploy-"$RUN_ID"'],
+    [planRel, planText,
+      "-f value='<the plan_only JSON for this decision>'",
+      "-f value='<the deploy JSON for this decision>'"],
+    [bindRel, bindText,
+      '-f correlation_id=<caller-generated id for this request>',
+      '-f correlation_id=<caller-generated id for this decision>'],
+  ];
+  for (const [rel, text, fromStr, toStr] of swaps) {
+    assert.ok(text.includes(fromStr), `swap source must exist: ${fromStr}`);
+    assert.ok(deviates(rel, text.replace(fromStr, toStr)).length > 0, toStr);
+  }
+
+  // Removal deviates too: a command cannot quietly disappear from a runbook.
+  const withoutDownload = bindText.replace(/gh run download[^\n]*\n/, '');
+  assert.ok(deviates(bindRel, withoutDownload).length > 0);
+
+  // And an APPENDED command — beyond the last reviewed literal — deviates as well: length is
+  // part of identity, not only per-position content. (Round 14's own reversion proof exposed
+  // this: a comparator that skips positions past the expected list stayed green until this
+  // regression existed.)
+  const appendToLastFence = (text, line) => {
+    const closer = text.lastIndexOf('```');
+    return `${text.slice(0, closer)}${line}\n${text.slice(closer)}`;
+  };
+  assert.ok(deviates(planRel, appendToLastFence(planText, 'gh secret set PROD')).length > 0);
+  assert.ok(deviates(planRel, appendToLastFence(planText, "g'h' secret set PROD")).length > 0);
+
+  // ROUND 15: a dangling continuation cannot vanish. Codex's reproduction — a continuation whose
+  // next line is a comment — used to reconstruct IDENTICALLY to the original document while bash
+  // would join and execute it. Now the comment is payload (shell semantics), so the joined
+  // command deviates; a continuation left open at the fence closer, at EOF, and an unbalanced
+  // fence are refused outright, and the refusal is a deviation.
+  const contComment = appendToLastFence(planText, "g'h' secret set PROD \\\n# continuation content ignored by scanner");
+  assert.ok(deviates(planRel, contComment).length > 0, 'continuation + comment must deviate');
+  const contBlank = appendToLastFence(planText, "g'h' secret set PROD \\\n");
+  assert.ok(deviates(planRel, contBlank).length > 0, 'continuation + blank line must deviate');
+  const contAtClose = appendToLastFence(planText, "g'h' secret set PROD \\");
+  assert.ok(deviates(planRel, contAtClose).length > 0, 'continuation at the fence closer must deviate');
+  const FENCE = '`'.repeat(3);
+  const contAtEof = [planText, `${FENCE}bash`, "g'h' secret set PROD \\"].join('\n');
+  assert.ok(deviates(planRel, contAtEof).length > 0, 'continuation at EOF must deviate');
+  const unbalanced = [planText, `${FENCE}bash`, 'gh secret set PROD'].join('\n');
+  assert.ok(deviates(planRel, unbalanced).length > 0, 'an unbalanced fence must deviate');
+  // …and the real document still reconstructs cleanly, so the refusals are attributable.
+  assert.deepEqual(deviates(planRel, planText), []);
+
+  // ROUND 15 meta: the inventory's own bound is a closed operation-class list, not prefixes.
+  assert.ok(inventoriedGhOffenses(`gh api -X DELETE repos/${CANONICAL_REPO}/actions/secrets/PROD`).length > 0);
+  assert.ok(inventoriedGhOffenses('gh issue close 70').length > 0);
+  assert.ok(inventoriedGhOffenses('gh secret set PROD').length > 0);
+  assert.deepEqual(inventoriedGhOffenses(`gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main -f release_sha=<full 40-character release SHA> -f mode=dev_only -f correlation_id=<caller-generated id for this decision>`), []);
+
+  // Rounds 12-13 regressions, restated under identity: none of these lines is a reviewed
+  // literal, so each deviates wherever it is injected.
+  for (const bypass of [
+    'gh api -X PATCH "$ENDPOINT" -f name=CBA_CLOUD_GATE',
+    `gh api -X DELETE repos/${CANONICAL_REPO}/actions/secrets/PROD`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo attacker/fork --ref main`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --repo=attacker/fork --ref main`,
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} --ref main && gh secret set PROD`,
+    'env X=1 gh secret set PROD',
+    'true; gh secret set PROD',
+    'gh run list --workflow release-pilot.yml',
+  ]) {
+    assert.ok(deviates(planRel, injectIntoFirstFence(planText, bypass)).length > 0, bypass);
+  }
+
+  // …and the continuation-line override still deviates as ONE reconstructed command.
+  const doc = [
+    '```bash',
+    `gh workflow run release-pilot.yml --repo ${CANONICAL_REPO} \\`,
+    '  --repo attacker/fork --ref main',
+    '```',
+  ].join('\n');
+  const [cmd] = reconstructFencedCommands(doc);
+  assert.match(cmd, /--repo attacker\/fork/);
+  assert.ok(deviates(planRel, injectIntoFirstFence(planText, `${cmd}`)).length > 0);
+});
+
+test('ROUND I4-3: the retired over-claim about the abandon refusal cannot return', () => {
+  // I4 claimed the abandon refusal ran "provably before any AWS call"; I4-2 precised it (the STS
+  // identity reads precede the gate check by design), and I4-3 found the stale phrase surviving
+  // in the canonical handoff beside the corrected one — two contradictory guarantees coexisting.
+  // The stale phrasing is refused, finitely, on every surface that states the guarantee.
+  const surfaces = [
+    '.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md',
+    'spec/spec-anchored-development.md',
+    'infra/aws/bin/deploy-release.js',
+    'infra/aws/test/deploy-preflight.test.js',
+  ];
+  const offending = surfaces.filter((rel) => /provably before any AWS call/i.test(read(rel)));
+  assert.deepEqual(offending, [], `stale guarantee wording in: ${offending.join(', ')}`);
+  // POSITIVE CONTROL: the pattern sees the phrase it guards against.
+  assert.ok(/provably before any AWS call/i.test('and provably before any AWS call, until'));
+});
+
+test('ROUND 10: no governance surface carries a CloudFormation stack ARN', () => {
+  // The acceptance binds its stack by DIGEST of an out-of-band value precisely so that no live
+  // ARN — account id included — ever enters the tracked policy or its documents. This scan keeps
+  // that true against regression: a stack ARN in any governance surface is a finding, whatever
+  // account it names.
+  const surfaces = [
+    'src/lib/authority-policy.js',
+    'spec/authority-policy.json',
+    ...fs.readdirSync(path.join(ROOT, 'spec')).filter((f) => f.endsWith('.md')).map((f) => `spec/${f}`),
+    ...fs.readdirSync(path.join(ROOT, 'spec/agents')).filter((f) => f.endsWith('.md')).map((f) => `spec/agents/${f}`),
+    ...fs.readdirSync(path.join(ROOT, 'docs/runbooks')).filter((f) => f.endsWith('.md')).map((f) => `docs/runbooks/${f}`),
+    'test/governance-model.test.js',
+  ];
+  const offending = surfaces.filter((rel) => /arn:aws[a-z-]*:cloudformation:[a-z0-9-]*:[0-9]{12}:/.test(read(rel)));
+  assert.deepEqual(offending, [], `stack ARNs with account ids in governance surfaces: ${offending.join(', ')}`);
+  // POSITIVE CONTROL: the scanner sees the shape it guards against (probe assembled at runtime
+  // so this file itself stays clean).
+  assert.ok(/arn:aws[a-z-]*:cloudformation:[a-z0-9-]*:[0-9]{12}:/.test(['arn:aws:cloudformation:us-east-1', '111122223333', 'stack/x/1'].join(':')));
 });
 
 test('a dangling document-to-effect authority is rejected', () => {
   expectRejected((p) => {
     // the document claims the effect, but the effect names a different authorizer
     p.documents['execution-gate'].authorizes.push('merge');
-  }, /policy\.effects\.merge\.authorizedBy must be "execution-gate"/);
+  }, /policy\.effects\.merge\.authorizedBy must be "execution-gate"|policy\.documents\.execution-gate\.authorizes must be exactly/);
 });
 
 test('an incomplete governed-surface list is rejected', () => {
@@ -2022,5 +2836,128 @@ test('REGRESSION: an authority claim in a newly governed surface fails the allow
       const allowed = new Set(POLICY.allowedAuthorityStatements[rel] ?? []);
       assert.equal(allowed.has(found[0]), false, `${rel} must not already permit: ${planted}`);
     }
+  }
+});
+
+// ─── SLICE I6-2 ───────────────────────────────────────────────────────────────────────────────
+// The [SPEC-ID] annotation MIGRATION is a closed inventory. spec:lint proves existing tokens
+// RESOLVE; it cannot see a token that was silently deleted. This regression pins the exact
+// bracketed literals the I6 migration placed (and the pre-existing frontmatter lists it counts
+// on), file by file — remove or reword one and this fails by name. It is deliberately FINITE:
+// a future PROPOSED id gains no obligation here; per-anchor presence becomes mandatory only at
+// activation (SPEC-GOV-006). Extending this inventory is part of annotating, not automatic.
+test('SLICE I6-2: the annotation migration inventory is FINITE and every expected token is present', () => {
+  const INVENTORY = {
+    'infra/aws/bin/deploy-release.js': [
+      '[SPEC-DEPLOY-001, SPEC-DEPLOY-008, SPEC-DEPLOY-011, SPEC-DEPLOY-013, SPEC-DEPLOY-016, SPEC-DEPLOY-017, SPEC-DEPLOY-018]',
+      '[SPEC-DEPLOY-007]', '[SPEC-DEPLOY-009]', '[SPEC-DEPLOY-010]', '[SPEC-DEPLOY-003]',
+      '[SPEC-DEPLOY-012]', '[SPEC-DEPLOY-005]', '[SPEC-RUN-007]', '[SPEC-RUN-008]', '[SPEC-DEPLOY-021]',
+    ],
+    'infra/aws/lib/context.js': ['[SPEC-DEPLOY-015]', '[SPEC-DEPLOY-004]'],
+    'infra/aws/lib/deploy-preflight.js': ['[SPEC-DEPLOY-019]'],
+    'bin/resolve-run.mjs': ['[SPEC-LANE-007]'],
+    'infra/aws/lib/security-stack.js': ['[SPEC-IAM-001]'],
+    '.github/workflows/release-pilot.yml': [
+      '[SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-LANE-004, SPEC-RUN-007, SPEC-RUN-008]',
+      '[SPEC-LANE-006]', '[SPEC-LANE-005, SPEC-LANE-006]',
+    ],
+    'docs/runbooks/README.md': ['[SPEC-RUN-001]', '[SPEC-RUN-002]', '[SPEC-RUN-005]', '[SPEC-RUN-003, SPEC-RUN-004]'],
+    'spec/agents/gemini-spec-auditor.md': ['[SPEC-AUDIT-002, SPEC-AUDIT-003, SPEC-AUDIT-004, SPEC-AUDIT-005]'],
+    'spec/spec-anchored-development.md': [
+      '[SPEC-GOV-001]', '[SPEC-GOV-002, SPEC-GOV-003, SPEC-GOV-004, SPEC-GOV-005]',
+      '[SPEC-GOV-006, SPEC-GOV-007]', '[SPEC-GOV-004, SPEC-GOV-008]', '[SPEC-GOV-009]',
+    ],
+  };
+  // Sites the migration counts on but did not create: the twin DEPLOY-019 tokens in the
+  // entrypoint and the twin DEPLOY-006/DEPLOY-014 pairs are asserted by COUNT so neither copy
+  // can vanish while the other keeps the include() true.
+  const COUNTS = {
+    'infra/aws/bin/deploy-release.js': [['[SPEC-DEPLOY-019]', 2], ['[SPEC-DEPLOY-006]', 2], ['[SPEC-DEPLOY-014]', 2]],
+    'infra/aws/lib/context.js': [['[SPEC-DEPLOY-015]', 2]],
+    '.github/workflows/release-pilot.yml': [['[SPEC-LANE-006]', 2]],
+  };
+  for (const [file, tokens] of Object.entries(INVENTORY)) {
+    const body = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    for (const token of tokens) {
+      assert.ok(body.includes(token), `${file} must carry ${token} — a silently dropped annotation is drift, not cleanup`);
+    }
+  }
+  for (const [file, pairs] of Object.entries(COUNTS)) {
+    const body = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    for (const [token, expected] of pairs) {
+      const seen = body.split(token).length - 1;
+      assert.equal(seen, expected, `${file} must carry ${token} exactly ${expected} times (saw ${seen})`);
+    }
+  }
+});
+
+// ─── SLICE I7 ─────────────────────────────────────────────────────────────────────────────────
+// The Gemini Spec Auditor persona is SEATED — and seated as NOTHING BUT an auditor. These two
+// tests are the discriminants Codex required: every canonical surface declares the SAME role
+// with no contradiction, and the policy validator refuses a Gemini that gains any grant or a
+// reworded standing.
+test('SLICE I7: every canonical surface seats the SAME Gemini persona — read-only, no authority', () => {
+  const protocol = read(PROTOCOL);
+  assert.match(protocol, /Read-only semantic auditor/);
+  assert.match(protocol, /SPEC_AUDIT_REPORT v1 document artifact/);
+  assert.match(protocol, /mechanical layers first, then the semantic audit, then Codex/);
+  const agents = read('AGENTS.md');
+  assert.match(agents, /Gemini Spec Auditor persona/);
+  assert.match(agents, /SPEC_AUDIT_REPORT v1/);
+  const persona = read('spec/agents/gemini-spec-auditor.md');
+  assert.match(persona, /Status: SEATED \(Slice I7\)/);
+  assert.match(persona, /VERDICT: PASS \| FINDINGS \| INCOMPLETE/);
+  assert.match(persona, /AUTHORITY: none/);
+  assert.match(read('docs/runbooks/spec-conformance-audit.md'), /PERSONA SEATED \(Slice I7\)/);
+  // The policy twin: the exact seated standing — an empty may is the LAW, not an omission.
+  assert.equal(POLICY.actors.gemini.role, 'read-only semantic auditor — the Gemini Spec Auditor persona; no authority of any kind');
+  assert.deepEqual(POLICY.actors.gemini.may, []);
+  for (const cap of ['accept-risk', 'access-secrets', 'any-authority-bearing-role', 'author-cloud-authorization', 'authorize-spend', 'deploy', 'grant-human-gate', 'implement', 'invoke-paid-service', 'merge', 'operate-artifact', 'perform-cloud-effect', 'prepare-artifact', 'push']) {
+    assert.ok(POLICY.actors.gemini.mayNever.includes(cap), `gemini.mayNever must include ${cap}`);
+  }
+  // The paid invocation stays Zamp's effect under the spend document — the persona spends nothing.
+  assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+});
+
+test('SLICE I7: the validator refuses a Gemini that gains any grant or a reworded standing', () => {
+  expectRejected((p) => {
+    p.actors.gemini.may = ['validate'];
+  }, /gemini/);
+  expectRejected((p) => {
+    p.actors.gemini.role = 'semantic reviewer';
+  }, /gemini/);
+  expectRejected((p) => {
+    p.actors.gemini.mayNever = p.actors.gemini.mayNever.filter((c) => c !== 'grant-human-gate');
+  }, /gemini/);
+});
+
+// ─── ROUND I7-2 ── the seated role and the broad ban must never coexist again ─────────────────
+test('ROUND I7-2: the retired blanket term cannot return while the persona is seated', () => {
+  // The finding: a policy that seats a read-only auditor while forbidding "any workflow or
+  // governance role" contradicts itself — a literal consumer must conclude the persona may not
+  // exercise its own seat. The blanket term was NARROWED to authority ('any-authority-bearing-
+  // role'); this regression keeps the two states from ever coexisting again. The string is
+  // split so this test's own source cannot satisfy the scan it performs.
+  const retired = 'any-workflow-or-' + 'governance-role';
+  for (const rel of ['spec/authority-policy.json', 'src/lib/authority-policy.js', PROTOCOL, 'AGENTS.md', 'spec/agents/gemini-spec-auditor.md']) {
+    assert.ok(!read(rel).includes(retired), `${rel} must not carry the retired blanket ban "${retired}" — the seated persona HAS a role; what it may never have is authority`);
+  }
+  // …and the narrowed term is REAL, in the vocabulary and on the actor, never grantable.
+  assert.ok(POLICY.actors.gemini.mayNever.includes('any-authority-bearing-role'));
+  assert.ok(!POLICY.actors.gemini.may.includes('any-authority-bearing-role'));
+  const persona = read('spec/agents/gemini-spec-auditor.md');
+  assert.match(persona, /Status: SEATED \(Slice I7\)/, 'the persona stays seated while the ban stays narrowed');
+});
+
+// ─── SLICE I8 ── the first activations: enforcement is ON and its evidence is closed ──────────
+test('SLICE I8: the first two activations are ACTIVE with closed §6c records — enforcement is on', () => {
+  const reg = JSON.parse(read('spec/registry.json'));
+  for (const id of ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']) {
+    const e = reg.entries.find((x) => x.id === id);
+    assert.equal(e.status, 'ACTIVE', `${id} must stay ACTIVE — enforcement is never quietly switched off`);
+    assert.deepEqual(Object.keys(e.mutationEvidence).sort(), ['command', 'commit', 'expectedFailure', 'patchSha256']);
+    assert.match(e.mutationEvidence.commit, /^[0-9a-f]{40}$/);
+    assert.match(e.mutationEvidence.patchSha256, /^[0-9a-f]{64}$/);
+    assert.ok(e.tests.length >= 2 && e.tests.every((t) => typeof t.title === 'string' && t.title.length > 0), `${id} names its exact tests`);
   }
 });

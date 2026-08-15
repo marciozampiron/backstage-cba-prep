@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BoundaryAllowsOnlyCdkBootstrapRoleAssumption",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-deploy-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-file-publishing-role-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-QUALIFIER_PLACEHOLDER-lookup-role-ACCOUNT_ID_PLACEHOLDER-us-east-1"
+      ]
+    }
+  ]
+}

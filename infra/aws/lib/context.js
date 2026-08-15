@@ -62,10 +62,72 @@ const DEPLOY_CONTEXT_KEYS = [
   'bedrockRoutedModelArns',
   'bedrockStandardInferenceProfileId',
   'corsAllowedOrigins',
+  'ghaDeployBoundaryArn',
   'githubOidcProviderArn',
   'githubRepo',
   'githubTrustSub',
+  'runtimeBoundaryArn',
 ];
+
+// THE CLOSED DEPLOY EFFECT (#70 Slice B1 review). `cdk deploy --all` deploys whatever the app
+// happens to contain — which today includes the account-global SecurityStack (OIDC provider,
+// GitHub roles) and the deferred AiOrchestrationStack, and tomorrow includes whatever stack
+// anyone adds. The manifest therefore names the EXACT stack set a release deploys, and the
+// entrypoint passes exactly that set with `--exclusively`. Every stack the app constructs must be
+// classified here — a discovery test refuses an unclassified stack, so a new stack can neither
+// ride into the deploy effect nor silently fall out of it without joining a list through review.
+// [SPEC-DEPLOY-015]
+const DEPLOYABLE_STACK_IDS = Object.freeze(['ApiStack', 'DataStack', 'IdentityStack', 'ObservabilityStack']);
+// Excluded each for a stated reason — not "not yet": SecurityStack is the account-global
+// foundation (OIDC provider + GitHub roles), deployed only by the human operator under the #66
+// scoped bootstrap; AiOrchestrationStack is a deferred placeholder with no reviewed deployment
+// decision behind it.
+// [SPEC-DEPLOY-015]
+const EXCLUDED_STACK_IDS = Object.freeze(['AiOrchestrationStack', 'SecurityStack']);
+
+// PER-ENVIRONMENT release bootstraps (#70 Slice B1 round 4). One qualifier — one toolkit stack,
+// one set of cdk-<qualifier>-* roles, one execution policy, one deploy-role boundary — PER TIER,
+// so dev authority reaches only dev resources and can never execute a pilot change. Reviewed
+// constants, never context: a configurable qualifier would let a deploy re-aim itself at a
+// differently-privileged bootstrap.
+const RELEASE_BOOTSTRAP_QUALIFIERS = Object.freeze({ dev: 'cbardev', pilot: 'cbarpil' });
+
+// The reviewed EXECUTION order for change sets — dependency order, not the alphabetical closed
+// set: Api consumes Identity + Data exports, Observability watches Api + Data. Same MEMBERS as
+// DEPLOYABLE_STACK_IDS (a test pins the set equality); different, deliberate sequence.
+const DEPLOYMENT_EXECUTION_ORDER = Object.freeze(['IdentityStack', 'DataStack', 'ApiStack', 'ObservabilityStack']);
+
+// THE REVIEWED PLAN GROUPS (#70 Slice B1 round 5). A change set for a stack that consumes
+// Fn::ImportValue exports cannot even be CREATED while the producer stacks are unexecuted — so a
+// fresh tier cannot prepare all four plans at once, and pretending otherwise would fail on the
+// first real deployment. The cloud gate therefore names WHICH group it authorizes, from this
+// closed list: the three dependency WAVES for a fresh tier (each wave planned, reviewed and
+// executed before the next can be planned), and the full set for steady state, where every
+// export already exists. A discovery test walks the REAL CDK dependency graph and refuses any
+// cross-stack edge that violates the wave order.
+// [SPEC-DEPLOY-004]
+const DEPLOYMENT_PLAN_GROUPS = Object.freeze([
+  Object.freeze(['IdentityStack', 'DataStack']),
+  Object.freeze(['ApiStack']),
+  Object.freeze(['ObservabilityStack']),
+  DEPLOYMENT_EXECUTION_ORDER,
+]);
+
+// One source for CloudFormation stack names: the app builds them from these suffixes, and the
+// deploy entrypoint reconstructs them to address change sets — a drifted copy would prepare a
+// plan for one stack and execute another's.
+const STACK_NAME_SUFFIXES = Object.freeze({
+  ApiStack: 'api',
+  DataStack: 'data',
+  IdentityStack: 'identity',
+  ObservabilityStack: 'observability',
+});
+
+function stackNameFor(environment, stackId) {
+  const suffix = STACK_NAME_SUFFIXES[stackId];
+  if (!suffix) throw new Error(`stack id "${stackId}" has no reviewed stack-name suffix`);
+  return `cba-study-coach-${environment}-${suffix}`;
+}
 
 // What `getContext` will read at all: the deploy contract plus the tier selector, nothing else.
 const READABLE_CONTEXT_KEYS = new Set([...DEPLOY_CONTEXT_KEYS, 'environment']);
@@ -169,4 +231,11 @@ module.exports = {
   DEFAULT_AUTH_URLS,
   defaultAuthDomainPrefix,
   DEPLOY_CONTEXT_KEYS,
+  DEPLOYABLE_STACK_IDS,
+  EXCLUDED_STACK_IDS,
+  RELEASE_BOOTSTRAP_QUALIFIERS,
+  DEPLOYMENT_EXECUTION_ORDER,
+  DEPLOYMENT_PLAN_GROUPS,
+  STACK_NAME_SUFFIXES,
+  stackNameFor,
 };

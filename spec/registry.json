@@ -1,0 +1,1444 @@
+{
+  "$comment": [
+    "Machine-readable SPEC-ID registry (spec/spec-anchored-development.md §6a).",
+    "The human-readable tables in the spec and this file must agree; the linter enforces it.",
+    "No tool, script, agent or CI job writes here (SPEC-GOV-001): changes are reviewed commits."
+  ],
+  "version": 1,
+  "entries": [
+    {
+      "id": "SPEC-GOV-001",
+      "status": "PROPOSED",
+      "title": "No tool, script, agent or CI job may write to spec/. A",
+      "normativeText": "No tool, script, agent or CI job may write to `spec/`. A conformance divergence is reported as a finding and never resolved by editing the spec.",
+      "normativeSha256": "0c058b0d62f36bebda5457ac060b1036bf2161166a551a7ade3ce6b19fc07902",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§3"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-002",
+      "status": "PROPOSED",
+      "title": "Every SPEC-ID carries exactly one of PROPOSED, ACTIVE, RETIRED",
+      "normativeText": "Every SPEC-ID carries exactly one of PROPOSED, ACTIVE, RETIRED. CI enforces conformance for ACTIVE ids only.",
+      "normativeSha256": "3356106a1106c5cfc0ade12a7317f09e352f78aa3feea8d671a11510bed766da",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§4"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-003",
+      "status": "PROPOSED",
+      "title": "A PROPOSED id becomes ACTIVE only in a commit whose tree",
+      "normativeText": "A PROPOSED id becomes ACTIVE only in a commit whose tree already satisfies its conformance predicates; the linter refuses an activation whose predicates do not hold in that same tree.",
+      "normativeSha256": "4ffbbed9eb280045b4e55b62f1db5efdf57587d121e5539a1d9ac22f012499a7",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§4"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-004",
+      "status": "PROPOSED",
+      "title": "An ACTIVE id's normative text is immutable: the linter compares",
+      "normativeText": "An ACTIVE id's normative text is immutable: the linter compares it to the text at its activation commit in the integration branch's history and fails on any difference.",
+      "normativeSha256": "d949e124265ccdd65d75012dadef8e9b385caa0858a82357164704aaa836f104",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§4"
+        },
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§6b"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-005",
+      "status": "PROPOSED",
+      "title": "An ACTIVE id is retired only by an activation commit that names",
+      "normativeText": "An ACTIVE id is retired only by an activation commit that names its successor, and the successor names it back. A SPEC-ID is never reused and never deleted.",
+      "normativeSha256": "808fd248d1a739f292cec2046efeb811ad24c200e67699306a89d5f9379c1bfa",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§4"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-006",
+      "status": "PROPOSED",
+      "title": "Every ACTIVE id names at least one code anchor, at least one",
+      "normativeText": "Every ACTIVE id names at least one code anchor, at least one test that fails when the invariant breaks, and every `[SPEC-…]` annotation in the tree resolves to a registered id.",
+      "normativeSha256": "f27852d2b8da1c97cfc61f1a09281d96be71d6ef37c9c77c2a305dee8d7e80f4",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§5"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-007",
+      "status": "PROPOSED",
+      "title": "One SPEC-ID binds exactly one refusable behavior: if two",
+      "normativeText": "One SPEC-ID binds exactly one refusable behavior: if two distinct mutations require two different sentences to explain the break, they are two ids.",
+      "normativeSha256": "7182fc4317364eb4af874969c0c972945d3317535f67e74b005c6c1f71d6fdc8",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§5"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-008",
+      "status": "PROPOSED",
+      "title": "Every digest this system publishes is computed over the",
+      "normativeText": "Every digest this system publishes is computed over the canonical framed serialization of §6b, never over a concatenation.",
+      "normativeSha256": "03a91b3af23013737c07d2a4aeced432c2bd563a3cdd35ead04f1f32649f96d3",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§6b"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-GOV-009",
+      "status": "PROPOSED",
+      "title": "Mutation evidence is a closed record of commit, patch digest",
+      "normativeText": "Mutation evidence is a closed record of commit, patch digest, command and expected failure; an activation without it is refused.",
+      "normativeSha256": "5b0c2a053e217a30539a4ad411b5c45532c4fc2c9cafe995476e3149613db87f",
+      "anchors": [
+        {
+          "file": "spec/spec-anchored-development.md",
+          "symbol": "§6c"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/spec-anchored-development.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-AUDIT-001",
+      "status": "PROPOSED",
+      "title": "The audit stages run in order — traceability linter",
+      "normativeText": "The audit stages run in order — traceability linter, conformance checks, semantic interpretation, independent review, human decision — and no stage substitutes another.",
+      "normativeSha256": "f05484e84ceb4be8ab81bfff04a07d242c10be424b5d68f5345548e8e0fb7876",
+      "anchors": [
+        {
+          "file": "docs/runbooks/spec-conformance-audit.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/spec-conformance-audit.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-AUDIT-002",
+      "status": "PROPOSED",
+      "title": "The auditor persona approves nothing, accepts no risk, performs",
+      "normativeText": "The auditor persona approves nothing, accepts no risk, performs no effect, edits nothing, and holds no protocol seat before a reviewed protocol amendment.",
+      "normativeSha256": "b686aab9f5a4fe41e687a0dd156d1e2a31358bcbcd81b6bc6ed385bdaba50615",
+      "anchors": [
+        {
+          "file": "spec/agents/gemini-spec-auditor.md",
+          "symbol": "§2"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/agents/gemini-spec-auditor.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-AUDIT-003",
+      "status": "PROPOSED",
+      "title": "Every audit report names its audited commit, its reviewed base",
+      "normativeText": "Every audit report names its audited commit, its reviewed base, and the digests of the diff, the spec set, the mechanical reports, the input bundle and the persona.",
+      "normativeSha256": "3af4ea6c0bd10672412575bcc4980b2fb26975f9caabb7d00d391d628d485562",
+      "anchors": [
+        {
+          "file": "spec/agents/gemini-spec-auditor.md",
+          "symbol": "§3"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/agents/gemini-spec-auditor.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-AUDIT-004",
+      "status": "PROPOSED",
+      "title": "Every audit run pins its model, profile, timeout, token ceiling",
+      "normativeText": "Every audit run pins its model, profile, timeout, token ceiling and cost ceiling; a run that hits a ceiling reports INCOMPLETE, which is never read as PASS.",
+      "normativeSha256": "6641c2a61938831bc06e5e73b9b48a18a43e8f86e22d6f0c834994df9e627ad4",
+      "anchors": [
+        {
+          "file": "spec/agents/gemini-spec-auditor.md",
+          "symbol": "§4"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/agents/gemini-spec-auditor.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-AUDIT-005",
+      "status": "PROPOSED",
+      "title": "Each paid audit run happens under its own spend authorization",
+      "normativeText": "Each paid audit run happens under its own spend authorization, issued by Zamp and covering that run only.",
+      "normativeSha256": "d37a1d56371e34ea99b5628310f7194ffdea3bdbea74b95de7c77d53a66eb003",
+      "anchors": [
+        {
+          "file": "spec/agents/gemini-spec-auditor.md",
+          "symbol": "§4"
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "spec/agents/gemini-spec-auditor.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-001",
+      "status": "PROPOSED",
+      "title": "A runbook confers no authority: it documents how an operation",
+      "normativeText": "A runbook confers no authority: it documents how an operation is performed and never whether it may be.",
+      "normativeSha256": "a5d2ff691180f4cb56b76741d8ad45e15813e3b929eda4b6d55235e3a899e51a",
+      "anchors": [
+        {
+          "file": "docs/runbooks/README.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/README.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-002",
+      "status": "PROPOSED",
+      "title": "A document that mutates cloud state declares cloudMutation",
+      "normativeText": "A document that mutates cloud state declares `cloudMutation: true` and depends on a cloud authorization; preparing a CloudFormation change set is cloud mutation.",
+      "normativeSha256": "11c015202f4e08411515125faa0a3b75d89bf96db3e482af137f9a9f26cf3230",
+      "anchors": [
+        {
+          "file": "docs/runbooks/README.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/README.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-003",
+      "status": "PROPOSED",
+      "title": "Runbook frontmatter carries exactly the closed key set",
+      "normativeText": "Runbook frontmatter carries exactly the closed key set, `humanApprover` is always Zamp, and `cloudMutation: true` implies `gateRequired: true`.",
+      "normativeSha256": "979ed0ae442045650e1f5f8504e58441925c0f7c51897a0e17eb6db32eec35dd",
+      "anchors": [
+        {
+          "file": "docs/runbooks/README.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/README.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-004",
+      "status": "PROPOSED",
+      "title": "A kind: runbook document covers exactly one operation with one",
+      "normativeText": "A `kind: runbook` document covers exactly one operation with one decision; a `kind: index` document links runbooks and holds no commands.",
+      "normativeSha256": "ed2efe165745bc3f0a15317fc8f66f2b6409298fc3ecc877d3ee6b1874c35f87",
+      "anchors": [
+        {
+          "file": "docs/runbooks/README.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/README.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-005",
+      "status": "PROPOSED",
+      "title": "Every command in a runbook names the actor that performs it",
+      "normativeText": "Every command in a runbook names the actor that performs it, and that actor is permitted to perform it by `spec/authority-policy.json`.",
+      "normativeSha256": "7556f3daaaccc919b85f3467bc72b36215630e504d821f0e5528bc6e1aac6c7c",
+      "anchors": [
+        {
+          "file": "docs/runbooks/README.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/README.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-006",
+      "status": "PROPOSED",
+      "title": "A cloud authorization is authored only after a read-only",
+      "normativeText": "A cloud authorization is authored only after a read-only binding operation has produced the exact manifest and assembly digest it must name.",
+      "normativeSha256": "c4233d14830df01ddcfd55312bb71b83edf5cd45893166cb0e2d34b0bfbf50ec",
+      "anchors": [
+        {
+          "file": "docs/runbooks/aws-dev-release-bind.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/aws-dev-release-bind.md"
+      ],
+      "mutationEvidence": "none — enforcement tooling does not exist yet (§7a)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-007",
+      "status": "PROPOSED",
+      "title": "The evidence of a cloud effect is a complete artifact bound to",
+      "normativeText": "The evidence of a cloud effect is a complete artifact bound to run id, decisionId, release SHA, stack group and plan digest; a truncated excerpt is not evidence.",
+      "normativeSha256": "d967b3e410d1744c72c76485d9eaa6e2b04bb217d2e13d5ba1eba46215bdac04",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "--artifact-out"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        },
+        {
+          "file": "docs/runbooks/aws-dev-release-plan.md",
+          "symbol": null
+        },
+        {
+          "file": "docs/runbooks/aws-dev-release-deploy.md",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml",
+        "docs/runbooks/aws-dev-release-deploy.md",
+        "docs/runbooks/aws-dev-release-plan.md",
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed in I3/I3-3: closed record, correlation proven before anything runs, honest partial on every halt, no account-bearing ARN; the record is bounded in UTF-8 BYTES to the NARROWEST hop — 100k bytes, with margin under the single Linux envp entry (MAX_ARG_STRLEN 128 KiB) that injects it into the materializer; every wider hop (the ~1MB job-output store) is satisfied a fortiori — and a plan whose record cannot cross REFUSES (PLAN_RENDERING_TOO_LARGE): evidence is reshaped by named code, never truncated, transport loss is a red run, and the materializer is proven by EXECUTION at near-cap size, byte for byte",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-008",
+      "status": "PROPOSED",
+      "title": "Change sets prepared for a plan that will not execute are",
+      "normativeText": "Change sets prepared for a plan that will not execute are deleted under their own authorization; they are never left to expire.",
+      "normativeSha256": "21b94372583a0bc6907fa3b254487e9937d60f4fb9760b130a3ce8089ee97db7",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "abandon"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        },
+        {
+          "file": "docs/runbooks/aws-dev-release-abandon.md",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml",
+        "docs/runbooks/aws-dev-release-abandon.md",
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "`infra/aws/bin/deploy-release.js` (abandon), `.github/workflows/release-pilot.yml`, `docs/runbooks/aws-dev-release-abandon.md`; round I5-2: a PARTIAL abandon resumes under a NEW decision — the continuation folds the deleted prefix into the same plan-digest root, refuses recreated or foreign sets, and the success → failure → new decision → safe remainder path is proven end to end; round I5-3: absences must form a PREFIX (ABANDON_NOT_A_PREFIX otherwise), every continuation artifact carries the ORIGINAL root and the FULL ordered digest map so a second interruption resumes from the newest artifact alone — proven fail → fail → third decision → success — and every halt after progress reports the gone prefix; round I5-4: an ambiguous delete outcome reconciles by one bounded read — provably absent records the deletion, provably present claims none, inconclusive halts ABANDON_STATE_UNKNOWN with the digest kept on the map — proven for timeout-after-accepted-deletion (chain still closes) and timeout-then-inconclusive (no false abandoned); round I5-5: reconciliation is bounded RE-OBSERVATION — a status-0 describe in a deleting state never claims rejection (proven: sustained DELETE_IN_PROGRESS → unknown at the five-attempt bound) and an early present-looking read never freezes the verdict (proven: present-then-absent → abandoned); round I5-6: presence requires the WHOLE window standing under a closed-enum allowlist — proven for the exact mixed sequence from review (deleting/timeout/malformed/deleting/calm-final, refusing unknown) and for an out-of-enum status (refusing unknown), both with no false abandoned",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-001",
+      "status": "PROPOSED",
+      "title": "The deploy child receives exactly the stack ids the manifest",
+      "normativeText": "The deploy child receives exactly the stack ids the manifest names, passed with `--exclusively`; `--all` never appears in a child's arguments.",
+      "normativeSha256": "49723b1a7248064e09b6a352ae12b04e9cd4fb423b24d6256506b975aa273999",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-002",
+      "status": "RETIRED",
+      "title": "The cloud authorization value satisfies a closed ten-key schema",
+      "normativeText": "The cloud authorization value satisfies a closed ten-key schema with `issue` pinned to 70, `mode` in {plan_only, deploy} and a `decisionId` matching its documented shape; any other shape refuses.",
+      "normativeSha256": "f1976bdd5095aa52eb4343570279455fe2c7aa884f249b2ebedc3a99b8b71fb6",
+      "anchors": [],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": "SPEC-DEPLOY-019"
+    },
+    {
+      "id": "SPEC-DEPLOY-003",
+      "status": "PROPOSED",
+      "title": "The plan is a set of named CloudFormation change sets",
+      "normativeText": "The plan is a set of named CloudFormation change sets: `plan_only` prepares them and `deploy` executes exactly those, addressed by their immutable change-set ids.",
+      "normativeSha256": "97766e30dcd72e903869d929de940dc88602db5ea0e154167b8f4d1f4261ca88",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "canonicalChangeSet"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-004",
+      "status": "PROPOSED",
+      "title": "A deploy executes only a stack group the reviewed plan-group",
+      "normativeText": "A deploy executes only a stack group the reviewed plan-group list contains, and every cross-stack import in the synthesized templates resolves to a producer in an earlier group.",
+      "normativeSha256": "baf502ac9f75b6a4332bb196a88a32800e41cf3cdc7398d6e5a08e15c7be96a8",
+      "anchors": [
+        {
+          "file": "infra/aws/lib/context.js",
+          "symbol": "DEPLOYMENT_PLAN_GROUPS"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/release-bootstrap.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/lib/context.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-005",
+      "status": "PROPOSED",
+      "title": "Every DescribeChangeSet response is validated against the",
+      "normativeText": "Every DescribeChangeSet response is validated against the reviewed schema — key names, types, documented enums and documented nullability — and any violation refuses the plan before a digest exists.",
+      "normativeSha256": "aaebd6e5e88aafadb3d4015540291e17135de2d5d140a1609a6dc08447348d37",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "validateChangeSet"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-006",
+      "status": "PROPOSED",
+      "title": "In the plan rendering, no value observed in a change set is",
+      "normativeText": "In the plan rendering, no value observed in a change set is published either verbatim or as any derivation of itself; each is replaced by a constant class label.",
+      "normativeSha256": "77ee68fa2546c777bd86a1343d55d26145c6785472349daa60fc041c00c43a18",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "REDACT"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "renderPlan"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-007",
+      "status": "PROPOSED",
+      "title": "Child stdout and stderr are never reproduced; a failure records",
+      "normativeText": "Child stdout and stderr are never reproduced; a failure records the exit code, per-stream byte counts and one digest over the framed streams. This digest is the named exception to SPEC-DEPLOY-006: it covers whole streams that are never published, not a value in the rendering, so it offers no per-value oracle.",
+      "normativeSha256": "ff1df4420ef4a7472183efa5f95fbed9429835c88a25dda5331c6f90ffb8f0f3",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "childEvidence"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-008",
+      "status": "PROPOSED",
+      "title": "The target account is resolved again immediately before the",
+      "normativeText": "The target account is resolved again immediately before the effect and, if it differs from the account the verification bound, the run refuses.",
+      "normativeSha256": "53ac54b416592e574d5c13fc315ab43908384d43346571b31ea5e55842cf93f0",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-009",
+      "status": "PROPOSED",
+      "title": "An authorization instant is accepted only as strict RFC3339 UTC",
+      "normativeText": "An authorization instant is accepted only as strict RFC3339 UTC that round-trips through the calendar; a normalized or offset instant refuses.",
+      "normativeSha256": "b2fce656ce528b77f97a842ff6ac546bd4090bac4d39dc71e20a65b94ff2a6d2",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "strictUtcInstant"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-010",
+      "status": "PROPOSED",
+      "title": "An authorization is valid only while approvedAt ≤ now <",
+      "normativeText": "An authorization is valid only while `approvedAt` ≤ now < `expiresAt`, with `expiresAt − approvedAt` at most one hour.",
+      "normativeSha256": "be366a8862983038c421d44a55b8ab5cb625cabc97cfb1d9d6101988c6f9c675",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "CLOUD_GATE_MAX_TTL_MS"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-011",
+      "status": "PROPOSED",
+      "title": "The authorized stack group must equal one of the reviewed plan",
+      "normativeText": "The authorized stack group must equal one of the reviewed plan groups exactly, in content and order.",
+      "normativeSha256": "085ca6a32588d0900d167b63772141f80c7fdfcdcc2e0b0306f56f27e57a61d9",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-012",
+      "status": "PROPOSED",
+      "title": "Each service response page is validated immediately after",
+      "normativeText": "Each service response page is validated immediately after parsing and before it is stored, merged or read for a cursor; pagination is fully consumed or the plan refuses.",
+      "normativeSha256": "4bc66b4f27c4c28cbd52051d5e13eea2dc2d4dd08d8fa73354dc12a7cb5458a6",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "describePlannedChangeSet"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-013",
+      "status": "PROPOSED",
+      "title": "Each ARN-typed field is validated against its position's",
+      "normativeText": "Each ARN-typed field is validated against its position's service and resource shape with all mandatory components present; only `CausingEntity` accepts a non-ARN reference.",
+      "normativeSha256": "9c45c06f517c6a9c185d360e60f47676edcd9f4fe44cd84a49b078e60d46755b",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-014",
+      "status": "PROPOSED",
+      "title": "Identities a reviewed decision produced — the approved host",
+      "normativeText": "Identities a reviewed decision produced — the approved host families, IAM principal paths and project-chosen resource names — render verbatim; AWS-generated identifiers never do.",
+      "normativeSha256": "71bbf816832f7ab8dec450e624a83730b77d5e6ec8a60000ce308a2d3b53a4ce",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "renderHost"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "renderArnResource"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-015",
+      "status": "PROPOSED",
+      "title": "Every stack the app constructs appears in exactly one of the",
+      "normativeText": "Every stack the app constructs appears in exactly one of the deployable or excluded lists, and an unclassified stack fails synthesis-time discovery.",
+      "normativeSha256": "17a7f385ce7924f4c15e0240bfdd3b7d9e0f27084d3c2d920e86277a3b01b0f8",
+      "anchors": [
+        {
+          "file": "infra/aws/lib/context.js",
+          "symbol": "DEPLOYABLE_STACK_IDS"
+        },
+        {
+          "file": "infra/aws/lib/context.js",
+          "symbol": "EXCLUDED_STACK_IDS"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/app.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/lib/context.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-016",
+      "status": "ACTIVE",
+      "title": "A plan recomputed at execution time that differs from the",
+      "normativeText": "A plan recomputed at execution time that differs from the digest the authorization names refuses as `PLAN_CHANGED`, and no change set executes.",
+      "normativeSha256": "866082c01474918992dbe151d78c662e46b7b040b7b9aa99b2e44f959a8ea08d",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "ABANDON: a drifted plan refuses as PLAN_CHANGED and NOTHING is deleted"
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": {
+        "commit": "cee1ac66de42bbf1bed5750142ddfdae8a3abebf",
+        "patchSha256": "a1590bfad03b73ef0dfbf87fe2c0900cc48d6180aea473df2a631614ed843274",
+        "command": "node --test --test-name-pattern \"drift refuses as PLAN_CHANGED\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: \"ROUND-4 REPRO: the deploy executes ONLY the change sets the gate names — drift refuses as PLAN_CHANGED\" (the deploy-path PLAN_CHANGED refusal removed; §6b diff headSha 001ae8a14c0b18e712395711d705d08bb9a1931d)"
+      },
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-017",
+      "status": "PROPOSED",
+      "title": "The authorization window is re-checked as the last operation",
+      "normativeText": "The authorization window is re-checked as the last operation before EACH change-set execution; a window that lapses mid-sequence stops the remaining executions.",
+      "normativeSha256": "3d81d16e4c9797a8faeb36fb4f9d80727b54a54031caa796dc567b86b21aa45d",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-019",
+      "status": "PROPOSED",
+      "title": "The cloud authorization value has EXACTLY these ten keys —",
+      "normativeText": "The cloud authorization value has EXACTLY these eleven keys — `issue`, `mode`, `decisionId`, `releaseSha`, `environment`, `manifestDigest`, `stacks`, `planDigest`, `absentEntryDigests`, `approvedAt`, `expiresAt` — no key absent and none unknown, with the per-key and per-mode constraints of §8a. Any other shape, and any effect outside the value's `mode`, refuses.",
+      "normativeSha256": "ffe37c51cb8acd684b6b895ad38685f7f0013620a8c670e3a51c0f5e153fe92e",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "checkCloudGate"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "CLOUD_GATE_KEYS"
+        },
+        {
+          "file": "infra/aws/lib/deploy-preflight.js",
+          "symbol": "manifestBundleDigest"
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        },
+        {
+          "file": "test/digest-agreement.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js",
+        "infra/aws/lib/deploy-preflight.js"
+      ],
+      "mutationEvidence": "code + tests reviewed in I4: manifestDigest recomputed from the verified manifest (never trusted), the retired key refused as unknown, abandon-mode gates schema-valid but refused ABANDON_NOT_IMPLEMENTED before any change-set API call or mutation (identity reads precede the gate check by design) until the abandon lane lands",
+      "supersedes": [
+        "SPEC-DEPLOY-002",
+        "SPEC-DEPLOY-020"
+      ],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-020",
+      "status": "RETIRED",
+      "title": "The cloud authorization schema carries an abandon mode, and an",
+      "normativeText": "The cloud authorization schema carries an `abandon` mode, and an abandon run executes no change set and prepares none.",
+      "normativeSha256": "0b8522f825e6fc0060d236781e622cea7949efa6be70346c32fb65622ea50411",
+      "anchors": [],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [],
+      "mutationEvidence": "none — absorbed into SPEC-DEPLOY-019 before activation (§4)",
+      "supersedes": [],
+      "supersededBy": "SPEC-DEPLOY-019"
+    },
+    {
+      "id": "SPEC-DEPLOY-022",
+      "status": "PROPOSED",
+      "title": "The stack-record cleanup decision is a closed nine-key value",
+      "normativeText": "The stack-record cleanup decision is a closed nine-key value (§8b): each key holds its exact grammar, `stackId` is a positionally validated CloudFormation stack ARN whose embedded region, account and name EQUAL the record's `region`, `account` and `stackName`, and the decision is valid only while `observedAt <= now < observedAt + 15 minutes`, a future instant refusing. The performer re-observes the same identity, status and window immediately before deleting. The activation commit must contain the instance parser and its adversarial tests, and that parser must re-check — immediately before the effect — that the acceptance is unexpired at that moment, that the §6b bundle digest it recomputes over the presented cleanup value equals `coversCleanupAuthorizationSha256`, and that the value's `decisionId` equals `coversCleanupDecisionId`. The residual TOCTOU that no re-observation can close leaves the effect without an executable procedure until Zamp records acceptance as the closed `riskAcceptance` record — a boolean is not a decision, and a free-text record is not an enforceable one.",
+      "normativeSha256": "716d62fc2aa6307d07c5777290f76cd0262d9d17078b1d43c762069bc8765b7f",
+      "anchors": [
+        {
+          "file": "spec/authority-policy.json",
+          "symbol": "stack-record-authorization"
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/governance-model.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "spec/authority-policy.json"
+      ],
+      "mutationEvidence": "policy data + tests reviewed in this commit; instance parser awaits activation; no procedure exists",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-021",
+      "status": "ACTIVE",
+      "title": "Deleting the empty stack record a CREATE change set leaves",
+      "normativeText": "Deleting the empty stack record a CREATE change set leaves behind is an effect distinct from deleting a change set, authorized by its own out-of-band instrument (§8b) that no lane can read, and no automated lane performs it: `DeleteStack` accepts no expected-status precondition, so an observed `REVIEW_IN_PROGRESS` cannot constrain the delete that follows it, and the release concurrency lock binds only this repository's lanes. A lane that would delete a stack record refuses; the condition is reported and resolved by a separate human decision.",
+      "normativeSha256": "3c7ed19f287c502ae3936b05c592507270c84ba16b5cd81d8c842708730260ff",
+      "anchors": [
+        {
+          "file": "spec/authority-policy.json",
+          "symbol": "delete-review-in-progress-stack-record"
+        },
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": "abandon"
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/governance-model.test.js",
+          "title": "the authority policy states the invariants as data, not prose"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "ABANDON: deletes exactly the declined change sets, in order, and never touches a stack"
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "spec/authority-policy.json",
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": {
+        "commit": "cee1ac66de42bbf1bed5750142ddfdae8a3abebf",
+        "patchSha256": "988134a9e6d8b2ae7a1c843b5387effcc867c4ba7b484e22527e586e34345260",
+        "command": "node --test --test-name-pattern \"never touches a stack\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: \"ABANDON: deletes exactly the declined change sets, in order, and never touches a stack\" (a DeleteStack call inserted into the abandon report loop; §6b diff headSha 9b4f57bf83ec719cc2c27cbd63316d6ec96862e0)"
+      },
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-005",
+      "status": "PROPOSED",
+      "title": "A bind_only dispatch terminates after the preflight and is",
+      "normativeText": "A `bind_only` dispatch terminates after the preflight and is structurally unable to enter a stage that prepares or executes change sets, whatever the Environment holds at any moment of the run.",
+      "normativeSha256": "c9a75f26d0dc78c9114f6b6ab8ec6832d8f1d3a856e1b7ec96dfe8a93aa60c5c",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": "bind-stage"
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed in I2: mode-gated on the immutable dispatch input, no id-token, no OIDC consumer, DAG-terminal",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-006",
+      "status": "PROPOSED",
+      "title": "Every dispatch carries a caller-generated correlation id",
+      "normativeText": "Every dispatch carries a caller-generated correlation id matching exactly `^cba-70-[0-9a-f]{32}$`; a dispatch whose id does not match is refused in the preflight, before any credentialed stage. The run's NAME is exactly `cba-release <mode> <correlationId>` and nothing else, so a run is selected by EQUALITY on its complete name — never by substring — and is identifiable from run metadata alone, before any artifact exists. The same id appears inside the structured uploaded artifact, together with the release SHA the run acted on, which is what a reviewer compares against the request; a run's `headSha` is the dispatch ref's tip and is never that comparison.",
+      "normativeSha256": "36125f2c1fbdc89338b56f1db565fc65f8f75abc2f9ea4f79a23597424b0625b",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": "run-name"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": "correlation_id"
+        },
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": "bind-stage"
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed in I2: closed-grammar refusal executed against the real script; run name and binding artifact pinned",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-007",
+      "status": "PROPOSED",
+      "title": "Run resolution is bounded and unambiguous: the workflow is",
+      "normativeText": "Run resolution is bounded and unambiguous: the workflow is pinned by FILE identity inside the helper (`release-pilot.yml` — a display name is not an identity, and no caller may supply another); the query pins `--branch main` and `--event workflow_dispatch`, matches the complete run name by EQUALITY, and is EXHAUSTIVE OR STOPS — a page that returns as many rows as requested refuses as truncated rather than proving uniqueness from the newest slice. It polls at most ten times with thirty seconds between attempts and no wait after the last, stops on zero matches after the bound or more than one at ANY query, and every external call carries a reviewed wall-clock deadline with a named timeout stop — ten attempts do not bound a stalled call or an endlessly queued run. After the run reaches a terminal conclusion, the SAME query must re-observe exactly the same single run id immediately before the artifact is accepted.",
+      "normativeSha256": "d5031593aa62c18aa734716f587a9624452e2aa26fec7ef9a49f14672a8d084e",
+      "anchors": [
+        {
+          "file": "bin/resolve-run.mjs",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/resolve-run.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "bin/resolve-run.mjs"
+      ],
+      "mutationEvidence": "helper + simulated-`gh` tests reviewed in this commit; the run name itself awaits the workflow",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-RUN-009",
+      "status": "PROPOSED",
+      "title": "Evidence is accepted only from a run that reached a terminal",
+      "normativeText": "Evidence is accepted only from a run that reached a terminal conclusion, identified by the correlation id it published in run metadata, whose artifact repeats that correlation id and names the release SHA the request dispatched, and whose provenance (run id, conclusion) is verified. The run's `headSha` is never used to identify the release.",
+      "normativeSha256": "a3f9d635f516d7eafff341d0315d2d763e38b20e82706c7cc1aa428dc5ca914e",
+      "anchors": [
+        {
+          "file": "docs/runbooks/aws-dev-release-bind.md",
+          "symbol": null
+        },
+        {
+          "file": "docs/runbooks/aws-dev-release-plan.md",
+          "symbol": null
+        },
+        {
+          "file": "docs/runbooks/aws-dev-release-deploy.md",
+          "symbol": null
+        }
+      ],
+      "tests": [],
+      "checks": [],
+      "governedPaths": [
+        "docs/runbooks/aws-dev-release-bind.md",
+        "docs/runbooks/aws-dev-release-deploy.md",
+        "docs/runbooks/aws-dev-release-plan.md"
+      ],
+      "mutationEvidence": "none — awaiting SPEC-LANE-006",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-DEPLOY-018",
+      "status": "PROPOSED",
+      "title": "When a sequence halts, the output names exactly which change",
+      "normativeText": "When a sequence halts, the output names exactly which change sets executed and states that the remaining ones did not.",
+      "normativeSha256": "d0d46f83e0cac28ea20eb68c56a62fe522e50f95d5b099d57f762bdc0c75463e",
+      "anchors": [
+        {
+          "file": "infra/aws/bin/deploy-release.js",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bin/deploy-release.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-001",
+      "status": "PROPOSED",
+      "title": "In every credentialed job, synthesis completes before the",
+      "normativeText": "In every credentialed job, synthesis completes before the pinned OIDC consumer step, and after that step ONLY the reviewed entrypoints and the evidence-output reader execute — no action step and no package-manager command, ever, because `id-token: write` is job-scoped and no scrub can remove the ability to mint a fresh token. Evidence leaves the lane exclusively from a job that never holds `id-token`.",
+      "normativeSha256": "a40b9a7d78f84f19be7a1f1d5a8ca4cc3893b7ee3a87d6075a8b5d4428f1a9c3",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven (I3-2 replaced the short-lived scrub clause with the job boundary after review showed env scrubbing cannot close OIDC authority)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-002",
+      "status": "PROPOSED",
+      "title": "The lane's concurrency group is the literal per-environment",
+      "normativeText": "The lane's concurrency group is the literal per-environment string with `cancel-in-progress: false`; a group derived from an input refuses.",
+      "normativeSha256": "db9ba7d4fbf2fe98c43bb1b13032b879d44d06a1b80006f6d67e25cb94307f01",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-003",
+      "status": "PROPOSED",
+      "title": "Every job declares timeout-minutes equal to its reviewed",
+      "normativeText": "Every job declares `timeout-minutes` equal to its reviewed bound.",
+      "normativeSha256": "3d2b57b0ca5ec10c94bad5fbbed899b5231e6e997d0771c4d24f69064e211bc3",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-LANE-004",
+      "status": "PROPOSED",
+      "title": "The dispatch input mode offers only dev_only, so the pilot",
+      "normativeText": "The dispatch input `mode` offers only the reviewed non-pilot set (`bind_only`, `dev_only`, `abandon`), so the pilot jobs' success expressions are unreachable.",
+      "normativeSha256": "a9ebb92064ce0c232665ad27a77321f6177e5378fb89af74e3afc5ce86b31ea5",
+      "anchors": [
+        {
+          "file": ".github/workflows/release-pilot.yml",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "test/release-pilot-workflow.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        ".github/workflows/release-pilot.yml"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven (text widened in I2 and I5 while PROPOSED — §4 permits it)",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-IAM-001",
+      "status": "PROPOSED",
+      "title": "Each tier's deploy role may assume only its own release",
+      "normativeText": "Each tier's deploy role may assume only its own release bootstrap's roles; no tier's role can reach another tier's bootstrap or the foundation bootstrap.",
+      "normativeSha256": "055324934700efbf27afdbca6e115e7fa06b31eb39cf0f458741023139d69880",
+      "anchors": [
+        {
+          "file": "infra/aws/lib/security-stack.js",
+          "symbol": null
+        },
+        {
+          "file": "infra/aws/bootstrap/policies/",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/security-stack.test.js",
+          "title": null
+        },
+        {
+          "file": "infra/aws/test/release-bootstrap.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bootstrap/policies/",
+        "infra/aws/lib/security-stack.js"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-IAM-002",
+      "status": "PROPOSED",
+      "title": "Where AWS generates the resource identifier, the release",
+      "normativeText": "Where AWS generates the resource identifier, the release execution policy conditions the action on the project and environment tags — request tags on creation, resource tags on lifecycle.",
+      "normativeSha256": "17da4dc0c0a04512fdfb3654244f55cf0e5822fac3aab421e4d13ed78418a181",
+      "anchors": [
+        {
+          "file": "infra/aws/bootstrap/policies/cfn-exec-release.template.json",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/release-bootstrap.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-IAM-003",
+      "status": "PROPOSED",
+      "title": "Removing or replacing the Project or Environment tag is",
+      "normativeText": "Removing or replacing the `Project` or `Environment` tag is explicitly denied on every tag-scoped family.",
+      "normativeSha256": "2a3d28d18298e38bb4210b1e2636ff608c6b294d3168ebd9a4d781aad25f1f8c",
+      "anchors": [
+        {
+          "file": "infra/aws/bootstrap/policies/cfn-exec-release.template.json",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/release-bootstrap.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    },
+    {
+      "id": "SPEC-IAM-004",
+      "status": "PROPOSED",
+      "title": "Every Resource: \"*\" in the release execution policy is its own",
+      "normativeText": "Every `Resource: \"*\"` in the release execution policy is its own named statement whose action set is pinned, and no wildcard action appears outside an explicit Deny.",
+      "normativeSha256": "dd8b0ee056b0a68068ba152826185daf11ab9a413497569aff99c179efcd8b29",
+      "anchors": [
+        {
+          "file": "infra/aws/bootstrap/policies/cfn-exec-release.template.json",
+          "symbol": null
+        }
+      ],
+      "tests": [
+        {
+          "file": "infra/aws/test/release-bootstrap.test.js",
+          "title": null
+        }
+      ],
+      "checks": [],
+      "governedPaths": [
+        "infra/aws/bootstrap/policies/cfn-exec-release.template.json"
+      ],
+      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "supersedes": [],
+      "supersededBy": null
+    }
+  ]
+}

@@ -2,6 +2,441 @@
 
 Append meaningful coordination changes here. Newest entries should go at the top.
 
+## 2026-08-09 — Claude — #70 Slice I1 APPROVED (spec system core); Slice I2 opens (lane, local)
+
+- Codex `REVIEW_APPROVED`, zero findings, target `d0c9bf60b89f7541905b39091284bcd7e51f0e69`
+  (I1 rounds 1-5 all closed fix-forward). Slice I1 concluded: registry (56 ids), traceability
+  linter, conformance checker, historical laws, per-child execution boundaries, CI wiring.
+- 0 ACTIVE remains intentional; activations await their own commits.
+- Next: Slice I2 — the lane's functional prerequisites (SPEC-LANE-005/006, SPEC-RUN-006):
+  correlation_id input, canonical run-name, bind_only path, structured binding artifact.
+  Local only; nothing published; no cloud effect.
+
+## 2026-08-07 — Claude — #70 Spec-Anchored Design APPROVED; implementation phase opens, local only
+
+- Codex `REVIEW_APPROVED`, zero findings, target `648748aadf5a9a5101524337f9a09379d6807ca7`
+  (design rounds 1-15 all closed fix-forward).
+- Zamp accepted the design and authorized the implementation phase, LOCAL ONLY
+  (`.agent-handoff/decisions/70-spec-anchored-design-accepted.md`).
+- No publication, cloud effect, secret or paid call authorized; every SPEC-ID stays PROPOSED;
+  TOCTOU riskAcceptance stays null.
+- Next: Slice I1 — `spec/registry.json` + closed-schema validator + `spec:lint` + `spec:conform`,
+  wired into the root test battery.
+
+## 2026-08-07 — Claude — #70 Slice B1 round 15: pages validated before transformation, ARNs positional
+
+- Codex's round-15 review of 49731da4: the raw page was still transformed before validation —
+  `Changes: null` was masked by `|| []`, but `Changes: {}` reached the spread and THREW,
+  killing the lane outside the fail-closed contract with no CHANGE_SET_SCHEMA_UNKNOWN evidence;
+  and ARN_REFERENCE recognized only the prefix shape, so `arn:::::supersecret`, an SNS topic
+  where a change set belongs and an IAM role where a topic belongs all validated. Two MEDIUMs.
+  Fix-forward, all fifteen reviewed commits preserved.
+- Every page is validated immediately after JSON.parse — before pages.push, before the spread,
+  before the token read. Non-iterable Changes (object, number, boolean) refuse structurally,
+  end-to-end proven: exit 1, CHANGE_SET_SCHEMA_UNKNOWN, no digest, nothing executed, no crash.
+- The ARN contracts are positional: CHANGE_SET_ARN (cloudformation, changeSet/<name>/<uuid>),
+  STACK_ARN, SNS_TOPIC_ARN and CLOUDWATCH_ALARM_ARN each demand their service and resource
+  shape plus mandatory non-empty partition/region and 12-digit account. The five reproductions
+  refuse by path; the compliant documented shapes still validate; ENTITY_REFERENCE keeps its
+  documented latitude only at CausingEntity. The test harness's change-set ARNs were made
+  contract-compliant (per-stack UUIDs), which the suite now enforces everywhere.
+- Two protections, two reversions, two failures. Nothing was deployed, published or mutated.
+
+## 2026-08-07 — Claude — #70 Slice B1 round 14: the validator's generic escapes closed
+
+- Codex's round-14 review of 11ef9846: the structural validation still had general bypasses —
+  every explicit `null` read as an absent member (`Changes: null`, `Action: null` passed, and
+  the pagination merge normalized `Changes: null` into `[]` BEFORE validation, erasing the
+  evidence); `OPAQUE` accepted any shape (an object rode where the contract says string);
+  numbers accepted any finite value (`MonitoringTimeInMinutes: -1.5`, `HookInvocationCount:
+  0.5`); and the ARN-only fields shared `CausingEntity`'s permissive string type, so
+  `ChangeSetId: "supersecret"` validated AND published in the human material. One HIGH, one
+  MEDIUM. Fix-forward, all fourteen reviewed commits preserved.
+- `null` is a value now: only `HookInvocationCount` — the one position AWS documents as nullable
+  — accepts it; everywhere else an explicit null refuses by path. OPAQUE means opaque STRING.
+  Integers enforce integrality and the documented ranges. The RAW pages are preserved and
+  validated before any normalization touches them, end-to-end proven: a `Changes: null` page
+  refuses as CHANGE_SET_SCHEMA_UNKNOWN with no digest ever produced.
+- ARN_REFERENCE (strict ARN parse) now types ChangeSetId, StackId, ParentChangeSetId,
+  RootChangeSetId, NotificationARNs, RollbackTrigger.Arn and the nested change-set id;
+  ENTITY_REFERENCE survives only at CausingEntity, whose documented semantics genuinely admit a
+  parameter or logical name. The round-14 reproduction refuses before any digest, and the value
+  never surfaces anywhere in the refusal.
+- Five protections, five reversions, five failures. Nothing was deployed, published or mutated.
+
+## 2026-08-07 — Claude — #70 Slice B1 round 13: structural validation, documented schema, constant redaction
+
+- Codex's round-13 review of db1872ac: the closed schema validated NAMES only — `Changes:
+  "not-an-array"` and `Action: "SOMETHING_NEW"` both passed and became opaque text that could
+  still collect a human gate; the schema was not drift-aware (it lacked SyncWithActual,
+  PreviousDeploymentContext, ResourceDriftStatus, ResourceDriftIgnoredAttributes,
+  ChangeSource: NoModification, BeforeValueFrom/AfterValueFrom and Target.Drift, and it invented
+  `DeploymentMode: STANDARD`, which AWS does not document); and the opaque markers were a
+  published oracle — sha256("cba-pseudonym:" + value) reproduced `supersecret` offline. One HIGH,
+  two MEDIUMs. Fix-forward, all thirteen reviewed commits preserved.
+- Validation is one structural pass now: unknown key, wrong type and out-of-contract enum each
+  refuse BEFORE a digest exists, at every depth, and renderPlan runs the same validator itself
+  instead of trusting a caller to have remembered — a violating response is not rendered at all,
+  only its offending PATHS (never their values).
+- The schema was transcribed from the CloudFormation API reference (DescribeChangeSet, Change,
+  ResourceChange, ResourceChangeDetail, ResourceTargetDefinition, LiveResourceDrift,
+  ResourceDriftIgnoredAttribute, RollbackConfiguration, Parameter, Tag, ModuleInfo) with every
+  drift-aware member, and a full documented response is a permanent fixture that fails if the
+  schema drifts from the API. REVERT_DRIFT is the only documented DeploymentMode.
+- Every redaction is a CONSTANT class label. Determinism bought correlation and sold an offline
+  guessing oracle over parameter values, tag values and property blobs; no derivation of an
+  observed value is published anywhere. Where the delta matters, renderPlan compares the RAW
+  values in memory and prints changed/unchanged, and the drift-aware provenance
+  (ACTUAL_STATE/TEMPLATE) reads in clear because it is contract vocabulary.
+- Six protections, six reversions, six failures. Nothing was deployed, published or mutated.
+
+## 2026-08-05 — Claude — #70 Slice B1 round 12: trust moved from key names to schema positions
+
+- Codex's round-12 review of f430e0bb: the sanitizer still chose a value's treatment from its KEY
+  NAME at any depth, so parsed content recovered trust by naming itself — `BeforeValue` holding
+  `{"Key":"supersecret","Arn":"arn:…:role/covert-admin"}` rendered both; `DeploymentMode` and
+  `StackDriftStatus` (fields that change how CloudFormation INTERPRETS a change set) rendered as
+  opaque keys; and the child-evidence digest concatenated the streams, so (stdout "ab", stderr
+  "c") and (stdout "a", stderr "bc") were indistinguishable. One HIGH, one MEDIUM, one LOW.
+  Fix-forward, all twelve reviewed commits preserved.
+- A reviewed SCHEMA TREE now describes the entire DescribeChangeSet response and every value is
+  rendered by its POSITION. The same name at a different path is a different field, and a name
+  inside a content carrier is not a field at all: BeforeValue, AfterValue, BeforeContext and
+  AfterContext are opaque — one deterministic marker each, never parsed, so no internal name can
+  reach a validator. The trade is stated in the code: reading callback URLs out of a property
+  value is given up, and that control never lived here — PREFLIGHT-1 validates the exact auth
+  URLs and contextDigest binds them to the release before a change set exists.
+- DeploymentMode and StackDriftStatus are named vocabularies, rendered on their own line, so
+  REVERT_DRIFT is distinguishable at sight. A field the schema does not describe REFUSES the plan
+  (CHANGE_SET_SCHEMA_UNKNOWN) instead of becoming an opaque key — brittle on purpose: an
+  unreviewed field can change what an approval means, so a human extends the schema first.
+- Child evidence frames the streams through canonical JSON: exit code, per-stream byte counts and
+  a digest that distinguishes where stdout ends and stderr begins.
+- Four protections, four reversions, four failures — including two mutations that had to be
+  rewritten because the first attempts did not faithfully recreate the vulnerability (an object
+  schema on a string still failed closed; a digest change hidden behind visible byte counts). The
+  regressions were tightened until each reversion was genuinely red. Nothing was deployed,
+  published or mutated.
+
+## 2026-08-05 — Claude — #70 Slice B1 round 11: the whole change set bound, the last formats closed
+
+- Codex's round-11 review of 4dc496b2: "complete change" still meant `Changes` — the change
+  set's executable semantics (Capabilities, OnStackFailure, RollbackConfiguration,
+  NotificationARNs, Tags, Parameters, nested/import) were outside both the digest and the
+  material, so two plans differing only in `OnStackFailure: DELETE` versus `ROLLBACK` produced
+  the same digest and the same rendering; and the sanitizer still preserved text by generic
+  FORMAT — numeric strings (`111122223333`), free map keys (`supersecret`), identifier-shaped
+  values and our own project prefix — while a SECOND scanner echoed the prepare child's
+  stdout/stderr, leaving `postgres://user:supersecret@db.internal/cba` in a persistent CI log.
+  Two HIGHs. Fix-forward, all eleven reviewed commits preserved.
+- The canonical entry carries the complete DescribeChangeSet response, so the gate binds every
+  executable semantic; the rendering NAMES them (on-failure, capabilities, notifications,
+  rollback monitoring and triggers, tags, parameters, nested lineage) before the resource diff,
+  and then dumps the whole sanitized response. Pagination is consumed page by page — proven with
+  a three-page description whose last page must reach the material — and a description that
+  never stops paginating refuses instead of authorizing a partial plan.
+- Text survives only under a KNOWN SCHEMA FIELD with a VALIDATED value. Free positions have no
+  allowance left; only real JSON numbers stay numbers; only schema keys render; PhysicalResourceId
+  and parameter/tag values pseudonymize whole (including an ARN-shaped physical id, which the ARN
+  grammar would otherwise have rendered); stack names are validated against the names THIS
+  release computed. Parameter NAMES stay legible — a name is schema, a value is content.
+- One output policy: the child-output scanner is gone. A failing prepare records
+  `child not echoed — exit=… bytes=… sha256=…` and not one byte of the child's text, proven on
+  the real PLAN_PREPARE_FAILED path with a credential-spewing child.
+- Six protections, six reversions, six failures: the complete-response binding, the numeric-string
+  allowance, the format-based keys, the PhysicalResourceId whole-pseudonym, the format-validated
+  stack name and the pagination refusal each drop their own regression when removed.
+- Nothing was deployed, published or mutated.
+
+## 2026-08-04 — Claude — #70 Slice B1 round 10: the material completed, the last default inverted
+
+- Codex's round-10 review of 23d77ea2: the presentation rebuilt `ResourceChange` from six
+  hand-picked fields, so `PolicyAction`, `Scope`, `PhysicalResourceId`, `ChangeSetId` and
+  `ModuleInfo` never reached the human — two plans differing only in `Retain` versus `Delete`
+  rendered identically while the gate bound different bytes; and the sanitizer was still
+  fail-OPEN for arbitrary strings and structured keys (secrets inside serialized JSON, a URL used
+  as a map key, a URL wrapped in punctuation, and any suffix trailing a CloudFormation stack id).
+  One HIGH, one MEDIUM. Fix-forward, all ten reviewed commits preserved.
+- The review material carries the COMPLETE change now: each change renders as a concise summary
+  line (action, type, logical id, replacement, policy, scope) FOLLOWED by the whole sanitized
+  ResourceChange as canonical JSON. Nothing is selected away, and a field CloudFormation adds
+  upstream appears without anyone remembering to add it — proven with an unenumerated field.
+- Scalars fail CLOSED. A string renders verbatim only for an explicitly reviewed public form —
+  the closed CFN vocabulary, an AWS::Service::Type, a number, a region, a project-owned name, or
+  a URL/ARN through its own grammar; everything else is a deterministic [value#…] marker, so
+  equal values stay comparable while unknown material stays unshown. Keys are sanitized like
+  values. URL/ARN spans are recognized anywhere in a string, including behind punctuation and
+  inside serialized JSON, and bracketed IPv6 authorities are parsed rather than shredded.
+- BeforeValue/AfterValue and the context blobs are parsed and walked — which is also what keeps a
+  decision-bearing origin READABLE through JSON's legal `\/` escapes: without the walk the
+  approved workers.dev callback collapses into markers and the classifiability contract dies
+  inside every serialized value. That is the regression the walk alone satisfies.
+- The CloudFormation ARN grammar is complete and anchored: stack/<name>/<uuid> exactly, so a
+  trailing `covert-suffix` fails closed to a whole-resource pseudonym.
+- Five protections, five reversions, five failures: the full-JSON rendering, the fail-closed
+  scalars, the key sanitization, the JSON walk and the anchored CFN grammar each drop their own
+  regression when removed. Byte-identical restoration verified. Nothing was deployed, published
+  or mutated.
+
+## 2026-08-04 — Claude — #70 Slice B1 round 9: values classified as fields, grammars anchored
+
+- Codex's round-9 review of 6f8c702f (the six round-8 reproductions confirmed closed): the
+  structured parser only saw what an incomplete text scanner handed it — `postgres://` with
+  credentials passed whole (the scanner knew only http/s), a backslash cut the candidate and
+  stranded `?token=…` outside it, and pathnames rendered verbatim under any host including the
+  approved one; and `projectNamed()` blessed a WHOLE resource after finding a project prefix in
+  one segment — lambda aliases, log streams and Cognito groups rode through, an API Gateway v1
+  path returned entirely, and known-service branches failed OPEN when their expected shape did
+  not match. Two MEDIUMs. Fix-forward, all nine reviewed commits preserved.
+- Presentation is composed FROM SANITIZED VALUES now: every string in the canonical entries is
+  classified token by token (URL of any scheme, ARN, residual identifiers) and rendered by its
+  own field-aware rule; the CFN Before/After context blobs parse as JSON and are walked, failing
+  closed when unparseable; residual passes run over classifier output too, so an account inside
+  a verbatim-blessed bucket name still pseudonymizes. There is no outer scanner.
+- URL paths render only from the reviewed shape list (the committed auth callback/logout forms,
+  the Cognito hosted-UI endpoints, the stage roots) — an approved workers.dev host does not
+  bless an unreviewed path. Unknown schemes are markers; credentialed URLs are markers whatever
+  the scheme.
+- The per-service ARN grammars are ANCHORED: only the exact project-owned identity segment
+  renders; aliases, streams, groups, sessions, qualifiers and generated ids pseudonymize; every
+  known-service branch — and every unknown service — fails CLOSED to a whole-resource pseudonym.
+- The eight review reproductions are direct regressions, and the round-8 implementation was
+  proven to FAIL them: the http-only classifier, verbatim paths, substring blessing and the
+  cognito fail-open each reverted and each caught. The round-7/8 classification controls hold
+  under the tightened contract. Nothing was deployed, published or mutated.
+
+## 2026-08-03 — Claude — #70 Slice B1 round 8: the renderer's own exceptions closed
+
+- Codex's round-8 review of b507e587: the renderer's exceptions were broader than the reviewed
+  types — any `*.amazonaws.com` host passed whole (bucket-style and ELB-style names are not
+  public), and the per-service allowlist let S3 object keys, SSM parameter paths and STS
+  resources through verbatim; and the ad hoc URL regex missed grammar — embedded credentials
+  printed (`user:supersecret@…`) and IPv6 literals bypassed query stripping entirely. Two
+  MEDIUMs. Fix-forward, all eight reviewed commits preserved.
+- No suffix or service allowlist survives: a FORMAT either matches a reviewed project-name
+  family (cba-study-coach-, cdk-cbardev-, cdk-cbarpil-, the exact bootstrap-version parameters)
+  or it pseudonymizes. S3 object keys never render, whoever owns the bucket; foreign bucket
+  names and SSM paths never render; STS keeps the principal's role path (classifiability, the
+  round-6 contract) but pseudonymizes the caller-chosen session; outside the exact host families
+  (workers.dev, amazoncognito.com, localhost, the execute-api pattern) every host — amazonaws or
+  not — is an [unexpected-host#…] marker.
+- URLs are parsed with the STRUCTURED WHATWG parser: credentials never render — the whole URL
+  becomes a [credentialed-url#…] marker; IPv6 and every unrecognized host form are markers;
+  an unparseable candidate is never emitted raw; ports survive as structure; query and fragment
+  always strip.
+- The six round-8 reproductions are direct regressions, and the VULNERABLE implementations were
+  each proven to fail them: the amazonaws blanket, the S3 allowlist, the SSM allowlist, the
+  credential pass-through and the round-7 ad hoc parser — five reversions, five failures,
+  byte-identical restoration verified after each.
+- Nothing was deployed, published or mutated.
+
+## 2026-08-03 — Claude — #70 Slice B1 round 7: the renderer became type-aware
+
+- Codex's round-7 review of 22eaf263 (API Gateway confinement and the import walker CONFIRMED
+  CLOSED): the generic first-label rule reproduced the round-5 defect for ENDPOINTS — the
+  approved `cba-study-coach-pilot.workers.dev` origin and `evil.workers.dev` both rendered as
+  opaque hashes, when the first label IS the identity Zamp reviews for origins, callbacks and
+  CORS; and the round-6 claim that every ARN path is repository-public was FALSE — KMS key
+  UUIDs, API Gateway ids, stack UUIDs and URL query values rendered verbatim. One HIGH, one
+  MEDIUM. Fix-forward, all seven reviewed commits preserved.
+- The renderer decides BY TYPE now. Decision-bearing identities render VERBATIM: IAM role paths,
+  full hostnames from the reviewed suffix list (`workers.dev` — the approved pilot origin
+  family; `amazoncognito.com` — the project-chosen auth domain; localhost), project-chosen stack
+  and alias names. Generated material pseudonymizes at 128 bits: KMS key UUIDs, API Gateway
+  api/route ids, Cognito pool ids, CloudFormation stack/changeset UUIDs, execute-api labels,
+  free-standing UUIDs, accounts. URL query strings strip to `[query-redacted]` — tokens live
+  there. A hostname no reviewed decision produced renders `[unexpected-host#…]` — classifiable
+  as unexpected, never verbatim (it may itself exfiltrate), never hash-blended into the crowd.
+  An unknown service's ARN resource pseudonymizes whole — unknown is not proven public.
+- Direct regressions: expected-versus-attacker workers.dev origins both read in clear and
+  differ; raw KMS/API/stack identifiers and a query token never render; the Cognito auth domain
+  stays legible; IAM stays the round-6 contract. And per the review's demand, the BROKEN
+  implementations were each proven to FAIL: hosts collapsed to hashes, query returned verbatim,
+  KMS UUIDs verbatim, unknown hosts verbatim, API ids verbatim — five reversions, five failures,
+  byte-identical restoration verified.
+- Nothing was deployed, published or mutated.
+
+## 2026-08-03 — Claude — #70 Slice B1 round 6: children tag-confined, identities classifiable, imports walked
+
+- Codex's round-6 review of f6942f55: the API Gateway child paths still allowed unconditioned
+  mutation beneath every API id (and /tags/* allowed unconditioned tag deletion — a compromised
+  role could strip a foreign API's governance tags); the 8-hex fingerprints made principals
+  distinguishable but not CLASSIFIABLE (an approved role and an attacker's role were two opaque
+  hashes, with a feasible 32-bit collision surface); and the wave guard walked CDK metadata
+  edges, which a literal Fn::ImportValue pasted into a template never creates. Two HIGHs, one
+  MEDIUM. Fix-forward, all five reviewed commits preserved.
+- Every API Gateway operation now demands ownership: children (routes, integrations,
+  authorizers, stages, deployments, cors) authorize against the owning API's Project/Environment
+  tags per the service authorization reference; the V2 tags API is shaped POST/DELETE/GET with
+  resource ownership required; and the governance tags themselves are FENCED — removal of
+  Project/Environment explicitly denied, replacement with foreign values explicitly denied — on
+  API Gateway, Cognito and KMS alike, so an owned resource cannot be untagged out of its
+  confinement. A control asserts no unconditioned apigateway mutation exists anywhere, and the
+  condition values are proven EQUAL to the tags the real synthesized templates carry.
+- Review material uses STRUCTURED pseudonymization now: service, region, resource type and path
+  render VERBATIM (the expected deploy role and role/evil-admin are each classifiable at sight);
+  only account material renders as pseudonyms, at 128 bits — no feasible collision surface.
+  Stated limit, on the record: a 12-digit account space is enumerable offline against any
+  unkeyed derivation; the pseudonym prevents log disclosure (the mask-aws-account-id posture),
+  it is not cryptographic secrecy.
+- The fresh-tier guard walks the synthesized TEMPLATES recursively for literal Fn::ImportValue,
+  resolves every export name to its producer, and requires the producer in an earlier wave — or
+  in the SecurityStack foundation, which pre-exists every wave. Positive controls feed it
+  doctored templates the CDK metadata never sees: later-wave, same-wave, orphaned, non-literal
+  and deeply nested imports are each caught.
+- Every new rule proven by deletion: the child tag condition (1 test), the governance-removal
+  deny (1), the structured rendering collapsed to opaque hashes (1), the import collector
+  blinded (1). Nothing was deployed, published or mutated.
+
+## 2026-08-02 — Claude — #70 Slice B1 round 5: waves for the first deploy, the root API closed, semantics made reviewable
+
+- Codex's round-5 review of f49481d7: a fresh tier could not prepare all four change sets (the
+  consumers' Fn::ImportValue producers would be unexecuted — the tests had faked their way past
+  it); the API Gateway policy still allowed unconditioned DELETE/PATCH on /apis/* — which
+  includes every root API in the region, not just subresources; the digest bound plans whose
+  security semantics the human could not SEE (no property values retrieved, principals rendered
+  identically by design); and CREATE_COMPLETE was accepted without ExecutionStatus AVAILABLE, so
+  an obsolete change set could be gated only to fail at execution. Three HIGHs, one MEDIUM.
+  Fix-forward, all four reviewed commits preserved.
+- The cloud gate (v3) now NAMES the reviewed plan group it authorizes, from a closed list:
+  dependency WAVES for a fresh tier (Identity+Data → Api → Observability, each wave planned,
+  reviewed and executed under its own gate) and the full set for steady state. A discovery test
+  walks the REAL CDK assembly graph and refuses any cross-stack edge violating the wave order —
+  a new import that would strand a fresh tier fails in the suite, not in the account.
+- The API Gateway ROOT lifecycle is tag-confined: DELETE/GET/PATCH/PUT on /apis/* demand the
+  Project/Environment resource tags, so a foreign API's root is unreachable whatever its id;
+  subresource authority is now an ENUMERATED path list where every pattern carries a second path
+  segment (a bare /apis/{id} is out of its reach), and a control asserts no unconditioned
+  statement can address a root API. The residual shrank to foreign subresources under guessed
+  ids — named, bounded, recorded.
+- Review material carries SEMANTICS now: describes retrieve --include-property-values; the
+  rendering names changed properties with before/after values and causing entities; and every
+  identifier appears as a STABLE FINGERPRINT ([arn#a1b2c3d4]) — two principals are visibly
+  different, a known principal is recognizable, and the log still never carries the identifier.
+  The round-4 test that required identical renderings was inverted into the round-5 contract.
+- An unexecutable change set (ExecutionStatus not AVAILABLE) never receives a digest, in either
+  mode. Every new rule proven by deletion: group validation (1), AVAILABLE requirement (1),
+  property-value retrieval (1), fingerprint rendering (1).
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the per-tier
+  activation prerequisites in the workflow header; the runbook's step 12 now documents the
+  wave-by-wave first deployment.
+
+## 2026-08-02 — Claude — #70 Slice B1 round 4: the plan became change sets, the bootstrap split per tier
+
+- Codex's round-4 review of 38f3adbf: the gate still did not authorize the executed plan (`cdk
+  deploy` created a NEW change set over possibly different state, and the digest — computed after
+  sanitization — collided for two plans differing only in an ARN principal, reproduced); the
+  "second bootstrap" would have updated the existing CDKToolkit (no `--toolkit-stack-name`) and
+  both tiers shared cdk-cbarel-* roles, so dev authority reached pilot; the execution policy
+  allowed destructive operations on ALL apis/pools/keys in the region ("generated id" establishes
+  no ownership); the gate could expire during the final STS call and still deploy; and the
+  "strict" RFC3339 accepted calendar-invalid dates (2026-02-30 silently became March). Four
+  HIGHs, one LOW. Fix-forward, all three reviewed commits preserved.
+- THE PLAN IS THE CHANGE SETS NOW. `plan_only` prepares one NAMED CloudFormation change set per
+  stack (the one moment change sets may be created) and digests the canonical UNREDACTED
+  describes — immutable change-set ids, full change details, principals and all; sanitized output
+  is presentation only, and the reproduced principal collision is a regression test. `deploy`
+  spawns no cdk child at all: it re-describes exactly those change sets, requires the digest the
+  gate names (a recreated set has a new id — PLAN_CHANGED), resolves the account FIRST and
+  re-checks the window as the LAST operation before EACH execute-change-set, executes them in the
+  reviewed dependency order under the tier's assumed bootstrap role, and reports partial progress
+  honestly. CloudFormation itself refuses a change set whose stack moved after preparation.
+- THE BOOTSTRAP SPLIT PER TIER: qualifiers `cbardev`/`cbarpil` (reviewed constants), separate
+  toolkit stacks (`--toolkit-stack-name cba-release-toolkit-<env>` — without it the CDK would
+  have updated the existing CDKToolkit), per-tier deploy-role boundaries, per-tier runtime
+  boundaries, per-tier execution policies rendered from ONE parameterized template each — a dev
+  rendering names not one pilot resource, and tests pin that both ways.
+- OWNERSHIP IS TAGS, NOT ID SHAPE: Cognito and KMS statements demand Project/Environment tags —
+  aws:RequestTag on create (the resource has no ARN yet), aws:ResourceTag on lifecycle — so
+  PutKeyPolicy/ScheduleKeyDeletion/DeleteUserPool reach only this project's tier-tagged
+  resources. The one residual is NAMED: API Gateway sub-resources are untaggable in the service
+  model; below the tag-confined API creation, confinement is account+region+path only — recorded
+  for Zamp's risk decision, account isolation documented as the alternative.
+- The RFC3339 validation now round-trips through the calendar (2026-02-30, 2026-13-01, April 31
+  and fractional seconds all refuse as malformed). Every new rule proven by deletion: plan-digest
+  comparison (2 tests), per-mutation window re-check (2), unredacted-details digest (12),
+  calendar round-trip (1), boundary account resolution (1).
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the four
+  Zamp-gated activation prerequisites, now per tier, recorded in the workflow header.
+
+## 2026-08-02 — Claude — #70 Slice B1 round 3: the authority chain closed end to end
+
+- Codex's round-3 review found four HIGHs, all in the authority/execution chain of da550184:
+  synth code received AWS credentials before the gate; the deployed CloudFormation execution role
+  could not actually execute the four stacks (and would fail on the first real deploy); the deploy
+  was not bound to the reviewed plan; the gate accepted loose date formats, had no TTL and was not
+  revalidated at the mutation boundary. Fix-forward, both reviewed commits preserved.
+- Credentials and project code never share a window now: synth runs credential-free BEFORE the
+  OIDC consumer in all three credentialed jobs; after the consumer only `node
+  bin/deploy-preflight.js` / `node bin/deploy-release.js` execute. A named lane invariant refuses
+  npm/npx or any action step after credential acquisition — proven by mutation and by deletion.
+- The execution authority exists and is enumerated: the four deployable stacks synthesize against
+  their own bootstrap qualifier (`cbarel`, reviewed constant in lib/app.js), whose versioned
+  execution policy covers every resource type the real templates create (a discovery test
+  synthesizes both tiers and refuses unmapped types), scopes resources to the tier name prefixes,
+  names each unavoidable wildcard as its own justified statement, pins `iam:CreateRole` to the new
+  runtime boundary every release-created role carries, conditions PassRole to Lambda, and denies
+  the GitHub/foundation roles outright. The SecurityStack keeps the #66 bootstrap; one execution
+  role per blast radius. Runbook step 12 records the human-gated creation; the render loop now
+  names all five templates.
+- The deploy executes only the reviewed plan: `diff_only` emits PLAN_DIGEST (canonical, sanitized
+  plan bytes); the deploy-mode gate NAMES that digest; a recomputed plan that differs — live state
+  moved — refuses as PLAN_CHANGED and needs a fresh review. The plan is emitted before the effect.
+  Gate v2 is strict RFC3339 UTC only (the reproduced `2099-01-01` and space-separated forms are
+  malformed now), carries approvedAt + decisionId, caps the window at one hour, and is revalidated
+  — expiry AND account — immediately before the deploy child spawns; a clock that crosses the
+  expiry during the diff refuses one spawn from the effect, proven with an injected clock.
+- Nothing was deployed, published or mutated. The lane stays inoperable pending the four
+  Zamp-gated activation prerequisites now recorded in the workflow header.
+
+## 2026-08-02 — Claude — #70 Slice B1 round 2: the effect closed, the authority delivered, the gate bound
+
+- Codex's round-2 review found six issues in the first Slice B1 commit (74e3d889): `--all` scoped
+  the effect to whatever the app contains; concurrency keyed on the SHA instead of the
+  environment; the deploy authority neither designed nor canonical; raw CDK output leaking
+  outputs/ARNs; no job time bounds; no binding between reviewed plan, release, assembly and Zamp's
+  cloud authorization. Fix-forward, the reviewed commit preserved.
+- The correction, architecture first: manifest v5 NAMES the effect (closed `target.stacks` =
+  Api/Data/Identity/Observability, exact content and order; the entrypoint deploys it with
+  `--exclusively`, `--all` is gone; SecurityStack and AiOrchestrationStack are classified excluded
+  and a discovery test refuses any unclassified stack). The workflow lock is the literal
+  `release-dev` group. The deploy authority exists in reviewed code: SecurityStack
+  `GithubDeployRole`, trust pinned to `repo:...:environment:<env>`, boundary-pinned through the
+  extended #66 exec policy, able ONLY to assume the three CDK bootstrap roles; published under the
+  canonical `AWS_DEPLOY_ROLE_ARN`. Every job is time-bounded (5/15). Child output is captured and
+  sanitized by shape (ARNs, URLs, pool ids, account digits). The entrypoint refuses without Zamp's
+  per-release cloud gate — `CBA_CLOUD_GATE` naming the exact release and assembly digest with a
+  `diff_only`/`deploy` mode and expiry — and puts the `cdk diff` plan on the record before any
+  effect.
+- Every new rule is proven to bite by deletion: the serialization, time-bound, canonical-secret
+  and cloud-gate lane rules each fail their control when removed; the stack-set equality, the gate
+  validation and the `--exclusively` construction each fail infra tests when reverted.
+- The lane is NOT yet operable, on purpose: activation needs the human-gated SecurityStack
+  redeploy, the dev Environment configuration (zero secrets/vars exist today, evidenced), and the
+  per-release gate. Recorded in the workflow header and the #70 handoff. Nothing was deployed.
+
+## 2026-08-02 — Claude — #70 Slice B1 assigned: the dev stage becomes the sanctioned AWS deploy
+
+- Zamp assigned Slice B1 (code only): worktree `../cba-issue-70b`, branch
+  `task/70-aws-dev-deploy-slice-b`, cut from `origin/main` at `95583e94`.
+- The dev-stage placeholder is replaced by the sanctioned deploy: checkout pinned to the resolved
+  release OID, npm ci, the pinned OIDC consumer with a NEW Environment-scoped secret
+  (`AWS_DEV_DEPLOY_ROLE_ARN` — the deploy role never shares a name with the read-only preflight
+  role), re-synth with the bound context, and `deploy-release.js` — which refuses unless HEAD is
+  the release, the worktree is clean, the re-synthesized assembly reproduces the manifest digest,
+  and the account matches at verify and immediately before the effect. `id-token: write` exists
+  exactly where the consumer exists: the two preflights and dev-stage; the pilot placeholder stays
+  token-free.
+- Pilot promotion is MECHANICALLY blocked: `mode` offers only `dev_only`, so the pilot jobs (whose
+  success expressions require `dev_then_pilot`) are unreachable. A named invariant refuses the
+  option's return until O1/O2, the deployed smokes and the live SNS/KMS proof land — the
+  reviewed-object diff alone would go silent on the promotion slice's legitimate edit.
+- New named invariants: a job invoking the entrypoint must be Environment-bound, descend from its
+  environment's preflight, and hold id-token plus the pinned consumer; raw deploy commands remain
+  forbidden everywhere. Proven by mutation: deleting the promotion rule fails 1 test, deleting the
+  entrypoint-obligations rule fails 2.
+- No Cloudflare, no pilot deploy, no smoke in this parcel. Nothing was deployed producing it.
+
 ## 2026-08-02 — Claude — #106 delivered; all three #70 external prerequisites resolved
 
 - #106 CLOSED (Done). All six high Dependabot alerts remediated by upgrade, zero risk acceptance:

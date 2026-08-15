@@ -45,7 +45,7 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
     'whose only entry is `main`',
     'requires `marciozampiron` as reviewer',
     '6 HIGH Dependabot alerts are **RESOLVED**',
-    'The next #70 slice may be assigned',
+    'Slice B1 (dev AWS deploy through the sanctioned entrypoint) is in implementation',
     'No AWS\nor Cloudflare deployment has happened yet',
     'can_admins_bypass: true',
     'prevent_self_review: false',

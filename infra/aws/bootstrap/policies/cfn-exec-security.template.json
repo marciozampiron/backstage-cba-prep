@@ -45,6 +45,48 @@
       "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh"
     },
     {
+      "Sid": "CreateGhaDeployRoleDevOnlyWithItsBoundary",
+      "Effect": "Allow",
+      "Action": "iam:CreateRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateGhaDeployRolePilotOnlyWithItsBoundary",
+      "Effect": "Allow",
+      "Action": "iam:CreateRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot",
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "GhaDeployRoleLifecycleExactRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot"
+      ]
+    },
+    {
       "Sid": "ReadCdkBootstrapVersionParameter",
       "Effect": "Allow",
       "Action": "ssm:GetParameters",
@@ -57,7 +99,11 @@
         "iam:DeleteRolePermissionsBoundary",
         "iam:PutRolePermissionsBoundary"
       ],
-      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh"
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-bedrock-refresh",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-dev",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-deploy-pilot"
+      ]
     },
     {
       "Sid": "DenyBoundaryPolicyMutation",
@@ -68,7 +114,11 @@
         "iam:DeletePolicyVersion",
         "iam:SetDefaultPolicyVersion"
       ],
-      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-pilot-boundary-bedrock-refresh"
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-pilot-boundary-bedrock-refresh",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-dev",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-gha-deploy-pilot"
+      ]
     }
   ]
 }

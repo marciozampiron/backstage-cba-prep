@@ -42,14 +42,897 @@ guarded:
 3. The 6 high Dependabot alerts — **REMEDIATED by upgrade in #106** (PR #107, merged `3583aeda`),
    zero risk acceptance, 0 high open. See `done/106-dependabot-high-remediation.md`.
 
-The next #70 slice may be assigned. Two moderate root alerts remain documented in the #106 handoff
-for a future SDK bump, outside any GO criterion.
+**Slice B1 is IN IMPLEMENTATION** (assigned 2026-08-02): the dev-stage placeholder becomes the
+sanctioned AWS deploy of the dev tier, exclusively through `infra/aws/bin/deploy-release.js`, with
+OIDC granted only to the consuming job and pilot promotion MECHANICALLY blocked — `mode` offers
+only `dev_only` until O1/O2, the deployed smokes and the live SNS/KMS proof land. No Cloudflare, no
+pilot deploy, no smoke in this parcel. Two moderate root alerts remain documented in the #106
+handoff for a future SDK bump, outside any GO criterion.
+
+The Codex round-2 review of Slice B1 required, and the correction delivered: the deploy effect is a
+CLOSED stack set the manifest names (v5 `target.stacks` — Api/Data/Identity/Observability, with
+`--exclusively`, never `--all`; SecurityStack and AiOrchestrationStack classified excluded and a
+discovery test refusing unclassified stacks); releases serialize on the literal `release-dev`
+concurrency group; the deployment authority is delivered in code (SecurityStack `GithubDeployRole`,
+Environment-subject trust, boundary-pinned via the extended #66 exec policy, only the three CDK
+bootstrap roles assumable) under the canonical secret name `AWS_DEPLOY_ROLE_ARN`; every job carries
+`timeout-minutes` (preflights 5, deploy 15); CDK child output is captured and sanitized by shape;
+and the entrypoint requires Zamp's per-release cloud gate (`CBA_CLOUD_GATE`: exact release +
+assembly digest + `diff_only`/`deploy` mode + expiry) and puts the `cdk diff` plan on the record
+before any effect.
+
+The Codex round-3 review moved the remaining blockers out of the authority/execution chain, and
+the correction delivered: project code and credentials never share a window (synth runs
+credential-free before the OIDC consumer in every job; after the consumer only the reviewed
+entrypoints execute, enforced by a named invariant); the four deployable stacks execute through
+their tier's OWN CDK bootstrap (round 4: qualifier PER ENVIRONMENT — `cbardev`/`cbarpil`,
+reviewed constants — with its own toolkit stack, so dev authority reaches only dev) whose
+versioned execution policy (`cfn-exec-release.template.json`, rendered per tier) enumerates the
+templates' real resource types with tier-scoped resource names, demands the Project/Environment
+TAGS wherever AWS offers no ARN to scope to (Cognito and KMS: RequestTag on create, ResourceTag
+on lifecycle — "generated id" establishes no ownership), names its one residual (API Gateway
+sub-resources are untaggable; recorded for Zamp's risk decision with account isolation as the
+alternative), pins release-created roles to the per-tier runtime boundary, and explicitly denies
+touching the GitHub/foundation roles; the cloud gate is v2
+(strict RFC3339 UTC with calendar round-trip, `approvedAt` + TTL ≤ 1h, `decisionId`, and — for
+deploy mode — the `planDigest` of the reviewed plan), and — after the round-4 review — the plan
+IS the CloudFormation change sets: `plan_only` prepares one named change set per stack and
+digests the canonical UNREDACTED describes (change-set ids, full details, principals); `deploy`
+re-describes exactly those change sets, requires the digest the gate names, and executes them in
+the reviewed dependency order, resolving the account FIRST and re-checking the window as the
+LAST operation before EACH mutation. A recreated or drifted plan refuses as `PLAN_CHANGED`;
+CloudFormation itself refuses a change set whose stack moved after preparation.
+
+The round-5 review closed the last gaps in that chain: the gate now NAMES the reviewed plan
+group it covers — first deployments run in dependency WAVES (Identity+Data → Api →
+Observability, each wave planned/reviewed/executed under its own gate, because a change set
+whose `Fn::ImportValue` producers are unexecuted cannot even be created; a discovery test walks
+the real CDK assembly graph and refuses wave-order violations); the API Gateway ROOT lifecycle
+is tag-confined (`aws:ResourceTag`) so a foreign API's root is unreachable whatever its id; the
+plan describes retrieve `--include-property-values` and a change set that is not
+`ExecutionStatus: AVAILABLE` never receives a reviewable digest.
+
+The round-6 review closed the remaining seams: EVERY API Gateway child operation (routes,
+integrations, authorizers, stages, deployments, cors) now demands the owning API's
+Project/Environment tags (the service authorization reference lists `aws:ResourceTag` for these
+resource families — children authorize against the parent's tags), the V2 tags API is shaped as
+POST/DELETE/GET with ownership required, and the GOVERNANCE TAGS themselves are fenced: removal
+of Project/Environment is explicitly denied and replacement with foreign values is explicitly
+denied — on API Gateway, Cognito and KMS alike, so an owned resource cannot be untagged out of
+its confinement. Review material now uses TYPE-AWARE structured pseudonymization
+(rounds 6-7 — the round-6 claim that every resource path is public was FALSE, and the generic
+first-label rule reproduced the round-5 defect for endpoints): DECISION-BEARING identities
+render VERBATIM — IAM role paths, the full `workers.dev` and `amazoncognito.com` hostnames Zamp
+actually reviews for origins/callbacks/CORS, project-chosen stack and alias names — while
+GENERATED material renders as 128-bit pseudonyms (KMS key UUIDs, API Gateway ids, pool ids,
+stack UUIDs, execute-api labels, accounts), URL query values are stripped, a hostname no
+reviewed decision produced is marked `[unexpected-host#…]`, and an unknown service's resource is
+pseudonymized whole — unknown is not proven public. The round-8 review tightened the same rule
+against the renderer's own exceptions: there is NO `*.amazonaws.com` blanket and NO per-service
+allowlist — a FORMAT either matches a reviewed project-name family (`cba-study-coach-`,
+`cdk-cbardev-`, `cdk-cbarpil-`, the exact bootstrap-version parameters) or it pseudonymizes;
+S3 object keys never render (whoever owns the bucket), SSM parameter paths and foreign bucket
+names never render, STS keeps the principal's role path but pseudonymizes the caller-chosen
+session; and URLs go through the STRUCTURED WHATWG parser — embedded credentials never render
+(the whole URL becomes a `[credentialed-url#…]` marker), IPv6 literals and every unrecognized
+form are markers, unparseable spans are never emitted raw, query and fragment always strip.
+
+The round-9 review removed the renderer's last structural weakness: there is no outer text
+scanner deciding what the parsers see — presentation is composed FROM SANITIZED VALUES (every
+string in the canonical entries is classified token by token; the CFN Before/After context
+blobs parse as JSON and are walked, failing closed to a pseudonym when unparseable); the URL
+classifier admits ANY scheme (a `postgres://user:secret@…` value is a credentialed marker, not
+prose), URL PATHS render only when a reviewed decision produces that exact shape (a path
+segment carries secrets as easily as a query value — an approved host does not bless an
+unreviewed path); and the per-service ARN grammars are ANCHORED: only the exact project-owned
+identity segment renders — lambda aliases, log streams, Cognito groups, STS sessions and every
+unrecognized or v1-shaped resource pseudonymize, and every known-service branch fails CLOSED to
+a whole-resource pseudonym when the complete shape does not match.
+
+Round 10 inverted the last default and completed the material: an unknown scalar is no longer
+preserved because nothing recognized it as dangerous — a string renders VERBATIM only when it
+matches an explicitly reviewed public form (the closed CloudFormation vocabulary, an
+`AWS::Service::Type`, a number, a region, a project-owned name, or a URL/ARN through its own
+grammar), and every other scalar becomes a deterministic `[value#…]` marker (equal values render
+equal markers, so before/after comparison survives what must not be shown). Map KEYS are
+sanitized like values; URL and ARN spans are recognized ANYWHERE in a string, including behind
+punctuation and inside serialized JSON; `BeforeValue`/`AfterValue`/context blobs are parsed and
+walked, which is also what keeps a decision-bearing origin readable through JSON's `\/` escapes;
+and the CloudFormation ARN grammar is complete, so a suffix trailing the stack id fails closed.
+The review material now carries the WHOLE sanitized `ResourceChange` as canonical JSON beside
+the concise summary — `PolicyAction`, `Scope`, `PhysicalResourceId`, `ChangeSetId`, `ModuleInfo`
+and any field CloudFormation adds later reach Zamp without a hand-picked field list to fall
+behind, so a plan that retains and a plan that DELETES a table can never render alike.
+
+Round 11 closed the last two gaps. The digest and the material now bind the COMPLETE
+`DescribeChangeSet` response, not only `Changes`: `Capabilities` (what IAM the execution may
+create), `OnStackFailure` (`DELETE` destroys the stack after a failed create),
+`RollbackConfiguration`, `NotificationARNs`, `Tags`, `Parameters`, nested-stack and import flags
+are each bound and NAMED in the rendering — and pagination is consumed page by page or the plan
+refuses as `CHANGE_SET_PAGINATION_UNCONSUMED`, because a partial description describes an effect
+nobody reviewed. And the sanitizer's last format allowances are gone: text survives only where a
+KNOWN SCHEMA FIELD holds a value its own validator accepts — numeric STRINGS, free map keys,
+identifier-shaped values and our own name prefix each proved nothing about content, so
+`111122223333`, `supersecret` and `cba-study-coach-supersecret` are markers now; only real JSON
+numbers stay numbers; `PhysicalResourceId` and parameter/tag VALUES pseudonymize whole; stack
+names are validated against the names THIS release computed, never against a name shape. The two
+outputs were unified into one policy: unstructured child text is never echoed at all — the
+refusal records a stable exit code, per-stream byte counts and a framed digest, so credentials in
+a failing prepare child can no longer reach a persistent CI log.
+
+Round 12 replaced key-name trust with POSITION: a reviewed schema tree describes the whole
+`DescribeChangeSet` response, and a field is authorized by where it sits, so parsed content can
+no longer recover trust by naming itself `Key`, `Name`, `ParameterKey`, `LogicalResourceId` or
+`Arn`. `BeforeValue`, `AfterValue` and the context blobs are OPAQUE — one deterministic marker
+each, never parsed. That deliberately gives up reading callback URLs out of a property value, and
+the control does not move: PREFLIGHT-1 validates the exact auth URLs and the manifest's
+contextDigest binds them to the release BEFORE any change set exists. `DeploymentMode` and
+`StackDriftStatus` are named vocabularies now (`REVERT_DRIFT` is distinguishable at sight), and a
+field the schema does not describe REFUSES the plan as `CHANGE_SET_SCHEMA_UNKNOWN` — brittle on
+purpose, because an unreviewed field can change what an approval means.
+
+Round 13 closed the last two. Validation is STRUCTURAL: unknown key, wrong type AND
+out-of-contract enum each refuse before a digest exists (`Changes: "not-an-array"` and
+`Action: "SOMETHING_NEW"` used to pass the name-only walk and arrive as opaque text), and
+`renderPlan` runs the same validator itself rather than trusting its caller. The schema was
+transcribed from the CloudFormation API reference including every drift-aware member —
+`SyncWithActual`, `PreviousDeploymentContext`, `ResourceDriftStatus`,
+`ResourceDriftIgnoredAttributes`, `ChangeSource: NoModification`, `BeforeValueFrom`/
+`AfterValueFrom`, `Target.Drift` — and `DeploymentMode`'s only documented value is `REVERT_DRIFT`
+(the invented `STANDARD` is gone); a full documented response is a permanent fixture. And every
+redaction is now a CONSTANT class label: the old `[value#sha256(prefix+value)]` markers were a
+published derivation of the very values they hid — the review reproduced `supersecret` offline —
+so nothing derived from an observed value is published at all. Where the human needs to know
+whether a value moved, `renderPlan` compares the raw values IN MEMORY and prints
+`changed`/`unchanged`.
+
+Round 14 removed the validator's own generic escapes: an explicit `null` is a STATE, accepted
+only where the contract documents it (`HookInvocationCount`), never read as absence; `OPAQUE`
+positions are opaque STRINGS (an object smuggled where the contract says string is a malformed
+response, not deeper content); integers carry their documented integrality and bounds
+(`MonitoringTimeInMinutes` 0–180, `HookInvocationCount` 1–100); every RAW page is validated
+BEFORE the pagination merge, so `Changes: null` can no longer be normalized into an empty list
+and digested as if the service had sent it; and the ARN-typed fields (`ChangeSetId`, `StackId`,
+lineage, `NotificationARNs`, trigger and nested-change-set ARNs) demand a strict ARN parse —
+`ENTITY_REFERENCE`, with its documented latitude for parameter and logical names, survives only
+at `CausingEntity`.
+
+Round 15 finished both edges: every page is validated IMMEDIATELY after `JSON.parse` — before it
+is stored, before its `Changes` are spread, before its token is read — so `Changes: {}` (or a
+number, or a boolean) produces the structured `CHANGE_SET_SCHEMA_UNKNOWN` refusal instead of an
+uncaught TypeError that killed the lane outside the fail-closed contract; and the ARN contracts
+are POSITIONAL — a change-set ARN (`cloudformation`, `changeSet/<name>/<uuid>`), a stack ARN, an
+SNS topic ARN and a CloudWatch alarm ARN are distinct types with mandatory non-empty components,
+so `arn:::::x` and an IAM-role ARN sitting where a topic belongs each refuse before any digest. The expected origin and an attacker origin
+read in clear, visibly different; stated limit: a 12-digit account space is enumerable offline
+against any unkeyed derivation — the pseudonym prevents log disclosure, same posture as
+`mask-aws-account-id`. And the fresh-tier wave guard walks the synthesized TEMPLATES for
+literal `Fn::ImportValue` (recursively, with a positive control the CDK metadata never sees),
+resolving each export to its producer, which must sit in an earlier wave — or in the
+SecurityStack foundation, which pre-exists every wave.
+
+### Spec-Anchored Design — decision recorded, design under independent review (2026-08-07)
+
+The Codex confirmation of round 15 closed the technical findings; publication stays blocked
+because the contract the sixteen rounds hardened still lives only inside code and tests. Zamp
+directed the adoption of **Spec-Anchored Development**: the spec is the authority, code conforms
+to it, and a future mechanical conformance auditor in CI fails the build (exit 1) on any
+divergence — the spec is never updated automatically to accommodate code. The semantic layer is
+the **Gemini Spec Auditor** persona, which reads and reports only: it holds no authority of any
+kind, never approves anything, never accepts risk, never touches code or spec, and never runs
+any effect. Its report is one more input to the unchanged flow — Codex reviews independently,
+and the decision belongs to Zamp alone through `HUMAN_GATE_GRANTED`, exactly as the protocol
+states today. The persona takes effect only after the protocol and the authority policy are
+amended through their own reviewed commits; nothing is seated by this design.
+
+This phase delivered DESIGN DOCUMENTS ONLY, in one fix-forward commit on top of
+`346fe2dcd79654f3e4c3a145899b2e52a34034a9`, with the release entrypoint, the lane and the
+infrastructure untouched:
+
+- `spec/spec-anchored-development.md` — principles, spec authority and evolution rule,
+  SPEC-ID → code → test traceability, divergence semantics, and a seed registry binding
+  fourteen SPEC-IDs to invariants that already survived the #70 rounds;
+- `spec/agents/gemini-spec-auditor.md` — the persona: inputs, procedure, the SPEC_AUDIT_REPORT
+  document format with PASS/FINDINGS and evidence, and its closed list of non-powers;
+- `docs/runbooks/README.md` — the mandatory runbook standard (closed frontmatter, required
+  sections, the rule that a runbook confers nothing);
+- `docs/runbooks/spec-conformance-audit.md` — the audit flow: mechanical first, semantic
+  interpretation second, independent review third, human decision last; every command marked
+  `PLANNED — not executable`;
+- `docs/runbooks/aws-dev-release.md` — the planned #70 dev release flow only (waves, plan_only,
+  digest study, the second dispatch, evidence, stop conditions, rollback), with nothing to be
+  run in this phase.
+
+The next phase — JSON Schema tooling, the conformance checker, `[SPEC-ID]` annotations and the
+protocol amendments — starts only after this design passes the independent review and Zamp's
+decision.
+
+Design round 2 (Codex, six findings) reshaped the contract before any tooling exists, which is
+what a design review is for. The lifecycle now has three states — PROPOSED, ACTIVE, RETIRED —
+with CI enforcing ACTIVE ids only, activation atomic with conformance in the same tree, ACTIVE
+text immutable, and successors retiring predecessors by name: the "spec first" rule and the
+fail-closed CI no longer deadlock. The mechanical layer was renamed to what it honestly proves —
+a traceability LINTER plus registry-driven CONFORMANCE CHECKS with executable predicates — and
+the unprovable residue is named and assigned to the semantic stage. The spec system now governs
+itself: nine SPEC-GOV/AUDIT/RUN ids (PROPOSED — their tooling does not exist yet), the compound
+seed ids split into atomic ones (SPEC-DEPLOY-001…014), and the eight new documents were added to
+the fail-closed discovery and the closed surface policy, so their sentences are scanned like
+every other canonical surface. Publication authorization and cloud authorization are now two
+named instruments, both Zamp's, never interchangeable — and preparing change sets is classified
+as cloud mutation. The audit became reproducibly bound (report v1: commit, base, diff, spec,
+bundle and persona digests; pinned model and ceilings; INCOMPLETE is never a weaker PASS) and
+honestly priced: the semantic stage is a paid call and each run needs Zamp's separate spend
+authorization. The release flow was split to obey its own standard — an index plus three
+one-operation runbooks (plan, deploy, recovery) with copyable planned templates — and the audit
+runbook moved its recording into a separately owned reconciliation step so "read-only" stays
+true. Everything remains design: `PLANNED — not executable` throughout, the lane untouched, the
+entrypoint untouched.
+
+Design round 3 (Codex, eight findings) closed the last gaps that would have made the flow
+unrunnable or the policy decorative. The plan authorization could not be authored at all — it
+must name an assembly digest that only a run produces — so a read-only BINDING operation now
+precedes it. Evidence stopped being a `grep` window: every cloud effect produces a complete
+artifact bound to run id, decision, release SHA, stack group and plan digest, with the run id
+resolved deterministically and exactly one match required. A declined plan no longer "expires":
+AWS retains change sets until deleted, so an authorized ABANDON operation deletes them by id,
+resolves any `REVIEW_IN_PROGRESS` stack record and states what bootstrap material is retained.
+Performers are named on every command, and the three authorization kinds — publication, cloud,
+spend — are now POLICY DATA validated by the closed-schema validator, with `prepare-change-sets`
+and `invoke-paid-model-audit` as first-class effects and Opus explicitly denied both
+`author-cloud-authorization` and `perform-cloud-effect`. The registry became atomic (thirty-one
+ids, exact normative text instead of summaries) and the redaction contradiction was scoped: the
+child-evidence digest is the named exception to the no-derivation rule, because it covers whole
+streams that are never published rather than a value in the rendering. Audit digests gained a
+reviewed base with an ancestor check and the framed canonical serialization the #70 collision
+lesson demands; ACTIVE immutability is checked against activation history rather than a
+self-declared hash; mutation evidence became a closed record. The recovery assessment is
+read-only again — `gateRequired:false`, `cloudMutation:false` — with identity, account, region
+and pager pinned on every AWS call. And the governed vocabulary now collects cloud, spend,
+approver and persona claims, so the previously empty allowlists hold explicitly permitted
+sentences instead of nothing.
+
+Design round 4 (Codex, seven findings) corrected what the previous round had claimed too
+confidently. The registry's release ids are **PROPOSED again**: ACTIVE means CI enforces an id,
+the linter and conformance checks do not exist, and a design-only commit cannot be an activation
+commit — the evidence that today's tree conforms is recorded in its own column instead of being
+dressed as enforcement. The cloud instrument now binds a digest of the COMPLETE closed manifest
+rather than a release SHA plus an assembly digest, and `abandon-change-sets` joined the closed
+effect matrix; both arrived as policy data with successors registered PROPOSED, which is the
+lifecycle exercising itself for the first time. The binding and evidence operations were found
+unrunnable and unsafe as written — the manifest never reaches the log, a pre-dispatch check
+cannot constrain a variable another actor changes mid-run, and a timestamp window does not prove
+which request produced a run — so the runbooks now declare themselves BLOCKED on four
+implementation-phase prerequisites (a `bind_only` path that cannot enter a preparing stage, a
+correlation-id input, structured uploaded artifacts, and the abandon lane with its authorization
+mode), each registered as a SPEC id and tabulated in the spec's §10. The abandon operation was
+rewritten around a reviewed lane under the release lock with mutation-boundary revalidation, and
+its residual race is stated rather than papered over: CloudFormation offers no atomic
+compare-and-delete, so the entrypoint refuses on surprise instead of retrying. Digest framing
+became typed — status, paths, modes, object types, sizes and hashes — because a content record
+cannot tell a deletion from an absence or a mode change from none. And the runbooks stopped
+violating their own standard: versions bumped, the false "a later plan replaces them by name"
+claim removed from deploy, and the spend rule attributed to the id that actually carries it.
+
+Design round 5 (Codex, six findings) removed the last places where a document promised more
+control than the mechanism provides. **Two operations were found unsafe as specified.** Run
+correlation could not work: with `--ref main`, a run's `headSha` is main's tip, so comparing it
+to the release SHA rejects every release older than the tip, and a correlation id living only
+inside an artifact cannot identify the run you must find in order to download that artifact. The
+id is now published in the run's own NAME — run metadata, readable before any download — and the
+release SHA is verified separately, from the artifact, never from `headSha`. And the abandon
+operation no longer deletes stack records at all: `DeleteStack` accepts no expected-status
+precondition and the release lock binds only this repository's lanes, so "delete only what was
+re-observed in the expected state" was the race restated as care. A leftover
+`REVIEW_IN_PROGRESS` record is REPORTED; resolving it is a distinct effect
+(`delete-review-in-progress-stack-record`) that policy marks human-performed and no lane may
+perform.
+
+**The cloud instrument now binds its mode, as data.** One document holding four effects could not
+distinguish a plan from an execution, so `spec/authority-policy.json` carries a `modes` map
+validated as a PARTITION — `plan_only` prepares only, `deploy` executes only, `abandon` deletes
+prepared change sets only — and `boundTo` became
+`mode+decisionId+manifestDigest+stacks+planDigest+window`. The reversion proof for this control
+came back GREEN on the first attempt, because the validator carried a literal identical to the
+data: the partition law could be deleted with the suite still passing. The two layers are now
+separate and each is provable — the library enforces the LAW, the governance test pins the
+reviewed VALUE — and all ten reversions are red.
+
+SPEC-DEPLOY-019 became a COMPLETE successor (closed key set, `issue` pin, `decisionId`, the
+three-mode enum, window, stack group and the complete-manifest digest) rather than a partial one
+that would have silently dropped -002's obligations on activation; -002 stays registered until
+that activation retires it, and SPEC-DEPLOY-020 was absorbed and RETIRED under a new §4 rule for
+retiring a PROPOSED id that was never enforced. Digest framing split into three KINDS — `text`,
+`snapshot`, `diff`, with `digestKind` inside the digested bytes — because one shape was being
+applied to a string, a snapshot and a range alike; `renamed` left the diff enum because rename
+detection is a similarity heuristic and a digest that depends on a threshold is not reproducible
+by an independent verifier. SPEC-DEPLOY-021 records the unautomatable effect. Terminology was
+reconciled: the plan operation downloads one named artifact (not a "run log"), and evidence
+records change-set NAMES, because a change-set id is an ARN and evidence carries no live ARNs.
+
+Design round 6 (Codex, four findings) closed the gap between what the policy said and what it
+could express. **The stack-record cleanup effect had no authorization anyone could issue**: it
+named the cloud instrument, which neither listed it nor gave it a mode, so it read as authorized
+and no value could authorize it. Three things had to be true at once for that to survive — the
+forward check only walked documents' effect lists, so an effect in no list was never visited; the
+reverse direction was unchecked; and the pinned literals agreed with the defect. The relation is
+now ONE law taking both matrices as arguments, applied to the loaded policy inside `validate` and
+to this file's own literals at import, so a self-contradicting pin cannot load. Because correct
+pins mean no data mutation can reach it first, the law is proven by calling it directly with a
+deliberately dangling pair — the same call the module makes on itself. The effect got its own
+instrument, `stack-record-authorization`: out-of-band like the spend one, never an Environment
+variable, because the hazard being managed is acting on a stale observation.
+
+Run selection became identification rather than a guess: the correlation id has a closed format
+(`^cba-70-[0-9a-f]{32}$`, refused in the preflight when malformed), the run NAME is exactly
+`cba-release <mode> <correlationId>`, and the runbooks match the COMPLETE name by equality —
+`contains()` over a title is not identification — with the query pinned to workflow, branch and
+dispatch event, bounded at ten attempts. Zero matches after the bound is a stop; two or more is a
+stop in every case (SPEC-LANE-007).
+
+SPEC-DEPLOY-019 now enumerates its schema instead of claiming one: §8a lists all ten keys with
+per-key and per-mode constraints, including the `planDigest` the instrument's own binding
+required — `null` under `plan_only`, non-null under `deploy` and `abandon`. And the digest
+taxonomy gained a fourth kind: `snapshot` is defined by a commit, which a linter report or a
+prompt-as-invoked does not have, so generated streams are `bundle`, bound to their producer;
+`snapshot` binds its commit and `diff` binds `baseSha`/`headSha` inside the digested bytes; and
+every digest the auditor persona names — `PERSONA_SHA256` included, which previously had no kind
+at all — is mapped to exactly one.
+
+Design round 7 (Codex, five findings) drew the line between an expressible decision and a
+performable one. **The cleanup instrument recorded a stale observation without constraining it**:
+`observedAt` said when someone looked while nothing bounded the age of that look, which stack it
+identified, or what had to be true at the moment of the delete. Its value is now a closed
+nine-key decision (spec §8b, SPEC-DEPLOY-022) naming environment, account, region, stack NAME and
+the immutable stack ARN — a name can be deleted and recreated, and the recreation is a different
+stack the same name addresses — plus the exact status `REVIEW_IN_PROGRESS` and the instant, valid
+fifteen minutes, re-verified immediately before acting.
+
+**And that is still not enough, which is the finding's real content.** `DeleteStack` has no
+compare-and-delete; every field narrows the window and none closes it. The design therefore
+leaves the effect with **no executable procedure**: no runbook carries the command, and the
+validator refuses the one combination that would paper over it — an executable procedure over an
+unaccepted residual. Making it performable is **Zamp's risk-acceptance decision**, on its own
+record; Opus cannot take it and this design does not simulate it. (Round 8 replaced the boolean
+this paragraph originally named with the closed `riskAcceptance` record.)
+
+The bounded run resolution became a command instead of a description: the standard now carries the
+canonical procedure — `openssl rand -hex 16` for the correlation id (a regex alone admitted
+`cba-70-000…000`), the title passed through the environment so it is never interpolated into the
+jq program, exactly ten attempts thirty seconds apart, cardinality 1 required, two-or-more an
+immediate stop — and the four runbooks invoke it with their mode rather than restating a loop
+none of them implemented. SPEC-DEPLOY-019 gained types, regexes, cardinality and nullability for
+all ten keys, inherited from what the reviewed runtime already enforces. The generated release
+manifest is a `bundle`, not a `snapshot` — it is produced by the binding run and exists at no
+commit — and `patchSha256` states its kind (`diff`). The governed vocabulary now collects
+sentences about the cleanup instrument and about risk acceptance, closing the same "governed in
+name only" gap round 3 found.
+
+Design round 8 (Codex, three findings) turned the three remaining descriptions into contracts.
+**Risk acceptance became a record, not a boolean**: `riskAccepted: false` could be flipped
+together with `executableProcedure` in one edit, and nothing in the data said what an acceptance
+must contain. The policy now carries `riskAcceptance: null`, and the validator refuses any
+non-null value that is not a closed record — `acceptedBy` (must be `zamp`, the only holder of
+`accept-risk`), `decisionId`, `finding`, `justification`, `compensatingControls`, `acceptedAt`,
+`reviewBy`, `expiresAt` (strict UTC, ordered; an acceptance with no expiry is not an acceptance)
+and `boundToEffect` (an effect the instrument authorizes). An executor-signed acceptance is
+refused by name. A complete well-formed record still cannot slip in silently: the pinned literal
+is `null`, so accepting is a reviewed policy change of Zamp's own decision.
+
+**The cleanup value became a real schema** (SPEC-DEPLOY-022): `stackName` carries CloudFormation's
+name grammar; `stackId` is validated positionally (`arn:aws:cloudformation:<region>:<account>:
+stack/<name>/<uuid>`) and its embedded region, account and name must EQUAL the record's fields —
+cross-field equality is what stops a record naming one stack while its ARN addresses another; and
+the window is stated as `observedAt <= now < observedAt + 15 minutes`, a future instant refusing.
+The spec also states that a table is not an enforcer: the activation commit must contain the
+instance parser plus adversarial tests, mutation-proven; until then the schema binds review.
+
+**Run resolution became an executable** — `bin/resolve-run.mjs`, driven in `test/resolve-run.test.js`
+by a simulated `gh`. Round 8 caught what two rounds of prose review missed: the pasted loop
+stopped watching for duplicates the moment it found one run, so a duplicate appearing DURING
+`gh run watch` was never seen. The helper re-runs the same query after the terminal conclusion and
+requires exactly the same single id immediately before printing anything; late duplication, a
+vanished run, an identity change, `gh` failure, unparseable output, substring titles and the
+no-sleep-after-last-attempt bound are each proven by a scripted sequence. The runbooks now invoke
+the helper; the loop nobody could test is gone.
+
+Design round 9 (Codex, three findings) made the acceptance enforceable and the helper honest
+about its own bounds. **The risk-acceptance record gained the bindings that make it a decision
+about THIS risk**: `residualRiskSha256` digests the instrument's exact residual text and the
+validator recomputes it, so editing the finding detaches every prior acceptance structurally;
+`coversStackId` and `coversCleanupDecisionId` scope the acceptance to one stack record under one
+cleanup decision — never a class-wide waiver; and `zampStatementSha256` digests Zamp's verbatim
+written statement, because `acceptedBy: "zamp"` typed by an executor proves nothing — the
+statement is the decision channel, the policy entry its reviewed transcript. The validator now
+also evaluates the CLOCK: a tree holding an expired acceptance, or one dated in the future, fails
+closed; and the runtime consumer (the SPEC-DEPLOY-022 activation parser) must re-check expiry and
+coverage immediately before the effect — the validator proves the tree, the consumer proves the
+moment.
+
+**The helper stopped trusting its caller and its window.** The workflow is pinned by FILE
+identity inside `bin/resolve-run.mjs` (`release-pilot.yml`); the workflow argument is gone, and a
+test passes an attacker-named workflow to prove the query stays pinned. The window became
+exhaustive-or-stop: the query asks for 1000 rows and a full page refuses as truncated — round 9
+demonstrated a duplicate at row 51 was invisible under `--limit 50` — and a scripted test plants
+the duplicate beyond row 60. Every external call now carries a reviewed wall-clock deadline (60s
+per query, 45 minutes for the watch — the lane's jobs sum to 35), surfacing as named timeout
+stops, because ten attempts bound nothing when one call can stall forever.
+
+Design round 10 (Codex, two findings) held the new machinery to the project's own laws. **The
+acceptance's digests now obey §6b**: `residualRiskSha256` is the `text`-framed digest — kind,
+version and subject inside the digested bytes, recomputed by the validator, with adversarials for
+the raw-text digest (the round-9 shape itself), a kind swap, a foreign subject and a stray
+newline; the statement pointer became a closed object (`source: zamp-verbatim-message`, `sentAt`,
+`encoding: utf-8`, `bytes`, §6b bundle `sha256`) because a bare 64-hex fixed neither where the
+statement lives nor which bytes it digests. And the live stack ARN LEFT the tracked policy:
+`coversStackId` was itself a violation of the no-ARN rule, so the stack is now bound by
+`coversCleanupAuthorizationSha256` — the §6b bundle digest of the out-of-band cleanup value that
+contains `stackId` and `decisionId` — and a new governance scan asserts no governance surface
+carries a CloudFormation stack ARN, with its probes assembled at runtime so the test file passes
+its own scan.
+
+**The helper and the runbooks now name their repository.** `CANONICAL_REPO
+(marciozampiron/backstage-cba-prep)` is pinned in `bin/resolve-run.mjs` and passed as `--repo` on
+every `gh` call — without it, `gh` resolves the ambient clone, and a fork carrying the same
+workflow file and title would satisfy every other rule while handing back a foreign artifact id.
+The runbooks dispatch by workflow FILE with the same `--repo`, and every `gh run download`
+carries it too. A test passes `repo: 'attacker/fork'` and proves the queries stay pinned.
+
+Design round 11 (Codex, two findings) removed the last discretion from the evidence. **The two
+bundle digests got ONE canonical serialization**: `framedBundleDigest` in the policy library is
+the single shared implementation, and the two envelopes are pinned functions —
+`zampStatementDigest` (producer `zamp`, record name = the locator's path, `text/markdown`) and
+`cleanupAuthorizationDigest` (the nine keys in the exported `CLEANUP_VALUE_KEY_ORDER`,
+`application/json`; a permuted input digests identically, a changed key differently). Two
+reviewers can no longer frame the same bytes two "compatible" ways. The statement gained an
+immutable LOCATOR — the decision file under `.agent-handoff/decisions/` plus the commit that
+introduced it — because a source class and a timestamp find nothing univocally. The positive
+fixtures are now REAL: actual statement bytes and an actual nine-key value digested through the
+shared functions, with adversarials over producer, record name, media type, newline, a foreign
+path, and single-key changes to the authorization.
+
+**The first mutation now names its repository.** Round 10 pinned reads and dispatch; the `gh api
+PATCH` that installs `CBA_CLOUD_GATE` still said `repos/<owner>/<repo>`, and a hasty fill-in
+mutates a foreign Environment before the canonical dispatch would fail. The three mutating
+runbooks carry the literal canonical path, and a governance scan walks every fenced `gh` command
+in every runbook: no `<owner>/<repo>` placeholder anywhere, every `gh api … repos/…` on the
+canonical repository, every dispatch and download carrying `--repo` — with positive controls and
+the pin imported from the helper, so there is exactly one place the repository's identity lives.
+
+Design round 12 (Codex, three findings) closed the daylight between looking right and being
+right. **The statement digest now binds the complete locator**: the record name is
+`<path>@<introducedIn>`, so the same path at a different introducing commit — the exact pair the
+round-11 envelope could not tell apart — is a different digest; and a SHA that merely looks like
+a SHA proves nothing, so `verifyStatementLocator` runs the four history checks (commit exists,
+ancestor of the reviewed HEAD, ADDED that file, blob bytes match the recorded length and digest)
+with `git` injected — proven against a scripted history covering every named refusal, including
+same-length-different-bytes content and a foreign introducing commit.
+
+**The cleanup digest refuses what it is not given.** An extra key was silently dropped and a
+missing key silently serialized away — a digest of a projection, not of the value presented. Both
+of Codex's reproductions are now inverted into refusals, along with present-but-undefined values,
+wrong types and non-objects; the full per-key grammar parser remains SPEC-DEPLOY-022's activation
+obligation, stated as shape-now/content-at-activation.
+
+**The gh scanner became a closed structural allowlist over reconstructed commands.** Continuation
+lines are joined, and every fenced `gh` command must satisfy exactly one sanctioned form — the
+literal gate PATCH endpoint (a `"$ENDPOINT"` indirection is an offense because the endpoint token
+itself is inspected), the file-named dispatch with EXACTLY ONE canonical `--repo` (a second
+`--repo` on the same or the next physical line is an offense), the download with the same rule —
+and any other gh subcommand is an offense by default. The three demonstrated bypasses are pinned
+as adversarial tests, and the canonical forms are asserted to pass, so the allowlist is exact
+rather than merely strict.
+
+Design round 13 (Codex, two findings) replaced analysis with identity. **The gh allowlist became
+exact anchored templates**: flag-level analysis was fail-open four ways — commands not STARTING
+with gh were ignored (`env X=1 gh …`, `true; gh …`), tokenization slid past shell operators
+(`… && gh secret set`), only the `--repo VALUE` spelling was recognized (`--repo=fork` passed),
+and any method under the canonical prefix was accepted (`-X DELETE repos/<canon>/actions/
+secrets/…`). A finite command set needs no analysis: any gh-BEARING command — wherever the word
+sits in the line — either matches one of the three reviewed templates character for character, or
+it is an offense. All five demonstrated bypasses plus round 12's three are pinned as regressions,
+and the canonical forms are asserted to pass.
+
+**The reviewed head obeys the identity rule.** `verifyStatementLocator` refused to take `HEAD` or
+a branch name at face value: the anchor of the proof is now a full lowercase 40-character SHA,
+confirmed to EXIST, before any ancestry test — a statement introduced after the actually reviewed
+commit would become "an ancestor of HEAD" the moment anything advances. Eight moving-target
+shapes refuse as `REVIEWED_HEAD_NOT_A_FULL_SHA`, a well-formed SHA naming no commit refuses as
+`REVIEWED_HEAD_MISSING`, and the scripted history now tells the two cat-file probes apart.
+
+Design round 14 (Codex, one finding) ended the arms race by removing the contest. Rounds 11-13
+tried to ANALYZE commands — flags, then anchored templates keyed on the word `gh` — and each
+round the analysis proved fail-open: the executable can be spelled without the sequence
+(`g'h'`, `g\h`, `$(printf '\147\150')`, `${G}${H}`), and template alternations accepted
+cartesian combinations no runbook contains (a download whose artifact and directory name
+different operations; a plan gate carrying the deploy value's wording). **Identity needs no
+analysis**: the governance test now holds a reviewed inventory of EVERY reconstructed fenced
+command line of EVERY runbook — gh or not — and requires equality, in order; a runbook absent
+from the inventory is itself a deviation, and a stale inventory entry whose file is gone fails
+too. Changing any fenced command anywhere is a red build until the same reviewed commit updates
+the inventory. The regression suite mutates the REAL runbook texts: the four obfuscated
+spellings, the three cartesian swaps, a silent command removal, and all eight prior bypasses,
+each proven to deviate; a meta-check keeps the inventory itself canonical (one repository in
+every dispatch/download/API path, no administrative subcommand ever inventoried).
+
+Round I8-3 (Codex FINDINGS, 1 MEDIUM, fixed forward): the annotation law now binds the token
+to the ANCHOR'S SITE, not to the file — a symbol anchor requires its id's token on an
+occurrence's own line or within the ten lines above one; a file-level anchor (symbol null)
+remains an obligation of the whole file. Codex's exact reproduction is the new refusing
+discriminant: a second anchor in the same file (childEvidence), unannotated at its own site,
+refuses even though the abandon block's token exists at distance. Live proof: relocating
+-021's token from the abandon block to the file header refuses by name. One fixture followed
+the law (the table-agreement status-drift case now grants its transient ACTIVE a
+token-satisfied file-level anchor, so the case keeps proving table drift, not annotation).
+
+Round I8-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): SPEC-DEPLOY-021's traceability was
+completed — the abandon block carries its bracketed token beside SPEC-RUN-008's, the
+entrypoint joined the id's own governedPaths, the human table lists both anchors and both
+tests, and the abandon meta-test now proves the annotation's presence as executable evidence.
+The GENERIC law landed in the validator: every non-JSON anchor of an ACTIVE id must carry the
+id's own single-line bracketed token AND be covered by one of the id's own governedPaths —
+refusing discriminants for both directions, plus live reversion proofs. The proof run caught a
+real defect in the law's first draft: the token regex could span lines, letting any distant
+bracket pair embrace a parenthesized prose mention — tightened to a single-line bracket group
+before commit, with the trap recorded in the validator comment.
+
+Slice I8 (first activation batch, per the standing authorization and the post-I7 sequence):
+SPEC-DEPLOY-016 and SPEC-DEPLOY-021 are ACTIVE — the first ids CI enforces. Each activation is
+atomic per §4: exact named tests on the registry (two per id), a closed §6c mutation record
+performed at cee1ac66de42bbf1bed5750142ddfdae8a3abebf with the patch digested as a §6b diff
+document (headSha minted via git stash create, no ref moved, worktree restored and verified
+clean), and the table row moved to ACTIVE in the same commit. Proofs: the deploy-path
+PLAN_CHANGED refusal removed fails exactly the ROUND-4 REPRO test; a DeleteStack call inserted
+into the abandon report loop fails exactly the never-touches-a-stack meta-test. spec:conform
+now RUNS: 2 ACTIVE ids, 4 named tests, all green — and the governed-path predicate is live for
+infra/aws/bin/deploy-release.js and spec/authority-policy.json: their future changes must move
+their conformance evidence. A governance regression pins both activations (status, closed
+record, named tests) so enforcement cannot be quietly switched off.
+
+Round I7-2 (Codex FINDINGS, 1 MEDIUM, fixed forward): the policy no longer forbids the very
+role I7 seated — the blanket `mayNever` term was NARROWED to `any-authority-bearing-role` in
+the vocabulary, the never-grantable set, both policy twins and every consuming test; the old
+guard test was retitled to forbid AUTHORITY (approval, gate, risk, review-of-record, operational
+permission) without denying the seated read-only role; and a coexistence regression keeps the
+retired blanket term from ever returning to any canonical surface while the persona is seated
+(string split so the test cannot satisfy its own scan — which caught the first draft of a
+validator comment carrying the literal). A literal consumer of the policy now reads one
+consistent statement: the persona has its seat, and authority is what it may never have.
+
+Slice I7 (authorized by Zamp, verbatim `ZAMP_APROVED`, 2026-08-11; Codex
+IMPLEMENTATION_REQUEST): the Gemini Spec Auditor persona is SEATED — §10's protocol and
+authority-policy amendments, atomic across every canonical surface. The protocol's actor table,
+AGENTS.md, spec/authority-policy.json AND its validator twin (src/lib/authority-policy.js)
+now state the same standing: read-only semantic auditor, `may: []` ON PURPOSE (the persona
+performs no effect — Zamp performs the paid invocation under a per-run spend-authorization,
+`invoke-paid-model-audit`), an explicit fourteen-item mayNever, and the sole output
+SPEC_AUDIT_REPORT v1 as a document artifact deliberately OUTSIDE the protocol's closed message
+set (never `TYPE:`-labeled, never REVIEW_APPROVED, never a gate, never a substitute for Codex).
+The audit order is fixed in the protocol: mechanical → semantic → Codex → Zamp. The persona
+file's status is SEATED with constraints unchanged; the audit runbook (0.4.0) records the
+mechanical layers as implemented and the semantic stage as gated. Two discriminant governance
+tests landed: same-role-everywhere consistency, and the validator refusing a Gemini that gains
+any grant, loses a prohibition, or rewords its standing. No Gemini call was made in this slice.
+
+Round I6-2 (Codex FINDINGS, 1 MEDIUM, fixed forward at a6366c5020e14b6264e9c0a6bb1dfa3bb1dbfabe):
+the I6 envelope had overclaimed markdown coverage — 12 ids across 13 registry-declared anchor
+points lacked bracketed references (SPEC-GOV-001..009 in the spec's §3/§4/§5/§6b/§6c;
+SPEC-RUN-001/002/005 in the runbook README, whose parenthesized mentions are prose, not
+annotations). All 13 now carry tokens, and test/governance-model.test.js gained the FINITE
+migration inventory: the exact bracketed literals of every I6/I6-2 site plus by-count assertions
+for twin tokens — spec:lint proves tokens RESOLVE, the inventory proves they REMAIN. Deliberately
+finite: future PROPOSED ids gain no obligation (SPEC-GOV-006 binds at activation). Proven red on
+token removal; the inventory's own first draft failed on a miscounted twin and was corrected —
+the regression caught its own author. This paragraph was omitted from a6366c50's commit and
+recorded fix-forward in the commit that follows it.
+
+Slice I6 (authorized by Zamp, verbatim `Zamp_Aproved`, 2026-08-11, after the I5-6
+REVIEW_APPROVED): the `[SPEC-ID]` annotations — §5's third traceability direction made
+greppable. Every PROPOSED id's JS/YAML anchor now carries its bracketed token at the definition
+site (entrypoint file-laws on the header; symbol-laws above their symbols; workflow laws on the
+header, run-name, correlation_id and bind-stage); every markdown anchor is covered by a
+bracketed reference (runbook `specs:` frontmatter already was; the persona and the runbook
+README gained theirs); JSON anchors (authority-policy, IAM policy templates) cannot carry
+comments — the registry's anchor columns remain the mapping there, as §5 states. The linter
+validates every token against the registry (proven: one corrupted id fails spec:lint by name);
+per-anchor presence becomes mandatory only at activation (SPEC-GOV-006). No behavior changed —
+comments only.
+
+Round I5-6 (Codex FINDINGS, 1 HIGH, fixed forward): presence became a WHOLE-WINDOW claim
+under a closed-enum ALLOWLIST — every reconciliation read must be well-formed,
+identity-matched and in a STANDING status (`CREATE_PENDING`/`CREATE_IN_PROGRESS`/
+`CREATE_COMPLETE`/`FAILED`/`DELETE_FAILED`); one tainted read taints the window, so a deletion
+glimpsed at attempt 2 is never erased by a calm attempt 5, and a status outside the documented
+enum is a fact the code cannot claim. Proven with Codex's exact mixed sequence
+(deleting/timeout/malformed/deleting/calm-final → `ABANDON_STATE_UNKNOWN`) and an out-of-enum
+status (→ unknown), both with no false `abandoned` and no claimed rejection. Runbook 0.15.0,
+prose only.
+
+Round I5-5 (Codex FINDINGS, 1 HIGH, fixed forward): a status-0 describe is not proof the
+delete was rejected — reconciliation became BOUNDED RE-OBSERVATION (five attempts). Absence
+concludes at any attempt (`ChangeSetNotFound`); presence only at the FINAL attempt, in a
+well-formed, identity-matched (`ChangeSetId`), NON-delete status; a deleting status
+(`DELETE_PENDING`/`DELETE_IN_PROGRESS`/`DELETE_COMPLETE`), a malformed response, a diverging
+identity or a transport error at the bound is `ABANDON_STATE_UNKNOWN`. Proven both ways:
+sustained `DELETE_IN_PROGRESS` → unknown at the bound (never a claimed rejection, polling
+counted at exactly five), and present-then-absent → abandoned (an early present-looking read
+never freezes the verdict). Runbook 0.14.0, prose only.
+
+Round I5-4 (Codex FINDINGS, 1 HIGH, fixed forward): an ambiguous delete outcome no longer
+breaks the newest-artifact derivation — a failed delete call reconciles by ONE bounded read
+before anything is recorded. Provably absent → recorded in `abandoned` (the run still stops on
+the transport surprise; the chain is proven to close from that artifact alone). Provably present
+→ plain `ABANDON_DELETE_FAILED`, no deletion claimed. Inconclusive → `ABANDON_STATE_UNKNOWN`,
+claiming neither state, the set's digest kept on the map; Zamp re-observes that one set
+read-only before any new decision (runbook 0.13.0, prose only — the fenced command inventory is
+unchanged). No path records a false `abandoned`; no path leaves a continuation mechanically
+blocked.
+
+Round I5-3 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the continuation became
+CLOSED under interruption — every abandon artifact now carries the ORIGINAL root as its
+`planDigest` and the FULL ordered stack → `canonicalSha256` map (`ALREADY_ABSENT` positions
+included), so a second interruption resumes from the newest artifact alone, proven
+fail → fail → third decision → success end to end. Every halt after any progress reports the
+gone prefix's stack records (never an empty reporting field). And absences must form a PREFIX
+of the group order — the lane deletes in order, so a hole after the first present entry refuses
+`ABANDON_NOT_A_PREFIX` with nothing deleted, even when the supplied digests would close the root.
+
+Round I5-2 (Codex FINDINGS, 1 HIGH + 2 MEDIUM, fixed forward): the plan digest became a ROOT
+over the ordered per-entry digests, and a PARTIAL abandon became RESUMABLE — a new decision
+carries `absentEntryDigests` (copied from the failed run's `changeSets[].canonicalSha256`), the
+present remainder re-verifies, the absent prefix folds in from the gate, and the same root must
+emerge before anything is deleted (recreated/foreign sets, missing or leftover digests refuse
+with nothing deleted; the whole wave's stack records stay REPORTED). A `MODE_MISMATCH` refusal
+now publishes under the NEUTRAL name — the gate's claimed mode never reaches the record, proven
+reader → materializer → uploader, executed. An inconclusive `describe-stacks` reports `status
+unverifiable` — never a clean bill. Gate schema is now ELEVEN keys (§8a widened while PROPOSED).
+
+Implementation Slice I5 delivered the abandon lane — SPEC-RUN-008 made real, the last mutating
+operation of the dev tier. The dispatch gains mode `abandon` (run-name grammar already knew it);
+dev-stage is reachable on the effect modes and the ENTRYPOINT enforces name/effect coherence via
+DISPATCH_MODE — a run titled abandon may only delete, a dev_only run may only plan or deploy,
+MODE_MISMATCH otherwise, refused before any change-set API call. The abandon effect deletes
+EXACTLY the declined plan: the recomputed digest must equal the one the abandon gate names
+(PLAN_CHANGED refuses with nothing deleted — a drifted, recreated or superseded set is a
+surprise, and a surprised operation stops, never retries); account and window revalidate before
+EACH deletion (honest partial on every halt, shared `abandoned` array in evidence); a state or
+conflict error stops immediately. Stack records left in REVIEW_IN_PROGRESS are REPORTED, never
+deleted — the entrypoint does not even contain the DeleteStack verb, asserted as a meta-test
+(SPEC-DEPLOY-021). Evidence gained the closed `abandoned` and `reportedStackRecords` fields with
+outcome ABANDONED, materialized under the runbook's own name (abandon.json) and published by a
+dedicated pinned uploader — the four-way truth table proves exactly one uploader per mode. The
+abandon runbook's commands were already exactly this contract (dispatch mode=abandon, download
+--name abandon, sha256sum abandon.json — the reviewed command inventory holds unchanged);
+LANE-004's PROPOSED text widened to the reviewed triple; RUN-008 holds real anchors.
+
+Implementation round I4-2 (Codex: 1 MEDIUM, 1 LOW) closed the refusal's last mile and precised a
+guarantee. **Refusals route by EXCLUSION**: the refusal uploader's `mode == ''` condition let an
+abandon-mode refusal materialize evidence.json and publish nothing — the condition is now
+`mode != 'plan_only' && mode != 'deploy'`, and a truth-table regression proves EXACTLY ONE
+uploader matches every mode the record can carry (plan_only, deploy, abandon, empty), plus an
+executed materializer run proving an abandon REFUSED record lands as evidence.json byte for
+byte. **The wording now matches the order of operations**: the abandon refusal happens after full
+validation and before any CHANGE-SET API call or mutation — the STS identity reads that precede
+the gate check are verification, not effect — stated identically in code comment, test, spec
+evidence column and here.
+
+Implementation Slice I4 delivered the successor gate schema — SPEC-DEPLOY-019 is now the code.
+`CLOUD_GATE_KEYS` carries the ten §8a keys: `manifestDigest` replaced `assemblyDigest`, binding
+the COMPLETE closed manifest through one §6b bundle digest RECOMPUTED at the gate from the
+verified manifest (never trusted from the caller); the envelope is pinned once in
+`manifestBundleDigest` (producer `cba-release-binding`, record `binding-manifest`,
+application/json, canonical deep-key-sorted serialization) — a CommonJS twin of the governance
+framing, with `test/digest-agreement.test.js` proving the ESM/CJS implementations digest
+identically over shared fixtures, multibyte included, so a fork between them is a red build. The
+mode enum carries all three modes: an abandon-mode gate is schema-valid (planDigest non-null per
+§8a — it names the DECLINED plan) but refuses as ABANDON_NOT_IMPLEMENTED after full validation
+and provably before any change-set API call or mutation (the STS identity reads that precede the
+gate check are verification, not effect), until the abandon lane lands. A gate written to the retired
+-002 shape (assemblyDigest) is now an UNKNOWN key — malformed, not half-working. dev-preflight
+computes `manifest_digest` as a job output and the binding artifact embeds it, refusing to exist
+without a well-formed digest (the binding is the digest's birthplace — SPEC-RUN-006 made whole).
+Lifecycle: SPEC-DEPLOY-002 was RETIRED by before-activation absorption (§4) — the tree now
+implements the complete successor, and an id describing code that no longer exists cannot stay
+PROPOSED honestly; -019 holds real anchors; 54 PROPOSED / 2 RETIRED under spec:lint's history
+laws.
+
+Implementation round I3-4 (Codex, 1 MEDIUM) corrected the bound to the channel's NARROWEST hop
+and the arithmetic that mislabeled it. The 450k-UNIT cap fit the job-output store but not the
+single Linux envp entry (MAX_ARG_STRLEN, 128 KiB) that injects the record into the
+materializer — the shell dies with E2BIG before any in-script guard, reproduced at ~140 KB — and
+450k UTF-16 units is up to ~900 KB, not "half of 1 MB". The cap is now EVIDENCE_MAX_BYTES =
+100_000, measured with Buffer.byteLength in UTF-8 (what envp counts); a multi-byte regression
+proves the unit measure would have undercounted 3:1. And the materializer is now proven by
+EXECUTION, as required: the real script runs with a record sized near the cap (~98 KB) and the
+produced plan.json equals the record byte for byte; the foreign-correlation and vanished-evidence
+paths fail for real; and a companion test demonstrates the reason the byte cap exists — a 400 KB
+env entry (legal under the retired cap) cannot even start the shell (E2BIG).
+
+Implementation round I3-3 (Codex, 1 HIGH) proved the transport instead of assuming it. The
+evidence record crosses jobs as a GitHub output — a channel with a documented ~1MB per-job bound
+(UTF-16) that can also suppress values — so three laws landed. (1) The record is BOUNDED to the
+channel: EVIDENCE_MAX_UTF16 = 450k units (half the platform bound), and `boundedEvidence`
+reshapes by NAMED code — rendering removed with EVIDENCE_RENDERING_OMITTED, variable lists
+dropped with EVIDENCE_CHANNEL_OVERFLOW — never a truncation; the fixed core always fits. (2) The
+run-level law: a plan whose full record cannot cross the channel REFUSES as
+PLAN_RENDERING_TOO_LARGE after preparation — the prepared change sets REMAIN (a refused plan is a
+declined plan, removable only under the abandon operation), the bounded refusal evidence still
+travels, and no gate can be issued over a rendering nobody could download complete; the plan
+runbook gained the stop condition (split the wave, plan again). Deploy records carry no rendering
+and cross even a test-narrowed 2k channel untouched. (3) Transport loss is a RED RUN: the
+materializer fails loudly when a mode arrived with empty evidence (the dropped/suppressed-output
+case, after a possible effect), and validates arrival — schema plus THIS dispatch's correlation —
+before writing the file. Tests drive a plan through a channel it cannot fit, force the
+pathological reshape branch, and pin the vanish guard; the normal four-stack record measures
+under a quarter of the real cap.
+
+Implementation round I3-2 (Codex: 1 HIGH, 2 MEDIUM) replaced the scrub with the boundary it was
+pretending to be. **`id-token: write` is job-scoped**: emptying AWS_* variables cannot remove the
+ability to mint a fresh OIDC token, and `!cancelled()` would have let the uploaders run even
+after a failed scrub — so no post-effect ACTION ever runs in the credentialed job again. The
+evidence record leaves dev-stage as job OUTPUTS (the channel the manifest already travels) and a
+new `dev-evidence` job — no id-token, no Environment, no AWS consumer, a fresh runner that can
+never mint a token, DAG-terminal — materializes the file under the NAME the runbooks digest
+(plan.json / deploy.json / evidence.json, closing the F3 mismatch) and runs the three pinned
+uploaders. The window rule was re-narrowed: after the consumer, the ONLY steps are the closed
+named set (preflight evaluator, entrypoint, evidence reader) with their full content pinned; a
+job holding id-token may never contain an uploader; both proven by mutation (uploader in
+dev-stage trips two named rules; a foreign run step after the consumer trips the closed set;
+dev-evidence acquiring id-token refused). The entrypoint records a mutation at ACCEPTANCE
+(F2): `executed` is pushed when execute-change-set returns success, before the stability wait, so
+a STACK_EXECUTION_FAILED artifact carries the started stack and log and artifact can no longer
+disagree — regression proves the printed set equals the recorded set. SPEC-LANE-001's PROPOSED
+text now states the job-boundary law, with the short-lived scrub clause recorded as replaced.
+
+Implementation Slice I3 delivered the evidence artifacts for the two mutating operations
+(SPEC-RUN-007 made real; SPEC-LANE-001 widened while PROPOSED). The entrypoint gained
+`--artifact-out`: with it, `CORRELATION_ID` must match the closed grammar BEFORE anything runs
+(unattributable evidence is not evidence — CORRELATION_MALFORMED refuses and writes nothing), and
+every exit after that proof writes the CLOSED record — schema, correlationId, releaseSha,
+environment, mode, decisionId, stacks, planDigest, change sets by NAME (an id is an ARN and never
+enters evidence), the SHARED `executed` array so every halt carries the honest partial, refusal
+codes verbatim, and the sanitized rendering on plan_only. Tests prove: the closed key set, the
+artifact digest IS the printed digest, no account-bearing ARN anywhere and no ARN at all outside
+the rendering, the mid-wave halt recording exactly the executed prefix, and byte-for-byte
+unchanged behavior without the flag. The lane uploads it with the credential window CLOSED first:
+a reviewed scrub step empties every AWS_* variable via GITHUB_ENV, and only AFTER it do the three
+pinned uploaders run (plan / deploy / refusal-evidence, upload-artifact v7.0.1 by SHA,
+if-no-files-found error/error/ignore) — the window rule was widened to a still-closed grammar
+(consumer → entrypoint only → scrub → pinned uploaders + evidence read only), with mutation
+proofs: an uploader BEFORE the scrub trips the action rule, a foreign action AFTER the scrub
+trips the post-scrub vocabulary, npm after the scrub refused. Steps run on refusals too
+(`!cancelled()`): evidence of a refused run is still evidence.
+
+Implementation Slice I2 (first commit) delivered the lane's bind foundations — SPEC-LANE-005/006
+made real. `release-pilot.yml` gained: a canonical `run-name` (`cba-release <mode>
+<correlation_id>` — the exact closed string bin/resolve-run.mjs matches by equality); a REQUIRED
+`correlation_id` dispatch input whose closed grammar (`^cba-70-[0-9a-f]{32}$`) is refused in the
+global preflight BEFORE any git invocation or credentialed stage (executed tests drive the real
+script: seven malformed shapes refused with zero git calls and nothing emitted); a `bind_only`
+mode option; and a `bind-stage` job that terminates the DAG — gated on the IMMUTABLE dispatch
+input (an Environment value changed mid-run changes nothing), holding no id-token, containing no
+OIDC consumer, needed by no job — which assembles `binding.json` (correlationId, releaseSha,
+manifest) and uploads it via SHA-pinned upload-artifact v7.0.1. `dev-stage` is now reachable
+ONLY on `mode == 'dev_only'`, so a bind run cannot deploy. EXPECTED_WORKFLOW regenerated
+deliberately; the mode rule names the reviewed non-pilot set {bind_only, dev_only} with
+dev_then_pilot still refused by name; IF grammar extended to the closed mode literals; six jobs;
+new semantic rules and mutation proofs (mode gate stripped, id-token acquired, foreign run name,
+optional correlation). SPEC-LANE-004's PROPOSED text widened accordingly (§4 permits editing
+PROPOSED); LANE-005/006 rows and registry entries now carry their real anchors. All ids remain
+PROPOSED.
+
+Implementation round I1-5 (Codex, two HIGH) removed the last places where breakage read as
+absence. **A git failure is never "no history"**: the shallow probe must run and answer
+(`HISTORY_UNPROVABLE` otherwise), parents are ENUMERATED (`rev-list --parents` — a proven root
+commit is the only legitimate "no baseline"), file absence is proven by `ls-tree` (and a `show`
+that fails for a file ls-tree just listed refuses), and a broken diff refuses instead of
+returning "no changes" — in the worktree resolver, the commit-mode loader and both diff modes,
+with adversarials for each breakage in a non-shallow repository. **Every child runs inside its
+own boundary**: two run-level guards left a window where a check or concurrent process could
+swap a later child's file for a symlink and restore it before the final guard —
+`assertChildBoundary` now verifies, immediately before AND after each test and each check, that
+the audited object is a regular blob, that the PHYSICAL path is a regular file (lstat), that its
+bytes equal the audited commit's bytes exactly, and that the tree is clean. Codex's
+discriminating reproduction is a regression: a check that swaps the probe file for a symlink to
+/tmp mid-run is caught at that child's boundary (`EXEC_PATH_NOT_REGULAR`), same-length byte
+drift is caught (`EXEC_BYTES_DRIFTED`), and the honest end-to-end run over an ACTIVE fixture
+conforms.
+
+Implementation round I1-4 (Codex, three HIGH + one MEDIUM) took the laws to where CI actually
+runs. **The reviewed commit itself was not green** — the round-I1-3 provenance assertion demanded
+baseline bytes differ from current bytes, which is false for any commit that does not touch the
+registry; the test now asserts PROVENANCE (the baseline equals what the right source holds —
+HEAD when diverged, HEAD's parent when clean — whatever those bytes are), and this round's
+battery was re-run at the final commit. **Shallow clones refuse instead of degrading**: CI's
+default single-commit checkout made HEAD~1 unreadable and every historical law silently became
+"registry birth" — `HISTORY_TRUNCATED` now fails closed in both the baseline resolver and the
+diff, quality.yml checks out with fetch-depth: 0, and CI runs the FULL SHA-bound paths
+(`spec:lint --commit $(git rev-parse HEAD)` and `spec:conform --commit …`) beside npm test.
+**Executed bytes must be regular tracked files**: a tracked symlink "exists", keeps the worktree
+clean, and runs bytes from outside the audited commit — `isRegularTrackedFile` now checks BOTH
+views (the git object's mode 100644/100755 and lstat on the path the child would actually
+execute), applied to test files and check refs, proven with a real symlink built and refused in
+the test. **Renames carry both sides**: `--name-status -M` replaced `--name-only`, so a governed
+file renamed AWAY still counts as touched, with Codex's exact reproduction as a regression.
+
+Implementation round I1-3 (Codex, four HIGH findings) closed the gap between the laws and what
+CI actually exercises. **The history baseline is never the bytes under validation**: on a clean
+checkout the worktree file IS HEAD's file, so "compare with HEAD" compared the registry with
+itself and every historical law was vacuously green — the baseline is now HEAD when the worktree
+diverged, HEAD's parent when it is exactly HEAD, proven against the real loader; and retiring an
+ACTIVE id no longer licenses a rewrite — the text stays byte-identical through retirement. **The
+annotation scan fails closed and is commit-bound**: a git error refuses (exit 1 with empty output
+is the only "no matches"), broad candidates are parsed so a malformed token offends instead of
+vanishing, frontmatter reference lists resolve piece by piece, documentation placeholders are a
+closed set, and `--commit` greps the named tree-ish rather than the ambient worktree. **The
+governed-path predicate exists**: `governedPathOffenses` flags an ACTIVE id whose governed files
+changed without its tests or checks moving, fed by `diffChangedFiles` with the honest baseline
+per mode (commit vs parent; dirty worktree vs HEAD, untracked included; clean checkout HEAD vs
+parent), wired into spec:lint. **Checks are contained**: refs obey the same repo-relative law as
+anchors, every child (tests included) runs with a minimal environment — proven by a probe check
+that fails if the invoking shell's variable leaks — and bounded wall-clock; and the commit-bound
+conformance run re-guards the worktree AFTER the children ran, so a check that edited code or
+tests mid-run invalidates the verdict instead of decorating it.
+
+Implementation round I1-2 (Codex, six findings on Slice I1) hardened the spec system before any
+id can activate. `--commit` now requires the worktree to BE the audited commit (HEAD equal, tree
+clean) — the tests run from the worktree, and a broken target must not borrow a fixed tree's
+green. Conformance executes CHECKS as obligations (bash, 60s bound, named refusals), not just
+tests. The historical laws exist: judged against the last committed registry — inductively, every
+reviewed commit — nothing is ever deleted, an ACTIVE text cannot change even when digest and
+table are edited consistently with it, ACTIVE never quietly reverts to PROPOSED, and RETIRED is
+permanent in status, successor and text. Supersession became RECIPROCAL data (`supersedes` is a
+list; -019 names both -002 and the absorbed -020), so a supersededBy aimed at an unrelated id
+refuses. Paths must be normalized repo-relative (an anchor can no longer escape to a sibling
+checkout), an ACTIVE anchor symbol must actually appear in its file, and the third traceability
+direction runs from day one: every `[SPEC-…]` annotation in tracked content must resolve. The
+decision record now attributes each received line to its actual channel — what Opus received
+verbatim, what Codex reports as Zamp's own words, and Codex's normalization, separately. The
+spec header states the honest phase: implementation in progress, zero ACTIVE, no completeness
+claimed.
+
+**DESIGN PHASE CLOSED — APPROVED.** Codex `REVIEW_APPROVED` with zero findings at
+`648748aadf5a9a5101524337f9a09379d6807ca7` (2026-08-07); Zamp accepted the design and authorized
+the implementation phase, LOCAL ONLY (`decisions/70-spec-anchored-design-accepted.md`). The
+implementation follows §10's order — spec system first, then annotations, protocol amendments and
+lane changes — with every activation atomic with its conformance. Publication, cloud effects,
+secrets, paid calls and the TOCTOU acceptance remain exactly as gated before.
+
+Design round 15 (Codex, two findings) made the reconstruction itself fail-closed. **A dangling
+continuation can no longer vanish**: the reconstructor used to reset its buffer silently at a
+fence boundary, and skipped blank/comment lines even mid-continuation — so a trailing backslash
+followed by a comment reconstructed IDENTICALLY to the original document while bash would join
+and execute the hidden command. Now the blank/comment skip applies only BETWEEN commands (while a
+continuation is open, whatever follows is payload, per shell semantics); a continuation left open
+at a fence boundary or at EOF, and an unbalanced fence, are refusals — and a refusal counts as a
+deviation, never as a clean document. Codex's exact reproduction, plus continuation+blank,
+continuation-at-closer, continuation-at-EOF and unbalanced-fence, are pinned regressions against
+the real runbook text, with the untouched document asserted clean beside them.
+
+**The inventory's own bound became a closed operation-class list.** The prefix meta-checks let
+`gh api -X DELETE repos/<canon>/actions/secrets/…` and `gh issue close` through; every
+inventoried gh command must now match one of the three sanctioned operation classes, anchored
+both ends, with both reproductions pinned as refusals. The claim is stated at its honest size:
+the rule bounds gh-spelled operations by CLASS — exact cross-field pairing and non-gh spellings
+inside the inventory are what independent review of any inventory diff exists for, the inventory
+being a reviewed artifact and this rule its belt, not its judge.
+
+**THE LANE IS NOT YET OPERABLE — activation prerequisites, each Zamp-gated, recorded in the
+workflow header:** (1) the per-tier release bootstraps (`aws-bootstrap-and-oidc.md` step 12):
+three operator-managed policies per tier + `cdk bootstrap --qualifier cbardev|cbarpil
+--toolkit-stack-name cba-release-toolkit-<env>`; (2) provision
+`cba-study-coach-gha-deploy-dev` + its boundary (Zamp creates the policy outside CloudFormation)
+via a human-gated SecurityStack redeploy under the extended exec policy, then publish its ARN as
+the dev Environment secret `AWS_DEPLOY_ROLE_ARN`; (3) populate the dev Environment secrets and variables (read-only
+inspection on 2026-08-02 found ZERO of each); (4) per release, set `CBA_CLOUD_GATE` — naming the
+reviewed plan group (a wave on a fresh tier; the full set in steady state): first `plan_only`,
+which prepares that group's change sets and emits `PLAN_DIGEST`; then `deploy` naming that
+digest inside a ≤1h window — wave by wave until the tier exists.
 
 ## Ownership
 
-- Issue owner / implementation executor: **Claude Opus 5**. **No implementation worktree currently
-  exists** — the Slice A worktree and local branch were cleaned up after the merge, and the next
-  slice gets its own, cut from `origin/main` on assignment.
+- Issue owner / implementation executor: **Claude Opus 5** — Slice B1 in implementation on worktree
+  `../cba-issue-70b`, branch `task/70-aws-dev-deploy-slice-b`, cut from `origin/main` at
+  `95583e94` on Zamp's assignment (2026-08-02).
 - Architect / independent technical and security reviewer, read-only: **Codex**.
 - Assignment, approval, risk acceptance, gate and merge authority: **Zamp**.
 - One owner at a time: while this is in `active/`, no other agent takes #70 files.

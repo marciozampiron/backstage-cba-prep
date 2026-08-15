@@ -21,6 +21,7 @@
 // a supplied value to the output. Codex's Slice A review reproduced role-ARN and credential-shaped
 // material in this command's output, which is what these codes replace.
 const { DEFAULT_AUTH_URLS, defaultAuthDomainPrefix, parseExactUrlList, VALID_ENVIRONMENTS } = require('./context');
+const crypto = require('node:crypto');
 
 /** The RFC 2606 reserved TLD the committed pilot placeholder uses. */
 const RESERVED_TLD = 'invalid';
@@ -93,6 +94,36 @@ const CODES = {
   ASSEMBLY_UNREADABLE: 'could not be read or contains no files',
   ASSEMBLY_UNSAFE_ENTRY: 'contains a symlink or non-regular entry — an assembly is regular files only, and anything else is a path for content to escape the digest',
   ASSEMBLY_DIGEST_MISMATCH: 'does not match the synthesized assembly this run would deploy',
+  // Zamp's cloud-execution gate (#70 Slice B1 review). GitHub Environment protection binds WHO may
+  // run the lane; it does not bind the run to a reviewed plan. The gate is a closed JSON value the
+  // human sets per release: it names the exact release, the exact assembly digest, a mode
+  // (diff_only or deploy) and an expiry — so the effect that executes is the one whose plan was
+  // reviewed, and nothing executes on an absent, stale or re-aimed authorization.
+  CLOUD_GATE_MISSING: 'is not present — a cloud effect requires the human execution gate (CBA_CLOUD_GATE), and its absence is a refusal, never a default',
+  CLOUD_GATE_MALFORMED: 'is not a well-formed cloud-execution gate (closed schema: issue, environment, releaseSha, assemblyDigest, mode, expiresAt)',
+  CLOUD_GATE_MISMATCH: 'does not match the verified manifest — the gate authorizes exactly one release, one environment and one assembly, and this is not it',
+  CLOUD_GATE_EXPIRED: 'has expired — the gate authorizes a bounded window, and this run is outside it',
+  CLOUD_GATE_TTL_EXCEEDED: 'grants a window longer than the maximum — a gate is a short-lived decision, never a standing authorization',
+  CLOUD_GATE_NOT_YET_VALID: 'is in the future — a gate whose approval instant has not arrived authorizes nothing yet',
+  CLOUD_GATE_STACKS_INVALID: 'names a stack group outside the reviewed plan groups — first deployments run wave by wave (each wave under its own gate), steady state uses the full group, and nothing else is authorizable',
+  CHANGE_SET_UNAVAILABLE: 'has a change set that is not AVAILABLE to execute — an obsolete or superseded plan must be re-prepared and re-reviewed, never gated only to fail at execution',
+  PLAN_PREPARE_FAILED: 'could not be prepared — the change-set child failed, and without named change sets there is no plan to review or execute',
+  BOOTSTRAP_ROLE_UNASSUMABLE: 'could not be assumed — without this tier\'s cdk deploy role there is no way to read or execute the change sets',
+  CHANGE_SET_MISSING: 'has no prepared change set under this release\'s name — the reviewed plan does not exist (expired, deleted, or never prepared); run plan_only again',
+  CHANGE_SET_UNREADABLE: 'has a change set that could not be described — an unreadable plan authorizes nothing',
+  CHANGE_SET_SCHEMA_UNKNOWN: 'has a change set carrying a field the reviewed schema does not describe — an unreviewed field can change what an approval means, so the plan refuses until a human extends the schema',
+  CHANGE_SET_PAGINATION_UNCONSUMED: 'has a change set whose description did not finish paginating — a partial plan describes an effect nobody reviewed, so it authorizes nothing',
+  CHANGE_SET_FAILED: 'has a change set in a failed state — a plan that CloudFormation itself rejected cannot be reviewed or executed',
+  PLAN_CHANGED: 'does not match the plan the gate names — the change sets differ from the reviewed ones (recreated, drifted or edited), and a changed world needs a new review before any effect',
+  PLAN_RENDERING_TOO_LARGE: 'produced a rendering whose evidence record cannot cross the job-output channel complete — evidence is never truncated, so the plan refuses; split the wave and plan again',
+  MODE_MISMATCH: 'names a gate mode the dispatched lane does not correspond to — a run titled abandon may only delete, and a dev_only run may only plan or deploy; the run name must mean what happened',
+  ABANDON_STATE_UNKNOWN:
+    'the delete call failed and bounded re-observation could not prove the set absent or present — presence requires an UNBROKEN window of well-formed, identity-matched observations in a standing status from the closed enum, and any deleting or unknown status, malformed response, diverging identity or transport error taints it; recorded as neither deleted nor present; read-only reconciliation of the named set is required before a new decision',
+  ABANDON_NOT_A_PREFIX:
+    'an absence after the first present entry cannot result from the lane\'s ordered deletion — the observed world is not a state this operation produced; nothing was deleted; re-observe under a new decision',
+  ABANDON_DELETE_FAILED: 'refused to delete — CloudFormation returned a state or conflict error, which means the world changed between observation and action; a surprised operation stops, it does not retry',
+  EXECUTE_FAILED: 'refused to execute — CloudFormation would not start the reviewed change set (a stack modified after preparation refuses exactly here)',
+  STACK_EXECUTION_FAILED: 'did not reach a healthy terminal state — the execution failed or rolled back; the partial record above is the honest state',
 };
 
 class PreflightError extends Error {
@@ -307,7 +338,47 @@ function evaluatePreflight({ environment, context = {}, domainProbe = null } = {
   };
 }
 
+/**
+ * §6b `bundle` framing over ONE record — the CommonJS TWIN of `framedBundleDigest` in
+ * src/lib/authority-policy.js (ESM, unreachable from this CJS tree). The envelopes MUST agree
+ * byte for byte; test/digest-agreement.test.js proves both implementations produce identical
+ * digests over shared fixtures, so drift between the twins is a red build, not a latent fork.
+ */
+function framedBundleDigestCjs({ producer, name, mediaType, content }) {
+  const bytes = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+  const doc = {
+    digestKind: 'bundle',
+    version: 1,
+    producer,
+    records: [{
+      name,
+      mediaType,
+      bytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    }],
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(doc), 'utf8').digest('hex');
+}
+
+/**
+ * The manifest digest the cloud gate names (SPEC-DEPLOY-019, §8a): the §6b bundle digest over
+ * the CANONICAL serialization of the complete closed manifest — keys deep-sorted so the digest
+ * is a property of the manifest's CONTENT, not of whichever writer serialized it. The envelope
+ * is pinned here, once: producer, record name and media type are part of the digested bytes.
+ */
+// [SPEC-DEPLOY-019]
+function manifestBundleDigest(manifest, deepSortKeysFn) {
+  return framedBundleDigestCjs({
+    producer: 'cba-release-binding',
+    name: 'binding-manifest',
+    mediaType: 'application/json',
+    content: JSON.stringify(deepSortKeysFn(manifest)),
+  });
+}
+
 module.exports = {
+  framedBundleDigestCjs,
+  manifestBundleDigest,
   PROBE,
   CODES,
   PREFIX_MAX,

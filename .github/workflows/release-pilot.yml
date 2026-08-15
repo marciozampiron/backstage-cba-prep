@@ -1,5 +1,11 @@
-# Release orchestrator (#70 Slice A) — release identity, preflight, binding and gates.
-# NOTHING DEPLOYS YET.
+# [SPEC-LANE-001, SPEC-LANE-002, SPEC-LANE-003, SPEC-LANE-004, SPEC-RUN-007, SPEC-RUN-008]
+# Release orchestrator (#70) — release identity, preflight, binding, gates and the DEV deploy.
+# SLICE B1 + I2: the dev stage deploys AWS through the sanctioned entrypoint, and `bind_only`
+# publishes the release manifest as a structured artifact without entering any mutating stage.
+# PILOT DEPLOYS NOTHING — promotion is MECHANICALLY BLOCKED: `mode` offers only the reviewed
+# non-pilot set {bind_only, dev_only}, so the pilot jobs (whose success expressions require
+# `dev_then_pilot`) are unreachable until O1/O2, the deployed smokes and the live SNS/KMS
+# notification proof are implemented in later slices.
 #
 # Shaped by `docs/architecture/deployed-environment-smoke-workflow-design.md` §1 and §4. Slice A
 # delivers the identity, the ordering, the binding and the refusals; the deploys, the F1/F2 gates
@@ -41,7 +47,47 @@
 # DEFINITION from the branch the operator selects. The identity job constrains the RELEASE, not the
 # file; what stops a modified workflow from reaching pilot secrets is the pilot Environment's
 # deployment-branch restriction — which now exists and is main-only.
+#
+# THIS LANE IS NOT YET OPERABLE, by design — activation has prerequisites, each human-gated and
+# each refusing loudly while absent (read-only inspection on 2026-08-02 found ZERO secrets and
+# ZERO variables in the dev Environment):
+#   1. The RELEASE BOOTSTRAPS (aws-bootstrap-and-oidc.md step 12): PER ENVIRONMENT, the three
+#      operator-managed policies (gha-deploy boundary, runtime boundary, cfn-exec-release —
+#      rendered per tier) and `cdk bootstrap --qualifier cbardev|cbarpil --toolkit-stack-name
+#      cba-release-toolkit-<env>` with that tier's execution policy — the enumerated authority
+#      the four deployable stacks execute through, one blast radius per tier. Without it the
+#      deploy role's assumable targets do not exist and the lane cannot mutate anything.
+#   2. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
+#      operator-managed boundary and the extended #66 exec policy — a human-gated SecurityStack
+#      redeploy — then its ARN published as the dev Environment secret AWS_DEPLOY_ROLE_ARN.
+#   3. The dev Environment configuration: AWS_DEPLOY_PREFLIGHT_ROLE_ARN, AWS_REGION,
+#      CBA_AUTH_CALLBACK_URLS, CBA_AUTH_LOGOUT_URLS, CBA_AUTH_DOMAIN_PREFIX,
+#      CBA_EXPECTED_USER_POOL_ID.
+#   4. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
+#      release, assembly digest, decision id, a bounded window (strict RFC3339 UTC, at most one
+#      hour) and the REVIEWED PLAN GROUP it covers — first with mode plan_only, which PREPARES
+#      one named CloudFormation change set per stack in the group and emits PLAN_DIGEST over
+#      their unredacted canonical describes (property values included — the rendering keeps
+#      service/type/resource paths VERBATIM so principals are classifiable, and pseudonymizes
+#      only account material at 128 bits); then with mode deploy NAMING that digest, which
+#      executes EXACTLY those change sets. A recreated or drifted plan refuses as PLAN_CHANGED;
+#      an OBSOLETE change set never receives a digest; CloudFormation itself refuses a change
+#      set whose stack moved after preparation. FIRST DEPLOYMENT of a tier runs in dependency
+#      WAVES (Identity+Data, then Api, then Observability — each wave planned, reviewed and
+#      executed under its own gate) because a change set whose Fn::ImportValue producers are
+#      unexecuted cannot even be created; steady state uses the full group in one cycle. No gate, no children.
+#
+# CREDENTIALS AND PROJECT CODE NEVER SHARE A WINDOW (round 3): synth — which executes project
+# code, bundlers and package lifecycles — runs in its own credential-free step BEFORE the OIDC
+# consumer in every job. After the consumer, the only thing that executes is the reviewed
+# entrypoint (node bin/deploy-preflight.js / node bin/deploy-release.js); a semantic invariant
+# refuses npm/npx or any action step after credential acquisition.
 name: Release Pilot
+# The run's NAME carries the caller's correlation id (SPEC-LANE-006): a run must be identifiable
+# from run metadata alone, BEFORE any artifact can be downloaded — bin/resolve-run.mjs matches
+# this exact closed string by equality.
+# [SPEC-LANE-006]
+run-name: cba-release ${{ inputs.mode }} ${{ inputs.correlation_id }}
 
 on:
   workflow_dispatch:
@@ -50,20 +96,29 @@ on:
         description: 'Full 40-character commit SHA to release; must be an ancestor of main'
         required: true
         type: string
+      # [SPEC-LANE-006]
+      correlation_id:
+        description: 'Caller-generated id for THIS decision, cba-70- plus 32 lowercase hex (a CSPRNG value, per the runbook standard); it becomes part of the run name and of every uploaded artifact'
+        required: true
+        type: string
       mode:
-        description: 'dev_only stops after the dev stage; dev_then_pilot continues to pilot after it is green'
+        description: 'bind_only terminates after the preflight (no cloud authority beyond the read-only preflight role); dev_only is the plan/deploy path; abandon deletes the change sets of a DECLINED plan and nothing else — pilot promotion is mechanically blocked until O1/O2, the smokes and the live SNS/KMS proof are implemented'
         required: true
         type: choice
         options:
+          - bind_only
           - dev_only
-          - dev_then_pilot
+          - abandon
 
 permissions:
   contents: read
 
-# One release at a time. Keyed on the release, because the environment is not an input.
+# Releases serialize PER ENVIRONMENT (design §1): a LITERAL lock, never derived from inputs — a
+# group keyed on release_sha would give two different SHAs two different groups and let them
+# mutate dev concurrently. Slice B1 deploys only dev, so the one literal group is release-dev;
+# the promotion slice introduces release-pilot alongside it, through review.
 concurrency:
-  group: release-pilot-${{ inputs.release_sha }}
+  group: release-dev
   cancel-in-progress: false
 
 jobs:
@@ -76,6 +131,7 @@ jobs:
   global-preflight:
     name: Release identity (shape, object type and ancestry)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -90,12 +146,20 @@ jobs:
         id: identity
         env:
           RELEASE_SHA: ${{ inputs.release_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
         run: |
           set -euo pipefail
           # Shape FIRST, before any git invocation, and over ALL forty characters: a `[0-9a-f]*`
           # pattern validates only the first one, so "a" followed by 39 "Z"s passed it.
           if [ "${#RELEASE_SHA}" -ne 40 ] || [ -n "${RELEASE_SHA//[0-9a-f]/}" ]; then
             echo "::error::release_sha must be exactly 40 lowercase hex characters — a commit OID, never a ref name"
+            exit 1
+          fi
+          # The correlation id has a CLOSED grammar (SPEC-LANE-006) and is refused here, before
+          # any credentialed stage: prefix, then exactly 32 lowercase hex.
+          suffix="${CORRELATION_ID#cba-70-}"
+          if [ "$suffix" = "$CORRELATION_ID" ] || [ "${#suffix}" -ne 32 ] || [ -n "${suffix//[0-9a-f]/}" ]; then
+            echo "::error::correlation_id must match cba-70- followed by exactly 32 lowercase hex characters"
             exit 1
           fi
           git fetch --quiet origin main
@@ -130,6 +194,7 @@ jobs:
     needs: [global-preflight]
     if: needs.global-preflight.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: dev
     permissions:
       contents: read
@@ -137,6 +202,7 @@ jobs:
     outputs:
       context_digest: ${{ steps.preflight.outputs.context_digest }}
       manifest: ${{ steps.preflight.outputs.manifest }}
+      manifest_digest: ${{ steps.preflight.outputs.manifest_digest }}
     defaults:
       run:
         working-directory: infra/aws
@@ -154,6 +220,18 @@ jobs:
         run: npm ci
       - name: Unit tests (context helpers and preflight)
         run: npm test
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
       - name: Configure AWS credentials (read-only preflight role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -171,11 +249,6 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
-          npm run synth:quiet -- \
-            -c environment=dev \
-            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
-            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
-            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment dev \
             --release-sha "$RELEASE_SHA" \
@@ -188,23 +261,103 @@ jobs:
           digest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' "$RUNNER_TEMP/preflight-dev.json")
           echo "context_digest=$digest" >> "$GITHUB_OUTPUT"
           echo "manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' "$RUNNER_TEMP/preflight-dev.json")" >> "$GITHUB_OUTPUT"
+          # SPEC-DEPLOY-019: the §6b bundle digest of the COMPLETE manifest — what a plan_only
+          # authorization must name. Computed by the same pinned envelope the entrypoint
+          # recomputes at the gate, so the two can never drift apart silently.
+          manifest_digest=$(node -e '
+            const { manifestBundleDigest } = require("./lib/deploy-preflight");
+            const { deepSortKeys } = require("./bin/deploy-release");
+            process.stdout.write(manifestBundleDigest(require(process.argv[1]), deepSortKeys));
+          ' "$RUNNER_TEMP/preflight-dev.json")
+          echo "manifest_digest=$manifest_digest" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------------------------
-  # DEV STAGE — SLICE A PLACEHOLDER. Runs no deployment of any kind.
+  # BIND STAGE — SPEC-LANE-005/006, SPEC-RUN-006: publish the release's manifest as a STRUCTURED
+  # UPLOADED ARTIFACT so Zamp can author a cloud authorization that names its digest. This path
+  # terminates here BY CONSTRUCTION: it is gated on the immutable dispatch input (an Environment
+  # value changed mid-run changes nothing), no job needs it, it holds no id-token permission and
+  # contains no OIDC consumer — it cannot prepare or execute anything, whatever the Environment
+  # holds at any instant of the run. Evidence is read from the artifact, never scraped from logs.
+  # ---------------------------------------------------------------------------------------------
+  # [SPEC-LANE-005, SPEC-LANE-006]
+  bind-stage:
+    name: Bind — publish the release manifest as evidence (no cloud authority)
+    needs: [global-preflight, dev-preflight]
+    if: needs.dev-preflight.result == 'success' && inputs.mode == 'bind_only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Assemble the binding artifact
+        env:
+          MANIFEST: ${{ needs.dev-preflight.outputs.manifest }}
+          MANIFEST_DIGEST: ${{ needs.dev-preflight.outputs.manifest_digest }}
+          RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/binding"
+          node -e '
+            const manifest = JSON.parse(process.env.MANIFEST);
+            const binding = {
+              correlationId: process.env.CORRELATION_ID,
+              releaseSha: process.env.RELEASE_SHA,
+              manifestDigest: process.env.MANIFEST_DIGEST,
+              manifest,
+            };
+            if (!/^[0-9a-f]{64}$/.test(binding.manifestDigest ?? "")) {
+              throw new Error("the binding is the digest birthplace - without it there is nothing for an authorization to name");
+            }
+            require("fs").writeFileSync(process.argv[1], JSON.stringify(binding, null, 2) + "\n");
+          ' "$RUNNER_TEMP/binding/binding.json"
+      - name: Upload the binding artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binding
+          path: ${{ runner.temp }}/binding/binding.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV STAGE — SLICE B1: the sanctioned AWS deploy of the dev tier.
   #
-  # It DOES verify the manifest: closed schema, this exact environment, this exact release, this
-  # exact digest. That is what makes the binding travel instead of being a printed string. A later
-  # slice that replaces the placeholder with a deploy MUST run `verify-manifest --recompute` before
-  # the deploy command — the invariants refuse any deploying job that does not.
+  # Deployment happens ONLY through infra/aws/bin/deploy-release.js. In one process it validates
+  # the manifest's closed schema, requires HEAD to BE the release with a clean worktree, snapshots
+  # the freshly synthesized assembly, recomputes BOTH digests (context: release+environment+region+
+  # account+bound values; assembly: every regular file), re-resolves the account immediately before
+  # the effect, validates Zamp's CLOUD GATE (CBA_CLOUD_GATE — an Environment variable naming the
+  # exact release, the exact assembly digest, a plan_only|deploy mode, a bounded window and — for
+  # deploy — the PLAN_DIGEST of the reviewed change sets), and then: plan_only PREPARES one named
+  # change set per stack from the private snapshot (--exclusively over the closed set, never
+  # --all — the account-global SecurityStack and the deferred AiOrchestrationStack are
+  # structurally outside the release blast radius) and puts the digest of their unredacted
+  # canonical describes on the record; deploy re-describes those exact change sets, requires the
+  # digest the gate names, and EXECUTES them in the reviewed dependency order under this tier's
+  # assumed bootstrap role, re-checking window and account immediately before each mutation.
+  # Everything a child prints is sanitized by shape (ARNs, URLs, pool ids, account digits) before
+  # it reaches this log. A re-synth that differs from what the preflight digested REFUSES — determinism is
+  # verified, never assumed. This is the only stage job holding id-token: write, because it is the
+  # only stage job with the pinned OIDC consumer; AWS_DEPLOY_ROLE_ARN is the canonical
+  # Environment-scoped deploy-role secret (design §3), distinct from the read-only preflight
+  # role's secret. Raw deploy commands remain forbidden everywhere by the closed step shapes.
   # ---------------------------------------------------------------------------------------------
   dev-stage:
-    name: Dev stage (not implemented in Slice A)
+    name: Dev stage — deploy AWS (dev)
     needs: [global-preflight, dev-preflight]
-    if: needs.dev-preflight.result == 'success'
+    if: needs.dev-preflight.result == 'success' && (inputs.mode == 'dev_only' || inputs.mode == 'abandon')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: dev
     permissions:
       contents: read
+      id-token: write
+    outputs:
+      evidence: ${{ steps.evidence.outputs.evidence }}
+      mode: ${{ steps.evidence.outputs.mode }}
+    defaults:
+      run:
+        working-directory: infra/aws
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -213,23 +366,162 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-      - name: Verify the preflight manifest
+          cache: npm
+          cache-dependency-path: infra/aws/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=dev \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+      - name: Configure AWS credentials (dev deploy role)
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Deploy the verified release through the sanctioned entrypoint
         env:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
-          CONTEXT_DIGEST: ${{ needs.dev-preflight.outputs.context_digest }}
+          TARGET_REGION: ${{ vars.AWS_REGION }}
           MANIFEST_JSON: ${{ needs.dev-preflight.outputs.manifest }}
+          CBA_CLOUD_GATE: ${{ vars.CBA_CLOUD_GATE }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
           set -euo pipefail
           printf '%s' "$MANIFEST_JSON" > "$RUNNER_TEMP/manifest.json"
-          node infra/aws/bin/deploy-preflight.js verify-manifest \
+          node bin/deploy-release.js \
             --manifest "$RUNNER_TEMP/manifest.json" \
             --environment dev \
             --release-sha "$RELEASE_SHA" \
-            --expect-digest "$CONTEXT_DIGEST"
-      - name: Slice A stops here
+            --region "$TARGET_REGION" \
+            --assembly cdk.out \
+            --artifact-out "$RUNNER_TEMP/release-evidence/evidence.json" \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
+      # ROUND I3-2: no post-effect ACTION runs in this job, ever. `id-token: write` is a JOB-scoped
+      # capability — scrubbing AWS_* variables cannot remove the ability to mint a fresh OIDC
+      # token, so evidence leaves this job as OUTPUTS (the same channel the manifest already
+      # travels) and is uploaded by a separate job that never holds id-token. The reader runs on
+      # refusals too: evidence of a refused run is still evidence (SPEC-DEPLOY-018).
+      - name: Publish the evidence record as job outputs
+        id: evidence
+        if: ${{ !cancelled() }}
         run: |
-          echo "Slice A implements no deployment step: no AWS stack, no Cloudflare Worker,"
-          echo "no account mutation and no paid call happened in this run."
+          set -euo pipefail
+          file="$RUNNER_TEMP/release-evidence/evidence.json"
+          mode=""
+          if [ -f "$file" ]; then
+            mode=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).mode ?? ""))' "$file")
+            {
+              echo "evidence<<CBA_EVIDENCE_EOF"
+              cat "$file"
+              echo "CBA_EVIDENCE_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------------------------
+  # DEV EVIDENCE — ROUND I3-2: the ONLY place artifacts leave the lane. A separate job is the
+  # boundary the scrub could not be: it holds no id-token (it cannot mint an OIDC token at all),
+  # binds no Environment, assumes nothing — a fresh runner whose only inputs are the evidence
+  # OUTPUTS of dev-stage. It runs when dev-stage ran at all (success OR refusal — refusal
+  # evidence is still evidence) and materializes the file under the NAME the runbooks digest:
+  # plan.json for plan_only, deploy.json for deploy, evidence.json otherwise.
+  # ---------------------------------------------------------------------------------------------
+  dev-evidence:
+    name: Dev evidence — upload the run's record (no cloud authority)
+    needs: [dev-stage]
+    if: always() && needs.dev-stage.result != 'skipped' && needs.dev-stage.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Materialize the evidence file under its reviewed name
+        env:
+          EVIDENCE: ${{ needs.dev-stage.outputs.evidence }}
+          MODE: ${{ needs.dev-stage.outputs.mode }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          # ROUND I3-3: transport loss is a RED RUN, never a silent gap. A mode on the record with
+          # no evidence output means the channel dropped or suppressed the value AFTER a cloud
+          # effect may have happened — the one state that must never pass quietly.
+          if [ -n "$MODE" ] && [ -z "$EVIDENCE" ]; then
+            echo "::error::the evidence output vanished in transport (mode=$MODE, evidence empty) — the record exists in dev-stage but did not arrive; do not trust this run's artifacts"
+            exit 1
+          fi
+          if [ -z "$EVIDENCE" ]; then
+            echo "no evidence record was produced (the run refused before the entrypoint); nothing to materialize"
+            exit 0
+          fi
+          # The record must arrive INTACT: parseable JSON whose correlation is THIS dispatch's.
+          printf '%s\n' "$EVIDENCE" | node -e '
+            let raw = "";
+            process.stdin.on("data", (c) => { raw += c; });
+            process.stdin.on("end", () => {
+              const record = JSON.parse(raw);
+              if (record.schema !== "cba-release-evidence/1") throw new Error("unexpected evidence schema");
+              if (record.correlationId !== process.env.CORRELATION_ID) throw new Error("evidence correlation does not match this dispatch");
+            });
+          '
+          case "$MODE" in
+            plan_only) name=plan.json ;;
+            deploy) name=deploy.json ;;
+            abandon) name=abandon.json ;;
+            *) name=evidence.json ;;
+          esac
+          printf '%s\n' "$EVIDENCE" > "$RUNNER_TEMP/evidence/$name"
+      - name: Upload the plan artifact
+        if: ${{ needs.dev-stage.outputs.mode == 'plan_only' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plan
+          path: ${{ runner.temp }}/evidence/plan.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload the deploy artifact
+        if: ${{ needs.dev-stage.outputs.mode == 'deploy' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deploy
+          path: ${{ runner.temp }}/evidence/deploy.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload the abandon artifact
+        if: ${{ needs.dev-stage.outputs.mode == 'abandon' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: abandon
+          path: ${{ runner.temp }}/evidence/abandon.json
+          if-no-files-found: error
+          retention-days: 90
+      # ROUNDS I4-2/I5: refusals route by EXCLUSION, not by an empty-mode guess. Exactly one
+      # uploader matches every mode: plan_only → plan, deploy → deploy, abandon → abandon,
+      # anything else → evidence.
+      - name: Upload refusal evidence (any mode without a reviewed artifact name)
+        if: ${{ needs.dev-stage.outputs.mode != 'plan_only' && needs.dev-stage.outputs.mode != 'deploy' && needs.dev-stage.outputs.mode != 'abandon' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: evidence
+          path: ${{ runner.temp }}/evidence/evidence.json
+          if-no-files-found: ignore
+          retention-days: 90
 
   # ---------------------------------------------------------------------------------------------
   # PILOT PREFLIGHT — reachable ONLY through a green dev stage, and only when the operator asked
@@ -240,6 +532,7 @@ jobs:
     needs: [global-preflight, dev-preflight, dev-stage]
     if: needs.dev-stage.result == 'success' && inputs.mode == 'dev_then_pilot'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: pilot
     permissions:
       contents: read
@@ -262,6 +555,18 @@ jobs:
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
+        env:
+          CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
+          CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
+        run: |
+          set -euo pipefail
+          npm run synth:quiet -- \
+            -c environment=pilot \
+            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
+            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
+            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
       - name: Configure AWS credentials (read-only preflight role)
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -279,11 +584,6 @@ jobs:
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
         run: |
           set -euo pipefail
-          npm run synth:quiet -- \
-            -c environment=pilot \
-            -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
-            -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
-            -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
           node bin/deploy-preflight.js \
             --environment pilot \
             --release-sha "$RELEASE_SHA" \
@@ -305,6 +605,7 @@ jobs:
     needs: [global-preflight, dev-stage, pilot-preflight]
     if: needs.pilot-preflight.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     environment: pilot
     permissions:
       contents: read
