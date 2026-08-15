@@ -85,7 +85,7 @@ test('the done #70 handoff agrees: decision closed, highs done, real gates still
     'The 6 high Dependabot alerts on the default branch must be fixed',
     'The custom-domain decision, since the CORS list',
   ]) {
-    assert.equal(H70.includes(stale), false, `active/70 reintroduces a stale state: "${stale}"`);
+    assert.equal(H70.includes(stale), false, `done/70 reintroduces a stale state: "${stale}"`);
   }
   for (const resolved of [
     'The origin decision is CLOSED: the pilot uses `workers.dev`',
@@ -95,7 +95,7 @@ test('the done #70 handoff agrees: decision closed, highs done, real gates still
     'prevent_self_review: false',
     'NOT non-bypassable',
   ]) {
-    assert.equal(H70.includes(resolved), true, `active/70 lost the resolved state: "${resolved}"`);
+    assert.equal(H70.includes(resolved), true, `done/70 lost the resolved state: "${resolved}"`);
   }
   // What must REMAIN open is as load-bearing as what closed: the SNS/KMS proof and the deploy-time
   // preflights are the standing gates, and losing them would overstate the resolution.
