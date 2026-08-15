@@ -2957,7 +2957,8 @@ test('ROUND I7-2: the retired blanket term cannot return while the persona is se
 // ─── SLICE I8 ── the first activations: enforcement is ON and its evidence is closed ──────────
 test('SLICE I8: the first two activations are ACTIVE with closed §6c records — enforcement is on', () => {
   const reg = JSON.parse(read('spec/registry.json'));
-  for (const id of ['SPEC-DEPLOY-016', 'SPEC-DEPLOY-021']) {
+  // Batch 2 (#115): the pin extends to the gate laws.
+  for (const id of ['SPEC-DEPLOY-009', 'SPEC-DEPLOY-010', 'SPEC-DEPLOY-016', 'SPEC-DEPLOY-019', 'SPEC-DEPLOY-021']) {
     const e = reg.entries.find((x) => x.id === id);
     assert.equal(e.status, 'ACTIVE', `${id} must stay ACTIVE — enforcement is never quietly switched off`);
     assert.deepEqual(Object.keys(e.mutationEvidence).sort(), ['command', 'commit', 'expectedFailure', 'patchSha256']);
