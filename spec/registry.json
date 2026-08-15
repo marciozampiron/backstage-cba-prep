@@ -744,7 +744,7 @@
     },
     {
       "id": "SPEC-DEPLOY-010",
-      "status": "PROPOSED",
+      "status": "ACTIVE",
       "title": "An authorization is valid only while approvedAt ≤ now <",
       "normativeText": "An authorization is valid only while `approvedAt` ≤ now < `expiresAt`, with `expiresAt − approvedAt` at most one hour.",
       "normativeSha256": "be366a8862983038c421d44a55b8ab5cb625cabc97cfb1d9d6101988c6f9c675",
@@ -757,14 +757,23 @@
       "tests": [
         {
           "file": "infra/aws/test/deploy-preflight.test.js",
-          "title": null
+          "title": "SPEC-DEPLOY-010: the window law — approvedAt inclusive, expiresAt exclusive, the one-hour TTL ceiling exact"
+        },
+        {
+          "file": "infra/aws/test/deploy-preflight.test.js",
+          "title": "the window is re-checked before EVERY mutation — a lapse mid-sequence stops with the honest record"
         }
       ],
       "checks": [],
       "governedPaths": [
         "infra/aws/bin/deploy-release.js"
       ],
-      "mutationEvidence": "code + tests reviewed, reversion proven",
+      "mutationEvidence": {
+        "commit": "30c1da85e8741d50517b806fc4b60e2a04b388aa",
+        "patchSha256": "11463af0a5e037142bc591a3da335aeefd5d34ae3ddfebfc7ea189b68e19d451",
+        "command": "node --test --test-name-pattern \"SPEC-DEPLOY-010\" infra/aws/test/deploy-preflight.test.js",
+        "expectedFailure": "exactly 1: the dedicated -010 test (CLOUD_GATE_MAX_TTL_MS doubled to 2h; §6b diff headSha ffe0406503a61965e8e256ab6c18c4bcf682a2c3)"
+      },
       "supersedes": [],
       "supersededBy": null
     },
