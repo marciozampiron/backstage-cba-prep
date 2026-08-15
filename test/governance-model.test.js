@@ -365,7 +365,7 @@ test('the canonical flow appears in the contract and is not contradicted', () =>
   assert.match(read(PROTOCOL), /Opus prepares -> Codex reviews -> Zamp approves -> Opus executes -> Zamp decides\/performs merge/);
 });
 
-/* ================= 2. Gemini has no workflow role ================= */
+/* ============ 2. Gemini has no AUTHORITY-BEARING role (the seat is read-only) ============ */
 
 test('the Gemini persona holds no AUTHORITY — approval, gate, risk, review-of-record and every operational permission stay denied', () => {
   // Round I7-2: the persona IS seated (read-only semantic auditor) — that role is not denied

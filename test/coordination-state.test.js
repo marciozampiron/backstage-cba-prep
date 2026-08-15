@@ -79,7 +79,7 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
   }
 });
 
-test('the active #70 handoff agrees: decision closed, highs done, real gates still standing', () => {
+test('the done #70 handoff agrees: decision closed, highs done, real gates still standing', () => {
   for (const stale of [
     'The open decision: custom domain',
     'The 6 high Dependabot alerts on the default branch must be fixed',
