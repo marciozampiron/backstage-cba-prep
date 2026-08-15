@@ -402,7 +402,8 @@
       "Two gates are required and are not interchangeable: a review scope bounds preparation and authorizes nothing; the execution gate — supplied as CBA_EXECUTION_GATE, closed-schema, bounded to 12 hours — is validated by the artifact before the operator confirmation and again immediately before the push.",
       "A gate whose approver is the invoking operator, or whose approver looks like an agent identity, is refused.",
       "The publish gate is authored by Zamp outside the task worktree.",
-      "A gate written inside the repository is an untracked file, which makes the worktree dirty, which validation refuses; the command refuses an in-repository gate path outright."
+      "A gate written inside the repository is an untracked file, which makes the worktree dirty, which validation refuses; the command refuses an in-repository gate path outright.",
+      "Gemini holds the seated read-only Gemini Spec Auditor persona — it audits and reports only, with no authority: never an approval, a gate, a risk acceptance or any operational permission."
     ],
     "docs/architecture/agent-publication-runbook.md": [
       "| Zamp — human product/security owner | Author a gate naming themselves; approve; accept residual risk; decide and perform the merge | Delegate approval, risk acceptance or merge to any agent |",

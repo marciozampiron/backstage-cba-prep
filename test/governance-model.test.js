@@ -2917,6 +2917,11 @@ test('SLICE I7: every canonical surface seats the SAME Gemini persona — read-o
   }
   // The paid invocation stays Zamp's effect under the spend document — the persona spends nothing.
   assert.equal(POLICY.effects['invoke-paid-model-audit'].authorizedBy, 'spend-authorization');
+  // Closeout round 3 (Codex F2): the security BASELINE is the sixth surface — the pre-#110
+  // sentence denied any Gemini role and contradicted the seat; it must state the persona.
+  const baseline = read('spec/security-rules.md');
+  assert.match(baseline, /seated read-only Gemini Spec Auditor persona/);
+  assert.ok(!baseline.includes('Gemini has no workflow or governance'), 'the pre-seating denial cannot return');
 });
 
 test('SLICE I7: the validator refuses a Gemini that gains any grant or a reworded standing', () => {

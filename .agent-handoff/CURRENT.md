@@ -77,15 +77,15 @@ Project board remain the source of truth; this file summarizes local coordinatio
   `2f9ee8efb97c9e1612eea31c16ab6b18e146fea1`): the `observability-gate` command implementing O1
   (structural) and O2 (deployed telemetry evidence, bounded minute-aligned smoke window, traffic
   before alarms, real wall-clock budget). Everything remains synth-only — nothing was deployed.
-- **Still open under #70, and NOT closed by #82: the live CloudWatch -> SNS -> KMS -> confirmed
+- **Transferred to #111 (was #70; NOT closed by #82): the live CloudWatch -> SNS -> KMS -> confirmed
   subscription proof.** O1 proves the resources exist; O2 proves telemetry flows and alarms are
   `OK`; neither proves a notification can actually be delivered, which is the one failure mode that
   is silent because a broken key policy loses notifications without changing any alarm state. It is
   also the only check that can falsify the deliberate narrowing of the key policy to exactly
   `kms:Decrypt` + `kms:GenerateDataKey`. It runs outside O1/O2 under operator credentials, is
   required before the first `pilot` promotion, and must be re-proven after any key/topic policy
-  change. #70 also owns wiring the gates into the workflow and enforcing the bounded execution
-  window on the saved queries.
+  change. Issue #111 also owns wiring the gates into the workflow and enforcing the bounded execution
+  window on the saved queries (#70 delivered the mechanisms; #111 operates them).
 - Phase 5 / #10 is the post-POC evolution from the CBA pilot to a multi-certification portal.
   Before the first non-CBA certification, a mandatory DDD hardening gate must make certification
   partitioning explicit, keep principals data-only, separate application ports/errors from adapters,
@@ -111,7 +111,7 @@ Project board remain the source of truth; this file summarizes local coordinatio
   #75 are CLOSED (Done)**; #75 delivered the smoke-cleanup contract in PR #101. **#67's in-repo
   delivery is merged** (PR #100), but #67 stays OPEN pending an actual deploy; its architecture
   decision is CLOSED — **the pilot uses the `workers.dev` origin** (Zamp, 2026-08-02).
-  Current work: **#70** (Cloudflare/AWS deploy pipeline and post-deploy smoke gates), then #79 ->
+  Current work: **#111** (operationalize the dev lane; Blocked on the 4 HIGH Dependabot alerts), then #79 ->
   close #46/#68. Everything is
   still synth-only: NO stack beyond SecurityStack is deployed.
   Product work can continue independently: #44 -> #57 -> #62. Follow-ups: `ai-batch` environment
@@ -146,7 +146,10 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Active handoff
 
-Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ownership 2026-07-31.- `done/70-cloudflare-aws-deploy-pipeline.md` — **#70 DELIVERED AND MERGED** (PR #110 at
+Audited 2026-07-30 against GitHub issues and the board; #70 was taken into active ownership
+2026-07-31 and DELIVERED 2026-08-15.
+
+- `done/70-cloudflare-aws-deploy-pipeline.md` — **#70 DELIVERED AND MERGED** (PR #110 at
   `34b01bd5a4d028682a2bbb68454e2ee1476e04ed`, merge `4bb91ca`, 2026-08-15). The full
   Spec-Anchored series (design + slices I1..I8-3) is on `main`: registry 52 PROPOSED / 2 ACTIVE
   (SPEC-DEPLOY-016/021, enforced in CI) / 2 RETIRED; the dev lane bind/plan/deploy/abandon is
@@ -158,8 +161,8 @@ Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ow
   authoritative remote enforcement; until it ships, every publication guardrail is process rather
   than enforcement.
 
-The two active owners touch disjoint files: #70 lives in `infra/aws/`, `.github/workflows/` and its
-own handoff; #91 is the publication toolchain. Neither may edit the other's surface.
+One active handoff remains: #91 (the publication toolchain). #70 is delivered and owns nothing —
+its former surfaces (`infra/aws/`, `.github/workflows/`) are unowned until #111 is assigned.
 
 **The deploy preflight is binding on every lane** (`infra/aws/bin/deploy-preflight.js`). It refuses
 before `cdk deploy` while `.invalid` survives into the effective Cognito callback/logout URLs, and
@@ -170,7 +173,7 @@ configuration at deploy time, never as tracked files.
 **DEPLOYMENT BINDING EVIDENCED (2026-08-02).** The GitHub Environments `dev` and `pilot` are
 configured: both carry a custom deployment-branch policy whose only entry is `main`, and `pilot`
 requires `marciozampiron` as reviewer (read-only API evidence, recorded in the #70 handoff and
-EVENTS). Slice B1 (dev AWS deploy) is in implementation; deploy approvals follow the normal
+EVENTS). Slice B1 was DELIVERED in #70 (merged, PR #110); operating any deploy is #111, and approvals follow the normal
 protocol. **No AWS
 or Cloudflare deployment has happened yet** — everything beyond SecurityStack remains synth-only.
 Observed residual limitations, stated so the mechanism is not read as stronger than it is:
