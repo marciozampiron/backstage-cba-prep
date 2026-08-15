@@ -1,6 +1,6 @@
 # Current Agent Coordination State
 
-Last updated: 2026-08-02 (#70 Slice B1 — dev AWS deploy — assigned and in implementation)
+Last updated: 2026-08-15 (#70 DELIVERED and MERGED — PR #110, merge `4bb91ca`; code delivered, NO deploy, NO QA; no active owner)
 Updated by: Claude
 
 This file is the fast boot context for agents entering the repository. GitHub Issues and the
@@ -146,23 +146,13 @@ Project board remain the source of truth; this file summarizes local coordinatio
 
 ## Active handoff
 
-Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ownership 2026-07-31.
-
-- `active/70-cloudflare-aws-deploy-pipeline.md` — **#70 OPEN**, owner Claude Opus 5; no
-  implementation worktree exists until the next slice is assigned. **Slice A is MERGED** (PR #104,
-  `da0ed88e`, 6/6 checks green): the #69 deploy preflight, the release identity, the
-  manifest/assembly binding, the `deploy-release` entrypoint and the YAML-semantic lane invariants.
-  Nothing is deployed. **All three external prerequisites are RESOLVED (2026-08-02)**: the
-  Environments `dev`/`pilot` exist with main-only deployment-branch policies and the pilot
-  reviewer, evidenced read-only via the API; Zamp decided the pilot uses the **`workers.dev`**
-  origin, closing the decision #67 carried; and the 6 high Dependabot alerts were remediated in
-  #106. **Slice B1 (dev AWS deploy through the sanctioned entrypoint) is in implementation** on
-  `task/70-aws-dev-deploy-slice-b`; deploy approvals follow the normal protocol, and pilot
-  promotion stays mechanically blocked (`mode` offers only `dev_only`).
-  #70 owns the account-level half of #67 (Cloudflare project and Environment token, Worker routes
-  and runtime VALUES, deploy lane, F1/F2), the AWS deploys of the synth-only stacks, the live
-  SNS/KMS notification proof, and the deployed smoke lane. **It must not re-open the
-  in-repo scope merged in PR #100 or the cleanup contract merged in PR #101.**
+Audited 2026-07-30 against GitHub issues and the board; #70 taken into active ownership 2026-07-31.- `done/70-cloudflare-aws-deploy-pipeline.md` — **#70 DELIVERED AND MERGED** (PR #110 at
+  `34b01bd5a4d028682a2bbb68454e2ee1476e04ed`, merge `4bb91ca`, 2026-08-15). The full
+  Spec-Anchored series (design + slices I1..I8-3) is on `main`: registry 52 PROPOSED / 2 ACTIVE
+  (SPEC-DEPLOY-016/021, enforced in CI) / 2 RETIRED; the dev lane bind/plan/deploy/abandon is
+  implemented and DELIBERATELY not executable. **Nothing is deployed and no QA ran** — activating
+  the lane is issue #111 (Blocked on the 4 HIGH Dependabot alerts). No active owner; the former
+  implementation worktree and branch are removed (the remote branch is merged).
 - `active/91-role-separated-publication.md` — **#91 OPEN**, Stage B not built. Preserved with its
   own worktree. Stage B is what makes operator identity unforgeable and adds replay protection and
   authoritative remote enforcement; until it ships, every publication guardrail is process rather

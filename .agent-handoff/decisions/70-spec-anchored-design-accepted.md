@@ -45,4 +45,4 @@ protocol amendments and lane changes, each activation atomic with its conformanc
 
 - Issues: #70
 - ADRs/specs: `spec/spec-anchored-development.md` (§4, §10),
-  `.agent-handoff/active/70-cloudflare-aws-deploy-pipeline.md`
+  `.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md`

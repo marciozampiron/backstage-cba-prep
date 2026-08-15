@@ -1,4 +1,11 @@
-# Active: Cloudflare/AWS deploy pipeline and post-deploy smoke gates (#70)
+# Done: Cloudflare/AWS deploy pipeline and post-deploy smoke gates (#70)
+
+> **FINAL STATUS (2026-08-15): DELIVERED AND MERGED — PR #110 at
+> `34b01bd5a4d028682a2bbb68454e2ee1476e04ed`, merge `4bb91ca`, decided and performed by Zamp.**
+> The implementation is on `main`; the dev lane remains DELIBERATELY not executable: **no deploy
+> has occurred and no QA ran**. Operationalizing it is issue #111 (Blocked on the 4 HIGH
+> Dependabot alerts). Everything below this block is the round-by-round HISTORICAL record and is
+> written from within those rounds — statuses it states were true then, not now.
 
 Roles and messages are canonical in [`../MESSAGE-PROTOCOL.md`](../MESSAGE-PROTOCOL.md); the
 publication mechanism is canonical in

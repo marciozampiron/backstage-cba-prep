@@ -22,6 +22,28 @@ const CURRENT = read('.agent-handoff/CURRENT.md');
 const H70 = read('.agent-handoff/done/70-cloudflare-aws-deploy-pipeline.md');
 const D106 = read('.agent-handoff/done/106-dependabot-high-remediation.md');
 
+test('#70 closeout: every canonical surface states the FINAL state — never the active one', () => {
+  // Codex (closeout review, MEDIUM): the move alone left CURRENT.md claiming an open issue with
+  // owners and an implementation in flight. These are finite refusals of the stale claims and
+  // finite requirements of the final ones.
+  for (const stale of ['#70 OPEN', 'active/70-cloudflare-aws-deploy-pipeline.md', 'assigned and in implementation']) {
+    assert.ok(!CURRENT.includes(stale), `CURRENT.md must not claim: ${stale}`);
+  }
+  for (const required of ['PR #110', '4bb91ca', 'DELIVERED AND MERGED', 'NO deploy, NO QA']) {
+    assert.ok(CURRENT.includes(required), `CURRENT.md must state: ${required}`);
+  }
+  assert.match(H70, /^# Done:/, 'the done/ handoff opens as Done');
+  assert.ok(H70.includes('FINAL STATUS (2026-08-15): DELIVERED AND MERGED'));
+  assert.ok(H70.includes('no QA ran'));
+  // The newest event leads the log: the closeout block appears before the previously-newest one.
+  const events = read('.agent-handoff/EVENTS.md');
+  assert.ok(events.indexOf('## 2026-08-15 — #70 delivered, published and merged') < events.indexOf('## 2026-08-09'), 'newest entries go at the top');
+  // Live surfaces never point at the removed path (historical logs in EVENTS/done are exempt).
+  for (const rel of ['.agent-handoff/CURRENT.md', '.agent-handoff/decisions/70-spec-anchored-design-accepted.md', 'infra/aws/lib/deploy-preflight.js']) {
+    assert.ok(!read(rel).includes('.agent-handoff/active/70-cloudflare'), `${rel} must reference done/, not the removed active/ path`);
+  }
+});
+
 test('CURRENT.md carries exactly the resolved prerequisite state, with no stale contradiction', () => {
   // The stale side. Each of these sentences described the pre-2026-08-02 state; reintroducing any
   // of them puts the cold-start reader back into "must not advance".
@@ -45,7 +67,6 @@ test('CURRENT.md carries exactly the resolved prerequisite state, with no stale 
     'whose only entry is `main`',
     'requires `marciozampiron` as reviewer',
     '6 HIGH Dependabot alerts are **RESOLVED**',
-    'Slice B1 (dev AWS deploy through the sanctioned entrypoint) is in implementation',
     'No AWS\nor Cloudflare deployment has happened yet',
     'can_admins_bypass: true',
     'prevent_self_review: false',
