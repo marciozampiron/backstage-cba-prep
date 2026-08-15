@@ -2279,3 +2279,20 @@ Append meaningful coordination changes here. Newest entries should go at the top
 - Updated `AGENTS.md` with the required agent collaboration boot sequence.
 - Validation: `git diff --check` and `npm test` passed.
 - No push performed.
+
+## 2026-08-15 — #70 delivered, published and merged (PR #110)
+
+- The Spec-Anchored series for #70 — 15 design rounds plus implementation slices I1..I8-3,
+  60 fix-forward commits, every slice independently reviewed by Codex — merged to `main`
+  at `34b01bd5a4d028682a2bbb68454e2ee1476e04ed` (merge commit `4bb91ca`), via the reviewed
+  publication artifact under review scope `zamp-2026-08-12.70-publication-scope-01` and
+  execution gate `zamp-2026-08-14.70-execution-gate-01`. Merge decided and performed by Zamp.
+- State on `main`: 52 PROPOSED / 2 ACTIVE (SPEC-DEPLOY-016, SPEC-DEPLOY-021) / 2 RETIRED;
+  spec:lint and spec:conform enforce in CI. The dev lane (bind/plan/deploy/abandon) is
+  implemented and DELIBERATELY not executable: no deploy has occurred, no cloud effect,
+  no secret, no paid call — every effect stays behind its own instrument.
+- Distinction on the record (Zamp): the implementation is merged; the AWS environment is
+  NOT deployed or QA-validated. Activating the lane end-to-end is a separate operational
+  issue with its own gates and evidence.
+- The active handoff moved to `done/` with this entry; the #70 handoff file is the full
+  round-by-round record.
