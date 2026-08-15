@@ -13,15 +13,34 @@ const ANTHROPIC_DEFAULTS = {
 };
 
 // AWS Bedrock cross-region inference-profile ids (LLM_BACKEND=bedrock).
-// Confirm/pin these with `aws bedrock list-inference-profiles`; override via
-// BEDROCK_MODEL_FAST / BEDROCK_MODEL_STANDARD / BEDROCK_MODEL_CRITICAL.
+// The #117 target, decided by Zamp (2026-08-15): the FAST tier deliberately does NOT name the
+// lowest-cost/latency model — the tier NAME stays a functional category, and Zamp chose
+// Opus 4.8 for it; that tradeoff is on the record here and in issue #117. Models are NEVER
+// selected automatically by price, availability or error, and there is NO silent fallback
+// between tiers, models or generations (modelForTier below fails closed by name).
+// Validation status: Bedrock Playground succeeded for all three under Zamp's HUMAN console
+// identity; the agreement-availability API diverges (NOT_AVAILABLE for the Opus pair) — the
+// divergence is recorded, and neither signal is definitive. Application-path validation is
+// claimed ONLY after the programmatic smokes (paid, under Zamp's own spend authorization).
+// Override via BEDROCK_MODEL_FAST / BEDROCK_MODEL_STANDARD / BEDROCK_MODEL_CRITICAL.
 const BEDROCK_DEFAULTS = {
-  fast: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  // Pilot standard tier is Amazon Nova Pro (#72): Claude Sonnet 5 is commercially unavailable for
-  // the authorized account (AWS Sales follow-up). Override via BEDROCK_MODEL_STANDARD.
-  standard: 'us.amazon.nova-pro-v1:0',
-  critical: 'us.anthropic.claude-opus-4-8',
+  fast: 'us.anthropic.claude-opus-4-8',
+  standard: 'us.anthropic.claude-sonnet-5',
+  critical: 'us.anthropic.claude-opus-5',
 };
+
+// Fail-closed tier resolution (#117): an unknown tier or a missing id REFUSES BY NAME — it
+// never quietly borrows another tier's model. Every adapter must resolve through this.
+export function modelForTier(cfg, tier) {
+  if (!TIERS.includes(tier)) {
+    throw new Error(`unknown model tier "${tier}" — tiers are ${TIERS.join(' | ')}; no fallback is performed`);
+  }
+  const id = cfg?.models?.[tier];
+  if (!id || !String(id).trim()) {
+    throw new Error(`missing model id for tier "${tier}" — configuration is incomplete; no fallback is performed`);
+  }
+  return id;
+}
 
 export function resolveModelConfig(env = process.env) {
   const backend = String(env.LLM_BACKEND || 'anthropic').toLowerCase();

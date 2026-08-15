@@ -49,10 +49,10 @@ test('boundary allows only bedrock:InvokeModel and nothing else', () => {
 test('boundary resources = standard inference profile + the 3 routed model ARNs', () => {
   const [stmt] = boundary.Statement;
   assert.deepEqual(stmt.Resource, [
-    'arn:aws:bedrock:us-east-1:ACCOUNT_ID_PLACEHOLDER:inference-profile/us.amazon.nova-pro-v1:0',
-    'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0',
-    'arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0',
-    'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0',
+    'arn:aws:bedrock:us-east-1:ACCOUNT_ID_PLACEHOLDER:inference-profile/us.anthropic.claude-sonnet-5',
+    'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5',
+    'arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5',
+    'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5',
   ]);
 });
 

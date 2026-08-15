@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { requireBedrockConfig } from '../bedrock/config.js';
+import { modelForTier } from '../../lib/model-config.js';
 import { toStrandsTools } from './tools.js';
 import { aiUsageEvent } from '../../domain/ai-orchestration/usage.js';
 import { agentRun } from '../../domain/ai-orchestration/agent-run.js';
@@ -42,7 +43,7 @@ export function createStrandsOrchestrator(opts = {}) {
 
   return {
     async run({ prompt, systemPrompt = null, tier = 'standard', tools = null, options = {} } = {}) {
-      const modelId = cfg.models[tier] || cfg.models.standard;
+      const modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
       const id = repository ? newId() : null;
       const startedAt = repository ? now() : null;
       const record = async (fields) => {

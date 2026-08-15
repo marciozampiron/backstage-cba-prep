@@ -113,8 +113,10 @@ The Bedrock adapter calls the **Converse API**. AWS authorizes `Converse` with t
 Blueprint refresh is **non-streaming**, so the role needs `bedrock:InvokeModel` only.
 
 `BEDROCK_MODEL_STANDARD` is the **configured standard-tier cross-region inference profile**
-(current pilot value: `us.amazon.nova-pro-v1:0` — Amazon Nova Pro, #72; Claude Sonnet 5 remains a
-**non-blocking follow-up via AWS Sales**). Because the permissions boundary and the role's inline
+(#117 target, decided by Zamp 2026-08-15: `us.anthropic.claude-sonnet-5`. Playground succeeded
+under the human console identity; the agreement-availability API diverges for the Opus pair —
+recorded, neither signal definitive. Application-path validation only after the programmatic
+smokes under their own spend authorization.
 policy are **model-specific**, switching the standard-tier model is NOT config-only: it requires
 the new configuration PLUS a new default version of the operator-managed boundary AND a
 SecurityStack redeploy, each behind its own human gate. A `us.*` profile routes the actual
@@ -143,7 +145,7 @@ Then scope the policy to the profile + those model ARNs, region-locked:
       "Action": "bedrock:InvokeModel",
       "Resource": [
         // the configured standard-tier inference profile (account-scoped, in the call region):
-        "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:inference-profile/us.amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:<REGION>:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5",
         // each routed foundation model (account-less "::"), from get-inference-profile above:
         "arn:aws:bedrock:us-east-1::foundation-model/<routed-model-id>",
         "arn:aws:bedrock:us-east-2::foundation-model/<routed-model-id>",
@@ -172,7 +174,7 @@ The human sets these after the role exists (the ARN and account id are only know
 | Name | Kind | Value | How |
 | --- | --- | --- | --- |
 | `AWS_REGION` | variable | e.g. `us-east-1` | `gh variable set AWS_REGION --body us-east-1` |
-| `BEDROCK_MODEL_STANDARD` | variable | the configured standard-tier profile (currently `us.amazon.nova-pro-v1:0`) | `gh variable set BEDROCK_MODEL_STANDARD --body us.amazon.nova-pro-v1:0` |
+| `BEDROCK_MODEL_STANDARD` | variable | the configured standard-tier profile (currently `us.anthropic.claude-sonnet-5`) | `gh variable set BEDROCK_MODEL_STANDARD --body us.anthropic.claude-sonnet-5` |
 | `AWS_BEDROCK_REFRESH_ROLE_ARN` | secret | the created role ARN | `gh secret set AWS_BEDROCK_REFRESH_ROLE_ARN --body arn:aws:iam::<ACCOUNT_ID>:role/cba-study-coach-gha-bedrock-refresh` |
 
 Model ids are configuration (variables), not secrets. The role ARN is stored as a secret only to

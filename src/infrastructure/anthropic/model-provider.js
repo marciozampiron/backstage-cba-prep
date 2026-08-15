@@ -3,6 +3,7 @@
 // offline; no SDK is required (matches the project's existing zero-dep HTTP path).
 
 import { resolveModelConfig } from '../../lib/model-config.js';
+import { modelForTier } from '../../lib/model-config.js';
 import { aiUsageEvent } from '../../domain/ai-orchestration/usage.js';
 import { ModelAccessError, ModelInvocationError, ModelNotConfiguredError } from '../../domain/ai-orchestration/errors.js';
 
@@ -26,7 +27,7 @@ export function createAnthropicModelProvider(opts = {}) {
       if (!apiKey) {
         throw new ModelNotConfiguredError('the anthropic adapter requires ANTHROPIC_API_KEY', { provider: 'anthropic' });
       }
-      const model = cfg.models[tier] || cfg.models.standard;
+      const model = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
 
       const body = {
         model,
