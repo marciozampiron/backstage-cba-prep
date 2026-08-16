@@ -27,6 +27,12 @@ on:
         required: false
         type: boolean
         default: false
+      authorized_sha:
+        description: smoke_only only — the FULL 40-hex SHA Zamp's spend authorization names; refused before OIDC if it differs from the commit being run
+        required: false
+      spend_decision_id:
+        description: smoke_only only — the identifier of Zamp's spend authorization, recorded in the evidence
+        required: false
 
 permissions:
   contents: write
@@ -48,13 +54,21 @@ jobs:
       AWS_BEDROCK_REFRESH_ROLE_ARN: ${{ secrets.AWS_BEDROCK_REFRESH_ROLE_ARN }}
       BEDROCK_MODEL_STANDARD: ${{ vars.BEDROCK_MODEL_STANDARD }}
     steps:
-      - name: Fail closed without explicit spend confirmation
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Fail closed before OIDC — spend confirmed AND bound to THIS exact commit
         env:
           CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
+          AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
+          SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
         run: |
           set -euo pipefail
           [ "$CONFIRM_AI_SPEND" = "true" ] || { echo "REFUSED: confirm_ai_spend=true is required — the smoke is a paid call"; exit 1; }
           [ -n "$AWS_BEDROCK_REFRESH_ROLE_ARN" ] || { echo "REFUSED: AWS_BEDROCK_REFRESH_ROLE_ARN is required"; exit 1; }
+          printf '%s' "$AUTHORIZED_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "REFUSED: authorized_sha must be the full 40-hex SHA the spend authorization names"; exit 1; }
+          [ "$AUTHORIZED_SHA" = "$GITHUB_SHA" ] || { echo "REFUSED: this run is not the authorized commit — a reusable boolean never authorizes other bytes"; exit 1; }
+          [ -n "$SPEND_DECISION_ID" ] || { echo "REFUSED: spend_decision_id is required so the evidence names the decision"; exit 1; }
       - name: Configure AWS credentials (refresh role via OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -63,42 +77,9 @@ jobs:
       - name: Standard-tier smoke (exactly one Converse call, then STOP)
         env:
           AWS_MAX_ATTEMPTS: "1"
-        run: |
-          set -euo pipefail
-          export AWS_MAX_ATTEMPTS=1
-          # Fail closed on IDENTITY — role name AND account, without ever printing the account.
-          ROLE_ACCOUNT=$(printf '%s' "$AWS_BEDROCK_REFRESH_ROLE_ARN" | cut -d: -f5)
-          CALLER_JSON=$(aws sts get-caller-identity --output json)
-          CALLER=$(printf '%s' "$CALLER_JSON" | jq -r .Arn)
-          CALLER_ACCOUNT=$(printf '%s' "$CALLER_JSON" | jq -r .Account)
-          MASKED=$(printf '%s' "$CALLER" | sed -E 's/[0-9]{12}/ACCOUNT/g')
-          if [ -z "$ROLE_ACCOUNT" ] || [ "$CALLER_ACCOUNT" != "$ROLE_ACCOUNT" ]; then
-            echo "REFUSED: caller account diverges from the refresh role's account"; exit 1
-          fi
-          case "$CALLER" in
-            *assumed-role/cba-study-coach-gha-bedrock-refresh/*) : ;;
-            *) echo "REFUSED: identity is not the refresh role: $MASKED"; exit 1 ;;
-          esac
-          # Fail closed on MODEL: exactly the approved standard profile — no fallback, ever.
-          if [ "$BEDROCK_MODEL_STANDARD" != "us.anthropic.claude-sonnet-5" ]; then
-            echo "REFUSED: BEDROCK_MODEL_STANDARD diverges from the approved standard profile"; exit 1
-          fi
-          # EXACTLY ONE invocation: AWS_MAX_ATTEMPTS=1 disables the CLI's automatic retries,
-          # set -e stops on failure — there is no second attempt of any kind.
-          STOP=$(aws bedrock-runtime converse --region "$AWS_REGION" --model-id "$BEDROCK_MODEL_STANDARD" \
-            --messages '[{"role":"user","content":[{"text":"Reply with exactly: ok"}]}]' \
-            --inference-config '{"maxTokens":8}' --query stopReason --output text)
-          # ONLY end_turn is success — max_tokens, content_filtered, guardrail_intervened all fail.
-          if [ "$STOP" != "end_turn" ]; then
-            echo "REFUSED: stopReason=$STOP is not end_turn — the smoke is NOT proven"; exit 1
-          fi
-          echo "SMOKE EVIDENCE"
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "identity=$MASKED (refresh role confirmed, account matched)"
-          echo "region=$AWS_REGION"
-          echo "model=$BEDROCK_MODEL_STANDARD"
-          echo "stopReason=$STOP"
-          echo "attempts=1"
+          AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
+          SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+        run: bash scripts/standard-smoke.sh
   refresh:
     if: github.event.inputs.smoke_only != 'true'
     runs-on: ubuntu-latest
