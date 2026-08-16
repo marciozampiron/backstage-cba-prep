@@ -22,6 +22,17 @@ on:
         required: false
         type: boolean
         default: false
+      smoke_only:
+        description: Run EXACTLY ONE standard-tier Converse smoke (maxTokens=8) under the refresh role and stop — no refresh, no PR (still requires confirm_ai_spend)
+        required: false
+        type: boolean
+        default: false
+      authorized_sha:
+        description: smoke_only only — the FULL 40-hex SHA Zamp's spend authorization names; refused before OIDC if it differs from the commit being run
+        required: false
+      spend_decision_id:
+        description: smoke_only only — the identifier of Zamp's spend authorization, recorded in the evidence
+        required: false
 
 permissions:
   contents: write
@@ -29,7 +40,48 @@ permissions:
   id-token: write
 
 jobs:
+  # The smoke is its OWN JOB and its own authority boundary: contents read-only, id-token only,
+  # nothing of the refresh job's write permissions. Exactly one Converse call, then the workflow
+  # is over — the refresh job is barred at JOB level when smoke_only is set.
+  smoke:
+    if: github.event.inputs.smoke_only == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_BEDROCK_REFRESH_ROLE_ARN: ${{ secrets.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+      BEDROCK_MODEL_STANDARD: ${{ vars.BEDROCK_MODEL_STANDARD }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Fail closed before OIDC — spend confirmed AND bound to THIS exact commit
+        env:
+          CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
+          AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
+          SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRM_AI_SPEND" = "true" ] || { echo "REFUSED: confirm_ai_spend=true is required — the smoke is a paid call"; exit 1; }
+          [ -n "$AWS_BEDROCK_REFRESH_ROLE_ARN" ] || { echo "REFUSED: AWS_BEDROCK_REFRESH_ROLE_ARN is required"; exit 1; }
+          printf '%s' "$AUTHORIZED_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "REFUSED: authorized_sha must be the full 40-hex SHA the spend authorization names"; exit 1; }
+          [ "$AUTHORIZED_SHA" = "$GITHUB_SHA" ] || { echo "REFUSED: this run is not the authorized commit — a reusable boolean never authorizes other bytes"; exit 1; }
+          printf '%s' "$SPEND_DECISION_ID" | LC_ALL=C grep -qzE '^zamp-[a-z0-9][a-z0-9._-]{0,79}$' || { echo "REFUSED: spend_decision_id fails the closed grammar (zamp-…); the value is not echoed"; exit 1; }
+      - name: Configure AWS credentials (refresh role via OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Standard-tier smoke (exactly one Converse call, then STOP)
+        env:
+          AWS_MAX_ATTEMPTS: "1"
+          AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
+          SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+        run: bash scripts/standard-smoke.sh
   refresh:
+    if: github.event.inputs.smoke_only != 'true'
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -75,10 +127,10 @@ jobs:
           role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Install dependencies
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         run: npm ci
       - name: Regenerate the domain from the source page
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         env:
           FROM_URL: ${{ github.event.inputs.url }}
           LLM_BACKEND: bedrock
@@ -89,17 +141,17 @@ jobs:
             node bin/cli.js blueprint --provider anthropic --write
           fi
       - name: Check the bank against the (possibly) new domain
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         run: node bin/cli.js validate || echo "::warning::bank no longer validates against the regenerated domain — review the PR carefully"
       - name: Write a synthetic change (plumbing test only)
-        if: steps.gate.outputs.plumbing == 'true'
+        if: steps.gate.outputs.plumbing == 'true' && github.event.inputs.smoke_only != 'true'
         run: |
           printf 'blueprint-refresh PR finalizer self-test — run %s\n' "$GITHUB_RUN_ID" \
             > .github/blueprint-refresh-selftest.txt
           echo "Synthetic change written (no Bedrock, no AWS)."
       - name: Detect a tracked change
         id: diff
-        if: steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true'
+        if: (steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true') && github.event.inputs.smoke_only != 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -112,6 +164,7 @@ jobs:
         if: >-
           (steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true')
           && steps.diff.outputs.changed == 'true'
+          && github.event.inputs.smoke_only != 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           branch: ${{ github.event.inputs.pr_plumbing_test == 'true' && 'chore/blueprint-refresh-selftest' || 'chore/blueprint-refresh' }}

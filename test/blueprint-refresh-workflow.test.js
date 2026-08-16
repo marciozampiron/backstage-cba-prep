@@ -22,9 +22,11 @@ const step = (nameFragment) => {
   return found[0];
 };
 
-test('checkout does not persist credentials (Authorization-collision guard)', () => {
-  const checkout = step('actions/checkout@');
-  assert.match(checkout, /persist-credentials:\s*false/);
+test('EVERY checkout refuses to persist credentials (Authorization-collision guard)', () => {
+  // The smoke job (#111) added a second checkout; the guard is per-checkout, not per-count.
+  const checkouts = stepChunks.filter((c) => c.includes('actions/checkout@'));
+  assert.ok(checkouts.length >= 1, 'at least one checkout exists');
+  for (const c of checkouts) assert.match(c, /persist-credentials:\s*false/);
 });
 
 test('pr_plumbing_test sets skip=true so every AWS/Bedrock step is skipped', () => {
