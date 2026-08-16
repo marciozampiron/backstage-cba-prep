@@ -36,12 +36,12 @@ export const FORBIDDEN_SCRIPT_PATTERNS = [
   { label: 'repository administration', re: /\bgh\s+api\b[^\n]*\/(branches|rulesets|protection|actions\/secrets|environments)\b|\bgh\s+repo\s+edit\b|\bgh\s+secret\b/ },
   { label: 'credential handling', re: /GH_TOKEN=|GITHUB_TOKEN=|AWS_SECRET|\bgh\s+auth\s+(login|refresh|token)\b|~\/\.aws\/credentials/ },
   { label: 'history rewriting', re: /\bgit\s+(rebase|reset\s+--hard|commit\s+--amend|filter-branch|push\s+--mirror)\b/ },
-  // Rounds #117-2/3: the detector distinguishes COMMAND POSITION from data. An `aws … bedrock*`
-  // call matches with global options and line continuations reconstructed; a paid endpoint
-  // matches only under an executable client (curl/wget); a word inside an assignment, comment,
-  // branch name, PR title or body is DATA and never trips. The four review reproductions are
-  // pinned as regressions in the test suite.
-  { label: 'paid service invocation', re: /(^|[;&|]|\$\(|`)[ \t]*aws(?:[^\n\\]|\\\r?\n)*?\bbedrock[\w-]*\b|(^|[;&|]|\$\(|`)[ \t]*(?:curl|wget)(?:[^\n\\]|\\\r?\n)*?(?:bedrock[\w.-]*\.amazonaws\.com|api\.openai\.com|api\.anthropic\.com|anthropic\.com\/v1)/im },
+  // Rounds #117-2/3/4: the detector reconstructs the LOGICAL command — an optional chain of
+  // VAR=value assignments and permitted wrappers (env, command, sudo, nohup), then the
+  // executable identified by BASENAME with a full token boundary (so `aws_note=` is data and
+  // `/usr/bin/aws` is a call), then the paid service. Endpoints match only under an executable
+  // curl/wget. Line continuations are reconstructed. The five round-4 reproductions are pinned.
+  { label: 'paid service invocation', re: /(^|[;&|]|\$\(|`)(?:[ \t]*(?:\w+=\S*|env|command|sudo|nohup)(?=[ \t]))*[ \t]*(?:\S*\/)?aws(?=[ \t]|\\\r?\n)(?:[^\n\\]|\\\r?\n)*?\bbedrock[\w-]*\b|(^|[;&|]|\$\(|`)(?:[ \t]*(?:\w+=\S*|env|command|sudo|nohup)(?=[ \t]))*[ \t]*(?:\S*\/)?(?:curl|wget)(?=[ \t]|\\\r?\n)(?:[^\n\\]|\\\r?\n)*?(?:bedrock[\w.-]*\.amazonaws\.com|api\.openai\.com|api\.anthropic\.com|anthropic\.com\/v1)/im },
 ];
 
 /**

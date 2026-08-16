@@ -266,6 +266,7 @@ test('ROUND #117-2: words in DATA never trip the paid-invocation detector — ex
   for (const legitimate of [
     "SOURCE_BRANCH='task/117-bedrock-model-tier-migration'",
     "SOURCE_BRANCH='task/118-bedrock-runtime-docs'",
+    "aws_note='bedrock-runtime documentation only'",
     'PR title: document invoke-model safely',
     'PR body: endpoint https://api.anthropic.com/v1/messages is the paid host',
     'PR body: models are anthropic and openai families; bedrock ids stay in configuration',
@@ -284,6 +285,10 @@ test('ROUND #117-2: words in DATA never trip the paid-invocation detector — ex
     'curl https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse',
     'curl https://api.anthropic.com/v1/messages',
     'wget -qO- https://api.openai.com/v1/chat/completions',
+    'env AWS_PROFILE=p aws bedrock-runtime converse --model-id x',
+    '/usr/bin/aws bedrock-runtime converse --model-id x',
+    'command aws bedrock-runtime converse --model-id x',
+    'env curl https://api.anthropic.com/v1/messages',
   ]) {
     assert.equal(paid.re.test(forbidden), true, `an executable paid call must refuse: ${forbidden}`);
   }
