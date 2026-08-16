@@ -174,48 +174,68 @@ test('EXECUTED: an expired, premature, inverted or over-TTL decision refuses wit
 /* ── anti-replay: executed with a fake gh serving the run ledger ── */
 
 const ANTIREPLAY = path.join(ROOT, 'scripts/smoke-antireplay.sh');
-function runAntiReplay({ runs = [], totalCount = null, ghExit = 0, decision = 'zamp-smoke-01', repo = 'marciozampiron/backstage-cba-prep' } = {}) {
+const SHA_A = 'a'.repeat(40);
+const SELF = { id: 424242, display_title: 'smoke zamp-smoke-01', run_attempt: 1, head_sha: SHA_A, event: 'workflow_dispatch' };
+function runAntiReplay({ runs, totalCount = null, ghExit = 0, ghBody = null, decision = 'zamp-smoke-01', repo = 'marciozampiron/backstage-cba-prep', attempt = '1', sha = SHA_A } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-ar-'));
-  const body = JSON.stringify({ total_count: totalCount ?? runs.length, workflow_runs: runs });
+  const list = runs ?? [SELF];
+  const body = ghBody ?? JSON.stringify({ total_count: totalCount ?? list.length, workflow_runs: list });
   fs.writeFileSync(path.join(dir, 'gh'), `#!/usr/bin/env bash
 [ ${ghExit} -ne 0 ] && exit ${ghExit}
 printf '%s' '${body.replace(/'/g, "'\\''")}'
 `, { mode: 0o755 });
   let out = ''; let code = 0;
   try {
-    out = execFileSync('bash', [ANTIREPLAY], { encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, SPEND_DECISION_ID: decision, GITHUB_RUN_ID: '424242', GITHUB_REPOSITORY: repo } });
+    out = execFileSync('bash', [ANTIREPLAY], { encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, SPEND_DECISION_ID: decision, GITHUB_RUN_ID: '424242', GITHUB_RUN_ATTEMPT: attempt, GITHUB_REPOSITORY: repo, AUTHORIZED_SHA: sha } });
   } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
   fs.rmSync(dir, { recursive: true, force: true });
   return { out, code };
 }
-const priorRun = (status, id = 111) => ({ id, display_title: 'smoke zamp-smoke-01', name: 'smoke zamp-smoke-01', status });
+const priorRun = (over = {}) => ({ id: 111, display_title: 'smoke zamp-smoke-01', run_attempt: 1, head_sha: SHA_A, event: 'workflow_dispatch', ...over });
 
-test('EXECUTED anti-replay: first run is eligible; the current run id never blocks itself', () => {
-  const fresh = runAntiReplay({ runs: [{ id: 424242, display_title: 'smoke zamp-smoke-01', name: 'smoke zamp-smoke-01' }] });
-  assert.equal(fresh.code, 0, fresh.out);
-  assert.match(fresh.out, /eligible/);
-  const empty = runAntiReplay({});
-  assert.equal(empty.code, 0);
+test('EXECUTED anti-replay v2: attempt 1 with a complete ledger and this run as its ONLY witness is eligible', () => {
+  const r = runAntiReplay({});
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /eligible/);
 });
 
-test('EXECUTED anti-replay: ANY prior run with the decision refuses — success, failure, cancelled, in_progress', () => {
-  for (const status of ['completed-success', 'completed-failure', 'cancelled', 'in_progress']) {
-    const r = runAntiReplay({ runs: [priorRun(status)] });
-    assert.notEqual(r.code, 0, status);
-    assert.match(r.out, /consumable ONCE, whatever its outcome/, status);
+test('EXECUTED anti-replay v2: a RERUN refuses before anything — attempt != 1, missing or non-canonical', () => {
+  for (const attempt of ['2', '10', '', '01', 'x']) {
+    const r = runAntiReplay({ attempt });
+    assert.notEqual(r.code, 0, `attempt=${JSON.stringify(attempt)}`);
+    assert.match(r.out, /rerun detected|GITHUB_RUN_ATTEMPT is missing or non-canonical/, `attempt=${JSON.stringify(attempt)}`);
   }
 });
 
-test('EXECUTED anti-replay: truncated listing, API failure and a foreign repo all refuse — exhaustive or nothing', () => {
-  const trunc = runAntiReplay({ runs: [], totalCount: 150 });
-  assert.notEqual(trunc.code, 0);
-  assert.match(trunc.out, /truncated \(0\/150\)/);
-  const fail = runAntiReplay({ ghExit: 1 });
-  assert.notEqual(fail.code, 0);
-  assert.match(fail.out, /listing failed/);
-  const foreign = runAntiReplay({ repo: 'someone/else' });
-  assert.notEqual(foreign.code, 0);
-  assert.match(foreign.out, /canonical repository/);
+test('EXECUTED anti-replay v2: ANY prior run with the decision refuses — whatever its outcome', () => {
+  for (const status of [{}, { run_attempt: 2 }, { head_sha: 'b'.repeat(40) }]) {
+    const r = runAntiReplay({ runs: [SELF, priorRun(status)], totalCount: 2 });
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /consumable ONCE, whatever its outcome/);
+  }
+});
+
+test('EXECUTED anti-replay v2: structural ambiguity ALWAYS refuses — empty, bad page, count drift, self absent/duplicated/divergent', () => {
+  const cases = [
+    [{ ghBody: '' }, /NO_PAGES|unparseable/, 'empty output'],
+    [{ ghBody: '{}' }, /BAD_PAGE/, 'page without fields'],
+    [{ ghBody: JSON.stringify({ total_count: 1, workflow_runs: [{ id: 424242 }] }) }, /BAD_RUN_FIELDS/, 'run missing fields'],
+    [{ runs: [SELF], totalCount: 0 }, /COUNT_MISMATCH 1\/0/, 'FETCHED > TOTAL'],
+    [{ runs: [SELF], totalCount: 5 }, /COUNT_MISMATCH 1\/5/, 'FETCHED < TOTAL'],
+    [{ runs: [priorRun()], totalCount: 1 }, /SELF_COUNT 0/, 'current run absent from the ledger'],
+    [{ runs: [SELF, { ...SELF }], totalCount: 2 }, /SELF_COUNT 2/, 'current run duplicated'],
+    [{ runs: [{ ...SELF, head_sha: 'c'.repeat(40) }] }, /SELF_DIVERGES/, 'current head_sha diverges'],
+    [{ runs: [{ ...SELF, event: 'push' }] }, /SELF_DIVERGES/, 'current event diverges'],
+    [{ runs: [{ ...SELF, run_attempt: 2 }] }, /SELF_DIVERGES/, 'ledger shows attempt 2 for self'],
+    [{ runs: [{ ...SELF, display_title: 'smoke zamp-other' }] }, /SELF_DIVERGES/, 'current title diverges'],
+    [{ ghExit: 1 }, /listing failed/, 'API failure'],
+    [{ repo: 'someone/else' }, /canonical repository/, 'foreign repo'],
+  ];
+  for (const [over, re, label] of cases) {
+    const r = runAntiReplay(over);
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.out, re, label);
+  }
 });
 
 test('anti-replay wiring: ledger check BEFORE OIDC, serialized concurrency by decision, run-name is the ledger key', () => {

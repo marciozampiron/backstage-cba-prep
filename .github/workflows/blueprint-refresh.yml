@@ -95,6 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+          AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
         run: bash scripts/smoke-antireplay.sh
       - name: Configure AWS credentials (refresh role via OIDC)
         uses: aws-actions/configure-aws-credentials@v6
