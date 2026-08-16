@@ -242,6 +242,50 @@ test('the forbidden-operation list actually detects what it claims to detect', (
   }
 });
 
+test('ROUND #117-2: the GENERATED script for the exact #117 branch passes its own self-check', () => {
+  // The defect's reproduction, inverted into a control: generate a full script whose gate names
+  // the exact branch that tripped the old bare-word pattern, and prove every forbidden-operation
+  // pattern — the narrowed paid-invocation detector included — accepts the result.
+  const gate = gateFixture();
+  gate.issue = 117;
+  gate.sourceBranch = 'task/117-bedrock-model-tier-migration';
+  const repo = repoFixture({
+    branch: 'task/117-bedrock-model-tier-migration',
+    worktrees: [{ path: '/w/117', branch: 'task/117-bedrock-model-tier-migration' }],
+  });
+  const script = scriptFixture(gate, repo);
+  assert.ok(script.includes('task/117-bedrock-model-tier-migration'), 'the branch name is embedded in the script');
+  for (const { label, re } of FORBIDDEN_SCRIPT_PATTERNS) {
+    assert.equal(re.test(script), false, `the #117-branch script trips: ${label}`);
+  }
+});
+
+test('ROUND #117-2: words in DATA never trip the paid-invocation detector — executable forms always do', () => {
+  const paid = FORBIDDEN_SCRIPT_PATTERNS.find((p) => p.label === 'paid service invocation');
+  // POSITIVE controls: legitimate script inputs that merely MENTION providers must pass — the
+  // exact branch name that exposed the defect included.
+  for (const legitimate of [
+    "SOURCE_BRANCH='task/117-bedrock-model-tier-migration'",
+    'PR title: feat(models): the Bedrock tier migration — Opus 4.8 fast, Sonnet 5 standard',
+    'PR body: models are anthropic and openai families; bedrock ids stay in configuration',
+    '# comment: the anthropic adapter and the openai provider are product functionality',
+  ]) {
+    assert.equal(paid.re.test(legitimate), false, `data must not trip the detector: ${legitimate}`);
+  }
+  // NEGATIVE controls: real paid invocations, line-continuation variants included, must refuse.
+  for (const forbidden of [
+    'aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-5',
+    'aws bedrock-runtime converse --model-id x',
+    'aws \\\n  bedrock-runtime converse --model-id x',
+    'aws bedrock get-foundation-model-availability --model-id x',
+    'curl https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse',
+    'curl https://api.anthropic.com/v1/messages',
+    'curl https://api.openai.com/v1/chat/completions',
+  ]) {
+    assert.equal(paid.re.test(forbidden), true, `an executable paid call must refuse: ${forbidden}`);
+  }
+});
+
 test('the script performs exactly ONE push, of the task branch, without force', () => {
   const script = scriptFixture();
   const pushes = script.split('\n').filter((l) => /^\s*git push\b/.test(l));
