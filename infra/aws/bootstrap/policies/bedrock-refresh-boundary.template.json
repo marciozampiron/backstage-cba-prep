@@ -6,10 +6,10 @@
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
       "Resource": [
-        "arn:aws:bedrock:us-east-1:ACCOUNT_ID_PLACEHOLDER:inference-profile/us.amazon.nova-pro-v1:0",
-        "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0",
-        "arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0",
-        "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0"
+        "arn:aws:bedrock:us-east-1:ACCOUNT_ID_PLACEHOLDER:inference-profile/us.anthropic.claude-sonnet-5",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5",
+        "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5",
+        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5"
       ]
     }
   ]

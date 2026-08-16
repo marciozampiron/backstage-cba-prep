@@ -4,6 +4,7 @@
 // never loads the AWS SDK unless the Bedrock path is actually used.
 
 import { requireBedrockConfig } from './config.js';
+import { modelForTier } from '../../lib/model-config.js';
 import { aiUsageEvent } from '../../domain/ai-orchestration/usage.js';
 import { ModelAccessError, ModelInvocationError, ModelNotConfiguredError } from '../../domain/ai-orchestration/errors.js';
 
@@ -31,7 +32,12 @@ export function createBedrockModelProvider(opts = {}) {
       if (!prompt || typeof prompt !== 'string') {
         throw new ModelInvocationError('invoke() requires a non-empty prompt string', { provider: 'bedrock' });
       }
-      const modelId = cfg.models[tier] || cfg.models.standard;
+      let modelId;
+      try {
+        modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      } catch (err) {
+        throw new ModelNotConfiguredError(err.message, { provider: 'bedrock', cause: err });
+      }
 
       let client = opts.client;
       let ConverseCommand = opts.ConverseCommand;

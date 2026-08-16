@@ -60,9 +60,9 @@ test('bedrock:InvokeModel is granted only on the expected resources, and nothing
   assert.equal(resources.length, 4, 'inference profile + 3 routed model ARNs');
   const literal = resources.filter((r) => typeof r === 'string');
   assert.deepEqual(literal, [
-    'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0',
-    'arn:aws:bedrock:us-east-2::foundation-model/amazon.nova-pro-v1:0',
-    'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0',
+    'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5',
+    'arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5',
+    'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5',
   ]);
   // No other bedrock action anywhere in the template; Converse never reappears (#66 guardrail).
   const flat = JSON.stringify(template.toJSON());

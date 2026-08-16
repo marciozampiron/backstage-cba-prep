@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const { parseArnList } = require('../lib/context');
 
 const ARNS = [
-  'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-pro-v1:0',
-  'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-pro-v1:0',
+  'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5',
+  'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5',
 ];
 
 test('parseArnList passes a real array through', () => {

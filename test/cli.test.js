@@ -241,10 +241,12 @@ test('resolveModelConfig defaults to first-party Anthropic tiers', () => {
   assert.equal(cfg.models.critical, 'claude-opus-4-8');
 });
 
-test('resolveModelConfig bedrock default standard tier is Nova Pro without overrides (#72)', () => {
+test('resolveModelConfig bedrock defaults are the #117 target — Zamp-decided, no price-based selection', () => {
   const cfg = resolveModelConfig({ LLM_BACKEND: 'bedrock' });
   assert.equal(cfg.backend, 'bedrock');
-  assert.equal(cfg.models.standard, 'us.amazon.nova-pro-v1:0');
+  assert.equal(cfg.models.fast, 'us.anthropic.claude-opus-4-8');
+  assert.equal(cfg.models.standard, 'us.anthropic.claude-sonnet-5');
+  assert.equal(cfg.models.critical, 'us.anthropic.claude-opus-5');
 });
 
 test('resolveModelConfig uses Bedrock inference-profile ids with env overrides', () => {
@@ -257,7 +259,7 @@ test('resolveModelConfig uses Bedrock inference-profile ids with env overrides',
   assert.equal(cfg.backend, 'bedrock');
   assert.equal(cfg.region, 'us-east-1');
   assert.equal(cfg.models.standard, 'us.anthropic.claude-sonnet-5-20260101-v1:0');
-  assert.match(cfg.models.fast, /^us\.anthropic\.claude-haiku/);
+  assert.match(cfg.models.fast, /^us\.anthropic\.claude-opus-4-8$/);
 });
 
 test('validateModelConfig passes for the default anthropic backend', () => {
