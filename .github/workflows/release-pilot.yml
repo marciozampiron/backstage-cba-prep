@@ -217,7 +217,9 @@ jobs:
           cache: npm
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ../../services/bff
       - name: Unit tests (context helpers and preflight)
         run: npm test
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
@@ -369,7 +371,9 @@ jobs:
           cache: npm
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ../../services/bff
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
         env:
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
@@ -554,7 +558,9 @@ jobs:
           cache: npm
           cache-dependency-path: infra/aws/package-lock.json
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ../../services/bff
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
         env:
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}

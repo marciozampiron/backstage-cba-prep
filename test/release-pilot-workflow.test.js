@@ -139,7 +139,7 @@ const EXPECTED_WORKFLOW = {
         },
         {
           "name": "Install dependencies",
-          "run": "npm ci"
+          "run": "npm ci\nnpm ci --prefix ../../services/bff\n"
         },
         {
           "name": "Unit tests (context helpers and preflight)",
@@ -254,7 +254,7 @@ const EXPECTED_WORKFLOW = {
         },
         {
           "name": "Install dependencies",
-          "run": "npm ci"
+          "run": "npm ci\nnpm ci --prefix ../../services/bff\n"
         },
         {
           "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
@@ -406,7 +406,7 @@ const EXPECTED_WORKFLOW = {
         },
         {
           "name": "Install dependencies",
-          "run": "npm ci"
+          "run": "npm ci\nnpm ci --prefix ../../services/bff\n"
         },
         {
           "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
@@ -1470,5 +1470,22 @@ test('EXECUTED: the happy path emits the resolved OID, in order, after every pro
     const idx = r.calls.indexOf(step);
     assert.ok(idx > last, `${step} runs, and after the previous proof`);
     last = idx;
+  }
+});
+
+test('#111 FIX: the BFF toolchain installs in ALL THREE lane jobs, before tests/synth/OIDC', () => {
+  // Run 31937787729: the first real dispatch died on FailedToBundleAsset — the api-stack tests
+  // bundle services/bff with esbuild --no-install, and the lane installed only infra/aws. The
+  // control is FINITE: exactly these three jobs, each installing the BFF prefix in the same
+  // step as npm ci, positioned before any test/synth/credential step (mirrors infra-synth.yml).
+  const { wf } = parseWorkflow(raw);
+  for (const key of ['dev-preflight', 'dev-stage', 'pilot-preflight']) {
+    const job = wf.jobs[key];
+    assert.ok(job, `job ${key} exists`);
+    const idx = job.steps.findIndex((s) => /npm ci --prefix \.\.\/\.\.\/services\/bff/.test(s.run ?? ''));
+    assert.ok(idx >= 0, `${key}: the BFF install exists`);
+    assert.match(job.steps[idx].run, /npm ci\n\s*npm ci --prefix/, `${key}: same step as the infra install`);
+    const before = job.steps.slice(0, idx).map((s) => `${s.name ?? ''}${s.uses ?? ''}${s.run ?? ''}`).join(' ');
+    assert.ok(!/aws-actions\/configure-aws-credentials|node --test|cdk synth|npm test/.test(before), `${key}: install precedes tests/synth/OIDC`);
   }
 });
