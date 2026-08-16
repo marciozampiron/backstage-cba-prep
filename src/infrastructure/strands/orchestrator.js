@@ -43,7 +43,12 @@ export function createStrandsOrchestrator(opts = {}) {
 
   return {
     async run({ prompt, systemPrompt = null, tier = 'standard', tools = null, options = {} } = {}) {
-      const modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      let modelId;
+      try {
+        modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      } catch (err) {
+        throw new ModelNotConfiguredError(err.message, { provider: 'strands', cause: err });
+      }
       const id = repository ? newId() : null;
       const startedAt = repository ? now() : null;
       const record = async (fields) => {

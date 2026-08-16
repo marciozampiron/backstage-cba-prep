@@ -57,3 +57,58 @@ test('#117: AccessDenied propagates without modifying the selection — one atte
   );
   assert.deepEqual(attempts, ['us.anthropic.claude-opus-5'], 'exactly ONE attempt, with the exact approved id — a failure never retries under another model');
 });
+
+// ─── ROUND 2 (Codex) ──────────────────────────────────────────────────────────────────────────
+
+test('#117-2: the operational template and the CDK default agree with the central defaults — no override drift', async () => {
+  const fs = await import('node:fs');
+  // .env.example is the template operators copy: its values must BE the approved trio, or the
+  // migration is silently undone by precedence.
+  const envExample = fs.readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
+  for (const [tier, id] of Object.entries(APPROVED)) {
+    const line = `BEDROCK_MODEL_${tier.toUpperCase()}=${id}`;
+    assert.ok(envExample.includes(line), `.env.example must carry exactly: ${line}`);
+  }
+  // The CDK standard-tier default must be the SAME id the central config approves.
+  const stack = fs.readFileSync(new URL('../infra/aws/lib/security-stack.js', import.meta.url), 'utf8');
+  assert.ok(stack.includes(`'bedrockStandardInferenceProfileId', '${APPROVED.standard}'`), 'the CDK default must equal the approved standard id');
+  // …and the infra README documents that same default.
+  const readme = fs.readFileSync(new URL('../infra/aws/README.md', import.meta.url), 'utf8');
+  assert.ok(readme.includes('`' + APPROVED.standard + '`'), 'infra README must document the approved standard id');
+});
+
+test('#117-2: every ADAPTER refuses an unknown tier as a DOMAIN error, with zero external calls', async () => {
+  const { createAnthropicModelProvider } = await import('../src/infrastructure/anthropic/model-provider.js');
+  const { createStrandsOrchestrator } = await import('../src/infrastructure/strands/orchestrator.js');
+  const domainRefusal = (provider) => (e) =>
+    e.name === 'ModelNotConfiguredError' && e.code === 'not_configured' && e.provider === provider && /unknown model tier "turbo"/.test(e.message);
+
+  // Bedrock: zero client.send.
+  let sends = 0;
+  const bedrock = createBedrockModelProvider({
+    env: { LLM_BACKEND: 'bedrock', AWS_REGION: 'us-east-1' },
+    client: { send: async () => { sends += 1; throw new Error('must not be called'); } },
+    ConverseCommand: class { constructor(i) { this.input = i; } },
+  });
+  await assert.rejects(() => bedrock.invoke({ prompt: 'x', tier: 'turbo' }), domainRefusal('bedrock'));
+  assert.equal(sends, 0, 'bedrock: the refusal precedes any client.send');
+
+  // Anthropic: zero fetch.
+  let fetches = 0;
+  const anthropic = createAnthropicModelProvider({
+    env: { LLM_BACKEND: 'anthropic', ANTHROPIC_API_KEY: 'k' },
+    apiKey: 'k',
+    fetchImpl: async () => { fetches += 1; throw new Error('must not be called'); },
+  });
+  await assert.rejects(() => anthropic.invoke({ prompt: 'x', tier: 'turbo' }), domainRefusal('anthropic'));
+  assert.equal(fetches, 0, 'anthropic: the refusal precedes any fetch');
+
+  // Strands: zero agentFactory.
+  let factories = 0;
+  const strands = createStrandsOrchestrator({
+    env: { LLM_BACKEND: 'bedrock', AWS_REGION: 'us-east-1' },
+    agentFactory: async () => { factories += 1; throw new Error('must not be called'); },
+  });
+  await assert.rejects(() => strands.run({ prompt: 'x', tier: 'turbo' }), domainRefusal('strands'));
+  assert.equal(factories, 0, 'strands: the refusal precedes any agentFactory');
+});

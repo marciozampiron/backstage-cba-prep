@@ -32,7 +32,12 @@ export function createBedrockModelProvider(opts = {}) {
       if (!prompt || typeof prompt !== 'string') {
         throw new ModelInvocationError('invoke() requires a non-empty prompt string', { provider: 'bedrock' });
       }
-      const modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      let modelId;
+      try {
+        modelId = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      } catch (err) {
+        throw new ModelNotConfiguredError(err.message, { provider: 'bedrock', cause: err });
+      }
 
       let client = opts.client;
       let ConverseCommand = opts.ConverseCommand;

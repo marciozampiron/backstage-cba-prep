@@ -27,7 +27,12 @@ export function createAnthropicModelProvider(opts = {}) {
       if (!apiKey) {
         throw new ModelNotConfiguredError('the anthropic adapter requires ANTHROPIC_API_KEY', { provider: 'anthropic' });
       }
-      const model = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      let model;
+      try {
+        model = modelForTier(cfg, tier); // #117: fail-closed — never another tier's model
+      } catch (err) {
+        throw new ModelNotConfiguredError(err.message, { provider: 'anthropic', cause: err });
+      }
 
       const body = {
         model,
