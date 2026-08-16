@@ -149,10 +149,11 @@ const EXPECTED_WORKFLOW = {
           "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
           "env": {
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
           },
-          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         },
         {
           "name": "Configure AWS credentials (read-only preflight role)",
@@ -170,11 +171,12 @@ const EXPECTED_WORKFLOW = {
             "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
             "TARGET_REGION": "${{ vars.AWS_REGION }}",
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
             "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
           },
-          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n# SPEC-DEPLOY-019: the §6b bundle digest of the COMPLETE manifest — what a plan_only\n# authorization must name. Computed by the same pinned envelope the entrypoint\n# recomputes at the gate, so the two can never drift apart silently.\nmanifest_digest=$(node -e '\n  const { manifestBundleDigest } = require(\"./lib/deploy-preflight\");\n  const { deepSortKeys } = require(\"./bin/deploy-release\");\n  process.stdout.write(manifestBundleDigest(require(process.argv[1]), deepSortKeys));\n' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"manifest_digest=$manifest_digest\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-dev.json\" \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-dev.json\")\" >> \"$GITHUB_OUTPUT\"\n# SPEC-DEPLOY-019: the §6b bundle digest of the COMPLETE manifest — what a plan_only\n# authorization must name. Computed by the same pinned envelope the entrypoint\n# recomputes at the gate, so the two can never drift apart silently.\nmanifest_digest=$(node -e '\n  const { manifestBundleDigest } = require(\"./lib/deploy-preflight\");\n  const { deepSortKeys } = require(\"./bin/deploy-release\");\n  process.stdout.write(manifestBundleDigest(require(process.argv[1]), deepSortKeys));\n' \"$RUNNER_TEMP/preflight-dev.json\")\necho \"manifest_digest=$manifest_digest\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -260,10 +262,11 @@ const EXPECTED_WORKFLOW = {
           "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
           "env": {
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
           },
-          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=dev \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         },
         {
           "name": "Configure AWS credentials (dev deploy role)",
@@ -284,10 +287,11 @@ const EXPECTED_WORKFLOW = {
             "CORRELATION_ID": "${{ inputs.correlation_id }}",
             "DISPATCH_MODE": "${{ inputs.mode }}",
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
           },
-          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --artifact-out \"$RUNNER_TEMP/release-evidence/evidence.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+          "run": "set -euo pipefail\nprintf '%s' \"$MANIFEST_JSON\" > \"$RUNNER_TEMP/manifest.json\"\nnode bin/deploy-release.js \\\n  --manifest \"$RUNNER_TEMP/manifest.json\" \\\n  --environment dev \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --artifact-out \"$RUNNER_TEMP/release-evidence/evidence.json\" \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         },
         {
           "name": "Publish the evidence record as job outputs",
@@ -412,10 +416,11 @@ const EXPECTED_WORKFLOW = {
           "name": "Synthesize the bound context (credential-free, BEFORE any AWS authority)",
           "env": {
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}"
           },
-          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
+          "run": "set -euo pipefail\nnpm run synth:quiet -- \\\n  -c environment=pilot \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\n"
         },
         {
           "name": "Configure AWS credentials (read-only preflight role)",
@@ -433,11 +438,12 @@ const EXPECTED_WORKFLOW = {
             "RELEASE_SHA": "${{ needs.global-preflight.outputs.release_sha }}",
             "TARGET_REGION": "${{ vars.AWS_REGION }}",
             "CBA_AUTH_CALLBACK_URLS": "${{ vars.CBA_AUTH_CALLBACK_URLS }}",
+            "CBA_CORS_ALLOWED_ORIGINS": "${{ vars.CBA_CORS_ALLOWED_ORIGINS }}",
             "CBA_AUTH_LOGOUT_URLS": "${{ vars.CBA_AUTH_LOGOUT_URLS }}",
             "CBA_AUTH_DOMAIN_PREFIX": "${{ vars.CBA_AUTH_DOMAIN_PREFIX }}",
             "CBA_EXPECTED_USER_POOL_ID": "${{ secrets.CBA_EXPECTED_USER_POOL_ID }}"
           },
-          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"\n"
+          "run": "set -euo pipefail\nnode bin/deploy-preflight.js \\\n  --environment pilot \\\n  --release-sha \"$RELEASE_SHA\" \\\n  --region \"$TARGET_REGION\" \\\n  --assembly cdk.out \\\n  --manifest-out \"$RUNNER_TEMP/preflight-pilot.json\" \\\n  -c \"corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS\" \\\n  -c \"authCallbackUrls=$CBA_AUTH_CALLBACK_URLS\" \\\n  -c \"authLogoutUrls=$CBA_AUTH_LOGOUT_URLS\" \\\n  -c \"authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX\"\ndigest=$(node -e 'process.stdout.write(require(process.argv[1]).contextDigest)' \"$RUNNER_TEMP/preflight-pilot.json\")\necho \"context_digest=$digest\" >> \"$GITHUB_OUTPUT\"\necho \"manifest=$(node -e 'process.stdout.write(JSON.stringify(require(process.argv[1])))' \"$RUNNER_TEMP/preflight-pilot.json\")\" >> \"$GITHUB_OUTPUT\"\n"
         }
       ]
     },
@@ -1488,4 +1494,18 @@ test('#111 FIX: the BFF toolchain installs in ALL THREE lane jobs, before tests/
     const before = job.steps.slice(0, idx).map((s) => `${s.name ?? ''}${s.uses ?? ''}${s.run ?? ''}`).join(' ');
     assert.ok(!/aws-actions\/configure-aws-credentials|node --test|cdk synth|npm test/.test(before), `${key}: install precedes tests/synth/OIDC`);
   }
+});
+
+test('#111: CORS follows the chosen origin — CBA_CORS_ALLOWED_ORIGINS wired at EVERY context site', () => {
+  // Codex F4: the closed context includes corsAllowedOrigins, but the lane never received it
+  // from the Environment — a binding would carry empty CORS and a deploy would create an API
+  // the Worker cannot call. Finite control: every step that passes authCallbackUrls into the
+  // context also passes corsAllowedOrigins from the SAME Environment variable.
+  const envDecls = (raw.match(/CBA_CORS_ALLOWED_ORIGINS: \$\{\{ vars\.CBA_CORS_ALLOWED_ORIGINS \}\}/g) ?? []).length;
+  const authDecls = (raw.match(/CBA_AUTH_CALLBACK_URLS: \$\{\{ vars\.CBA_AUTH_CALLBACK_URLS \}\}/g) ?? []).length;
+  assert.equal(envDecls, authDecls, 'every job that reads the auth vars reads the CORS var');
+  const cSites = (raw.match(/-c "corsAllowedOrigins=\$CBA_CORS_ALLOWED_ORIGINS"/g) ?? []).length;
+  const authSites = (raw.match(/-c "authCallbackUrls=\$CBA_AUTH_CALLBACK_URLS"/g) ?? []).length;
+  assert.equal(cSites, authSites, 'every context composition passes corsAllowedOrigins');
+  assert.ok(cSites >= 6, `all six context sites are covered (saw ${cSites})`);
 });

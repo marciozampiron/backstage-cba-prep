@@ -184,3 +184,31 @@ test('no real 12-digit account id in the versioned templates', () => {
     assert.ok(raw.includes('ACCOUNT_ID_PLACEHOLDER'), `${file}: placeholder expected`);
   }
 });
+
+// ─── #111: the dev release-preflight role (operator-managed, like the boundaries) ─────────────
+const preflightTrust = JSON.parse(readFileSync(join(POLICIES_DIR, 'preflight-role-trust.template.json'), 'utf8'));
+const preflightPolicy = JSON.parse(readFileSync(join(POLICIES_DIR, 'preflight-role-policy.template.json'), 'utf8'));
+
+test('preflight role trust: OIDC only, aud pinned, sub pinned to the repo Environment — nothing wider', () => {
+  assert.equal(preflightTrust.Statement.length, 1);
+  const s = preflightTrust.Statement[0];
+  assert.equal(s.Action, 'sts:AssumeRoleWithWebIdentity');
+  assert.match(s.Principal.Federated, /oidc-provider\/token\.actions\.githubusercontent\.com$/);
+  assert.equal(s.Condition.StringEquals['token.actions.githubusercontent.com:aud'], 'sts.amazonaws.com');
+  assert.equal(s.Condition.StringEquals['token.actions.githubusercontent.com:sub'], 'repo:marciozampiron/backstage-cba-prep:environment:ENVIRONMENT_PLACEHOLDER');
+});
+
+test('preflight role policy: EXACTLY cognito-idp:DescribeUserPoolDomain — the wildcard is isolated, named and alone', () => {
+  // Codex (#111): DescribeUserPoolDomain takes no useful ARN scoping, so the inevitable
+  // Resource:* is confined to a single-action statement with its own Sid. Nothing else exists.
+  assert.equal(preflightPolicy.Statement.length, 1);
+  const s = preflightPolicy.Statement[0];
+  assert.equal(s.Sid, 'PreflightReadCognitoDomainAvailabilityOnly');
+  assert.equal(s.Action, 'cognito-idp:DescribeUserPoolDomain');
+  assert.equal(s.Resource, '*');
+  assert.equal(s.Effect, 'Allow');
+  const raw = JSON.stringify(preflightPolicy);
+  for (const forbidden of ['cloudformation', 'PassRole', 'bedrock', 's3', 'iam:', 'sts:AssumeRole"']) {
+    assert.ok(!raw.includes(forbidden), `no ${forbidden} authority in the preflight policy`);
+  }
+});
