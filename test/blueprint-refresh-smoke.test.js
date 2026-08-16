@@ -32,7 +32,7 @@ test('smoke_only wiring: closed input, SHA binding BEFORE OIDC, minimal permissi
   const gate = smokeJob.steps[gateIdx].run;
   assert.match(gate, /\^\[0-9a-f\]\{40\}\$/, 'authorized_sha must be full 40-hex');
   assert.match(gate, /"\$AUTHORIZED_SHA" = "\$GITHUB_SHA"/, 'the run must BE the authorized commit');
-  assert.match(gate, /SPEND_DECISION_ID" \]/, 'the decision id is required');
+  assert.match(gate, /zamp-\[a-z0-9\]\[a-z0-9\._-\]\{0,79\}/, 'the decision id has a CLOSED grammar in the gate');
   const smoke = smokeJob.steps[smokeJob.steps.length - 1];
   assert.equal(smoke.run.trim(), 'bash scripts/standard-smoke.sh', 'the LAST step runs the testable script file');
   assert.equal(smoke.env.AWS_MAX_ATTEMPTS, '1');
@@ -42,12 +42,15 @@ test('smoke_only wiring: closed input, SHA binding BEFORE OIDC, minimal permissi
 /* ── behavioral harness: a fake aws records every converse and answers per scenario ── */
 
 const GOOD_ARN = 'arn:aws:iam::111122223333:role/cba-study-coach-gha-bedrock-refresh';
-function runSmoke({ callerAccount = '111122223333', callerRole = 'cba-study-coach-gha-bedrock-refresh', model = 'us.anthropic.claude-sonnet-5', stopReason = 'end_turn', converseExit = 0 } = {}) {
+function runSmoke({ callerAccount = '111122223333', callerRole = 'cba-study-coach-gha-bedrock-refresh', model = 'us.anthropic.claude-sonnet-5', stopReason = 'end_turn', converseExit = 0, spendId = 'zamp-smoke-01' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-smoke-'));
   const calls = path.join(dir, 'converse-calls');
+  const stsCalls = path.join(dir, 'sts-calls');
   fs.writeFileSync(calls, '');
+  fs.writeFileSync(stsCalls, '');
   const fakeAws = `#!/usr/bin/env bash
 if [ "$1" = "sts" ]; then
+  echo x >> '${stsCalls}'
   printf '{"Arn":"arn:aws:sts::${callerAccount}:assumed-role/${callerRole}/gha","Account":"${callerAccount}"}'
   exit 0
 fi
@@ -71,7 +74,7 @@ echo "unexpected aws $*" >&2; exit 90
         BEDROCK_MODEL_STANDARD: model,
         AWS_REGION: 'us-east-1',
         AUTHORIZED_SHA: 'a'.repeat(40),
-        SPEND_DECISION_ID: 'zamp-smoke-01',
+        SPEND_DECISION_ID: spendId,
       },
     });
   } catch (e) {
@@ -79,8 +82,9 @@ echo "unexpected aws $*" >&2; exit 90
     code = e.status ?? 1;
   }
   const converseCalls = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).length;
+  const sts = fs.readFileSync(stsCalls, 'utf8').split('\n').filter(Boolean).length;
   fs.rmSync(dir, { recursive: true, force: true });
-  return { out, code, converseCalls };
+  return { out, code, converseCalls, sts };
 }
 
 test('EXECUTED: divergent account, divergent role and divergent model each refuse with ZERO Converse calls', () => {
@@ -112,6 +116,25 @@ test('EXECUTED: a failing Converse makes exactly ONE attempt — never a second'
   assert.equal(r.converseCalls, 1, 'set -e stops after the single failed attempt');
 });
 
+test('EXECUTED: every invalid spend_decision_id refuses BEFORE any AWS call — zero STS, zero Converse, nothing echoed', () => {
+  const evil = [
+    ['', 'empty'],
+    ['zamp-ok\nFORGED_EVIDENCE=1', 'newline injection'],
+    ['zamp ok', 'space'],
+    ['zamp-ok\u0001', 'control character'],
+    ['evil-decision', 'wrong prefix'],
+    ['zamp-' + 'a'.repeat(90), 'over-length'],
+  ];
+  for (const [id, label] of evil) {
+    const r = runSmoke({ spendId: id });
+    assert.notEqual(r.code, 0, `${label} must be red`);
+    assert.equal(r.sts, 0, `${label}: zero STS calls`);
+    assert.equal(r.converseCalls, 0, `${label}: zero Converse calls`);
+    assert.match(r.out, /fails the closed grammar/, label);
+    assert.ok(!r.out.includes('FORGED_EVIDENCE') && !r.out.includes('evil-decision'), `${label}: no input-controlled value in the output`);
+  }
+});
+
 test('EXECUTED: success is exactly one attempt with the complete masked evidence', () => {
   const r = runSmoke({});
   assert.equal(r.code, 0, r.out);
@@ -120,4 +143,6 @@ test('EXECUTED: success is exactly one attempt with the complete masked evidence
     assert.ok(r.out.includes(line), `evidence line: ${line}`);
   }
   assert.ok(!/111122223333/.test(r.out), 'no raw account digits anywhere');
+  assert.equal((r.out.match(/^spend_decision=/gm) ?? []).length, 1, 'exactly ONE canonical spend_decision line');
+  assert.equal((r.out.match(/^authorized_sha=/gm) ?? []).length, 1, 'exactly ONE canonical authorized_sha line');
 });

@@ -5,6 +5,13 @@
 set -euo pipefail
 export AWS_MAX_ATTEMPTS=1
 
+# Fail closed on the SPEND DECISION ID before ANY AWS call: closed grammar, whole-value match
+# (grep -z makes the entire input one record, so an embedded newline can never smuggle a second
+# evidence line). The id is only ever printed AFTER passing this grammar.
+if ! printf '%s' "${SPEND_DECISION_ID:-}" | LC_ALL=C grep -qzE '^zamp-[a-z0-9][a-z0-9._-]{0,79}$'; then
+  echo "REFUSED: spend_decision_id fails the closed grammar (zamp-…); the value is not echoed"; exit 1
+fi
+
 # Fail closed on IDENTITY — role name AND account, without ever printing the account.
 ROLE_ACCOUNT=$(printf '%s' "${AWS_BEDROCK_REFRESH_ROLE_ARN:-}" | cut -d: -f5)
 CALLER_JSON=$(aws sts get-caller-identity --output json)

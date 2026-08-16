@@ -68,7 +68,7 @@ jobs:
           [ -n "$AWS_BEDROCK_REFRESH_ROLE_ARN" ] || { echo "REFUSED: AWS_BEDROCK_REFRESH_ROLE_ARN is required"; exit 1; }
           printf '%s' "$AUTHORIZED_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "REFUSED: authorized_sha must be the full 40-hex SHA the spend authorization names"; exit 1; }
           [ "$AUTHORIZED_SHA" = "$GITHUB_SHA" ] || { echo "REFUSED: this run is not the authorized commit — a reusable boolean never authorizes other bytes"; exit 1; }
-          [ -n "$SPEND_DECISION_ID" ] || { echo "REFUSED: spend_decision_id is required so the evidence names the decision"; exit 1; }
+          printf '%s' "$SPEND_DECISION_ID" | LC_ALL=C grep -qzE '^zamp-[a-z0-9][a-z0-9._-]{0,79}$' || { echo "REFUSED: spend_decision_id fails the closed grammar (zamp-…); the value is not echoed"; exit 1; }
       - name: Configure AWS credentials (refresh role via OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
