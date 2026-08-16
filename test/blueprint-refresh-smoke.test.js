@@ -176,17 +176,18 @@ test('EXECUTED: an expired, premature, inverted or over-TTL decision refuses wit
 const ANTIREPLAY = path.join(ROOT, 'scripts/smoke-antireplay.sh');
 const SHA_A = 'a'.repeat(40);
 const SELF = { id: 424242, display_title: 'smoke zamp-smoke-01', run_attempt: 1, head_sha: SHA_A, event: 'workflow_dispatch' };
-function runAntiReplay({ runs, totalCount = null, ghExit = 0, ghBody = null, decision = 'zamp-smoke-01', repo = 'marciozampiron/backstage-cba-prep', attempt = '1', sha = SHA_A } = {}) {
+function runAntiReplay({ runs, totalCount = null, ghExit = 0, ghHang = 0, ledgerTimeout = null, ghBody = null, decision = 'zamp-smoke-01', repo = 'marciozampiron/backstage-cba-prep', attempt = '1', sha = SHA_A } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-ar-'));
   const list = runs ?? [SELF];
   const body = ghBody ?? JSON.stringify({ total_count: totalCount ?? list.length, workflow_runs: list });
   fs.writeFileSync(path.join(dir, 'gh'), `#!/usr/bin/env bash
+[ ${ghHang} -ne 0 ] && sleep 30
 [ ${ghExit} -ne 0 ] && exit ${ghExit}
 printf '%s' '${body.replace(/'/g, "'\\''")}'
 `, { mode: 0o755 });
   let out = ''; let code = 0;
   try {
-    out = execFileSync('bash', [ANTIREPLAY], { encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, SPEND_DECISION_ID: decision, GITHUB_RUN_ID: '424242', GITHUB_RUN_ATTEMPT: attempt, GITHUB_REPOSITORY: repo, AUTHORIZED_SHA: sha } });
+    out = execFileSync('bash', [ANTIREPLAY], { encoding: 'utf8', env: { PATH: `${dir}:${process.env.PATH}`, SPEND_DECISION_ID: decision, GITHUB_RUN_ID: '424242', GITHUB_RUN_ATTEMPT: attempt, GITHUB_REPOSITORY: repo, AUTHORIZED_SHA: sha, ...(ledgerTimeout ? { LEDGER_TIMEOUT_SECONDS: ledgerTimeout } : {}) } });
   } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
   fs.rmSync(dir, { recursive: true, force: true });
   return { out, code };
@@ -250,4 +251,23 @@ test('anti-replay wiring: ledger check BEFORE OIDC, serialized concurrency by de
   assert.match(raw, /run-name:.*smoke \{0\}.*spend_decision_id/, 'the run-name carries the decision id');
   const inputs = (WF.on ?? WF[true]).workflow_dispatch.inputs;
   assert.ok(inputs.approved_at && inputs.expires_at, 'window inputs exist');
+});
+
+
+test('EXECUTED anti-replay v3: a HUNG ledger refuses by name within the injected deadline — never a wait, never partial output', () => {
+  const t0 = Date.now();
+  const r = runAntiReplay({ ghHang: 1, ledgerTimeout: '1' });
+  const elapsed = Date.now() - t0;
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /ledger query timed out after 1s/, 'the timeout is a NAMED refusal');
+  assert.ok(!/eligible/.test(r.out), 'partial output is never accepted as a ledger');
+  assert.ok(elapsed < 10_000, `finished in ${elapsed}ms — the deadline bites, the job does not hang`);
+});
+
+test('anti-replay v3 pins: neither the call deadline nor the job time-box can be removed', () => {
+  const script = fs.readFileSync(ANTIREPLAY, 'utf8');
+  assert.match(script, /timeout --foreground "\$\{LEDGER_TIMEOUT\}s" gh api/, 'the ledger call runs under an explicit deadline');
+  assert.match(script, /LEDGER_TIMEOUT_SECONDS:-60/, '60s default, injectable for tests');
+  assert.match(script, /-eq 124/, 'the timeout exit maps to the named refusal');
+  assert.equal(smokeJob['timeout-minutes'], 5, 'the smoke job is time-boxed as the second barrier');
 });

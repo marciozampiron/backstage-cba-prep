@@ -53,6 +53,9 @@ jobs:
   smoke:
     if: github.event.inputs.smoke_only == 'true'
     runs-on: ubuntu-latest
+    # Codex (#111 round 3): the job itself is time-boxed — the second barrier behind the
+    # ledger call's own 60s deadline.
+    timeout-minutes: 5
     # Codex (#111 HIGH): repeats of the SAME decision serialize — never cancel, never run in
     # parallel; the second in line then dies on the anti-replay ledger check.
     concurrency:

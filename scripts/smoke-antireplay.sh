@@ -20,8 +20,23 @@ if [ "${GITHUB_REPOSITORY:-}" != "$CANONICAL_REPO" ]; then
   echo "REFUSED: this is not the canonical repository — the decision ledger lives there"; exit 1
 fi
 EXPECTED_NAME="smoke ${SPEND_DECISION_ID}"
-LISTING=$(gh api --paginate "repos/${CANONICAL_REPO}/actions/workflows/blueprint-refresh.yml/runs?per_page=100" 2>/dev/null) \
-  || { echo "REFUSED: the prior-run listing failed — an unverified history never authorizes a paid call"; exit 1; }
+# The ledger query has an explicit DEADLINE (injectable for tests; 60s default). A hung API
+# is a refusal, not a wait — and partial output from a timed-out call is never a ledger.
+LEDGER_TIMEOUT="${LEDGER_TIMEOUT_SECONDS:-60}"
+# Capture to a FILE, not a pipe: a timed-out process may leave children holding the pipe open,
+# and a command substitution would then wait for THEIR EOF — the file redirect returns the
+# moment timeout kills the query, whatever grandchildren linger.
+LEDGER_TMP=$(mktemp)
+trap 'rm -f "$LEDGER_TMP"' EXIT
+set +e
+timeout --foreground "${LEDGER_TIMEOUT}s" gh api --paginate "repos/${CANONICAL_REPO}/actions/workflows/blueprint-refresh.yml/runs?per_page=100" > "$LEDGER_TMP" 2>/dev/null
+RC=$?
+set -e
+LISTING=$(cat "$LEDGER_TMP")
+if [ "$RC" -eq 124 ]; then
+  echo "REFUSED: the ledger query timed out after ${LEDGER_TIMEOUT}s — an unavailable ledger never authorizes a paid call"; exit 1
+fi
+[ "$RC" -eq 0 ] || { echo "REFUSED: the prior-run listing failed — an unverified history never authorizes a paid call"; exit 1; }
 
 VERDICT=$(printf '%s' "$LISTING" | jq -rs --arg name "$EXPECTED_NAME" --arg self "$GITHUB_RUN_ID" --arg sha "$AUTHORIZED_SHA" '
   if length < 1 then "NO_PAGES"
