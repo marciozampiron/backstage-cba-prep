@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      smoke_only:
+        description: Run EXACTLY ONE standard-tier Converse smoke (maxTokens=8) under the refresh role and stop — no refresh, no PR (still requires confirm_ai_spend)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -74,11 +79,37 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Standard-tier smoke (exactly one Converse call, then STOP)
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only == 'true'
+        run: |
+          set -euo pipefail
+          # Fail closed on IDENTITY: this smoke proves the REFRESH ROLE path, nothing else.
+          CALLER=$(aws sts get-caller-identity --query Arn --output text)
+          MASKED=$(printf '%s' "$CALLER" | sed -E 's/[0-9]{12}/ACCOUNT/g')
+          case "$CALLER" in
+            *assumed-role/cba-study-coach-gha-bedrock-refresh/*) : ;;
+            *) echo "REFUSED: identity is not the refresh role: $MASKED"; exit 1 ;;
+          esac
+          # Fail closed on MODEL: exactly the approved standard profile — no fallback, ever.
+          if [ "$BEDROCK_MODEL_STANDARD" != "us.anthropic.claude-sonnet-5" ]; then
+            echo "REFUSED: BEDROCK_MODEL_STANDARD diverges from the approved standard profile"; exit 1
+          fi
+          # EXACTLY ONE invocation. No retry: any non-zero exit stops here (set -e).
+          STOP=$(aws bedrock-runtime converse --region "$AWS_REGION" --model-id "$BEDROCK_MODEL_STANDARD" \
+            --messages '[{"role":"user","content":[{"text":"Reply with exactly: ok"}]}]' \
+            --inference-config '{"maxTokens":8}' --query stopReason --output text)
+          echo "SMOKE EVIDENCE"
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "identity=$MASKED (refresh role confirmed)"
+          echo "region=$AWS_REGION"
+          echo "model=$BEDROCK_MODEL_STANDARD"
+          echo "stopReason=$STOP"
+          echo "attempts=1"
       - name: Install dependencies
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         run: npm ci
       - name: Regenerate the domain from the source page
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         env:
           FROM_URL: ${{ github.event.inputs.url }}
           LLM_BACKEND: bedrock
@@ -89,17 +120,17 @@ jobs:
             node bin/cli.js blueprint --provider anthropic --write
           fi
       - name: Check the bank against the (possibly) new domain
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         run: node bin/cli.js validate || echo "::warning::bank no longer validates against the regenerated domain — review the PR carefully"
       - name: Write a synthetic change (plumbing test only)
-        if: steps.gate.outputs.plumbing == 'true'
+        if: steps.gate.outputs.plumbing == 'true' && github.event.inputs.smoke_only != 'true'
         run: |
           printf 'blueprint-refresh PR finalizer self-test — run %s\n' "$GITHUB_RUN_ID" \
             > .github/blueprint-refresh-selftest.txt
           echo "Synthetic change written (no Bedrock, no AWS)."
       - name: Detect a tracked change
         id: diff
-        if: steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true'
+        if: (steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true') && github.event.inputs.smoke_only != 'true'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -112,6 +143,7 @@ jobs:
         if: >-
           (steps.gate.outputs.skip != 'true' || steps.gate.outputs.plumbing == 'true')
           && steps.diff.outputs.changed == 'true'
+          && github.event.inputs.smoke_only != 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           branch: ${{ github.event.inputs.pr_plumbing_test == 'true' && 'chore/blueprint-refresh-selftest' || 'chore/blueprint-refresh' }}
