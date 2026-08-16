@@ -34,7 +34,73 @@ permissions:
   id-token: write
 
 jobs:
+  # The smoke is its OWN JOB and its own authority boundary: contents read-only, id-token only,
+  # nothing of the refresh job's write permissions. Exactly one Converse call, then the workflow
+  # is over — the refresh job is barred at JOB level when smoke_only is set.
+  smoke:
+    if: github.event.inputs.smoke_only == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_BEDROCK_REFRESH_ROLE_ARN: ${{ secrets.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+      BEDROCK_MODEL_STANDARD: ${{ vars.BEDROCK_MODEL_STANDARD }}
+    steps:
+      - name: Fail closed without explicit spend confirmation
+        env:
+          CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRM_AI_SPEND" = "true" ] || { echo "REFUSED: confirm_ai_spend=true is required — the smoke is a paid call"; exit 1; }
+          [ -n "$AWS_BEDROCK_REFRESH_ROLE_ARN" ] || { echo "REFUSED: AWS_BEDROCK_REFRESH_ROLE_ARN is required"; exit 1; }
+      - name: Configure AWS credentials (refresh role via OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Standard-tier smoke (exactly one Converse call, then STOP)
+        env:
+          AWS_MAX_ATTEMPTS: "1"
+        run: |
+          set -euo pipefail
+          export AWS_MAX_ATTEMPTS=1
+          # Fail closed on IDENTITY — role name AND account, without ever printing the account.
+          ROLE_ACCOUNT=$(printf '%s' "$AWS_BEDROCK_REFRESH_ROLE_ARN" | cut -d: -f5)
+          CALLER_JSON=$(aws sts get-caller-identity --output json)
+          CALLER=$(printf '%s' "$CALLER_JSON" | jq -r .Arn)
+          CALLER_ACCOUNT=$(printf '%s' "$CALLER_JSON" | jq -r .Account)
+          MASKED=$(printf '%s' "$CALLER" | sed -E 's/[0-9]{12}/ACCOUNT/g')
+          if [ -z "$ROLE_ACCOUNT" ] || [ "$CALLER_ACCOUNT" != "$ROLE_ACCOUNT" ]; then
+            echo "REFUSED: caller account diverges from the refresh role's account"; exit 1
+          fi
+          case "$CALLER" in
+            *assumed-role/cba-study-coach-gha-bedrock-refresh/*) : ;;
+            *) echo "REFUSED: identity is not the refresh role: $MASKED"; exit 1 ;;
+          esac
+          # Fail closed on MODEL: exactly the approved standard profile — no fallback, ever.
+          if [ "$BEDROCK_MODEL_STANDARD" != "us.anthropic.claude-sonnet-5" ]; then
+            echo "REFUSED: BEDROCK_MODEL_STANDARD diverges from the approved standard profile"; exit 1
+          fi
+          # EXACTLY ONE invocation: AWS_MAX_ATTEMPTS=1 disables the CLI's automatic retries,
+          # set -e stops on failure — there is no second attempt of any kind.
+          STOP=$(aws bedrock-runtime converse --region "$AWS_REGION" --model-id "$BEDROCK_MODEL_STANDARD" \
+            --messages '[{"role":"user","content":[{"text":"Reply with exactly: ok"}]}]' \
+            --inference-config '{"maxTokens":8}' --query stopReason --output text)
+          # ONLY end_turn is success — max_tokens, content_filtered, guardrail_intervened all fail.
+          if [ "$STOP" != "end_turn" ]; then
+            echo "REFUSED: stopReason=$STOP is not end_turn — the smoke is NOT proven"; exit 1
+          fi
+          echo "SMOKE EVIDENCE"
+          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "identity=$MASKED (refresh role confirmed, account matched)"
+          echo "region=$AWS_REGION"
+          echo "model=$BEDROCK_MODEL_STANDARD"
+          echo "stopReason=$STOP"
+          echo "attempts=1"
   refresh:
+    if: github.event.inputs.smoke_only != 'true'
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -79,32 +145,6 @@ jobs:
         with:
           role-to-assume: ${{ env.AWS_BEDROCK_REFRESH_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Standard-tier smoke (exactly one Converse call, then STOP)
-        if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only == 'true'
-        run: |
-          set -euo pipefail
-          # Fail closed on IDENTITY: this smoke proves the REFRESH ROLE path, nothing else.
-          CALLER=$(aws sts get-caller-identity --query Arn --output text)
-          MASKED=$(printf '%s' "$CALLER" | sed -E 's/[0-9]{12}/ACCOUNT/g')
-          case "$CALLER" in
-            *assumed-role/cba-study-coach-gha-bedrock-refresh/*) : ;;
-            *) echo "REFUSED: identity is not the refresh role: $MASKED"; exit 1 ;;
-          esac
-          # Fail closed on MODEL: exactly the approved standard profile — no fallback, ever.
-          if [ "$BEDROCK_MODEL_STANDARD" != "us.anthropic.claude-sonnet-5" ]; then
-            echo "REFUSED: BEDROCK_MODEL_STANDARD diverges from the approved standard profile"; exit 1
-          fi
-          # EXACTLY ONE invocation. No retry: any non-zero exit stops here (set -e).
-          STOP=$(aws bedrock-runtime converse --region "$AWS_REGION" --model-id "$BEDROCK_MODEL_STANDARD" \
-            --messages '[{"role":"user","content":[{"text":"Reply with exactly: ok"}]}]' \
-            --inference-config '{"maxTokens":8}' --query stopReason --output text)
-          echo "SMOKE EVIDENCE"
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "identity=$MASKED (refresh role confirmed)"
-          echo "region=$AWS_REGION"
-          echo "model=$BEDROCK_MODEL_STANDARD"
-          echo "stopReason=$STOP"
-          echo "attempts=1"
       - name: Install dependencies
         if: steps.gate.outputs.skip != 'true' && github.event.inputs.smoke_only != 'true'
         run: npm ci
