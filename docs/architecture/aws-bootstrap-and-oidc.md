@@ -198,6 +198,22 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    account already has the GitHub provider, pass its ARN at deploy time via
    `-c githubOidcProviderArn=...` so the stack imports it instead of creating a duplicate.
 3. **Enumerate routed model ARNs** with `aws bedrock get-inference-profile` (§2).
+3b. **Provision the release-preflight role** (#111) with the operator-managed script — it
+   renders `preflight-role-trust.template.json` + `preflight-role-policy.template.json`
+   (the SIXTH template family), creates `cba-study-coach-gha-release-preflight-<env>`,
+   attaches exactly the single-action `cognito-idp:DescribeUserPoolDomain` policy and
+   READS BACK fail-closed (trust, one inline policy, zero managed policies) before
+   printing the masked ARN:
+
+   ```bash
+   bash scripts/provision-preflight-role.sh dev
+   gh secret set AWS_DEPLOY_PREFLIGHT_ROLE_ARN --env dev --repo marciozampiron/backstage-cba-prep --body "<the unmasked ARN>"
+   ```
+
+   The dev Environment then needs the variables `AWS_REGION`, `CBA_AUTH_CALLBACK_URLS`,
+   `CBA_AUTH_LOGOUT_URLS`, `CBA_AUTH_DOMAIN_PREFIX` and `CBA_CORS_ALLOWED_ORIGINS` — the
+   URL values derive from the account's `workers.dev` subdomain (worker
+   `cba-study-coach-dev-web`), read from the Cloudflare dashboard and NEVER committed.
 4. **Render the versioned policy templates** (they live in Git with `ACCOUNT_ID_PLACEHOLDER`
    only — `infra/aws/bootstrap/policies/`). Substitute the account id from STS at render time; the
    rendered files stay under `/tmp` and never enter Git:

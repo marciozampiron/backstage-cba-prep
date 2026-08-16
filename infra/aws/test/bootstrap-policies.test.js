@@ -173,16 +173,39 @@ test('no wildcard anywhere in actions or resources of any policy', () => {
   }
 });
 
-test('no real 12-digit account id in the versioned templates', () => {
-  for (const file of [
-    'bedrock-refresh-boundary.template.json',
-    'cfn-exec-security.template.json',
-    'gha-deploy-boundary.template.json',
-  ]) {
+test('no real 12-digit account id in ANY versioned template — the scan covers the whole directory', () => {
+  // Round #111-2 (Codex): the scan globs the directory, so a new template can never ship
+  // outside it. Placeholder presence is asserted where the template references the account.
+  const files = require('node:fs').readdirSync(POLICIES_DIR).filter((f) => f.endsWith('.template.json'));
+  assert.ok(files.length >= 7, `all templates scanned (saw ${files.length})`);
+  for (const file of files) {
     const raw = readFileSync(join(POLICIES_DIR, file), 'utf8');
-    assert.ok(!/\b\d{12}\b/.test(raw), `${file}: only ACCOUNT_ID_PLACEHOLDER allowed`);
-    assert.ok(raw.includes('ACCOUNT_ID_PLACEHOLDER'), `${file}: placeholder expected`);
+    assert.ok(!/\b\d{12}\b/.test(raw), `${file}: no real account id, ever`);
+    if (raw.includes('arn:aws:iam::')) {
+      assert.ok(raw.includes('ACCOUNT_ID_PLACEHOLDER'), `${file}: account references use the placeholder`);
+    }
   }
+});
+
+test('#111-2: the dev render of the preflight trust has no placeholder and pins the dev Environment', () => {
+  const rendered = readFileSync(join(POLICIES_DIR, 'preflight-role-trust.template.json'), 'utf8')
+    .replaceAll('ACCOUNT_ID_PLACEHOLDER', '123456789012')
+    .replaceAll('ENVIRONMENT_PLACEHOLDER', 'dev');
+  assert.ok(!rendered.includes('PLACEHOLDER'), 'nothing unrendered survives');
+  const doc = JSON.parse(rendered);
+  assert.equal(doc.Statement[0].Condition.StringEquals['token.actions.githubusercontent.com:sub'],
+    'repo:marciozampiron/backstage-cba-prep:environment:dev');
+});
+
+test('#111-2: the provisioning script IS the authority unit — exact name, single policy, fail-closed read-back', () => {
+  const script = readFileSync(join(__dirname, '..', '..', '..', 'scripts', 'provision-preflight-role.sh'), 'utf8');
+  assert.match(script, /cba-study-coach-gha-release-preflight-\$\{ENV_NAME\}/, 'the canonical role name is versioned code');
+  assert.match(script, /REFUSED: unrendered placeholder/, 'rendering fails closed');
+  assert.match(script, /length'\)" = "1" \]/, 'exactly ONE inline policy is enforced on read-back');
+  assert.match(script, /no managed policy may be attached/, 'additional grants refuse');
+  assert.match(script, /grants more than DescribeUserPoolDomain/, 'the action set is read back, not trusted');
+  assert.match(script, /read-back diverges/, 'trust divergence refuses before the secret is installed');
+  assert.match(script, /sed -E 's\/\[0-9\]\{12\}\/ACCOUNT\/g'/, 'the printed ARN is masked');
 });
 
 // ─── #111: the dev release-preflight role (operator-managed, like the boundaries) ─────────────

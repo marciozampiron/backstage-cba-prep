@@ -1496,16 +1496,37 @@ test('#111 FIX: the BFF toolchain installs in ALL THREE lane jobs, before tests/
   }
 });
 
-test('#111: CORS follows the chosen origin — CBA_CORS_ALLOWED_ORIGINS wired at EVERY context site', () => {
-  // Codex F4: the closed context includes corsAllowedOrigins, but the lane never received it
-  // from the Environment — a binding would carry empty CORS and a deploy would create an API
-  // the Worker cannot call. Finite control: every step that passes authCallbackUrls into the
-  // context also passes corsAllowedOrigins from the SAME Environment variable.
-  const envDecls = (raw.match(/CBA_CORS_ALLOWED_ORIGINS: \$\{\{ vars\.CBA_CORS_ALLOWED_ORIGINS \}\}/g) ?? []).length;
-  const authDecls = (raw.match(/CBA_AUTH_CALLBACK_URLS: \$\{\{ vars\.CBA_AUTH_CALLBACK_URLS \}\}/g) ?? []).length;
-  assert.equal(envDecls, authDecls, 'every job that reads the auth vars reads the CORS var');
-  const cSites = (raw.match(/-c "corsAllowedOrigins=\$CBA_CORS_ALLOWED_ORIGINS"/g) ?? []).length;
-  const authSites = (raw.match(/-c "authCallbackUrls=\$CBA_AUTH_CALLBACK_URLS"/g) ?? []).length;
-  assert.equal(cSites, authSites, 'every context composition passes corsAllowedOrigins');
-  assert.ok(cSites >= 6, `all six context sites are covered (saw ${cSites})`);
+test('#111-2: CORS is wired STRUCTURALLY at each of the six {job, step} sites — counts cannot compensate', () => {
+  // Codex F3: global counts accepted removing CORS from one site and duplicating it in
+  // another. This control enumerates the sites structurally and proves, by in-test mutation,
+  // that an individual removal and a compensating duplication both refuse.
+  const checker = (rawText) => {
+    const { wf } = parseWorkflow(rawText);
+    const sites = [];
+    for (const [jobKey, job] of Object.entries(wf.jobs)) {
+      for (const [k, st] of (job.steps ?? []).entries()) {
+        if (/-c "authCallbackUrls=\$CBA_AUTH_CALLBACK_URLS"/.test(st.run ?? '')) {
+          const cors = ((st.run ?? '').match(/-c "corsAllowedOrigins=\$CBA_CORS_ALLOWED_ORIGINS"/g) ?? []).length;
+          const envOk = (st.env ?? {})['CBA_CORS_ALLOWED_ORIGINS'] === '${{ vars.CBA_CORS_ALLOWED_ORIGINS }}';
+          sites.push({ site: `${jobKey}#${k}`, cors, envOk });
+        }
+      }
+    }
+    return sites;
+  };
+  const sites = checker(raw);
+  assert.equal(sites.length, 6, `six context sites (saw ${sites.map((s) => s.site).join(', ')})`);
+  for (const s of sites) {
+    assert.equal(s.cors, 1, `${s.site}: exactly ONE corsAllowedOrigins argument`);
+    assert.ok(s.envOk, `${s.site}: the step's env carries CBA_CORS_ALLOWED_ORIGINS from vars`);
+  }
+  // MUTATION 1: remove CORS from one site only — the checker must refuse that exact site.
+  const one = raw.replace('-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n', '');
+  const mut1 = checker(one);
+  assert.ok(mut1.some((s) => s.cors === 0), 'individual removal is visible at its own site');
+  // MUTATION 2: compensate by duplicating at another site — a duplicate is equally refused.
+  const dup = one.replace('-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n',
+    '-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n');
+  const mut2 = checker(dup);
+  assert.ok(mut2.some((s) => s.cors === 0) && mut2.some((s) => s.cors === 2), 'the compensating duplication does not restore per-site truth');
 });
