@@ -1496,37 +1496,45 @@ test('#111 FIX: the BFF toolchain installs in ALL THREE lane jobs, before tests/
   }
 });
 
-test('#111-2: CORS is wired STRUCTURALLY at each of the six {job, step} sites — counts cannot compensate', () => {
-  // Codex F3: global counts accepted removing CORS from one site and duplicating it in
-  // another. This control enumerates the sites structurally and proves, by in-test mutation,
-  // that an individual removal and a compensating duplication both refuse.
+test('#111-3: CORS is wired at the CLOSED matrix of six {job, step} sites — moving a site stays red', () => {
+  // Codex F2 (round 3): discovery-by-content let a canonical site vanish while a new one kept
+  // the count. The matrix is CLOSED: exactly these six pairs, by job key and stable step name,
+  // each with the env declaration on the SAME step and exactly one corsAllowedOrigins argument.
+  const MATRIX = [
+    ['dev-preflight', 'Synthesize the bound context (credential-free, BEFORE any AWS authority)'],
+    ['dev-preflight', 'Evaluate PREFLIGHT-1 and PREFLIGHT-2'],
+    ['dev-stage', 'Synthesize the bound context (credential-free, BEFORE any AWS authority)'],
+    ['dev-stage', 'Deploy the verified release through the sanctioned entrypoint'],
+    ['pilot-preflight', 'Synthesize the bound context (credential-free, BEFORE any AWS authority)'],
+    ['pilot-preflight', 'Evaluate PREFLIGHT-1 and PREFLIGHT-2'],
+  ];
   const checker = (rawText) => {
     const { wf } = parseWorkflow(rawText);
-    const sites = [];
+    const found = [];
     for (const [jobKey, job] of Object.entries(wf.jobs)) {
-      for (const [k, st] of (job.steps ?? []).entries()) {
+      for (const st of job.steps ?? []) {
         if (/-c "authCallbackUrls=\$CBA_AUTH_CALLBACK_URLS"/.test(st.run ?? '')) {
-          const cors = ((st.run ?? '').match(/-c "corsAllowedOrigins=\$CBA_CORS_ALLOWED_ORIGINS"/g) ?? []).length;
-          const envOk = (st.env ?? {})['CBA_CORS_ALLOWED_ORIGINS'] === '${{ vars.CBA_CORS_ALLOWED_ORIGINS }}';
-          sites.push({ site: `${jobKey}#${k}`, cors, envOk });
+          found.push({
+            pair: [jobKey, st.name],
+            cors: ((st.run ?? '').match(/-c "corsAllowedOrigins=\$CBA_CORS_ALLOWED_ORIGINS"/g) ?? []).length,
+            envOk: (st.env ?? {})['CBA_CORS_ALLOWED_ORIGINS'] === '${{ vars.CBA_CORS_ALLOWED_ORIGINS }}',
+          });
         }
       }
     }
-    return sites;
+    return found;
   };
-  const sites = checker(raw);
-  assert.equal(sites.length, 6, `six context sites (saw ${sites.map((s) => s.site).join(', ')})`);
-  for (const s of sites) {
-    assert.equal(s.cors, 1, `${s.site}: exactly ONE corsAllowedOrigins argument`);
-    assert.ok(s.envOk, `${s.site}: the step's env carries CBA_CORS_ALLOWED_ORIGINS from vars`);
+  const found = checker(raw);
+  assert.deepEqual(found.map((f) => f.pair), MATRIX, 'exactly the six canonical pairs, in order — nothing moved, added or dropped');
+  for (const f of found) {
+    assert.equal(f.cors, 1, `${f.pair.join('#')}: exactly ONE corsAllowedOrigins argument`);
+    assert.ok(f.envOk, `${f.pair.join('#')}: env declared on the SAME step`);
   }
-  // MUTATION 1: remove CORS from one site only — the checker must refuse that exact site.
+  // MUTATION: move a canonical site into another job (rename its step) — the matrix refuses.
+  const moved = raw.replace('Evaluate PREFLIGHT-1 and PREFLIGHT-2', 'Evaluate PREFLIGHT-1 and PREFLIGHT-2 (moved)');
+  const foundMoved = checker(moved);
+  assert.notDeepEqual(foundMoved.map((f) => f.pair), MATRIX, 'a moved/renamed site cannot satisfy the closed matrix');
+  // MUTATION: remove one argument — the per-site count refuses even though another site could gain one.
   const one = raw.replace('-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n', '');
-  const mut1 = checker(one);
-  assert.ok(mut1.some((s) => s.cors === 0), 'individual removal is visible at its own site');
-  // MUTATION 2: compensate by duplicating at another site — a duplicate is equally refused.
-  const dup = one.replace('-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n',
-    '-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n');
-  const mut2 = checker(dup);
-  assert.ok(mut2.some((s) => s.cors === 0) && mut2.some((s) => s.cors === 2), 'the compensating duplication does not restore per-site truth');
+  assert.ok(checker(one).some((f) => f.cors === 0), 'individual removal is visible at its own site');
 });

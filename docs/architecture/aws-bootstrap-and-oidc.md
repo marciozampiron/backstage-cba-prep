@@ -211,7 +211,9 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    ```
 
    The dev Environment then needs the variables `AWS_REGION`, `CBA_AUTH_CALLBACK_URLS`,
-   `CBA_AUTH_LOGOUT_URLS`, `CBA_AUTH_DOMAIN_PREFIX` and `CBA_CORS_ALLOWED_ORIGINS` — the
+   `CBA_AUTH_LOGOUT_URLS`, `CBA_AUTH_DOMAIN_PREFIX`, `CBA_CORS_ALLOWED_ORIGINS` and
+   `CBA_EXPECTED_USER_POOL_ID` (may stay absent only while the domain prefix is provably
+   free; record it after the pool exists) — the
    URL values derive from the account's `workers.dev` subdomain (worker
    `cba-study-coach-dev-web`), read from the Cloudflare dashboard and NEVER committed.
 4. **Render the versioned policy templates** (they live in Git with `ACCOUNT_ID_PLACEHOLDER`
@@ -237,7 +239,8 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    done
    ```
 
-   Five templates, two rendering families: the #66 pair (bedrock-refresh boundary + scoped
+   Seven templates, three rendering families (#111 added the preflight trio — trust, policy
+   and boundary — provisioned by scripts/provision-preflight-role.sh): the #66 pair (bedrock-refresh boundary + scoped
    SecurityStack execution policy, account substitution only) and the #70 release trio (the
    GitHub deploy-role boundary, the runtime boundary every release-created role carries, and the
    release CloudFormation execution policy — account + ENVIRONMENT + QUALIFIER substitution, one

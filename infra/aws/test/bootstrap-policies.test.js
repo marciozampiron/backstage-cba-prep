@@ -197,14 +197,15 @@ test('#111-2: the dev render of the preflight trust has no placeholder and pins 
     'repo:marciozampiron/backstage-cba-prep:environment:dev');
 });
 
-test('#111-2: the provisioning script IS the authority unit — exact name, single policy, fail-closed read-back', () => {
+test('#111-3: the provisioning script IS the authority unit — validate-before-mutate, boundary, masked', () => {
   const script = readFileSync(join(__dirname, '..', '..', '..', 'scripts', 'provision-preflight-role.sh'), 'utf8');
   assert.match(script, /cba-study-coach-gha-release-preflight-\$\{ENV_NAME\}/, 'the canonical role name is versioned code');
+  assert.match(script, /cba-study-coach-boundary-preflight-\$\{ENV_NAME\}/, 'the durable boundary is versioned code');
   assert.match(script, /REFUSED: unrendered placeholder/, 'rendering fails closed');
-  assert.match(script, /length'\)" = "1" \]/, 'exactly ONE inline policy is enforced on read-back');
-  assert.match(script, /no managed policy may be attached/, 'additional grants refuse');
-  assert.match(script, /grants more than DescribeUserPoolDomain/, 'the action set is read back, not trusted');
-  assert.match(script, /read-back diverges/, 'trust divergence refuses before the secret is installed');
+  assert.match(script, /pre-existing role, BEFORE any change/, 'a pre-existing role is validated BEFORE any put');
+  assert.match(script, /zero mutation performed/, 'divergence refuses without mutating');
+  assert.match(script, /--permissions-boundary/, 'the role is created UNDER the boundary');
+  assert.match(script, /read-back, AFTER provisioning/, 'the full validation re-runs as read-back');
   assert.match(script, /sed -E 's\/\[0-9\]\{12\}\/ACCOUNT\/g'/, 'the printed ARN is masked');
 });
 
