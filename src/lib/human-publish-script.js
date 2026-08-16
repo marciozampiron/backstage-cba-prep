@@ -36,12 +36,12 @@ export const FORBIDDEN_SCRIPT_PATTERNS = [
   { label: 'repository administration', re: /\bgh\s+api\b[^\n]*\/(branches|rulesets|protection|actions\/secrets|environments)\b|\bgh\s+repo\s+edit\b|\bgh\s+secret\b/ },
   { label: 'credential handling', re: /GH_TOKEN=|GITHUB_TOKEN=|AWS_SECRET|\bgh\s+auth\s+(login|refresh|token)\b|~\/\.aws\/credentials/ },
   { label: 'history rewriting', re: /\bgit\s+(rebase|reset\s+--hard|commit\s+--amend|filter-branch|push\s+--mirror)\b/ },
-  // Round #117-2: the bare word "bedrock" made the self-check refuse its own legitimate
-  // inputs (a branch named task/117-bedrock-model-tier-migration embedded in the script). The
-  // detector matches EXECUTABLE invocation forms — an aws bedrock CLI call (line-continuation
-  // variants included), the invoke-model/converse operations, runtime endpoints and paid API
-  // hosts — never a word inside data, comments, branch names or PR text.
-  { label: 'paid service invocation', re: /\baws(?:\s*\\\r?\n|\s)+bedrock[\w-]*\b|\bbedrock-runtime\b|\binvoke-model\b|bedrock[\w.-]*\.amazonaws\.com|api\.openai\.com|api\.anthropic\.com|anthropic\.com\/v1/i },
+  // Rounds #117-2/3: the detector distinguishes COMMAND POSITION from data. An `aws … bedrock*`
+  // call matches with global options and line continuations reconstructed; a paid endpoint
+  // matches only under an executable client (curl/wget); a word inside an assignment, comment,
+  // branch name, PR title or body is DATA and never trips. The four review reproductions are
+  // pinned as regressions in the test suite.
+  { label: 'paid service invocation', re: /(^|[;&|]|\$\(|`)[ \t]*aws(?:[^\n\\]|\\\r?\n)*?\bbedrock[\w-]*\b|(^|[;&|]|\$\(|`)[ \t]*(?:curl|wget)(?:[^\n\\]|\\\r?\n)*?(?:bedrock[\w.-]*\.amazonaws\.com|api\.openai\.com|api\.anthropic\.com|anthropic\.com\/v1)/im },
 ];
 
 /**

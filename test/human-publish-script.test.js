@@ -262,25 +262,28 @@ test('ROUND #117-2: the GENERATED script for the exact #117 branch passes its ow
 
 test('ROUND #117-2: words in DATA never trip the paid-invocation detector — executable forms always do', () => {
   const paid = FORBIDDEN_SCRIPT_PATTERNS.find((p) => p.label === 'paid service invocation');
-  // POSITIVE controls: legitimate script inputs that merely MENTION providers must pass — the
-  // exact branch name that exposed the defect included.
+  // POSITIVE controls — the review's exact reproductions pinned: words in data NEVER trip.
   for (const legitimate of [
     "SOURCE_BRANCH='task/117-bedrock-model-tier-migration'",
-    'PR title: feat(models): the Bedrock tier migration — Opus 4.8 fast, Sonnet 5 standard',
+    "SOURCE_BRANCH='task/118-bedrock-runtime-docs'",
+    'PR title: document invoke-model safely',
+    'PR body: endpoint https://api.anthropic.com/v1/messages is the paid host',
     'PR body: models are anthropic and openai families; bedrock ids stay in configuration',
     '# comment: the anthropic adapter and the openai provider are product functionality',
   ]) {
     assert.equal(paid.re.test(legitimate), false, `data must not trip the detector: ${legitimate}`);
   }
-  // NEGATIVE controls: real paid invocations, line-continuation variants included, must refuse.
+  // NEGATIVE controls — executable forms ALWAYS refuse: command position, global options
+  // before the service, line continuations, and endpoints under an executable client.
   for (const forbidden of [
     'aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-5',
     'aws bedrock-runtime converse --model-id x',
+    'aws --region us-east-1 bedrock get-foundation-model-availability --model-id x',
     'aws \\\n  bedrock-runtime converse --model-id x',
-    'aws bedrock get-foundation-model-availability --model-id x',
+    'x=1; aws bedrock list-inference-profiles',
     'curl https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse',
     'curl https://api.anthropic.com/v1/messages',
-    'curl https://api.openai.com/v1/chat/completions',
+    'wget -qO- https://api.openai.com/v1/chat/completions',
   ]) {
     assert.equal(paid.re.test(forbidden), true, `an executable paid call must refuse: ${forbidden}`);
   }
