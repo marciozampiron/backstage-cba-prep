@@ -1,4 +1,5 @@
 name: Refresh blueprint
+run-name: ${{ github.event.inputs.smoke_only == 'true' && format('smoke {0}', github.event.inputs.spend_decision_id) || 'Refresh blueprint' }}
 
 # Regenerates the exam domain (spec/blueprint.json) from the official source page using AI
 # and opens a PULL REQUEST when it changes. Manual only: this workflow can spend Bedrock tokens.
@@ -33,6 +34,12 @@ on:
       spend_decision_id:
         description: smoke_only only — the identifier of Zamp's spend authorization, recorded in the evidence
         required: false
+      approved_at:
+        description: smoke_only only — strict UTC Z instant the spend decision was approved
+        required: false
+      expires_at:
+        description: smoke_only only — strict UTC Z expiry; TTL at most one hour from approved_at
+        required: false
 
 permissions:
   contents: write
@@ -46,9 +53,15 @@ jobs:
   smoke:
     if: github.event.inputs.smoke_only == 'true'
     runs-on: ubuntu-latest
+    # Codex (#111 HIGH): repeats of the SAME decision serialize — never cancel, never run in
+    # parallel; the second in line then dies on the anti-replay ledger check.
+    concurrency:
+      group: smoke-${{ github.event.inputs.spend_decision_id }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       AWS_BEDROCK_REFRESH_ROLE_ARN: ${{ secrets.AWS_BEDROCK_REFRESH_ROLE_ARN }}
@@ -62,6 +75,8 @@ jobs:
           CONFIRM_AI_SPEND: ${{ github.event.inputs.confirm_ai_spend }}
           AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
           SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+          APPROVED_AT: ${{ github.event.inputs.approved_at }}
+          EXPIRES_AT: ${{ github.event.inputs.expires_at }}
         run: |
           set -euo pipefail
           [ "$CONFIRM_AI_SPEND" = "true" ] || { echo "REFUSED: confirm_ai_spend=true is required — the smoke is a paid call"; exit 1; }
@@ -69,6 +84,18 @@ jobs:
           printf '%s' "$AUTHORIZED_SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "REFUSED: authorized_sha must be the full 40-hex SHA the spend authorization names"; exit 1; }
           [ "$AUTHORIZED_SHA" = "$GITHUB_SHA" ] || { echo "REFUSED: this run is not the authorized commit — a reusable boolean never authorizes other bytes"; exit 1; }
           printf '%s' "$SPEND_DECISION_ID" | LC_ALL=C grep -qzE '^zamp-[a-z0-9][a-z0-9._-]{0,79}$' || { echo "REFUSED: spend_decision_id fails the closed grammar (zamp-…); the value is not echoed"; exit 1; }
+          TS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+          printf '%s' "$APPROVED_AT" | LC_ALL=C grep -qzE "$TS_RE" || { echo "REFUSED: approved_at must be strict UTC Z"; exit 1; }
+          printf '%s' "$EXPIRES_AT" | LC_ALL=C grep -qzE "$TS_RE" || { echo "REFUSED: expires_at must be strict UTC Z"; exit 1; }
+          AP=$(date -u -d "$APPROVED_AT" +%s); EX=$(date -u -d "$EXPIRES_AT" +%s); NOW=$(date -u +%s)
+          [ "$AP" -lt "$EX" ] || { echo "REFUSED: inverted or empty window"; exit 1; }
+          [ $((EX - AP)) -le 3600 ] || { echo "REFUSED: TTL exceeds one hour"; exit 1; }
+          [ "$NOW" -ge "$AP" ] && [ "$NOW" -lt "$EX" ] || { echo "REFUSED: outside the decision window"; exit 1; }
+      - name: Anti-replay — this decision must never have run before (any outcome)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+        run: bash scripts/smoke-antireplay.sh
       - name: Configure AWS credentials (refresh role via OIDC)
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -79,6 +106,8 @@ jobs:
           AWS_MAX_ATTEMPTS: "1"
           AUTHORIZED_SHA: ${{ github.event.inputs.authorized_sha }}
           SPEND_DECISION_ID: ${{ github.event.inputs.spend_decision_id }}
+          APPROVED_AT: ${{ github.event.inputs.approved_at }}
+          EXPIRES_AT: ${{ github.event.inputs.expires_at }}
         run: bash scripts/standard-smoke.sh
   refresh:
     if: github.event.inputs.smoke_only != 'true'
