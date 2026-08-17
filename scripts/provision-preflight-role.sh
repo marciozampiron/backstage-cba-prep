@@ -68,7 +68,11 @@ observe "the role" aws iam get-role --role-name "$ROLE" --output json
 R_STATE="$OBS_STATE"; ROLE_JSON="$OBS_OUT"
 
 validate_role_reads() { # full semantic verification via fresh reads; refuses on ANY divergence
+  # $2 = contract: "pre" may accept an empty inline set (nothing installed yet); "post" REQUIRES
+  # exactly the reviewed policy present — a put that reported success but materialized nothing
+  # is a failed provisioning, never READ-BACK OK.
   local when="$1"
+  local contract="${2:?contract pre|post}"
   local got_trust got_boundary attached inline got_policy
   got_trust=$(printf '%s' "$ROLE_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["Role"]["AssumeRolePolicyDocument"]))')
   same_doc "$got_trust" "$TRUST" || { echo "REFUSED (${when}): the role's trust diverges from the reviewed template — zero mutation performed"; exit 1; }
@@ -82,7 +86,8 @@ validate_role_reads() { # full semantic verification via fresh reads; refuses on
   observe "inline policies" aws iam list-role-policies --role-name "$ROLE" --output json
   inline=$(printf '%s' "$OBS_OUT" | python3 -c 'import json,sys; print(",".join(sorted(json.load(sys.stdin)["PolicyNames"])))')
   case "$inline" in
-    "") : ;;
+    "")
+      [ "$contract" = "pre" ] || { echo "REFUSED (${when}): the put reported success but the inline policy is NOT present — post-mutation requires exactly the reviewed policy"; exit 1; } ;;
     "$POLICY_NAME")
       observe "the inline policy document" aws iam get-role-policy --role-name "$ROLE" --policy-name "$POLICY_NAME" --output json
       got_policy=$(printf '%s' "$OBS_OUT" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["PolicyDocument"]))')
@@ -94,7 +99,7 @@ validate_role_reads() { # full semantic verification via fresh reads; refuses on
 if [ "$R_STATE" = "EXISTS" ]; then
   # A pre-existing role: EVERYTHING validates before any mutation — the absent-boundary
   # composition refuses here, before any create-policy could run.
-  validate_role_reads "pre-existing role, BEFORE any change"
+  validate_role_reads "pre-existing role, BEFORE any change" pre
 else
   # Provably fresh (NoSuchEntity proven): only now may the boundary be created.
   if [ "$B_STATE" = "ABSENT" ]; then
@@ -110,8 +115,16 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name "$POLICY_NAME" --polic
 observe "the role (read-back)" aws iam get-role --role-name "$ROLE" --output json
 [ "$OBS_STATE" = "EXISTS" ] || { echo "REFUSED: the role vanished during provisioning"; exit 1; }
 ROLE_JSON="$OBS_OUT"; B_STATE=EXISTS
-validate_role_reads "read-back, AFTER provisioning"
+validate_role_reads "read-back, AFTER provisioning" post
 ARN=$(printf '%s' "$ROLE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Role"]["Arn"])')
+# The VALIDATED ARN travels as exact bytes in a 0600 file — the install command consumes those
+# bytes and never re-reads AWS, so a credential swap after the read-back cannot substitute a
+# same-named role from another account.
+ARN_FILE=$(mktemp /tmp/cba-preflight-arn.XXXXXX)
+chmod 600 "$ARN_FILE"
+printf '%s' "$ARN" > "$ARN_FILE"
 echo "READ-BACK OK: conta vinculada, trust semanticamente igual, boundary pinada, 1 inline exata, 0 managed"
 echo "ARN (mascarado): $(printf '%s' "$ARN" | sed -E 's/[0-9]{12}/ACCOUNT/g')"
-echo "Instale o secret: gh secret set AWS_DEPLOY_PREFLIGHT_ROLE_ARN --env ${ENV_NAME} --repo marciozampiron/backstage-cba-prep --body \"\$(aws iam get-role --role-name ${ROLE} --query Role.Arn --output text)\""
+echo "ARN validado gravado (0600, bytes exatos do read-back): $ARN_FILE"
+echo "Instale o secret com EXATAMENTE estes bytes — nenhuma releitura AWS:"
+echo "  gh secret set AWS_DEPLOY_PREFLIGHT_ROLE_ARN --env ${ENV_NAME} --repo marciozampiron/backstage-cba-prep --body \"\$(cat ${ARN_FILE})\""

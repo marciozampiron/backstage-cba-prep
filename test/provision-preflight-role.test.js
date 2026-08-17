@@ -29,7 +29,7 @@ function run(scen = {}) {
     boundaryExists: true, boundaryDoc: BOUNDARY, boundaryErr: '',
     roleExists: false, roleErr: '',
     trustDoc: TRUST, roleBoundary: BOUNDARY_ARN,
-    inlineNames: ['cba-study-coach-preflight-readonly-dev'], inlineDoc: POLICY, attached: [],
+    inlineNames: [], inlineDoc: POLICY, attached: [], putNoop: false,
     expectedEnv: ACCOUNT,
     ...scen,
   };
@@ -50,7 +50,7 @@ switch (sub) {
   case 'iam create-policy': mut('create-policy'); break;
   case 'iam get-role': if (S.roleErr) die(S.roleErr); if (!S.roleExists) die('An error occurred (NoSuchEntity)'); process.stdout.write(roleJson()); break;
   case 'iam create-role': mut('create-role'); S.roleExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S)); break;
-  case 'iam put-role-policy': mut('put-role-policy'); break;
+  case 'iam put-role-policy': mut('put-role-policy'); if (!S.putNoop) { S.inlineNames = ['cba-study-coach-preflight-readonly-dev']; fs.writeFileSync('${fixture}', JSON.stringify(S)); } break;
   case 'iam list-attached-role-policies': process.stdout.write(JSON.stringify({ AttachedPolicies: S.attached })); break;
   case 'iam list-role-policies': process.stdout.write(JSON.stringify({ PolicyNames: S.inlineNames })); break;
   case 'iam get-role-policy': process.stdout.write(JSON.stringify({ PolicyDocument: S.inlineDoc })); break;
@@ -75,10 +75,18 @@ test('EXECUTED positive: fresh account — boundary + role created, one put, ful
   assert.deepEqual(r.mutations, ['create-policy', 'create-role', 'put-role-policy']);
   assert.match(r.out, /READ-BACK OK/);
   assert.ok(!r.out.includes(ACCOUNT), 'no account value prints');
+  // Round 5 (F2): the validated ARN travels as exact bytes — no fresh AWS read in the command.
+  const arnFile = r.out.match(/gravado \(0600, bytes exatos do read-back\): (\S+)/)?.[1];
+  assert.ok(arnFile && fs.existsSync(arnFile), 'the ARN file exists');
+  assert.equal(fs.statSync(arnFile).mode & 0o777, 0o600, 'mode 0600');
+  assert.equal(fs.readFileSync(arnFile, 'utf8'), `arn:aws:iam::${ACCOUNT}:role/cba-study-coach-gha-release-preflight-dev`, 'exact validated bytes');
+  assert.match(r.out, new RegExp(`cat ${arnFile.replace(/[.*+?^$()[\]{}|\\]/g, '\\$&')}`), 'the install command consumes the file bytes');
+  assert.ok(!/gh secret set[^\n]*aws iam get-role/.test(r.out), 'no independent AWS re-read in the install command');
+  fs.rmSync(arnFile, { force: true });
 });
 
 test('EXECUTED positive: clean pre-existing role — fully validated BEFORE the only put', () => {
-  const r = run({ roleExists: true });
+  const r = run({ roleExists: true, inlineNames: ['cba-study-coach-preflight-readonly-dev'] });
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(r.mutations, ['put-role-policy']);
 });
@@ -135,7 +143,7 @@ test('EXECUTED adversarial (kept from round 3): every single-surface divergence 
   const divergentPolicy = { ...POLICY, Statement: [{ ...POLICY.Statement[0], Action: ['cognito-idp:DescribeUserPoolDomain', 'cognito-idp:DeleteUserPool'] }] };
   const cases = [
     [{ roleExists: true, trustDoc: widened }, /trust diverges/],
-    [{ roleExists: true, inlineDoc: divergentPolicy }, /inline policy diverges/],
+    [{ roleExists: true, inlineNames: ['cba-study-coach-preflight-readonly-dev'], inlineDoc: divergentPolicy }, /inline policy diverges/],
     [{ roleExists: true, attached: [{ PolicyName: 'AdministratorAccess' }] }, /managed policies are attached/],
     [{ roleExists: true, roleBoundary: `arn:aws:iam::${ACCOUNT}:policy/other` }, /boundary is absent or diverges/],
     [{ roleExists: true, inlineNames: ['cba-study-coach-preflight-readonly-dev', 'extra'] }, /unexpected inline policies/],
@@ -147,4 +155,12 @@ test('EXECUTED adversarial (kept from round 3): every single-surface divergence 
     assert.match(r.out, re);
     assert.deepEqual(r.mutations, []);
   }
+});
+
+
+test('EXECUTED (round 5): a put that reports success but materializes NOTHING refuses — never READ-BACK OK', () => {
+  const r = run({ boundaryExists: false, roleExists: false, putNoop: true });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /put reported success but the inline policy is NOT present/);
+  assert.ok(!/READ-BACK OK/.test(r.out), 'a hollow put never reads back OK');
 });
