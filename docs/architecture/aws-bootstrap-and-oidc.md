@@ -239,7 +239,7 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    done
    ```
 
-   Seven templates, three rendering families (#111 added the preflight trio — trust, policy
+   Eight templates, three rendering families (#111 added the preflight trio — trust, policy
    and boundary — provisioned by scripts/provision-preflight-role.sh): the #66 pair (bedrock-refresh boundary + scoped
    SecurityStack execution policy, account substitution only) and the #70 release trio (the
    GitHub deploy-role boundary, the runtime boundary every release-created role carries, and the
