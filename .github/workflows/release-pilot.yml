@@ -60,9 +60,15 @@
 #   2. The deploy authority: cba-study-coach-gha-deploy-dev (SecurityStack) with its
 #      operator-managed boundary and the extended #66 exec policy — a human-gated SecurityStack
 #      redeploy — then its ARN published as the dev Environment secret AWS_DEPLOY_ROLE_ARN.
-#   3. The dev Environment configuration: AWS_DEPLOY_PREFLIGHT_ROLE_ARN, AWS_REGION,
+#   3. The dev Environment configuration — the preflight authority FIRST: the role
+#      cba-study-coach-gha-release-preflight-dev provisioned by the operator-managed
+#      scripts/provision-preflight-role.sh (renders the reviewed trust/policy templates,
+#      creates the role, fail-closed read-back), its ARN as the Environment secret
+#      AWS_DEPLOY_PREFLIGHT_ROLE_ARN; then the variables: AWS_REGION,
 #      CBA_AUTH_CALLBACK_URLS, CBA_AUTH_LOGOUT_URLS, CBA_AUTH_DOMAIN_PREFIX,
-#      CBA_EXPECTED_USER_POOL_ID.
+#      CBA_CORS_ALLOWED_ORIGINS (the Worker origin — a binding with empty CORS would
+#      produce an API the Worker cannot call), CBA_EXPECTED_USER_POOL_ID (may stay absent
+#      only while the domain prefix is provably free; record it after the pool exists).
 #   4. Zamp's per-release cloud gate: the CBA_CLOUD_GATE Environment variable naming the exact
 #      release, assembly digest, decision id, a bounded window (strict RFC3339 UTC, at most one
 #      hour) and the REVIEWED PLAN GROUP it covers — first with mode plan_only, which PREPARES
@@ -225,12 +231,14 @@ jobs:
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
         env:
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
           set -euo pipefail
           npm run synth:quiet -- \
             -c environment=dev \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
@@ -246,6 +254,7 @@ jobs:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
           TARGET_REGION: ${{ vars.AWS_REGION }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
@@ -257,6 +266,7 @@ jobs:
             --region "$TARGET_REGION" \
             --assembly cdk.out \
             --manifest-out "$RUNNER_TEMP/preflight-dev.json" \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
@@ -377,12 +387,14 @@ jobs:
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
         env:
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
           set -euo pipefail
           npm run synth:quiet -- \
             -c environment=dev \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
@@ -401,6 +413,7 @@ jobs:
           CORRELATION_ID: ${{ inputs.correlation_id }}
           DISPATCH_MODE: ${{ inputs.mode }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
@@ -413,6 +426,7 @@ jobs:
             --region "$TARGET_REGION" \
             --assembly cdk.out \
             --artifact-out "$RUNNER_TEMP/release-evidence/evidence.json" \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
@@ -564,12 +578,14 @@ jobs:
       - name: Synthesize the bound context (credential-free, BEFORE any AWS authority)
         env:
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
         run: |
           set -euo pipefail
           npm run synth:quiet -- \
             -c environment=pilot \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"
@@ -585,6 +601,7 @@ jobs:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
           TARGET_REGION: ${{ vars.AWS_REGION }}
           CBA_AUTH_CALLBACK_URLS: ${{ vars.CBA_AUTH_CALLBACK_URLS }}
+          CBA_CORS_ALLOWED_ORIGINS: ${{ vars.CBA_CORS_ALLOWED_ORIGINS }}
           CBA_AUTH_LOGOUT_URLS: ${{ vars.CBA_AUTH_LOGOUT_URLS }}
           CBA_AUTH_DOMAIN_PREFIX: ${{ vars.CBA_AUTH_DOMAIN_PREFIX }}
           CBA_EXPECTED_USER_POOL_ID: ${{ secrets.CBA_EXPECTED_USER_POOL_ID }}
@@ -596,6 +613,7 @@ jobs:
             --region "$TARGET_REGION" \
             --assembly cdk.out \
             --manifest-out "$RUNNER_TEMP/preflight-pilot.json" \
+            -c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \
             -c "authCallbackUrls=$CBA_AUTH_CALLBACK_URLS" \
             -c "authLogoutUrls=$CBA_AUTH_LOGOUT_URLS" \
             -c "authDomainPrefix=$CBA_AUTH_DOMAIN_PREFIX"

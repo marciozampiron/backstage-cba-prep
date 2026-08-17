@@ -173,14 +173,66 @@ test('no wildcard anywhere in actions or resources of any policy', () => {
   }
 });
 
-test('no real 12-digit account id in the versioned templates', () => {
-  for (const file of [
-    'bedrock-refresh-boundary.template.json',
-    'cfn-exec-security.template.json',
-    'gha-deploy-boundary.template.json',
-  ]) {
+test('no real 12-digit account id in ANY versioned template — the scan covers the whole directory', () => {
+  // Round #111-2 (Codex): the scan globs the directory, so a new template can never ship
+  // outside it. Placeholder presence is asserted where the template references the account.
+  const files = require('node:fs').readdirSync(POLICIES_DIR).filter((f) => f.endsWith('.template.json'));
+  assert.ok(files.length >= 7, `all templates scanned (saw ${files.length})`);
+  for (const file of files) {
     const raw = readFileSync(join(POLICIES_DIR, file), 'utf8');
-    assert.ok(!/\b\d{12}\b/.test(raw), `${file}: only ACCOUNT_ID_PLACEHOLDER allowed`);
-    assert.ok(raw.includes('ACCOUNT_ID_PLACEHOLDER'), `${file}: placeholder expected`);
+    assert.ok(!/\b\d{12}\b/.test(raw), `${file}: no real account id, ever`);
+    if (raw.includes('arn:aws:iam::')) {
+      assert.ok(raw.includes('ACCOUNT_ID_PLACEHOLDER'), `${file}: account references use the placeholder`);
+    }
+  }
+});
+
+test('#111-2: the dev render of the preflight trust has no placeholder and pins the dev Environment', () => {
+  const rendered = readFileSync(join(POLICIES_DIR, 'preflight-role-trust.template.json'), 'utf8')
+    .replaceAll('ACCOUNT_ID_PLACEHOLDER', '123456789012')
+    .replaceAll('ENVIRONMENT_PLACEHOLDER', 'dev');
+  assert.ok(!rendered.includes('PLACEHOLDER'), 'nothing unrendered survives');
+  const doc = JSON.parse(rendered);
+  assert.equal(doc.Statement[0].Condition.StringEquals['token.actions.githubusercontent.com:sub'],
+    'repo:marciozampiron/backstage-cba-prep:environment:dev');
+});
+
+test('#111-3: the provisioning script IS the authority unit — validate-before-mutate, boundary, masked', () => {
+  const script = readFileSync(join(__dirname, '..', '..', '..', 'scripts', 'provision-preflight-role.sh'), 'utf8');
+  assert.match(script, /cba-study-coach-gha-release-preflight-\$\{ENV_NAME\}/, 'the canonical role name is versioned code');
+  assert.match(script, /cba-study-coach-boundary-preflight-\$\{ENV_NAME\}/, 'the durable boundary is versioned code');
+  assert.match(script, /REFUSED: unrendered placeholder/, 'rendering fails closed');
+  assert.match(script, /pre-existing role, BEFORE any change/, 'a pre-existing role is validated BEFORE any put');
+  assert.match(script, /zero mutation performed/, 'divergence refuses without mutating');
+  assert.match(script, /--permissions-boundary/, 'the role is created UNDER the boundary');
+  assert.match(script, /read-back, AFTER provisioning/, 'the full validation re-runs as read-back');
+  assert.match(script, /sed -E 's\/\[0-9\]\{12\}\/ACCOUNT\/g'/, 'the printed ARN is masked');
+});
+
+// ─── #111: the dev release-preflight role (operator-managed, like the boundaries) ─────────────
+const preflightTrust = JSON.parse(readFileSync(join(POLICIES_DIR, 'preflight-role-trust.template.json'), 'utf8'));
+const preflightPolicy = JSON.parse(readFileSync(join(POLICIES_DIR, 'preflight-role-policy.template.json'), 'utf8'));
+
+test('preflight role trust: OIDC only, aud pinned, sub pinned to the repo Environment — nothing wider', () => {
+  assert.equal(preflightTrust.Statement.length, 1);
+  const s = preflightTrust.Statement[0];
+  assert.equal(s.Action, 'sts:AssumeRoleWithWebIdentity');
+  assert.match(s.Principal.Federated, /oidc-provider\/token\.actions\.githubusercontent\.com$/);
+  assert.equal(s.Condition.StringEquals['token.actions.githubusercontent.com:aud'], 'sts.amazonaws.com');
+  assert.equal(s.Condition.StringEquals['token.actions.githubusercontent.com:sub'], 'repo:marciozampiron/backstage-cba-prep:environment:ENVIRONMENT_PLACEHOLDER');
+});
+
+test('preflight role policy: EXACTLY cognito-idp:DescribeUserPoolDomain — the wildcard is isolated, named and alone', () => {
+  // Codex (#111): DescribeUserPoolDomain takes no useful ARN scoping, so the inevitable
+  // Resource:* is confined to a single-action statement with its own Sid. Nothing else exists.
+  assert.equal(preflightPolicy.Statement.length, 1);
+  const s = preflightPolicy.Statement[0];
+  assert.equal(s.Sid, 'PreflightReadCognitoDomainAvailabilityOnly');
+  assert.equal(s.Action, 'cognito-idp:DescribeUserPoolDomain');
+  assert.equal(s.Resource, '*');
+  assert.equal(s.Effect, 'Allow');
+  const raw = JSON.stringify(preflightPolicy);
+  for (const forbidden of ['cloudformation', 'PassRole', 'bedrock', 's3', 'iam:', 'sts:AssumeRole"']) {
+    assert.ok(!raw.includes(forbidden), `no ${forbidden} authority in the preflight policy`);
   }
 });

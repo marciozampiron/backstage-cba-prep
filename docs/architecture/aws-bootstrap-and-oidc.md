@@ -198,6 +198,24 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    account already has the GitHub provider, pass its ARN at deploy time via
    `-c githubOidcProviderArn=...` so the stack imports it instead of creating a duplicate.
 3. **Enumerate routed model ARNs** with `aws bedrock get-inference-profile` (§2).
+3b. **Provision the release-preflight role** (#111) with the operator-managed script — it
+   renders `preflight-role-trust.template.json` + `preflight-role-policy.template.json`
+   (the SIXTH template family), creates `cba-study-coach-gha-release-preflight-<env>`,
+   attaches exactly the single-action `cognito-idp:DescribeUserPoolDomain` policy and
+   READS BACK fail-closed (trust, one inline policy, zero managed policies) before
+   printing the masked ARN:
+
+   ```bash
+   bash scripts/provision-preflight-role.sh dev
+   gh secret set AWS_DEPLOY_PREFLIGHT_ROLE_ARN --env dev --repo marciozampiron/backstage-cba-prep --body "<the unmasked ARN>"
+   ```
+
+   The dev Environment then needs the variables `AWS_REGION`, `CBA_AUTH_CALLBACK_URLS`,
+   `CBA_AUTH_LOGOUT_URLS`, `CBA_AUTH_DOMAIN_PREFIX`, `CBA_CORS_ALLOWED_ORIGINS` and
+   `CBA_EXPECTED_USER_POOL_ID` (may stay absent only while the domain prefix is provably
+   free; record it after the pool exists) — the
+   URL values derive from the account's `workers.dev` subdomain (worker
+   `cba-study-coach-dev-web`), read from the Cloudflare dashboard and NEVER committed.
 4. **Render the versioned policy templates** (they live in Git with `ACCOUNT_ID_PLACEHOLDER`
    only — `infra/aws/bootstrap/policies/`). Substitute the account id from STS at render time; the
    rendered files stay under `/tmp` and never enter Git:
@@ -221,7 +239,8 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    done
    ```
 
-   Five templates, two rendering families: the #66 pair (bedrock-refresh boundary + scoped
+   Eight templates, three rendering families (#111 added the preflight trio — trust, policy
+   and boundary — provisioned by scripts/provision-preflight-role.sh): the #66 pair (bedrock-refresh boundary + scoped
    SecurityStack execution policy, account substitution only) and the #70 release trio (the
    GitHub deploy-role boundary, the runtime boundary every release-created role carries, and the
    release CloudFormation execution policy — account + ENVIRONMENT + QUALIFIER substitution, one
