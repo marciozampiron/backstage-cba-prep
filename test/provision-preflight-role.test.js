@@ -164,3 +164,14 @@ test('EXECUTED (round 5): a put that reports success but materializes NOTHING re
   assert.match(r.out, /put reported success but the inline policy is NOT present/);
   assert.ok(!/READ-BACK OK/.test(r.out), 'a hollow put never reads back OK');
 });
+
+
+test('EXECUTED (charset): every AWS-bound string in the script satisfies the IAM Latin-1 description charset', () => {
+  // The first live run refused: the description carried an em-dash (U+2014), outside IAM
+  // description charset [\t\n\r\x20-\x7E\xA1-\xFF]. The --description literal must stay inside it.
+  const script = fs.readFileSync(SCRIPT, 'utf8');
+  const desc = script.match(/--description "([^"]+)"/)?.[1];
+  assert.ok(desc, 'the description literal exists');
+  assert.match(desc, /^[\t\n\r\x20-\x7E\xA1-\xFF$\{\}A-Za-z_]*$/, 'description is IAM-charset-safe');
+  assert.ok(!/[\u2010-\u2015\u2018-\u201F]/.test(desc), 'no unicode dashes or quotes in the description');
+});
