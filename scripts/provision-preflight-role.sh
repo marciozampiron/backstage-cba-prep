@@ -108,7 +108,7 @@ else
   fi
   aws iam create-role --role-name "$ROLE" --assume-role-policy-document "$TRUST" \
     --permissions-boundary "$BOUNDARY_ARN" \
-    --description "Read-only release preflight (${ENV_NAME}) — cognito-idp:DescribeUserPoolDomain only" >/dev/null
+    --description "Read-only release preflight (${ENV_NAME}) - cognito-idp:DescribeUserPoolDomain only" >/dev/null
   echo "role criado: $ROLE (com boundary)"
 fi
 aws iam put-role-policy --role-name "$ROLE" --policy-name "$POLICY_NAME" --policy-document "$POLICY_DOC"
