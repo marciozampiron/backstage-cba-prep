@@ -248,8 +248,8 @@ test('no literal 12-digit account id in the synthesized template', () => {
 test('F1 GUARD round 2: NO context can produce the foundation without its OIDC provider', () => {
   // The import-an-existing-provider path is GONE from this stack: a template that lost
   // `GithubOidc` would make the next redeploy of the deployed foundation DELETE the live
-  // provider and sever every OIDC trust in the account. The old key is inert here even when
-  // supplied — it now reaches only the ObservabilityStack gate role.
+  // provider and sever every OIDC trust in the account. The old key is inert EVERYWHERE
+  // (round 3): no stack reads it, so supplying it changes nothing at all.
   for (const context of [
     {},
     { githubOidcProviderArn: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/token.actions.githubusercontent.com' },

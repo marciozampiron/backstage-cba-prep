@@ -62,7 +62,6 @@ const DEPLOY_CONTEXT_KEYS = [
   'bedrockRoutedModelArns',
   'bedrockStandardInferenceProfileId',
   'corsAllowedOrigins',
-  'githubOidcProviderArn',
   'githubRepo',
   'githubTrustSub',
   'runtimeBoundaryArn',

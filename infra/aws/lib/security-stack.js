@@ -26,8 +26,9 @@ class SecurityStack extends Stack {
     // (#111 F1 round 2) The `githubOidcProviderArn` import path is GONE from this stack: a
     // supplied ARN used to take `GithubOidc` out of the template, and now that every assembly
     // targets the ONE deployed foundation, a redeploy with that context would make CloudFormation
-    // DELETE the live provider it owns — severing every OIDC trust in the account. The key
-    // remains in the deploy contract for the ObservabilityStack gate role only.
+    // DELETE the live provider it owns — severing every OIDC trust in the account. (Round 3: the
+    // key left the deploy contract entirely — the ObservabilityStack gate role now consumes the
+    // foundation's exported reference, with no context override.)
     // Standard-tier cross-region inference profile (a model id is configuration, not a secret).
     // #117 target (Zamp, 2026-08-15): Claude Sonnet 5. The routed FM ARNs below were enumerated
     // read-only via get-inference-profile on the authorized account. NOTE: the permissions

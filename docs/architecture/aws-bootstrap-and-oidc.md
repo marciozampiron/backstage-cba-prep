@@ -205,8 +205,10 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
      under the stack with a CloudFormation **resource import** — both human-gated operator
      actions, never context.
    - **Redeploy** (the deployed foundation): the stack already owns `GithubOidc`; pass nothing.
-   `-c githubOidcProviderArn=...` now reaches ONLY the ObservabilityStack gate role's trust
-   reference; it never changes foundation ownership.
+   There is no `githubOidcProviderArn` context at all anymore (#111 round 3): the
+   ObservabilityStack gate role consumes the foundation's exported reference as a REQUIRED
+   property, so neither foundation ownership nor the gate role's trust anchor can be re-aimed
+   from ambient context.
 3. **Enumerate routed model ARNs** with `aws bedrock get-inference-profile` (§2).
 3b. **Provision the release-preflight role** (#111) with the operator-managed script — it
    renders `preflight-role-trust.template.json` + `preflight-role-policy.template.json`

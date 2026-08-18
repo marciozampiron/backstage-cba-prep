@@ -283,10 +283,13 @@ test('the digest binds EVERY deploy-sensitive context key — the round-4 pair i
   // the exact same digest: IAM trust and CORS could drift under a manifest that still verified.
   const base = { releaseSha: SHA, environment: 'pilot', region: 'us-east-1', accountId: ACCOUNT, context: goodContext() };
   const d = contextDigest(base);
+  // `githubOidcProviderArn` left this list with the contract (#111 round 3): no stack consumes
+  // it anymore — the gate role takes the foundation's REQUIRED reference — so there is nothing
+  // for the digest to bind, and binding an unconsumed key would be exactly the "declared but
+  // dead" entry the discovery test below forbids.
   for (const over of [
     { githubTrustSub: 'repo:attacker/fork:ref:refs/heads/main' },
     { corsAllowedOrigins: '["https://attacker.example"]' },
-    { githubOidcProviderArn: `arn:aws:iam::${'1'.repeat(12)}:oidc-provider/other` },
     { githubRepo: 'attacker/fork' },
     { bedrockStandardInferenceProfileId: 'us.other-model-v9:0' },
     { bedrockRoutedModelArns: '["arn:aws:bedrock:us-east-1::foundation-model/other"]' },

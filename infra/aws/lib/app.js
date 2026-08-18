@@ -75,10 +75,10 @@ function buildStacks(app) {
         bffLogGroup: api.bffLogGroup,
         accessLogGroup: api.accessLogGroup,
         table: data.table,
-        // The gate role trusts the provider SecurityStack owns. Passing the reference makes the
-        // dependency real instead of implied; the explicit addDependency below covers the case
-        // where an operator supplies an already-existing provider ARN by context, which produces
-        // no CloudFormation reference and therefore no ordering on its own.
+        // The gate role trusts the provider the foundation owns. This REQUIRED reference is the
+        // ONLY way the ARN reaches the gate role (#111 round 3: the context override is gone), so
+        // the dependency is always a real CloudFormation reference; the explicit addDependency
+        // below states the ordering at the assembly level as well.
         githubOidcProviderArn: security.githubOidcProviderArn,
       });
       observability.addDependency(security);
