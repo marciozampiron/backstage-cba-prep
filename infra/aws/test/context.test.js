@@ -70,3 +70,32 @@ test('cdk.json pins cross-stack reference strength to "strong" explicitly', () =
   const cdkJson = require('../cdk.json');
   assert.equal(cdkJson.context['@aws-cdk/core:defaultCrossStackReferences'], 'strong');
 });
+
+/* ---------------- README ↔ contract agreement (#111 round 4) ---------------- */
+
+test('the README context table documents EXACTLY the closed deploy contract', () => {
+  // The README round-tripped stale advice once already: it kept teaching the removed
+  // `githubOidcProviderArn` override after the code dropped it. Docs that describe a context key
+  // the contract does not carry (or omit one it does) misconfigure the next operator — so the
+  // table and DEPLOY_CONTEXT_KEYS must agree EXACTLY, in both directions, forever.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { DEPLOY_CONTEXT_KEYS } = require('../lib/context');
+
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  const section = readme.split('## Context parameters')[1]?.split('\n## ')[0];
+  assert.ok(section, 'the README must keep its "Context parameters" section');
+
+  const documented = new Set();
+  for (const line of section.split('\n')) {
+    const m = line.match(/^\|\s*`([^`]+(?:`\s*\/\s*`[^`]+)*)`\s*\|/);
+    if (!m) continue;
+    // A combined cell like "`authCallbackUrls` / `authLogoutUrls`" documents every key in it.
+    for (const key of m[1].split(/`\s*\/\s*`/)) documented.add(key.trim());
+  }
+  documented.delete('environment'); // the tier selector, bound separately in the manifest digest
+
+  const contract = [...DEPLOY_CONTEXT_KEYS].sort();
+  assert.deepEqual([...documented].sort(), contract,
+    'the README context table and DEPLOY_CONTEXT_KEYS must agree exactly — fix whichever side drifted');
+});
