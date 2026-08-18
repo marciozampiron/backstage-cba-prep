@@ -4,7 +4,7 @@
 // Extracted from bin/cba-pilot.js so tests can assert the REAL app wiring.
 const { DefaultStackSynthesizer } = require('aws-cdk-lib');
 const iam = require('aws-cdk-lib/aws-iam');
-const { resolveEnvironment, getContext, RELEASE_BOOTSTRAP_QUALIFIERS, stackNameFor } = require('./context');
+const { resolveEnvironment, getContext, FOUNDATION_STACK_NAME, RELEASE_BOOTSTRAP_QUALIFIERS, stackNameFor } = require('./context');
 const { SecurityStack } = require('./security-stack');
 const { IdentityStack } = require('./identity-stack');
 const { DataStack } = require('./data-stack');
@@ -38,10 +38,13 @@ function buildStacks(app) {
   const base = `cba-study-coach-${environment}`;
   const releaseSynthesizer = () => new DefaultStackSynthesizer({ qualifier: RELEASE_BOOTSTRAP_QUALIFIERS[environment] });
 
+  // #111 F1: the foundation is ONE physical stack, referenced by EVERY assembly under its
+  // deployed name — never `${base}-security`, which would mint a second stack whose fixed-name
+  // account-globals (OIDC provider, refresh role, deploy roles) collide with the deployed ones.
   const security = new SecurityStack(app, 'SecurityStack', {
-    stackName: `${base}-security`,
+    stackName: FOUNDATION_STACK_NAME,
     description:
-      'CBA Study Coach pilot security: GitHub OIDC provider + blueprint-refresh Bedrock role (#53/#54). Synth-only in CI; deploys are human-gated.',
+      'CBA Study Coach foundation (account-global, shared by dev and pilot): GitHub OIDC provider, blueprint-refresh Bedrock role, and both tiers\' GitHub deploy roles (#53/#54/#111). Synth-only in CI; deploys are human-gated.',
   });
 
   return {
@@ -72,10 +75,10 @@ function buildStacks(app) {
         bffLogGroup: api.bffLogGroup,
         accessLogGroup: api.accessLogGroup,
         table: data.table,
-        // The gate role trusts the provider SecurityStack owns. Passing the reference makes the
-        // dependency real instead of implied; the explicit addDependency below covers the case
-        // where an operator supplies an already-existing provider ARN by context, which produces
-        // no CloudFormation reference and therefore no ordering on its own.
+        // The gate role trusts the provider the foundation owns. This REQUIRED reference is the
+        // ONLY way the ARN reaches the gate role (#111 round 3: the context override is gone), so
+        // the dependency is always a real CloudFormation reference; the explicit addDependency
+        // below states the ordering at the assembly level as well.
         githubOidcProviderArn: security.githubOidcProviderArn,
       });
       observability.addDependency(security);

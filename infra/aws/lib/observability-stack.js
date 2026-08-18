@@ -112,8 +112,8 @@ class ObservabilityStack extends Stack {
     // A missing reference fails SYNTH. A stack that synthesises without the workload it is meant to
     // watch is worse than no stack at all: it deploys, looks present to the structural gate, and
     // observes nothing.
-    const { httpApi, bffFunction, bffLogGroup, accessLogGroup, table } = props;
-    for (const [name, value] of Object.entries({ httpApi, bffFunction, bffLogGroup, accessLogGroup, table })) {
+    const { httpApi, bffFunction, bffLogGroup, accessLogGroup, table, githubOidcProviderArn } = props;
+    for (const [name, value] of Object.entries({ httpApi, bffFunction, bffLogGroup, accessLogGroup, table, githubOidcProviderArn })) {
       if (!value) {
         throw new Error(
           `ObservabilityStack requires an explicit "${name}" reference. Alarms, dashboard and ` +
@@ -465,17 +465,16 @@ class ObservabilityStack extends Stack {
     // never creates a second one. Two providers for the same issuer is a deploy-time conflict, and
     // an account-level identity boundary should have exactly one owner.
     //
-    // `props.githubOidcProviderArn` is SecurityStack's own reference, which is what makes the
-    // dependency real: reconstructing the ARN from pseudo parameters synthesises fine and creates
-    // NO dependency, so in a clean account the role could be created before the provider exists and
-    // the deploy would fail (or worse, succeed against a provider someone else created).
-    // The pseudo-parameter form remains only as a last-resort fallback for a standalone synth of
-    // this stack; `-c githubOidcProviderArn=...` overrides both.
-    const providerArn = ctx(
-      'githubOidcProviderArn',
-      props.githubOidcProviderArn
-        || `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_HOST}`,
-    );
+    // `props.githubOidcProviderArn` is SecurityStack's own reference — REQUIRED, like every other
+    // cross-stack reference above (#111 round 3). It is what makes the dependency real:
+    // reconstructing the ARN from pseudo parameters synthesises fine and creates NO dependency, so
+    // in a clean account the role could be created before the provider exists and the deploy would
+    // fail (or worse, succeed against a provider someone else created). The context override and
+    // the pseudo-parameter fallback are BOTH gone: a `-c githubOidcProviderArn=...` used to take
+    // priority over the foundation's reference, letting ambient context re-aim the gate role's
+    // trust anchor at a foreign provider while `GithubOidc` stayed in the foundation — an
+    // incoherent assembly. The key left the deploy contract entirely.
+    const providerArn = githubOidcProviderArn;
     const githubRepo = ctx('githubRepo', 'marciozampiron/backstage-cba-prep');
 
     // Trust is exact on all three axes: this repository, the GitHub Environment matching this

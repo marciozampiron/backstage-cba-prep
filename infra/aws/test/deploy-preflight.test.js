@@ -283,10 +283,13 @@ test('the digest binds EVERY deploy-sensitive context key — the round-4 pair i
   // the exact same digest: IAM trust and CORS could drift under a manifest that still verified.
   const base = { releaseSha: SHA, environment: 'pilot', region: 'us-east-1', accountId: ACCOUNT, context: goodContext() };
   const d = contextDigest(base);
+  // `githubOidcProviderArn` left this list with the contract (#111 round 3): no stack consumes
+  // it anymore — the gate role takes the foundation's REQUIRED reference — so there is nothing
+  // for the digest to bind, and binding an unconsumed key would be exactly the "declared but
+  // dead" entry the discovery test below forbids.
   for (const over of [
     { githubTrustSub: 'repo:attacker/fork:ref:refs/heads/main' },
     { corsAllowedOrigins: '["https://attacker.example"]' },
-    { githubOidcProviderArn: `arn:aws:iam::${'1'.repeat(12)}:oidc-provider/other` },
     { githubRepo: 'attacker/fork' },
     { bedrockStandardInferenceProfileId: 'us.other-model-v9:0' },
     { bedrockRoutedModelArns: '["arn:aws:bedrock:us-east-1::foundation-model/other"]' },
@@ -302,10 +305,13 @@ test('every context key the stacks consume is in the closed deploy contract', ()
   const found = new Set();
   for (const f of fs.readdirSync(libDir).filter((n) => n.endsWith('.js'))) {
     const src = fs.readFileSync(path.join(libDir, f), 'utf8');
-    for (const m of src.matchAll(/(?:\bctx|getContext)\((?:this\.node, )?'([^']+)'/g)) found.add(m[1]);
+    // \s* crosses line breaks (#111 F1 round 2): the old single-line pattern silently missed
+    // multi-line reads and leaned on reads that no longer exist; the strict bidirectional
+    // scanner later in this file remains the authority — this is the early sanity pass.
+    for (const m of src.matchAll(/(?:\bctx|getContext)\(\s*(?:(?:this\.)?node\s*,\s*)?'([^']+)'/g)) found.add(m[1]);
   }
   found.delete('environment'); // bound separately in the digest
-  assert.ok(found.size >= 9, 'the discovery scan must actually find the known keys');
+  assert.ok(found.size >= 10, 'the discovery scan must actually find the known keys');
   for (const key of found) {
     assert.ok(DEPLOY_CONTEXT_KEYS.includes(key), `context key "${key}" must join the closed deploy contract`);
   }

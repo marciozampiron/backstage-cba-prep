@@ -43,6 +43,9 @@ function build(environment = 'pilot', overrides = {}) {
     bffLogGroup: api.bffLogGroup,
     accessLogGroup: api.accessLogGroup,
     table: data.table,
+    // REQUIRED since #111 round 3 — standalone builds supply a literal stand-in; the real app
+    // always passes the foundation's own reference (a test below proves the Fn::ImportValue).
+    githubOidcProviderArn: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/token.actions.githubusercontent.com',
     ...overrides,
   });
   return { app, stack, api, data };
@@ -932,7 +935,7 @@ test('no literal account id appears in the template', () => {
 /* ================= synth-time refusals ======================================================== */
 
 test('NEGATIVE: a missing stack reference fails synth', () => {
-  for (const missing of ['httpApi', 'bffFunction', 'bffLogGroup', 'accessLogGroup', 'table']) {
+  for (const missing of ['httpApi', 'bffFunction', 'bffLogGroup', 'accessLogGroup', 'table', 'githubOidcProviderArn']) {
     assert.throws(
       () => build('pilot', { [missing]: undefined }),
       new RegExp(`requires an explicit "${missing}" reference`),
@@ -948,31 +951,42 @@ test('NEGATIVE: an unsupported environment fails synth', () => {
 });
 
 test('the gate role consumes the SecurityStack provider and depends on that stack', () => {
+  // #111 round 3: the gate role's trust anchor comes from the foundation's exported reference,
+  // REQUIRED and with no context override — so the same assertions run twice, once clean and once
+  // with a hostile ambient `githubOidcProviderArn`, and must observe the identical wiring: the
+  // context used to take priority over the foundation's reference, re-aiming the trust at a
+  // foreign provider while `GithubOidc` stayed in the foundation — an incoherent assembly.
   const { buildStacks } = require('../lib/app');
-  const app = new App({ context: { environment: 'pilot' } });
-  const stacks = buildStacks(app);
+  const ATTACKER = 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/attacker.example';
+  for (const context of [
+    { environment: 'pilot' },
+    { environment: 'pilot', githubOidcProviderArn: ATTACKER },
+  ]) {
+    const app = new App({ context });
+    const stacks = buildStacks(app);
 
-  // An explicit stack dependency, so ordering holds even when an operator supplies an existing
-  // provider ARN by context (which produces no CloudFormation reference on its own).
-  assert.ok(
-    stacks.observability.dependencies.includes(stacks.security),
-    'ObservabilityStack must depend on SecurityStack',
-  );
+    // An explicit stack dependency, stated at the assembly level as well as by the reference.
+    assert.ok(
+      stacks.observability.dependencies.includes(stacks.security),
+      'ObservabilityStack must depend on SecurityStack',
+    );
 
-  const assembly = app.synth();
-  const artifact = assembly.getStackArtifact(stacks.observability.artifactId);
-  assert.ok(
-    artifact.dependencies.some((d) => d.id === stacks.security.artifactId),
-    'the synthesized assembly must order SecurityStack before ObservabilityStack',
-  );
+    const assembly = app.synth();
+    const artifact = assembly.getStackArtifact(stacks.observability.artifactId);
+    assert.ok(
+      artifact.dependencies.some((d) => d.id === stacks.security.artifactId),
+      'the synthesized assembly must order SecurityStack before ObservabilityStack',
+    );
 
-  // And the trust actually consumes that provider rather than a reconstructed ARN.
-  const principal = JSON.stringify(
-    artifact.template.Resources[
-      Object.keys(artifact.template.Resources).find((k) => artifact.template.Resources[k].Type === 'AWS::IAM::Role')
-    ].Properties.AssumeRolePolicyDocument.Statement[0].Principal,
-  );
-  assert.match(principal, /Fn::ImportValue/, 'the provider must be imported from SecurityStack');
+    // And the trust actually consumes that provider rather than a reconstructed or injected ARN.
+    const principal = JSON.stringify(
+      artifact.template.Resources[
+        Object.keys(artifact.template.Resources).find((k) => artifact.template.Resources[k].Type === 'AWS::IAM::Role')
+      ].Properties.AssumeRolePolicyDocument.Statement[0].Principal,
+    );
+    assert.match(principal, /Fn::ImportValue/, 'the provider must be imported from SecurityStack');
+    assert.equal(principal.includes('attacker.example'), false, 'ambient context must never re-aim the trust anchor');
+  }
 });
 
 test('the app wires the observability stack to the real workload constructs', () => {

@@ -7,7 +7,10 @@ step. **Synth-only in CI**; any deploy is human-gated and out of scope here.
 
 ```text
 bin/cba-pilot.js          app entry (env-agnostic — synth needs no AWS credentials)
-lib/security-stack.js     #54 model: GitHub OIDC provider + blueprint-refresh Bedrock role (real)
+lib/security-stack.js     #54 model + #111 F1: the ONE account-global foundation — GitHub OIDC
+                          provider, blueprint-refresh Bedrock role, and BOTH tiers' GitHub deploy
+                          roles (cba-study-coach-gha-deploy-dev|pilot); deployed once as
+                          cba-study-coach-pilot-security, referenced by every assembly (real)
 lib/data-stack.js         #77: environment-scoped DynamoDB simulation table (on-demand, encrypted;
                           pilot durable with PITR+deletion protection+RETAIN, dev disposable);
                           grants/roles belong to #78
@@ -55,7 +58,6 @@ Override at synth/deploy time with `-c key=value`:
 | --- | --- | --- |
 | `githubRepo` | `marciozampiron/backstage-cba-prep` | repo baked into the OIDC trust subject |
 | `githubTrustSub` | `repo:<githubRepo>:ref:refs/heads/main` | full trust subject; switch to `repo:<repo>:environment:ai-batch` for the hardening target |
-| `githubOidcProviderArn` | *(empty → create)* | reuse the account-global GitHub OIDC provider instead of creating one |
 | `bedrockRefreshBoundaryArn` | pseudo-account `policy/cba-study-coach-pilot-boundary-bedrock-refresh` | operator-managed permissions boundary attached to the refresh role (#66); created outside CloudFormation |
 | `bedrockStandardInferenceProfileId` | `us.anthropic.claude-sonnet-5` | configured standard-tier cross-region inference profile (config, not secret; the #117 target — application-path validation only after the programmatic smokes) |
 | `bedrockRoutedModelArns` | 3-region placeholders | **JSON array**, e.g. `-c 'bedrockRoutedModelArns=["arn:aws:bedrock:us-east-1::foundation-model/..."]'` — replace at deploy time with the ARNs from `aws bedrock get-inference-profile` (see #54 doc §2). A non-array/bad value fails synth loudly (`parseArnList`). |
@@ -63,11 +65,21 @@ Override at synth/deploy time with `-c key=value`:
 | `corsAllowedOrigins` | *(empty → no CORS)* | **JSON array** of exact origins for the HTTP API CORS seam (#69); `"*"` is rejected |
 | `authCallbackUrls` / `authLogoutUrls` | dev: localhost; pilot: `https://pilot.invalid/...` placeholders | **JSON array** of EXACT URLs for the Cognito SPA client (#69); https-only except localhost, wildcards rejected; #70 overrides at deploy with the real Cloudflare origin (#67) |
 | `authDomainPrefix` | `cba-study-coach-<env>` | Cognito hosted-UI domain prefix (globally unique per region) |
+| `runtimeBoundaryArn` | pseudo-account `policy/cba-study-coach-boundary-runtime-<env>` | operator-managed runtime permissions boundary applied to every role a RELEASE creates (#70 round 4; per tier) |
+
+There is deliberately **no** `githubOidcProviderArn` context (#111 round 3): the foundation
+creates and owns the provider unconditionally, and the ObservabilityStack gate role consumes the
+foundation's exported reference as a REQUIRED property — neither ownership nor the trust anchor
+can be re-aimed from ambient context. A test (`test/context.test.js`) keeps this table in exact
+agreement with `DEPLOY_CONTEXT_KEYS`.
 
 ## Outputs
 
 - `BedrockRefreshRoleArn` — publish as the GitHub secret `AWS_BEDROCK_REFRESH_ROLE_ARN`.
-- `GithubOidcProviderArn` — reuse for future roles via `-c githubOidcProviderArn=...`.
+- `GithubOidcProviderArn` — cross-stack reference ONLY (consumed by the ObservabilityStack gate
+  role through the foundation's export); it is not an input anywhere and cannot be passed back in.
+- `GithubDeployRoleArn` — publish as the **pilot** Environment secret `AWS_DEPLOY_ROLE_ARN`.
+- `GithubDeployRoleDevArn` — publish as the **dev** Environment secret `AWS_DEPLOY_ROLE_ARN`.
 
 ## Deliberate non-goals (this scaffold)
 
