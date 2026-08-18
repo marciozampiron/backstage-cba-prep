@@ -71,7 +71,21 @@ test('cdk.json pins cross-stack reference strength to "strong" explicitly', () =
   assert.equal(cdkJson.context['@aws-cdk/core:defaultCrossStackReferences'], 'strong');
 });
 
-/* ---------------- README ↔ contract agreement (#111 round 4) ---------------- */
+/* ---------------- README ↔ contract agreement (#111 rounds 4-5) ---------------- */
+
+// Shared parser so the guard and its regression exercise the SAME extraction: a table row's first
+// cell may combine keys ("`authCallbackUrls` / `authLogoutUrls`") and every key in it counts.
+function documentedContextKeys(markdown) {
+  const section = markdown.split('## Context parameters')[1]?.split('\n## ')[0];
+  assert.ok(section, 'the README must keep its "Context parameters" section');
+  const documented = new Set();
+  for (const line of section.split('\n')) {
+    const m = line.match(/^\|\s*`([^`]+(?:`\s*\/\s*`[^`]+)*)`\s*\|/);
+    if (!m) continue;
+    for (const key of m[1].split(/`\s*\/\s*`/)) documented.add(key.trim());
+  }
+  return documented;
+}
 
 test('the README context table documents EXACTLY the closed deploy contract', () => {
   // The README round-tripped stale advice once already: it kept teaching the removed
@@ -83,19 +97,32 @@ test('the README context table documents EXACTLY the closed deploy contract', ()
   const { DEPLOY_CONTEXT_KEYS } = require('../lib/context');
 
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  const section = readme.split('## Context parameters')[1]?.split('\n## ')[0];
-  assert.ok(section, 'the README must keep its "Context parameters" section');
+  const documented = documentedContextKeys(readme);
 
-  const documented = new Set();
-  for (const line of section.split('\n')) {
-    const m = line.match(/^\|\s*`([^`]+(?:`\s*\/\s*`[^`]+)*)`\s*\|/);
-    if (!m) continue;
-    // A combined cell like "`authCallbackUrls` / `authLogoutUrls`" documents every key in it.
-    for (const key of m[1].split(/`\s*\/\s*`/)) documented.add(key.trim());
-  }
-  documented.delete('environment'); // the tier selector, bound separately in the manifest digest
+  // `environment` is operator surface too (round 5): Set.delete RETURNS whether the entry
+  // existed, so a missing row fails here by name instead of being silently skipped over.
+  assert.ok(
+    documented.delete('environment'),
+    'the README must document the `environment` tier selector (bound separately in the manifest digest)',
+  );
 
   const contract = [...DEPLOY_CONTEXT_KEYS].sort();
   assert.deepEqual([...documented].sort(), contract,
     'the README context table and DEPLOY_CONTEXT_KEYS must agree exactly — fix whichever side drifted');
+});
+
+test('REGRESSION: removing the `environment` row alone is observed — the guard goes red', () => {
+  // The round-4 guard deleted `environment` unconditionally, so a README that dropped exactly
+  // that row still compared equal. The mutation runs IN MEMORY against the same parser the guard
+  // uses; the file on disk is never touched.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  const mutated = readme.split('\n').filter((l) => !/^\|\s*`environment`\s*\|/.test(l)).join('\n');
+  assert.notEqual(mutated, readme, 'the mutation must actually remove the `environment` row');
+  assert.equal(
+    documentedContextKeys(mutated).delete('environment'),
+    false,
+    'the parser must observe the missing row — the guard asserts on exactly this return value',
+  );
 });
