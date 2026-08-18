@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const LAUNCHER = path.join(ROOT, 'scripts/provision.sh');
 const SCRIPT = path.join(ROOT, 'scripts/provision-release-bootstrap.sh');
 const RESOLVER = path.join(ROOT, 'scripts/lib/bootstrap-expected-state.py');
 const SNAPSHOT = path.join(ROOT, 'infra/aws/bootstrap/cdk-bootstrap-template.yaml');
@@ -135,7 +136,7 @@ function run(env, phase, scen = {}, mutate = null) {
     stackRoleArn: null, storedTemplate: null,
     resourcesNextToken: false, stackPolicy: false, createRc: 0, waitRc: 0,
     hang: null, hangWait: false, hangCreate: false, delayedChild: false, stubbornChild: false,
-    tamperedHelper: null, strayFile: null,
+    probeFail: null, probeHang: null, pristineRoot: null, archiveFail: false,
     live: liveStateFor(env),
     docs: cfg.docs,
     ...scen,
@@ -151,27 +152,28 @@ const S = JSON.parse(fs.readFileSync('${fixture}', 'utf8'));
 const a = process.argv.slice(2);
 const i = a.indexOf('-C');
 const rest = i >= 0 ? a.filter((_, j) => j !== i && j !== i + 1) : a;
-if (rest[0] === 'rev-parse') { process.stdout.write(S.gitHead + '\\n'); process.exit(0); }
-if (rest[0] === 'status') { process.stdout.write(S.gitDirty ? ' M x\\n' : ''); process.exit(0); }
-if (rest[0] === 'ls-tree') {
-  // The authorized commit's scripts/ tree: the real files, so the byte comparison is real.
-  const walk = (d, out) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (e.name === '__pycache__') continue; // real ls-tree lists TRACKED files only
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p, out); else out.push(path.relative('${ROOT}', p));
-    }
-    return out;
-  };
-  process.stdout.write(walk(path.join('${ROOT}', 'scripts'), []).join('\\n') + '\\n');
-  process.exit(0);
+if (rest[0] === 'rev-parse') {
+  if (S.probeFail === 'rev-parse') { process.stderr.write('fatal: not a git repository\\n'); process.exit(128); }
+  process.stdout.write(S.gitHead + '\\n'); process.exit(0);
 }
-if (rest[0] === 'ls-files') { process.stdout.write(S.strayFile ? S.strayFile + '\\n' : ''); process.exit(0); }
-if (rest[0] === 'show') {
-  const p = rest[1].split(':')[1];
-  // r4-F1: a TAMPERED helper is modelled as the authorized commit differing from disk.
-  if (S.tamperedHelper && p === S.tamperedHelper) { process.stdout.write('# authorized bytes differ\\n'); process.exit(0); }
-  process.stdout.write(fs.readFileSync(path.join('${ROOT}', p), 'utf8'));
+if (rest[0] === 'status') {
+  // r5-F2: a FAILING probe writes nothing — empty output must never read as "clean".
+  if (S.probeFail === 'status') { process.exit(128); }
+  if (S.probeHang === 'status') { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
+  process.stdout.write(S.gitDirty ? ' M x\\n' : ''); process.exit(0);
+}
+if (rest[0] === 'archive') {
+  // The authorized commit's tree, as a tar stream — exactly what the launcher extracts. The
+  // SOURCE is a pristine copy of the repo files, so a tampered WORKTREE file (S.tamperedWorktree)
+  // is provably not what runs.
+  const src = S.pristineRoot || '${ROOT}';
+  const paths = rest.slice(rest.indexOf(S.gitHead) + 1);
+  if (S.archiveFail) { process.stderr.write('archive failed\\n'); process.exit(128); }
+  const r = require('child_process').spawnSync('tar', ['-c', '--exclude=__pycache__', '-C', src, ...paths], { maxBuffer: 1 << 28 });
+  if (r.status !== 0) { process.stderr.write('archive failed\\n'); process.exit(2); }
+  // Synchronous, complete write: process.exit() would truncate a buffered pipe write.
+  let off = 0;
+  while (off < r.stdout.length) off += fs.writeSync(1, r.stdout, off, r.stdout.length - off);
   process.exit(0);
 }
 process.stderr.write('unexpected git ' + a.join(' ') + '\\n'); process.exit(254);
@@ -324,9 +326,11 @@ switch (sub) {
 }
 `, { mode: 0o755 });
 
+  // The LAUNCHER is the entrypoint under test (r5-F1): it binds the SHA, materializes the
+  // authorized commit and execs the provisioning script from that private tree.
   let outText = ''; let code = 0;
   try {
-    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), SCRIPT, env, phase], {
+    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), scen.entrypoint ?? LAUNCHER, env, phase], {
       encoding: 'utf8',
       env: {
         PATH: `${dir}:${process.env.PATH}`,
@@ -616,29 +620,67 @@ test('EXECUTED r3-F2: a same-group child trying a DELAYED mutation dies with the
   }
 });
 
-test('EXECUTED r4-F1: a TAMPERED helper or an ignored SHADOW module refuses with ZERO aws calls', () => {
-  // The binding order is the control: SHA/HEAD/worktree AND the byte-identity of everything under
-  // scripts/ are settled before a single credential-bearing or local helper call happens.
-  const cases = [
-    [{ tamperedHelper: 'scripts/lib/bounded-run.py' }, /bounded-run\.py differs from the authorized commit/],
-    [{ tamperedHelper: 'scripts/lib/bootstrap-expected-state.py' }, /bootstrap-expected-state\.py differs from the authorized commit/],
-    [{ tamperedHelper: 'scripts/provision-release-bootstrap.sh' }, /provision-release-bootstrap\.sh differs from the authorized commit/],
-    [{ strayFile: 'scripts/lib/json.py' }, /shadow module could be imported/],
-  ];
-  for (const phase of ['policies', 'bootstrap']) {
-    for (const [scen, re] of cases) {
-      const r = run('dev', phase, scen);
-      assert.notEqual(r.code, 0, JSON.stringify(scen));
-      assert.match(r.out, re, JSON.stringify(scen));
-      assert.deepEqual(r.mutations, [], 'zero mutation');
-      assert.deepEqual(r.awsCalls, [], `${JSON.stringify(scen)}: ZERO aws calls — not even STS`);
+test('EXECUTED r5-F1: a TAMPERED worktree copy never runs — the materialized commit does', () => {
+  // The strongest form of the claim: tamper the WORKTREE script with a prefix that would fire
+  // before any in-script guard (an `exit 0` at the very top), while the authorized commit's tree
+  // stays pristine. If the worktree copy were what executes, the run would end silently at once.
+  const pristine = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-pristine-'));
+  const tampered = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-tampered-'));
+  try {
+    for (const sub of ['scripts', 'infra/aws/bootstrap']) {
+      fs.cpSync(path.join(ROOT, sub), path.join(pristine, sub), { recursive: true, filter: (s) => !s.includes('__pycache__') });
+      fs.cpSync(path.join(ROOT, sub), path.join(tampered, sub), { recursive: true, filter: (s) => !s.includes('__pycache__') });
     }
+    const victim = path.join(tampered, 'scripts/provision-release-bootstrap.sh');
+    const body = fs.readFileSync(victim, 'utf8').split('\n');
+    body.splice(1, 0, 'echo "TAMPERED PREFIX RAN"; exit 0');
+    fs.writeFileSync(victim, body.join('\n'));
+
+    const r = run('dev', 'policies', {
+      entrypoint: path.join(tampered, 'scripts/provision.sh'),
+      pristineRoot: pristine,
+    });
+    assert.ok(!r.out.includes('TAMPERED PREFIX RAN'), 'the tampered worktree prefix must never execute');
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /arvore materializada do commit autorizado/);
+    assert.match(r.out, /POLICIES OK/);
+  } finally {
+    fs.rmSync(pristine, { recursive: true, force: true });
+    fs.rmSync(tampered, { recursive: true, force: true });
   }
-  // And the SHA binding itself now precedes the account binding: a bad SHA never reaches STS.
-  for (const scen of [{ authorizedSha: 'abc123' }, { gitHead: 'e'.repeat(40) }, { gitDirty: true }]) {
+});
+
+test('EXECUTED r5-F1: the provisioning script REFUSES to run outside the materialized tree', () => {
+  // Direct invocation is the bypass this closes: no CBA_MATERIALIZED_ROOT, no run.
+  for (const envExtra of [{}, { CBA_MATERIALIZED_ROOT: '/tmp/somewhere-else' }]) {
+    let out = ''; let code = 0;
+    try {
+      out = execFileSync('bash', [SCRIPT, 'dev', 'policies'], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH, CBA_EXPECTED_ACCOUNT_ID: ACCOUNT, CBA_AUTHORIZED_SHA: SHA, ...envExtra },
+      });
+    } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+    assert.notEqual(code, 0);
+    assert.match(out, /materialized|scripts\/provision\.sh/);
+  }
+});
+
+test('EXECUTED r5-F2: a FAILED or HUNG git probe is never a clean answer — refuses with ZERO aws calls', () => {
+  const cases = [
+    [{ probeFail: 'rev-parse' }, /git probe for HEAD failed/],
+    [{ probeFail: 'status' }, /git probe for the worktree state failed/],
+    [{ probeHang: 'status', timeouts: { CBA_GIT_TIMEOUT_SECONDS: '1' } }, /git probe for the worktree state exceeded its deadline/],
+    [{ timeouts: { CBA_GIT_TIMEOUT_SECONDS: '0' } }, /CBA_GIT_TIMEOUT_SECONDS must be a positive integer/],
+    [{ authorizedSha: 'abc123' }, /CBA_AUTHORIZED_SHA is required/],
+    [{ gitHead: 'e'.repeat(40) }, /HEAD does not match/],
+    [{ gitDirty: true }, /worktree is dirty/],
+  ];
+  for (const [scen, re] of cases) {
     const r = run('dev', 'policies', scen);
-    assert.notEqual(r.code, 0);
-    assert.deepEqual(r.awsCalls, [], `${JSON.stringify(scen)}: the SHA binding precedes every AWS call`);
+    assert.notEqual(r.code, 0, JSON.stringify(scen));
+    assert.match(r.out, re, JSON.stringify(scen));
+    assert.deepEqual(r.mutations, [], 'zero mutation');
+    assert.deepEqual(r.awsCalls, [], `${JSON.stringify(scen)}: ZERO aws calls — not even STS`);
   }
 });
 
@@ -729,12 +771,66 @@ test('EXECUTED observation errors are NEVER absence — zero mutation', () => {
 });
 
 test('EXECUTED closed CLI: no combined mode, no default, no third argument', () => {
-  for (const args of [['dev'], ['dev', 'all'], ['dev', ''], ['staging', 'policies'], ['dev', 'policies', 'bootstrap']]) {
-    let code = 0; let out = '';
-    try {
-      out = execFileSync('bash', [SCRIPT, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH } });
-    } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
-    assert.notEqual(code, 0, JSON.stringify(args));
-    assert.match(out, /usage:|REFUSED/, JSON.stringify(args));
+  for (const entry of [LAUNCHER, SCRIPT]) {
+    for (const args of [['dev'], ['dev', 'all'], ['dev', ''], ['staging', 'policies'], ['dev', 'policies', 'bootstrap']]) {
+      let code = 0; let out = '';
+      try {
+        out = execFileSync('bash', [entry, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+      } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+      assert.notEqual(code, 0, `${entry} ${JSON.stringify(args)}`);
+      assert.match(out, /usage:|REFUSED/, `${entry} ${JSON.stringify(args)}`);
+    }
+  }
+});
+
+test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed, pinned exception set', () => {
+  // The claim is narrow and provable: everything that reaches the network or carries credentials
+  // goes through the bounded runner; the only unwrapped children are local text utilities on
+  // files the script itself created. This test pins BOTH halves.
+  const body = fs.readFileSync(SCRIPT, 'utf8');
+  const code = body.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+
+  // 1. NOTHING that reaches the network may be INVOKED, wrapped or not. The match is at command
+  //    position — the word may still appear inside a message, which is prose, not a call.
+  for (const forbidden of ['npx', 'cdk', 'node', 'curl', 'wget', 'nc', 'ssh', 'git']) {
+    const atCommandPosition = new RegExp(`(?:^\\s*|[;&|(]\\s*|\\$\\(\\s*|\\bexec\\s+)${forbidden}\\s`, 'm');
+    assert.equal(atCommandPosition.test(code), false, `${forbidden} must not be invoked by the provisioning script`);
+  }
+  // 2. Every `aws` invocation is a bounded one: either through aws_() or an explicit
+  //    bounded-run.py line (the two mutation calls).
+  const awsLines = code.split('\n').filter((l) => /(^|[;&|(]\s*|\s)aws\s/.test(l));
+  for (const line of awsLines) {
+    assert.ok(
+      /aws_\(\)/.test(line) || /bounded-run|python3 "\$BOUNDED"/.test(line) || /--cli-connect-timeout/.test(line),
+      `unbounded aws invocation: ${line.trim()}`,
+    );
+  }
+  // 3. Every python3 invocation is either bounded or one of the PINNED inline parsers, which
+  //    read only local strings/files this script produced.
+  const pyLines = code.split('\n').filter((l) => /python3/.test(l));
+  const INLINE_PARSERS = ['canon()', 'same_doc()', 'jqpy()', 'pyq()'];
+  for (const line of pyLines) {
+    const bounded = /\$BOUNDED/.test(line) || /^\s*run_\s/.test(line);
+    const inline = INLINE_PARSERS.some((p) => line.includes(p)) || /python3 -c/.test(line);
+    assert.ok(bounded || inline, `python3 call is neither bounded nor a pinned inline parser: ${line.trim()}`);
+  }
+  // 4. The unwrapped exception set is ENUMERATED IN THE SCRIPT ITSELF and pinned here, so the
+  //    contract and the code cannot drift apart silently. (A shell tokenizer is the wrong tool
+  //    for this job: quoting, case arms and embedded Python make it fragile, and a fragile guard
+  //    that trips on prose only teaches people to loosen it.)
+  const declared = body.match(/files this script itself created\s*#?\s*\(([^)]+)\)/);
+  assert.ok(declared, 'the script must enumerate its unwrapped-utility exception set in the header');
+  assert.match(body, /are NOT wrapped/, 'the exception set must be stated as an explicit exception');
+  const ALLOWED_LOCAL = ['printf', 'grep', 'sed', 'cat', 'cp', 'sha256sum', 'mktemp', 'chmod', 'mkdir', 'tail'];
+  assert.deepEqual(declared[1].split('/').map((s) => s.trim()), ALLOWED_LOCAL,
+    'the declared exception set changed — a new unwrapped external command is a review event');
+  for (const u of ALLOWED_LOCAL) {
+    assert.ok(new RegExp(`(?:^\\s*|[;&|(]\\s*|\\$\\(\\s*)${u}\\s`, 'm').test(code),
+      `declared exception "${u}" is not actually used — the contract must describe the code`);
+  }
+  // 5. And no OTHER interpreter or transfer tool may be invoked, however it is spelled.
+  for (const forbidden of ['scp', 'rsync', 'docker', 'kubectl', 'perl', 'ruby', 'php', 'telnet', 'ftp']) {
+    const atCommandPosition = new RegExp(`(?:^\\s*|[;&|(]\\s*|\\$\\(\\s*|\\bexec\\s+)${forbidden}\\s`, 'm');
+    assert.equal(atCommandPosition.test(code), false, `${forbidden} must not be invoked by the provisioning script`);
   }
 });

@@ -21,12 +21,24 @@
 # RESOLVED FROM THE SNAPSHOT (scripts/lib/bootstrap-expected-state.py, closed by resource type
 # AND by property: anything the model does not consume refuses the snapshot).
 #
-# OBSERVE-THEN-ACT: account bound first (CBA_EXPECTED_ACCOUNT_ID, never echoed) and re-checked
-# immediately before the first mutation; CBA_AUTHORIZED_SHA must equal HEAD of a clean worktree
-# and every reviewed byte is read from THAT SHA; renders are per phase, private (0700 mktemp,
-# umask 077), trap-removed; only a proven absence may create; any divergence refuses with zero
-# mutation; every external call carries a WALL-CLOCK DEADLINE (r2-F5) and a timeout is a named
-# refusal, never a blind retry. Evidence carries names and digests only.
+# NEVER RUN THIS FILE DIRECTLY (r5-F1). `scripts/provision.sh` is the entrypoint: it binds the
+# SHA, materializes THIS script and every reviewed input from the authorized commit into a
+# private write-stripped tree, and execs the materialized copy. Self-verification from inside a
+# running script is circular (the prefix already ran) and racy (compare-then-execute), so this
+# file does not attempt it — it REFUSES unless it is the materialized copy, and reads every
+# reviewed byte from that tree. No `git` runs here at all.
+#
+# OBSERVE-THEN-ACT: account bound (CBA_EXPECTED_ACCOUNT_ID, never echoed) and re-checked
+# immediately before the first mutation; renders are per phase, private (0700 mktemp, umask 077),
+# trap-removed; only a proven absence may create; any divergence refuses with zero mutation.
+#
+# DEADLINE SCOPE, stated exactly (r5-F3): every command that reaches the NETWORK or carries
+# CREDENTIALS (`aws`) and every Python helper runs through scripts/lib/bounded-run.py — own
+# process group, output to files, group killed and reaped on deadline. Local text utilities on
+# files this script itself created (printf/grep/sed/cat/cp/sha256sum/mktemp/chmod/mkdir/tail)
+# are NOT wrapped: they touch no network, hold no credentials, and read bounded local data. A
+# test pins that closed set AND proves every entry is really used, so the contract cannot drift
+# from the code and a future edit cannot smuggle an unbounded network call in.
 set -euo pipefail
 umask 077
 export AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1
@@ -56,51 +68,25 @@ mask() { sed -E 's/[0-9]{12}/ACCOUNT/g'; }
 # garbage would silently disable the limit. ──
 OBS_T="${CBA_OBSERVE_TIMEOUT_SECONDS:-60}"
 BOOT_T="${CBA_BOOTSTRAP_TIMEOUT_SECONDS:-3600}"
-GIT_T=60
 printf '%s' "$OBS_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$OBS_T" -le 600 ] \
   || { echo "REFUSED: CBA_OBSERVE_TIMEOUT_SECONDS must be a positive integer no greater than 600 — zero would disable the deadline"; exit 1; }
 printf '%s' "$BOOT_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$BOOT_T" -le 7200 ] \
   || { echo "REFUSED: CBA_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer no greater than 7200 — zero would disable the deadline"; exit 1; }
 BOUNDED="${REPO_ROOT}/scripts/lib/bounded-run.py"
 
-# ═══════════ THE SHA BINDS FIRST, AND THE HELPERS BIND WITH IT (r4-F1) ═══════════
-# Nothing local and nothing credential-bearing runs before this block. Round 3 checked the SHA
-# only AFTER the account binding, which itself ran scripts/lib/bounded-run.py — so a modified
-# helper (or an ignored, untracked shadow module Python would import from scripts/lib/) executed
-# under the operator's credentials before the late refusal could fire.
-#
-# These first git calls are the ONE mechanism exception, stated rather than hidden: they are
-# read-only local git, carry no credentials, and cannot use the bounded runner because the runner
-# is exactly what they are about to verify. They are bounded by coreutils `timeout`; from the end
-# of this block onward, EVERY external command — git, the Python helpers and every aws call —
-# goes through the verified bounded runner.
-git_() { timeout --kill-after=5 "$GIT_T" git -C "$REPO_ROOT" "$@"; }
+# ═══════════ ONLY THE MATERIALIZED COPY RUNS (r5-F1) ═══════════
+# scripts/provision.sh extracted the authorized commit into a private write-stripped tree and
+# exported CBA_MATERIALIZED_ROOT. Refusing here means the worktree copy — the one an attacker can
+# edit between a check and an exec — is never the thing that provisions.
+MAT_ROOT="${CBA_MATERIALIZED_ROOT:-}"
+[ -n "$MAT_ROOT" ] \
+  || { echo "REFUSED: run scripts/provision.sh — this script only executes from the tree materialized out of the authorized commit"; exit 1; }
+[ "$REPO_ROOT" = "$MAT_ROOT" ] \
+  || { echo "REFUSED: this copy is not the materialized one (run scripts/provision.sh)"; exit 1; }
 SHA="${CBA_AUTHORIZED_SHA:-}"
 printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
   || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
-HEAD_SHA=$(git_ rev-parse HEAD 2>/dev/null) \
-  || { echo "REFUSED: the repository HEAD could not be read"; exit 1; }
-[ "$HEAD_SHA" = "$SHA" ] \
-  || { echo "REFUSED: HEAD does not match CBA_AUTHORIZED_SHA — run from the authorized commit"; exit 1; }
-[ -z "$(git_ status --porcelain 2>/dev/null)" ] \
-  || { echo "REFUSED: the worktree is dirty — the authorized SHA must be the whole story"; exit 1; }
-
-# The executable unit — this script and EVERY helper it may load — must be byte-identical to the
-# authorized commit. `git status` alone does not close this: an IGNORED untracked file is invisible
-# to it, and a shadow module in scripts/lib/ is importable by any helper that runs from there.
-HELPER_LIST=$(git_ ls-tree -r --name-only "$SHA" -- scripts 2>/dev/null) \
-  || { echo "REFUSED: the authorized commit's script tree could not be listed"; exit 1; }
-for f in $HELPER_LIST; do
-  [ -f "${REPO_ROOT}/${f}" ] \
-    || { echo "REFUSED: ${f} is present in the authorized commit but missing on disk"; exit 1; }
-  git_ show "${SHA}:${f}" 2>/dev/null | cmp -s - "${REPO_ROOT}/${f}" \
-    || { echo "REFUSED: ${f} differs from the authorized commit — no local code runs before it matches the reviewed bytes"; exit 1; }
-done
-STRAY=$(git_ ls-files --others --ignored --exclude-standard -- scripts 2>/dev/null || true)
-[ -z "$STRAY" ] \
-  || { echo "REFUSED: ignored-but-present file(s) under scripts/ — a shadow module could be imported by a helper; remove them and re-run"; exit 1; }
-HELPER_COUNT=$(printf '%s\n' "$HELPER_LIST" | grep -c . || true)
-echo "binding: SHA autorizado == HEAD, worktree limpa, ${HELPER_COUNT} arquivos de scripts/ identicos ao commit revisado"
+echo "execucao: arvore materializada do commit autorizado (somente leitura); nenhum git roda nesta fase"
 
 # ── the private working dir; every bounded call captures into it ──
 TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)
@@ -120,7 +106,6 @@ run_() { # bounded ANY external command through the verified runner; $1 = deadli
   return "$rc"
 }
 aws_() { run_ "$OBS_T" aws --cli-connect-timeout 10 --cli-read-timeout 55 "$@"; }
-gitb_() { run_ "$GIT_T" git -C "$REPO_ROOT" "$@"; }
 
 # ── the ACCOUNT binds next; neither value is ever echoed ──
 EXPECTED="${CBA_EXPECTED_ACCOUNT_ID:-}"
@@ -159,9 +144,8 @@ sys.exit(0 if c(a) == c(b) else 1)' "$1" "$2"; }
 for name in "${POLICY_NAMES[@]}"; do
   t="$(TEMPLATE_OF "$name")"
   raw="$TMP/$t.raw"; out="$TMP/$t.json"
-  gitb_ show "${SHA}:infra/aws/bootstrap/policies/${t}.template.json" >/dev/null 2>&1 \
-    || { echo "REFUSED: template ${t} could not be read from the authorized SHA"; exit 1; }
-  printf '%s\n' "$RUN_OUT" > "$raw"
+  cp "${MAT_ROOT}/infra/aws/bootstrap/policies/${t}.template.json" "$raw" 2>/dev/null \
+    || { echo "REFUSED: template ${t} is missing from the materialized commit tree"; exit 1; }
   sed -e "s/ACCOUNT_ID_PLACEHOLDER/${ACCOUNT}/g" \
       -e "s/ENVIRONMENT_PLACEHOLDER/${ENV_NAME}/g" \
       -e "s/QUALIFIER_PLACEHOLDER/${QUALIFIER}/g" "$raw" > "$out"
@@ -299,9 +283,8 @@ done
 EXEC_ARN="arn:aws:iam::${ACCOUNT}:policy/${EXEC_POLICY}"
 
 # ── THE REVIEWED SNAPSHOT IS THE AUTHORITY (r2-F1/r3-F1): committed bytes, from the SHA ──
-gitb_ show "${SHA}:${SNAPSHOT_PATH}" >/dev/null 2>&1 \
-  || { echo "REFUSED: the committed bootstrap template snapshot could not be read from the authorized SHA"; exit 1; }
-printf '%s\n' "$RUN_OUT" > "$TMP/toolkit.yaml"
+cp "${MAT_ROOT}/${SNAPSHOT_PATH}" "$TMP/toolkit.yaml" 2>/dev/null \
+  || { echo "REFUSED: the bootstrap template snapshot is missing from the materialized commit tree"; exit 1; }
 TEMPLATE_SHA=$(sha256sum "$TMP/toolkit.yaml" | cut -d' ' -f1)
 echo "toolkit template: snapshot revisado do SHA autorizado, sha256 ${TEMPLATE_SHA}"
 

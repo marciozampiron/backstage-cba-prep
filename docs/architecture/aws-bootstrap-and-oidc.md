@@ -320,13 +320,18 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     `--toolkit-stack-name` is REQUIRED: without it the CDK would update the existing `CDKToolkit`
     stack instead of creating the separate bootstrap this design names.
 
-    Both steps run through the operator-managed `scripts/provision-release-bootstrap.sh` — TWO
-    MUTUALLY EXCLUSIVE PHASES, one human gate each, never a combined mode. The script binds the
-    reviewed commit FIRST (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree, and every
-    file under `scripts/` must be byte-identical to that commit, with no ignored-but-present
-    shadow module) — nothing local and nothing credential-bearing runs before that. Then it binds
-    the account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately before the first mutation),
-    renders the step-4
+    Both steps run through the operator-managed launcher `scripts/provision.sh` — TWO MUTUALLY
+    EXCLUSIVE PHASES, one human gate each, never a combined mode. The launcher binds the reviewed
+    commit FIRST (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree; every git probe's exit
+    status is validated before its output is read, so a failed probe is never a clean answer),
+    then MATERIALIZES that commit's `scripts/` and `infra/aws/bootstrap/` into a private,
+    write-stripped directory with `git archive` and execs the provisioning script FROM THERE. The
+    worktree copies never run: self-verification from inside a running script is circular and
+    racy, and the provisioning script refuses outright unless it is the materialized copy. (The
+    launcher's own bytes are not self-verified — nothing can do that from inside; it is kept tiny
+    and single-purpose so it can be read whole, and #91 Stage B is where signing closes it.) The
+    provisioning script then binds the account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately
+    before the first mutation), reads the step-4
     trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
     absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
     mutation, and read-backs the full surface before reporting OK. The toolkit template is the
@@ -344,10 +349,10 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     ```bash
     # Gate 1 — the three operator policies (never runs CDK/CloudFormation):
     CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
-      bash scripts/provision-release-bootstrap.sh dev policies
+      bash scripts/provision.sh dev policies
     # Gate 2 — the toolkit (re-observes the policies read-only; never creates/alters one):
     CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
-      bash scripts/provision-release-bootstrap.sh dev bootstrap
+      bash scripts/provision.sh dev bootstrap
     ```
 
     The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary
