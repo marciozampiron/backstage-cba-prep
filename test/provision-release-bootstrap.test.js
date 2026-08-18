@@ -134,7 +134,8 @@ function run(env, phase, scen = {}, mutate = null) {
     stackExists: true, stackErr: '', stackStatus: 'CREATE_COMPLETE', termProt: true,
     stackRoleArn: null, storedTemplate: null,
     resourcesNextToken: false, stackPolicy: false, createRc: 0, waitRc: 0,
-    hang: null, hangWait: false, delayedChild: false,
+    hang: null, hangWait: false, hangCreate: false, delayedChild: false, stubbornChild: false,
+    tamperedHelper: null, strayFile: null,
     live: liveStateFor(env),
     docs: cfg.docs,
     ...scen,
@@ -145,15 +146,32 @@ function run(env, phase, scen = {}, mutate = null) {
 
   fs.writeFileSync(path.join(dir, 'git'), `#!/usr/bin/env node
 const fs = require('fs');
+const path = require('path');
 const S = JSON.parse(fs.readFileSync('${fixture}', 'utf8'));
 const a = process.argv.slice(2);
 const i = a.indexOf('-C');
 const rest = i >= 0 ? a.filter((_, j) => j !== i && j !== i + 1) : a;
 if (rest[0] === 'rev-parse') { process.stdout.write(S.gitHead + '\\n'); process.exit(0); }
 if (rest[0] === 'status') { process.stdout.write(S.gitDirty ? ' M x\\n' : ''); process.exit(0); }
+if (rest[0] === 'ls-tree') {
+  // The authorized commit's scripts/ tree: the real files, so the byte comparison is real.
+  const walk = (d, out) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === '__pycache__') continue; // real ls-tree lists TRACKED files only
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p, out); else out.push(path.relative('${ROOT}', p));
+    }
+    return out;
+  };
+  process.stdout.write(walk(path.join('${ROOT}', 'scripts'), []).join('\\n') + '\\n');
+  process.exit(0);
+}
+if (rest[0] === 'ls-files') { process.stdout.write(S.strayFile ? S.strayFile + '\\n' : ''); process.exit(0); }
 if (rest[0] === 'show') {
   const p = rest[1].split(':')[1];
-  process.stdout.write(fs.readFileSync(require('path').join('${ROOT}', p), 'utf8'));
+  // r4-F1: a TAMPERED helper is modelled as the authorized commit differing from disk.
+  if (S.tamperedHelper && p === S.tamperedHelper) { process.stdout.write('# authorized bytes differ\\n'); process.exit(0); }
+  process.stdout.write(fs.readFileSync(path.join('${ROOT}', p), 'utf8'));
   process.exit(0);
 }
 process.stderr.write('unexpected git ' + a.join(' ') + '\\n'); process.exit(254);
@@ -174,6 +192,7 @@ const S = JSON.parse(fs.readFileSync('${fixture}', 'utf8'));
 const raw = process.argv.slice(2);
 const a = raw.filter((x, i) => !(x.startsWith('--cli-') || (i > 0 && raw[i - 1].startsWith('--cli-'))));
 const sub = a[0] + ' ' + a[1];
+fs.appendFileSync('${path.join(dir, 'aws-calls')}', sub + '\\n');
 if (S.hang === sub) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
 const flag = (n) => { const i = a.indexOf(n); return i >= 0 ? a[i + 1] : null; };
 const mut = (x) => fs.appendFileSync('${mut}', x + '\\n');
@@ -258,18 +277,23 @@ switch (sub) {
     const bytes = tb && tb.startsWith('file://') ? fs.readFileSync(tb.slice(7)) : Buffer.from(tb ?? '');
     const digest = require('crypto').createHash('sha256').update(bytes).digest('hex');
     mut('create-stack sha256=' + digest + ' ' + a.slice(2).filter((x) => !x.startsWith('file://')).join(' '));
+    // "AWS accepted, the transport failed": the stack EXISTS even though the caller sees an error.
+    if (S.createAcceptedThenFailed) { S.stackExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S)); process.stderr.write('connection reset\\n'); process.exit(52); }
+    if (S.hangCreate) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
     if (S.createRc !== 0) { process.stderr.write('create failed\\n'); process.exit(S.createRc); }
     S.stackExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S));
     out({ StackId: 'arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/x/y' });
     break;
   }
   case 'cloudformation wait': {
-    if (S.delayedChild) {
-      // The adversarial of r3-F2: a same-group child that tries to register a mutation AFTER the
-      // parent is gone. The bounded runner must kill the WHOLE group before reconciliation.
-      require('child_process').spawn(process.execPath, ['-e',
-        'setTimeout(() => require("fs").appendFileSync("${mut}", "delayed-mutation\\\\n"), 3000)'],
-      { stdio: 'ignore' });
+    if (S.delayedChild || S.stubbornChild) {
+      // The adversarials of r3-F2/r4-F2: a same-group child that tries to register a mutation
+      // AFTER the parent is gone — the stubborn variant IGNORES SIGTERM, so only a group-wide
+      // SIGKILL can stop it. The runner must leave no survivor before reconciliation.
+      const body = S.stubbornChild
+        ? 'process.on("SIGTERM", () => {}); setTimeout(() => require("fs").appendFileSync("${mut}", "delayed-mutation\\\\n"), 3000)'
+        : 'setTimeout(() => require("fs").appendFileSync("${mut}", "delayed-mutation\\\\n"), 3000)';
+      require('child_process').spawn(process.execPath, ['-e', body], { stdio: 'ignore' });
     }
     if (S.hangWait) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
     if (S.waitRc !== 0) { process.stderr.write('waiter failed\\n'); process.exit(S.waitRc); }
@@ -314,9 +338,19 @@ switch (sub) {
   } catch (e) { outText = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
   const mutations = fs.readFileSync(mut, 'utf8').split('\n').filter(Boolean);
   const npxCalls = fs.readFileSync(npxLog, 'utf8').split('\n').filter(Boolean);
-  if (scen.keepDir) return { out: outText, code, mutations, npxCalls, mutPath: mut, dir };
+  const awsCalls = fs.existsSync(path.join(dir, 'aws-calls'))
+    ? fs.readFileSync(path.join(dir, 'aws-calls'), 'utf8').split('\n').filter(Boolean) : [];
+  if (scen.keepDir) return { out: outText, code, mutations, npxCalls, awsCalls, mutPath: mut, dir };
   fs.rmSync(dir, { recursive: true, force: true });
-  return { out: outText, code, mutations, npxCalls };
+  return { out: outText, code, mutations, npxCalls, awsCalls };
+}
+
+// Reconciliation calls = describe-stacks AFTER the create-stack attempt (r4-F3). The existence
+// probe before the mutation is a different call and must not be counted as reconciliation.
+function reconcileProbes(r) {
+  const i = r.awsCalls.findIndex((c) => c === 'cloudformation create-stack');
+  assert.notEqual(i, -1, 'the create-stack attempt must appear in the call log');
+  return r.awsCalls.slice(i + 1).filter((c) => c === 'cloudformation describe-stacks').length;
 }
 
 /* ═══════════ the reviewed snapshot and its resolver are anchored to hand-written facts ═══════════ */
@@ -550,7 +584,8 @@ test('EXECUTED bootstrap failure and TIMEOUTS (r2-F5/r3-F2): named refusals, rec
 
   const waitFail = run('dev', 'bootstrap', { stackExists: false, waitRc: 255 });
   assert.notEqual(waitFail.code, 0);
-  assert.match(waitFail.out, /read-only reconciliation follows; no retry/);
+  assert.match(waitFail.out, /FAILED while waiting/);
+  assert.match(waitFail.out, /NENHUM retry foi tentado/);
   assert.equal(waitFail.mutations.filter((m) => m.startsWith('create-stack')).length, 1);
 
   const hungObs = run('dev', 'policies', { hang: 'iam get-policy', timeouts: { CBA_OBSERVE_TIMEOUT_SECONDS: '1' } });
@@ -578,6 +613,66 @@ test('EXECUTED r3-F2: a same-group child trying a DELAYED mutation dies with the
     assert.ok(!after.includes('delayed-mutation'), 'the delayed mutation must never land');
   } finally {
     fs.rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r4-F1: a TAMPERED helper or an ignored SHADOW module refuses with ZERO aws calls', () => {
+  // The binding order is the control: SHA/HEAD/worktree AND the byte-identity of everything under
+  // scripts/ are settled before a single credential-bearing or local helper call happens.
+  const cases = [
+    [{ tamperedHelper: 'scripts/lib/bounded-run.py' }, /bounded-run\.py differs from the authorized commit/],
+    [{ tamperedHelper: 'scripts/lib/bootstrap-expected-state.py' }, /bootstrap-expected-state\.py differs from the authorized commit/],
+    [{ tamperedHelper: 'scripts/provision-release-bootstrap.sh' }, /provision-release-bootstrap\.sh differs from the authorized commit/],
+    [{ strayFile: 'scripts/lib/json.py' }, /shadow module could be imported/],
+  ];
+  for (const phase of ['policies', 'bootstrap']) {
+    for (const [scen, re] of cases) {
+      const r = run('dev', phase, scen);
+      assert.notEqual(r.code, 0, JSON.stringify(scen));
+      assert.match(r.out, re, JSON.stringify(scen));
+      assert.deepEqual(r.mutations, [], 'zero mutation');
+      assert.deepEqual(r.awsCalls, [], `${JSON.stringify(scen)}: ZERO aws calls — not even STS`);
+    }
+  }
+  // And the SHA binding itself now precedes the account binding: a bad SHA never reaches STS.
+  for (const scen of [{ authorizedSha: 'abc123' }, { gitHead: 'e'.repeat(40) }, { gitDirty: true }]) {
+    const r = run('dev', 'policies', scen);
+    assert.notEqual(r.code, 0);
+    assert.deepEqual(r.awsCalls, [], `${JSON.stringify(scen)}: the SHA binding precedes every AWS call`);
+  }
+});
+
+test('EXECUTED r4-F2: a SIGTERM-IGNORING descendant is killed with the group — the late mutation never lands', async () => {
+  const r = run('dev', 'bootstrap', { stackExists: false, hangWait: true, stubbornChild: true, keepDir: true, timeouts: { CBA_BOOTSTRAP_TIMEOUT_SECONDS: '1' } });
+  try {
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /killed and reaped/);
+    // The stubborn child ignores SIGTERM and writes at T+3s; the group was killed at T+1s.
+    await new Promise((resolve) => { setTimeout(resolve, 3500); });
+    const after = fs.readFileSync(r.mutPath, 'utf8').split('\n').filter(Boolean);
+    assert.ok(!after.includes('delayed-mutation'), 'a SIGTERM-ignoring survivor must not outlive the deadline');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r4-F3: every mutation failure path reconciles ONCE, read-only, with no retry', () => {
+  const cases = [
+    ['AWS accepted, transport failed', { createAcceptedThenFailed: true }, /FAILED at create-stack/, /reconciliation — stack status: CREATE_COMPLETE/],
+    ['create-stack error', { createRc: 1 }, /FAILED at create-stack/, /reconciliation — stack status: does not exist/],
+    ['create-stack timeout', { hangCreate: true, timeouts: { CBA_OBSERVE_TIMEOUT_SECONDS: '1' } }, /TIMEOUT at create-stack/, /reconciliation — stack status:/],
+    ['waiter error', { waitRc: 255 }, /FAILED while waiting/, /reconciliation — stack status: CREATE_COMPLETE/],
+    ['waiter timeout', { hangWait: true, timeouts: { CBA_BOOTSTRAP_TIMEOUT_SECONDS: '1' } }, /TIMEOUT while waiting/, /reconciliation — stack status:/],
+  ];
+  for (const [label, scen, headline, status] of cases) {
+    const r = run('dev', 'bootstrap', { stackExists: false, ...scen });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.out, headline, label);
+    assert.match(r.out, status, label);
+    assert.match(r.out, /NENHUM retry foi tentado/, label);
+    assert.equal(reconcileProbes(r), 1, `${label}: EXACTLY one describe-stacks in reconciliation`);
+    assert.equal(r.mutations.filter((m) => m.startsWith('create-stack')).length, 1, `${label}: exactly one create-stack attempt`);
+    assert.ok(!r.out.includes(ACCOUNT), `${label}: masked output`);
   }
 });
 

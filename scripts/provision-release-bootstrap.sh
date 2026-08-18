@@ -53,39 +53,82 @@ RESOLVER="${REPO_ROOT}/scripts/lib/bootstrap-expected-state.py"
 mask() { sed -E 's/[0-9]{12}/ACCOUNT/g'; }
 
 # ── wall-clock deadlines (r2-F5, r3-F2): positive integers with REVIEWED CEILINGS — zero or
-# garbage would silently disable the limit; every external command runs in its OWN process group
-# through scripts/lib/bounded-run.py, which kills and REAPS the whole group on deadline and
-# captures output to FILES, never a command substitution a surviving grandchild could hold open.
+# garbage would silently disable the limit. ──
 OBS_T="${CBA_OBSERVE_TIMEOUT_SECONDS:-60}"
 BOOT_T="${CBA_BOOTSTRAP_TIMEOUT_SECONDS:-3600}"
+GIT_T=60
 printf '%s' "$OBS_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$OBS_T" -le 600 ] \
   || { echo "REFUSED: CBA_OBSERVE_TIMEOUT_SECONDS must be a positive integer no greater than 600 — zero would disable the deadline"; exit 1; }
 printf '%s' "$BOOT_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$BOOT_T" -le 7200 ] \
   || { echo "REFUSED: CBA_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer no greater than 7200 — zero would disable the deadline"; exit 1; }
-BOUNDED="$(cd "$(dirname "$0")" && pwd)/lib/bounded-run.py"
-RUN_OUT=""; RUN_ERR=""
-aws_() { # bounded aws with file capture; caller reads $RUN_OUT / $RUN_ERR afterwards
-  # NEVER toggles set -e: a callee flipping errexit back on would undo the CALLER's guard and
-  # turn every nonzero observation into a silent exit — `|| rc=$?` is errexit-safe by itself.
-  local rc=0
-  python3 "$BOUNDED" "$OBS_T" "$TMP/.out" "$TMP/.err" aws --cli-connect-timeout 10 --cli-read-timeout 55 "$@" || rc=$?
-  RUN_OUT=$(cat "$TMP/.out" 2>/dev/null || true)
-  RUN_ERR=$(cat "$TMP/.err" 2>/dev/null || true)
-  return "$rc"
-}
+BOUNDED="${REPO_ROOT}/scripts/lib/bounded-run.py"
 
-# ── the private working dir exists FIRST: every bounded call captures into it ──
+# ═══════════ THE SHA BINDS FIRST, AND THE HELPERS BIND WITH IT (r4-F1) ═══════════
+# Nothing local and nothing credential-bearing runs before this block. Round 3 checked the SHA
+# only AFTER the account binding, which itself ran scripts/lib/bounded-run.py — so a modified
+# helper (or an ignored, untracked shadow module Python would import from scripts/lib/) executed
+# under the operator's credentials before the late refusal could fire.
+#
+# These first git calls are the ONE mechanism exception, stated rather than hidden: they are
+# read-only local git, carry no credentials, and cannot use the bounded runner because the runner
+# is exactly what they are about to verify. They are bounded by coreutils `timeout`; from the end
+# of this block onward, EVERY external command — git, the Python helpers and every aws call —
+# goes through the verified bounded runner.
+git_() { timeout --kill-after=5 "$GIT_T" git -C "$REPO_ROOT" "$@"; }
+SHA="${CBA_AUTHORIZED_SHA:-}"
+printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
+  || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
+HEAD_SHA=$(git_ rev-parse HEAD 2>/dev/null) \
+  || { echo "REFUSED: the repository HEAD could not be read"; exit 1; }
+[ "$HEAD_SHA" = "$SHA" ] \
+  || { echo "REFUSED: HEAD does not match CBA_AUTHORIZED_SHA — run from the authorized commit"; exit 1; }
+[ -z "$(git_ status --porcelain 2>/dev/null)" ] \
+  || { echo "REFUSED: the worktree is dirty — the authorized SHA must be the whole story"; exit 1; }
+
+# The executable unit — this script and EVERY helper it may load — must be byte-identical to the
+# authorized commit. `git status` alone does not close this: an IGNORED untracked file is invisible
+# to it, and a shadow module in scripts/lib/ is importable by any helper that runs from there.
+HELPER_LIST=$(git_ ls-tree -r --name-only "$SHA" -- scripts 2>/dev/null) \
+  || { echo "REFUSED: the authorized commit's script tree could not be listed"; exit 1; }
+for f in $HELPER_LIST; do
+  [ -f "${REPO_ROOT}/${f}" ] \
+    || { echo "REFUSED: ${f} is present in the authorized commit but missing on disk"; exit 1; }
+  git_ show "${SHA}:${f}" 2>/dev/null | cmp -s - "${REPO_ROOT}/${f}" \
+    || { echo "REFUSED: ${f} differs from the authorized commit — no local code runs before it matches the reviewed bytes"; exit 1; }
+done
+STRAY=$(git_ ls-files --others --ignored --exclude-standard -- scripts 2>/dev/null || true)
+[ -z "$STRAY" ] \
+  || { echo "REFUSED: ignored-but-present file(s) under scripts/ — a shadow module could be imported by a helper; remove them and re-run"; exit 1; }
+HELPER_COUNT=$(printf '%s\n' "$HELPER_LIST" | grep -c . || true)
+echo "binding: SHA autorizado == HEAD, worktree limpa, ${HELPER_COUNT} arquivos de scripts/ identicos ao commit revisado"
+
+# ── the private working dir; every bounded call captures into it ──
 TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)
 chmod 700 "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
-# ── the ACCOUNT binds before anything; neither value is ever echoed ──
+RUN_OUT=""; RUN_ERR=""
+run_() { # bounded ANY external command through the verified runner; $1 = deadline seconds
+  # NEVER toggles set -e: a callee flipping errexit back on would undo the CALLER's guard and
+  # turn every nonzero result into a silent exit — `|| rc=$?` is errexit-safe by itself.
+  local deadline="$1"; shift
+  local rc=0
+  python3 "$BOUNDED" "$deadline" "$TMP/.out" "$TMP/.err" "$@" || rc=$?
+  RUN_OUT=$(cat "$TMP/.out" 2>/dev/null || true)
+  RUN_ERR=$(cat "$TMP/.err" 2>/dev/null || true)
+  [ "$rc" -eq 125 ] && { echo "REFUSED: processes SURVIVED the deadline kill — the result is INDETERMINATE; reconcile read-only before any new gate"; exit 1; }
+  return "$rc"
+}
+aws_() { run_ "$OBS_T" aws --cli-connect-timeout 10 --cli-read-timeout 55 "$@"; }
+gitb_() { run_ "$GIT_T" git -C "$REPO_ROOT" "$@"; }
+
+# ── the ACCOUNT binds next; neither value is ever echoed ──
 EXPECTED="${CBA_EXPECTED_ACCOUNT_ID:-}"
 printf '%s' "$EXPECTED" | LC_ALL=C grep -qzE '^[0-9]{12}$' \
   || { echo "REFUSED: CBA_EXPECTED_ACCOUNT_ID is required (12 digits, supplied outside Git); the value is not echoed"; exit 1; }
 check_account() { # $1 = when
-  local rc
-  set +e; aws_ sts get-caller-identity --query Account --output text; rc=$?; set -e
+  local rc=0
+  aws_ sts get-caller-identity --query Account --output text || rc=$?
   [ "$rc" -eq 124 ] && { echo "REFUSED ($1): STS observation exceeded its wall-clock deadline (OBSERVATION_TIMEOUT)"; exit 1; }
   [ "$rc" -eq 0 ] || { echo "REFUSED ($1): STS identity observation failed — nothing was mutated"; exit 1; }
   local got="$RUN_OUT"
@@ -96,17 +139,6 @@ check_account() { # $1 = when
   ACCOUNT="$got"
 }
 check_account "binding"
-
-# ── the AUTHORIZED SHA binds every reviewed byte this run consumes ──
-SHA="${CBA_AUTHORIZED_SHA:-}"
-printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
-  || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
-HEAD_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) \
-  || { echo "REFUSED: the repository HEAD could not be read"; exit 1; }
-[ "$HEAD_SHA" = "$SHA" ] \
-  || { echo "REFUSED: HEAD does not match CBA_AUTHORIZED_SHA — run from the authorized commit"; exit 1; }
-[ -z "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ] \
-  || { echo "REFUSED: the worktree is dirty — the authorized SHA must be the whole story"; exit 1; }
 
 # ── fresh private render, per phase; nothing is transported between phases ──
 canon() { python3 -c '
@@ -127,8 +159,9 @@ sys.exit(0 if c(a) == c(b) else 1)' "$1" "$2"; }
 for name in "${POLICY_NAMES[@]}"; do
   t="$(TEMPLATE_OF "$name")"
   raw="$TMP/$t.raw"; out="$TMP/$t.json"
-  git -C "$REPO_ROOT" show "${SHA}:infra/aws/bootstrap/policies/${t}.template.json" > "$raw" 2>/dev/null \
+  gitb_ show "${SHA}:infra/aws/bootstrap/policies/${t}.template.json" >/dev/null 2>&1 \
     || { echo "REFUSED: template ${t} could not be read from the authorized SHA"; exit 1; }
+  printf '%s\n' "$RUN_OUT" > "$raw"
   sed -e "s/ACCOUNT_ID_PLACEHOLDER/${ACCOUNT}/g" \
       -e "s/ENVIRONMENT_PLACEHOLDER/${ENV_NAME}/g" \
       -e "s/QUALIFIER_PLACEHOLDER/${QUALIFIER}/g" "$raw" > "$out"
@@ -144,7 +177,7 @@ OBS_STATE=""; OBS_OUT=""
 observe() {
   local desc="$1" marker="$2"; shift 2
   local rc
-  set +e; aws_ "$@"; rc=$?; set -e
+  rc=0; aws_ "$@" || rc=$?
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     echo "REFUSED: observation of ${desc} exceeded its wall-clock deadline (OBSERVATION_TIMEOUT) — nothing was mutated"; exit 1
   fi
@@ -266,8 +299,9 @@ done
 EXEC_ARN="arn:aws:iam::${ACCOUNT}:policy/${EXEC_POLICY}"
 
 # ── THE REVIEWED SNAPSHOT IS THE AUTHORITY (r2-F1/r3-F1): committed bytes, from the SHA ──
-git -C "$REPO_ROOT" show "${SHA}:${SNAPSHOT_PATH}" > "$TMP/toolkit.yaml" 2>/dev/null \
+gitb_ show "${SHA}:${SNAPSHOT_PATH}" >/dev/null 2>&1 \
   || { echo "REFUSED: the committed bootstrap template snapshot could not be read from the authorized SHA"; exit 1; }
+printf '%s\n' "$RUN_OUT" > "$TMP/toolkit.yaml"
 TEMPLATE_SHA=$(sha256sum "$TMP/toolkit.yaml" | cut -d' ' -f1)
 echo "toolkit template: snapshot revisado do SHA autorizado, sha256 ${TEMPLATE_SHA}"
 
@@ -288,8 +322,9 @@ readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at 
   jqpy "
 phys={r['LogicalResourceId']: r.get('PhysicalResourceId','') for r in d['StackResourceSummaries']}
 print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
-  python3 "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARN" "$TMP/phys.json" > "$TMP/model.json" \
-    || { echo "REFUSED (${when}): the expected-state resolver refused the reviewed snapshot"; exit 1; }
+  run_ "$OBS_T" python3 "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARN" "$TMP/phys.json" \
+    || { echo "REFUSED (${when}): the expected-state resolver refused the reviewed snapshot"; sed -E 's/[0-9]{12}/ACCOUNT/g' <<<"$RUN_ERR"; exit 1; }
+  printf '%s\n' "$RUN_OUT" > "$TMP/model.json"
 
   # IAM: the five roles, each fully observed.
   local lid rname
@@ -349,12 +384,9 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
   fi
 
   # ONE validator, comparing EVERYTHING against the resolved model; never short-circuits.
-  local vrc
-  set +e
-  python3 "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARN" "$TOOLKIT" > "$TMP/verdict.txt" 2>&1
-  vrc=$?
-  set -e
-  sed -E 's/[0-9]{12}/ACCOUNT/g' "$TMP/verdict.txt"
+  local vrc=0
+  run_ "$OBS_T" python3 "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARN" "$TOOLKIT" || vrc=$?
+  printf '%s\n%s\n' "$RUN_OUT" "$RUN_ERR" | grep -v '^$' | sed -E 's/[0-9]{12}/ACCOUNT/g' || true
   [ "$vrc" -eq 0 ] || { echo "REFUSED (${when}): the live stack diverges from the reviewed template — every divergence is listed above"; exit 1; }
   echo "READ-BACK OK (${when}): conjunto completo de recursos, 5 roles (trust/tags/managed/inline exatos), exec policy exclusiva, SSM, bucket (policy incluida), ECR (lifecycle+policy), KMS (policy+alias) — tudo igual ao snapshot revisado sha256 ${TEMPLATE_SHA}"
 }
@@ -366,11 +398,34 @@ if [ "$OBS_STATE" = "EXISTS" ]; then
   exit 0
 fi
 
+# ── ONE read-only reconciliation, reached by EVERY mutation failure path (r4-F3) ──
+# A create-stack whose response was lost looks exactly like one that never happened: the request
+# may have been accepted and the stack may be building. Round 3 promised reconciliation and then
+# exited before performing it on the create-stack paths. This routine is the single owner of that
+# promise: EXACTLY ONE describe-stacks, no retry, and it never decides anything — the operator
+# reads the status and opens a new gate.
+reconcile_and_stop() { # $1 = headline, $2 = stderr file to tail
+  echo "$1"
+  local rc=0
+  aws_ cloudformation describe-stacks --stack-name "$TOOLKIT" --output json || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$RUN_OUT" ]; then
+    printf '%s' "$RUN_OUT" | jqpy "s=d['Stacks'][0]; print('reconciliation — stack status:', s['StackStatus'])" 2>/dev/null \
+      || echo "reconciliation — stack status: unparseable"
+  elif grep -q "does not exist" <<<"$RUN_ERR$RUN_OUT"; then
+    echo "reconciliation — stack status: does not exist (the request left no stack)"
+  else
+    echo "reconciliation — stack status: NOT OBSERVABLE; treat the account as indeterminate"
+  fi
+  [ -n "${2:-}" ] && [ -s "$2" ] && sed -E 's/[0-9]{12}/ACCOUNT/g' "$2" | tail -3
+  echo "NENHUM retry foi tentado; abra um novo gate depois de investigar"
+  exit 1
+}
+
 check_account "immediately before the first mutation"
 # The ONE mutation: the reviewed snapshot bytes go to CloudFormation directly — the AWS CLI is
 # the executor, the same trust root as every observation; no local package touches credentials.
 # Omitted parameters take the template defaults the resolver models.
-set +e
+RC=0
 python3 "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
   aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation create-stack \
     --stack-name "$TOOLKIT" \
@@ -379,33 +434,21 @@ python3 "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
                  "ParameterKey=CloudFormationExecutionPolicies,ParameterValue=${EXEC_ARN}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --enable-termination-protection \
-    --output json
-RC=$?
-set -e
-[ "$RC" -eq 124 ] && { echo "REFUSED: create-stack exceeded its wall-clock deadline (MUTATION_TIMEOUT) — the result is INDETERMINATE; reconcile read-only before any new gate"; exit 1; }
-[ "$RC" -eq 0 ] || { echo "BOOTSTRAP FAILED at create-stack — read-only reconciliation follows; no retry is attempted:"; sed -E 's/[0-9]{12}/ACCOUNT/g' "$TMP/create.err" | tail -3; exit 1; }
-set +e
+    --output json || RC=$?
+case "$RC" in
+  0) : ;;
+  124|137) reconcile_and_stop "BOOTSTRAP TIMEOUT at create-stack (deadline exceeded; the process group was killed and reaped) — the request may have been ACCEPTED; the result is INDETERMINATE:" "$TMP/create.err" ;;
+  125) reconcile_and_stop "BOOTSTRAP INDETERMINATE at create-stack: processes SURVIVED the deadline kill:" "$TMP/create.err" ;;
+  *) reconcile_and_stop "BOOTSTRAP FAILED at create-stack — the request may still have been accepted before the error surfaced:" "$TMP/create.err" ;;
+esac
+RC=0
 python3 "$BOUNDED" "$BOOT_T" "$TMP/wait.out" "$TMP/wait.err" \
-  aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation wait stack-create-complete --stack-name "$TOOLKIT"
-RC=$?
-set -e
-if [ "$RC" -ne 0 ]; then
-  if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
-    echo "BOOTSTRAP TIMEOUT (wall-clock deadline exceeded; the process group was killed and reaped) — the result is INDETERMINATE; read-only reconciliation follows and NOTHING is retried:"
-  else
-    echo "BOOTSTRAP FAILED — read-only reconciliation follows; no retry is attempted:"
-  fi
-  set +e
-  aws_ cloudformation describe-stacks --stack-name "$TOOLKIT" --output json 2>/dev/null
-  if [ -n "$RUN_OUT" ]; then
-    printf '%s' "$RUN_OUT" | jqpy "s=d['Stacks'][0]; print('stack status:', s['StackStatus'])" 2>/dev/null \
-      || echo "stack status: unparseable"
-  else
-    echo "stack status: not observable (it may not exist)"
-  fi
-  set -e
-  sed -E 's/[0-9]{12}/ACCOUNT/g' "$TMP/wait.err" | tail -3
-  exit 1
-fi
+  aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation wait stack-create-complete --stack-name "$TOOLKIT" || RC=$?
+case "$RC" in
+  0) : ;;
+  124|137) reconcile_and_stop "BOOTSTRAP TIMEOUT while waiting (deadline exceeded; the process group was killed and reaped) — the result is INDETERMINATE:" "$TMP/wait.err" ;;
+  125) reconcile_and_stop "BOOTSTRAP INDETERMINATE while waiting: processes SURVIVED the deadline kill:" "$TMP/wait.err" ;;
+  *) reconcile_and_stop "BOOTSTRAP FAILED while waiting for the stack to complete:" "$TMP/wait.err" ;;
+esac
 readback "read-back, AFTER bootstrap"
 echo "BOOTSTRAP OK (${ENV_NAME}): ${TOOLKIT} criado (qualifier ${QUALIFIER}) com os bytes exatos do snapshot revisado; evidencia acima carrega nomes e digests apenas"

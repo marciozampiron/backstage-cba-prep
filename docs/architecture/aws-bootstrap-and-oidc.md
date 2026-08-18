@@ -322,8 +322,11 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
 
     Both steps run through the operator-managed `scripts/provision-release-bootstrap.sh` — TWO
     MUTUALLY EXCLUSIVE PHASES, one human gate each, never a combined mode. The script binds the
-    account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately before the first mutation) and the
-    reviewed commit (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree), renders the step-4
+    reviewed commit FIRST (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree, and every
+    file under `scripts/` must be byte-identical to that commit, with no ignored-but-present
+    shadow module) — nothing local and nothing credential-bearing runs before that. Then it binds
+    the account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately before the first mutation),
+    renders the step-4
     trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
     absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
     mutation, and read-backs the full surface before reporting OK. The toolkit template is the
