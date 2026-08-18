@@ -549,6 +549,8 @@ function gitSeam(repo = repoFixture(), { remoteUrl = `https://github.com/${REPO}
       return repo.worktrees.map((w) => `worktree ${w.path}\nbranch refs/heads/${w.branch}\n`).join('\n');
     }
     if (key === 'remote get-url origin') return remoteUrl;
+    if (key === 'remote get-url --all origin') return remoteUrl;
+    if (key === 'remote get-url --push --all origin') return remoteUrl;
     if (key === 'rev-parse --show-toplevel') return ROOT;
     throw new Error(`unexpected git command in test: ${key}`);
   };
@@ -1022,8 +1024,10 @@ test('a failed gate read never echoes the caller-supplied path or a raw error', 
 
 test('the script binds the push target to the API target at run time', () => {
   const script = scriptFixture();
-  assert.match(script, /origin_url=\$\(git remote get-url origin\)/);
-  assert.match(script, /the origin remote does not match the repository this script was generated for/);
+  assert.match(script, /fetch_urls=\$\(git remote get-url --all origin\)/);
+  assert.match(script, /push_urls=\$\(git remote get-url --push --all origin\)/);
+  assert.match(script, /the origin fetch url does not match the repository this script was generated for/);
+  assert.match(script, /the origin PUSH url does not match the repository this script was generated for/);
   // The binding must be checked before either external effect.
   assert.ok(script.indexOf('origin_url=') < script.indexOf('git push origin'));
   assert.ok(script.indexOf('origin_url=') < script.indexOf('gh pr create'));
@@ -1457,6 +1461,8 @@ case "$*" in
   "worktree list --porcelain") echo "worktree ${repoRoot}"; echo "branch refs/heads/${branch}" ;;
   "rev-list --reverse"*) ${(commits.length ? commits : [headSha]).map((sha) => `echo ${JSON.stringify(sha)}`).join('; ')} ;;
   "remote get-url origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
+  "remote get-url --all origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
+  "remote get-url --push --all origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
   "ls-remote origin refs/heads/main") echo -e ${JSON.stringify(remoteBase)}"\trefs/heads/main" ;;
   "ls-remote origin refs/heads/"*) ${remoteHead ? `echo -e ${JSON.stringify(remoteHead)}"\trefs/heads/x"` : 'true'} ;;
   "push"*) echo "FORBIDDEN_CALL git $*" >&2; exit 99 ;;
@@ -2091,6 +2097,8 @@ case "$*" in
   "worktree list --porcelain") echo "worktree ${repoRoot}"; echo "branch refs/heads/${branch}" ;;
   "rev-list --reverse"*) echo ${JSON.stringify(head)} ;;
   "remote get-url origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
+  "remote get-url --all origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
+  "remote get-url --push --all origin") echo ${JSON.stringify(`https://github.com/${REPO}.git`)} ;;
   "ls-remote origin refs/heads/main")
     printf 'x' >> ${JSON.stringify(counter)}
     if [ "$(wc -c < ${JSON.stringify(counter)})" -ge ${expireAfterLsRemote} ]; then touch ${JSON.stringify(marker)}; fi
@@ -2183,4 +2191,119 @@ test('a gate that expires AFTER the push cannot reach the pull-request creation'
     );
     assert.notEqual(r.status, 0);
   });
+});
+
+/* ================= THE PUSH DESTINATION (#111 artifact review) ================= */
+
+// `git push origin` honours `remote.origin.pushurl`. Validating only the FETCH url proved nothing
+// about where the push lands, so a canonical fetch url could coexist with a push url pointing at
+// another repository. These tests EXECUTE the generated function against a fake `git`.
+
+/** Run the generated binding check with a fake `git` that answers the two url queries. */
+function runOriginBinding({ fetchUrls, pushUrls, calls = 1 }) {
+  const script = scriptFixture();
+  const fnStart = script.indexOf('check_url_is_canonical() {');
+  const fnEnd = script.indexOf('# `git ls-remote` reads the live value');
+  assert.ok(fnStart > 0 && fnEnd > fnStart, 'the generated script must carry the binding functions');
+  const functions = script.slice(fnStart, fnEnd);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-origin-'));
+  try {
+    // Each answer may differ per call, so the fake keeps a counter on disk: that is how "the
+    // config changed between the two checks" is exercised for real.
+    fs.writeFileSync(path.join(dir, 'fetch.json'), JSON.stringify(fetchUrls));
+    fs.writeFileSync(path.join(dir, 'push.json'), JSON.stringify(pushUrls));
+    fs.writeFileSync(path.join(dir, 'git'), `#!/usr/bin/env node
+const fs = require('fs');
+const a = process.argv.slice(2).join(' ');
+const nth = (file) => {
+  const answers = JSON.parse(fs.readFileSync('${dir}/' + file, 'utf8'));
+  const countFile = '${dir}/' + file + '.count';
+  const n = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) : 0;
+  fs.writeFileSync(countFile, String(n + 1));
+  const answer = Array.isArray(answers[0]) ? (answers[n] ?? answers[answers.length - 1]) : answers;
+  if (answer === null) process.exit(2);
+  process.stdout.write(answer.join('\\n') + '\\n');
+};
+if (a === 'remote get-url --all origin') return nth('fetch.json');
+if (a === 'remote get-url --push --all origin') return nth('push.json');
+process.stderr.write('unexpected git ' + a + '\\n');
+process.exit(9);
+`, { mode: 0o755 });
+
+    const harness = [
+      'set -uo pipefail',
+      `REPO='${REPO}'`,
+      'die() { echo "REFUSED: $1"; exit 1; }',
+      functions,
+      `for i in $(seq 1 ${calls}); do check_origin_binding || exit 1; done`,
+      'echo BINDING_OK',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', harness], {
+      encoding: 'utf8',
+      env: { PATH: `${dir}:${process.env.PATH}` },
+    });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const CANONICAL_URL = `https://github.com/${REPO}.git`;
+const FOREIGN_URL = 'https://github.com/attacker/example.git';
+
+test('EXECUTED: a canonical fetch url with a FOREIGN push url refuses — the push never runs', () => {
+  const r = runOriginBinding({ fetchUrls: [CANONICAL_URL], pushUrls: [FOREIGN_URL] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /origin PUSH url does not match/);
+  assert.ok(!r.out.includes('BINDING_OK'));
+});
+
+test('EXECUTED: MULTIPLE push urls refuse — a push must not fan out', () => {
+  const r = runOriginBinding({ fetchUrls: [CANONICAL_URL], pushUrls: [CANONICAL_URL, FOREIGN_URL] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /declares 2 push urls/);
+  assert.ok(!r.out.includes('BINDING_OK'));
+});
+
+test('EXECUTED: multiple FETCH urls refuse — the destination must be unambiguous', () => {
+  const r = runOriginBinding({ fetchUrls: [CANONICAL_URL, FOREIGN_URL], pushUrls: [CANONICAL_URL] });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /declares 2 fetch urls/);
+});
+
+test('EXECUTED: a push url that CHANGES between the two checks refuses on the second', () => {
+  // The function runs before and after the operator confirmation; this is that window.
+  const r = runOriginBinding({
+    fetchUrls: [[CANONICAL_URL], [CANONICAL_URL]],
+    pushUrls: [[CANONICAL_URL], [FOREIGN_URL]],
+    calls: 2,
+  });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /origin PUSH url does not match/);
+  assert.ok(!r.out.includes('BINDING_OK'), 'the second check must refuse');
+});
+
+test('EXECUTED: exactly one canonical fetch url and one canonical push url pass', () => {
+  for (const url of [
+    `https://github.com/${REPO}`,
+    `https://github.com/${REPO}.git`,
+    `git@github.com:${REPO}`,
+    `git@github.com:${REPO}.git`,
+  ]) {
+    const r = runOriginBinding({ fetchUrls: [url], pushUrls: [url] });
+    assert.equal(r.code, 0, `${url}: ${r.out}`);
+    assert.match(r.out, /BINDING_OK/);
+  }
+});
+
+test('the binding check runs BEFORE and AFTER the confirmation, and validates BOTH url sets', () => {
+  const script = scriptFixture();
+  const calls = [...script.matchAll(/^check_origin_binding$/gm)];
+  assert.equal(calls.length, 2, 'the binding is checked twice: before and after the confirmation');
+  const confirm = script.indexOf('read -r typed');
+  assert.ok(calls[0].index < confirm && calls[1].index > confirm, 'one check on each side of the confirmation');
+  assert.ok(calls[1].index < script.indexOf('git push origin'), 'the second check precedes the push');
+  assert.match(script, /git remote get-url --all origin/);
+  assert.match(script, /git remote get-url --push --all origin/);
 });

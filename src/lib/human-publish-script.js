@@ -445,13 +445,46 @@ check_gate_expiry() {
 
 # The push goes to \`origin\`; every \`gh\` query goes to $REPO. If those two ever name different
 # repositories, the branch lands in one place while the pull request is inspected in another.
-check_origin_binding() {
-  local origin_url
-  origin_url=$(git remote get-url origin)
-  case "$origin_url" in
-    "https://github.com/$REPO"|"https://github.com/$REPO.git"|"git@github.com:$REPO"|"git@github.com:$REPO.git") ;;
-    *) die "the origin remote does not match the repository this script was generated for" ;;
+#
+# FETCH AND PUSH ARE DIFFERENT URLS. A push to \`origin\` honours \`remote.origin.pushurl\` when it
+# exists, so validating only \`git remote get-url origin\` — the FETCH url — proved nothing about
+# where the push lands: a canonical fetch url can coexist with a push url pointing at another
+# repository, and the after-the-fact check would read the fetch url again, too late. Both url
+# SETS are validated, each must hold EXACTLY ONE entry, and both entries must name $REPO. The
+# whole function runs before AND after the operator confirmation, so a config edit in between
+# refuses instead of redirecting the push.
+check_url_is_canonical() {
+  case "$1" in
+    "https://github.com/$REPO"|"https://github.com/$REPO.git"|"git@github.com:$REPO"|"git@github.com:$REPO.git") return 0 ;;
+    *) return 1 ;;
   esac
+}
+
+check_origin_binding() {
+  local fetch_urls push_urls url count
+
+  fetch_urls=$(git remote get-url --all origin) \\
+    || die "the origin remote has no fetch url"
+  count=$(printf '%s\\n' "$fetch_urls" | grep -c .)
+  [ "$count" = "1" ] \\
+    || die "origin declares $count fetch urls; exactly one is required so the destination is unambiguous"
+  check_url_is_canonical "$fetch_urls" \\
+    || die "the origin fetch url does not match the repository this script was generated for"
+
+  # \`--push\` reports pushurl when set and falls back to the fetch url when it is not, which is
+  # exactly the destination the push below will use.
+  push_urls=$(git remote get-url --push --all origin) \\
+    || die "the origin remote has no push url"
+  count=$(printf '%s\\n' "$push_urls" | grep -c .)
+  [ "$count" = "1" ] \\
+    || die "origin declares $count push urls; exactly one is required so the push cannot fan out"
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    check_url_is_canonical "$url" \\
+      || die "the origin PUSH url does not match the repository this script was generated for"
+  done <<EOF_PUSH_URLS
+$push_urls
+EOF_PUSH_URLS
 }
 
 # \`git ls-remote\` reads the live value over the wire and touches no local ref. A local
