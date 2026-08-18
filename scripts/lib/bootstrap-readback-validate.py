@@ -81,13 +81,17 @@ if stack.get('RoleARN'):
     fail('stack: an unexpected service role is set')
 if stack.get('NotificationARNs'):
     fail('stack: unexpected notification ARNs are set')
+# The COMPLETE parameter map, exact in both directions — no substring acceptance (r3-F3): a
+# divergent BootstrapVariant, DenyExternalId or any smuggled extra parameter refuses by name.
 params = {p['ParameterKey']: p['ParameterValue'] for p in stack.get('Parameters', [])}
-if params.get('Qualifier') != QUALIFIER:
-    fail('stack: the Qualifier parameter diverges')
-if EXEC_ARN not in params.get('CloudFormationExecutionPolicies', ''):
-    fail('stack: the CloudFormationExecutionPolicies parameter does not name the reviewed policy')
-if params.get('TrustedAccounts'):
-    fail('stack: TrustedAccounts is non-empty — cross-account trust must never exist')
+for k, v in sorted(model['stackParameters'].items()):
+    if k not in params:
+        fail(f'stack: parameter {k} is missing')
+    elif params[k] != v:
+        fail(f'stack: parameter {k} diverges from the resolved template value')
+for k in sorted(params):
+    if k not in model['stackParameters']:
+        fail(f'stack: unexpected parameter {k}')
 
 # 2. The stored template equals the reviewed snapshot bytes.
 body = load('obs.template.json')['TemplateBody']
@@ -120,6 +124,8 @@ for lid, exp in sorted(model['roles'].items()):
     got_boundary = role.get('PermissionsBoundary', {}).get('PermissionsBoundaryArn')
     if got_boundary != exp.get('boundary'):
         fail(f'{lid}: permissions boundary diverges from the template')
+    if role.get('MaxSessionDuration', 3600) != exp['maxSessionDuration']:
+        fail(f'{lid}: MaxSessionDuration diverges from the template default — sessions must not be silently lengthened')
     if not same(role['AssumeRolePolicyDocument'], exp['trust']):
         fail(f'{lid}: the trust document diverges from the template')
     got_tags = {t['Key']: t['Value'] for t in role.get('Tags', [])}
@@ -164,6 +170,14 @@ if b.get('publicAccessBlock') and any(pab.get(k) is not True for k in b['publicA
 bpol = json.loads(load('obs.s3-policy.json')['Policy'])
 if not same(bpol, b['policy']):
     fail('bucket: the bucket policy diverges from the template')
+lifecycle = load('obs.s3-lifecycle.json').get('Rules')
+if not same(lifecycle, b.get('lifecycle')):
+    fail('bucket: the lifecycle configuration diverges from the template — an external rule could expire live assets')
+acl = load('obs.s3-acl.json')
+owner = acl.get('Owner', {}).get('ID')
+grants = acl.get('Grants', [])
+if len(grants) != 1 or grants[0].get('Permission') != 'FULL_CONTROL' or grants[0].get('Grantee', {}).get('ID') != owner:
+    fail('bucket: the ACL is not owner-only FULL_CONTROL')
 
 # 11. ECR: exactly what the template declares — mutability, lifecycle, repository policy.
 e = model['ecr']

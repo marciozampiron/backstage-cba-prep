@@ -29,7 +29,8 @@ const SNAPSHOT_TEXT = fs.readFileSync(SNAPSHOT, 'utf8');
 
 // The reviewed snapshot's identity: any change to the committed template must come through THIS
 // pin, which makes the change a review surface instead of a silent re-generation (r2-F1).
-const SNAPSHOT_SHA256 = 'ed382e6eaab4bfddfe9b4fdb5a81fed0dfb7cc1dc6118fb11c41a0381377e89f';
+// r3-F4: stored with a single trailing newline so `git diff --check` stays clean.
+const SNAPSHOT_SHA256 = '862af2dedb13198902e2d084587d19992edfff38224f19103ffa67de2a070447';
 
 const ENVS = {
   dev: { qualifier: 'cbardev' },
@@ -85,6 +86,7 @@ function liveStateFor(env) {
       tags: r.tags,
       attached: r.managed,
       inline: r.inline,
+      maxSession: r.maxSessionDuration,
     };
   }
   const phys = Object.fromEntries(Object.keys(model.resources).map((lid) => [
@@ -99,14 +101,12 @@ function liveStateFor(env) {
     })),
     bucketPolicy: model.bucket.policy,
     bucketSseKeyArn: model.bucket.sseKmsKeyArn,
+    bucketLifecycle: model.bucket.lifecycle,
     ecr: model.ecr,
     kms: model.kms,
     ssmValue: model.ssm.value,
-    stackParams: [
-      { ParameterKey: 'Qualifier', ParameterValue: qualifier },
-      { ParameterKey: 'CloudFormationExecutionPolicies', ParameterValue: execArn },
-      { ParameterKey: 'TrustedAccounts', ParameterValue: '' },
-    ],
+    // The COMPLETE parameter map, as CloudFormation reports it (r3-F3).
+    stackParams: Object.entries(model.stackParameters).map(([k, v]) => ({ ParameterKey: k, ParameterValue: v })),
     entities: {
       [`cba-study-coach-boundary-gha-deploy-${env}|PermissionsPolicy`]: [],
       [`cba-study-coach-boundary-gha-deploy-${env}|PermissionsBoundary`]: [`cba-study-coach-gha-deploy-${env}`],
@@ -130,12 +130,11 @@ function run(env, phase, scen = {}, mutate = null) {
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
-    cdkVersion: `${CDK_VERSION} (build fake)`,
     policyAbsent: [], policyErr: {}, policyDocs: {}, policyVersions: {}, policyPath: {}, createNoop: false,
     stackExists: true, stackErr: '', stackStatus: 'CREATE_COMPLETE', termProt: true,
-    stackRoleArn: null, storedTemplate: null, tamperShowTemplate: false,
-    resourcesNextToken: false, stackPolicy: false, bootstrapRc: 0,
-    hang: null, hangBootstrap: false,
+    stackRoleArn: null, storedTemplate: null,
+    resourcesNextToken: false, stackPolicy: false, createRc: 0, waitRc: 0,
+    hang: null, hangWait: false, delayedChild: false,
     live: liveStateFor(env),
     docs: cfg.docs,
     ...scen,
@@ -160,25 +159,13 @@ if (rest[0] === 'show') {
 process.stderr.write('unexpected git ' + a.join(' ') + '\\n'); process.exit(254);
 `, { mode: 0o755 });
 
+  // r3-F1: the script must NEVER execute npx/cdk — any call to this shim is a loud failure,
+  // and the npx-calls log doubles as the executed proof that none happened.
   fs.writeFileSync(path.join(dir, 'npx'), `#!/usr/bin/env node
 const fs = require('fs');
-const S = JSON.parse(fs.readFileSync('${fixture}', 'utf8'));
-const a = process.argv.slice(2);
-fs.appendFileSync('${npxLog}', a.join(' ') + '\\n');
-if (a.includes('--version')) { process.stdout.write(S.cdkVersion + '\\n'); process.exit(0); }
-if (a.includes('--show-template')) {
-  let t = fs.readFileSync('${SNAPSHOT}', 'utf8');
-  if (S.tamperShowTemplate) t += '\\n  Backdoor:\\n    Type: AWS::IAM::Role\\n';
-  process.stdout.write(t); process.exit(0);
-}
-if (a[1] === 'cdk' && a[2] === 'bootstrap') {
-  fs.appendFileSync('${mut}', 'cdk-bootstrap ' + a.slice(3).join(' ') + '\\n');
-  if (S.hangBootstrap) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
-  if (S.bootstrapRc !== 0) { process.stderr.write('bootstrap failed\\n'); process.exit(S.bootstrapRc); }
-  S.stackExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S));
-  process.exit(0);
-}
-process.stderr.write('unexpected npx ' + a.join(' ') + '\\n'); process.exit(254);
+fs.appendFileSync('${npxLog}', process.argv.slice(2).join(' ') + '\\n');
+process.stderr.write('REFUSED BY TEST: npx must never run under the operator script\\n');
+process.exit(254);
 `, { mode: 0o755 });
 
   fs.writeFileSync(path.join(dir, 'aws'), `#!/usr/bin/env node
@@ -228,7 +215,7 @@ switch (sub) {
   case 'iam get-role': {
     const r = S.live.roles[flag('--role-name')];
     if (!r) die('An error occurred (NoSuchEntity)');
-    out({ Role: { Path: r.path || '/', Arn: 'arn:aws:iam::${ACCOUNT}:role/' + flag('--role-name'), AssumeRolePolicyDocument: r.trust, Tags: r.tags, ...(r.boundary ? { PermissionsBoundary: { PermissionsBoundaryArn: r.boundary } } : {}) } });
+    out({ Role: { Path: r.path || '/', Arn: 'arn:aws:iam::${ACCOUNT}:role/' + flag('--role-name'), AssumeRolePolicyDocument: r.trust, Tags: r.tags, MaxSessionDuration: r.maxSession ?? 3600, ...(r.boundary ? { PermissionsBoundary: { PermissionsBoundaryArn: r.boundary } } : {}) } });
     break;
   }
   case 'iam list-attached-role-policies': {
@@ -266,6 +253,32 @@ switch (sub) {
     out({ StackResourceSummaries: S.live.resources, ...(S.resourcesNextToken ? { NextToken: 'more' } : {}) });
     break;
   case 'cloudformation get-stack-policy': out(S.stackPolicy ? { StackPolicyBody: '{}' } : {}); break;
+  case 'cloudformation create-stack': {
+    const tb = flag('--template-body');
+    const bytes = tb && tb.startsWith('file://') ? fs.readFileSync(tb.slice(7)) : Buffer.from(tb ?? '');
+    const digest = require('crypto').createHash('sha256').update(bytes).digest('hex');
+    mut('create-stack sha256=' + digest + ' ' + a.slice(2).filter((x) => !x.startsWith('file://')).join(' '));
+    if (S.createRc !== 0) { process.stderr.write('create failed\\n'); process.exit(S.createRc); }
+    S.stackExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S));
+    out({ StackId: 'arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/x/y' });
+    break;
+  }
+  case 'cloudformation wait': {
+    if (S.delayedChild) {
+      // The adversarial of r3-F2: a same-group child that tries to register a mutation AFTER the
+      // parent is gone. The bounded runner must kill the WHOLE group before reconciliation.
+      require('child_process').spawn(process.execPath, ['-e',
+        'setTimeout(() => require("fs").appendFileSync("${mut}", "delayed-mutation\\\\n"), 3000)'],
+      { stdio: 'ignore' });
+    }
+    if (S.hangWait) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
+    if (S.waitRc !== 0) { process.stderr.write('waiter failed\\n'); process.exit(S.waitRc); }
+    break;
+  }
+  case 's3api get-bucket-lifecycle-configuration': out({ Rules: S.live.bucketLifecycle }); break;
+  case 's3api get-bucket-acl':
+    out({ Owner: { ID: 'owner-id' }, Grants: S.aclOverride ?? [{ Grantee: { ID: 'owner-id', Type: 'CanonicalUser' }, Permission: 'FULL_CONTROL' }] });
+    break;
   case 'ssm get-parameter': out({ Parameter: { Name: flag('--name'), Value: S.live.ssmValue } }); break;
   case 's3api get-bucket-encryption':
     out({ ServerSideEncryptionConfiguration: { Rules: [{ ApplyServerSideEncryptionByDefault: { SSEAlgorithm: 'aws:kms', KMSMasterKeyID: S.live.bucketSseKeyArn } }] } });
@@ -289,7 +302,7 @@ switch (sub) {
 
   let outText = ''; let code = 0;
   try {
-    outText = execFileSync('bash', [SCRIPT, env, phase], {
+    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), SCRIPT, env, phase], {
       encoding: 'utf8',
       env: {
         PATH: `${dir}:${process.env.PATH}`,
@@ -301,6 +314,7 @@ switch (sub) {
   } catch (e) { outText = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
   const mutations = fs.readFileSync(mut, 'utf8').split('\n').filter(Boolean);
   const npxCalls = fs.readFileSync(npxLog, 'utf8').split('\n').filter(Boolean);
+  if (scen.keepDir) return { out: outText, code, mutations, npxCalls, mutPath: mut, dir };
   fs.rmSync(dir, { recursive: true, force: true });
   return { out: outText, code, mutations, npxCalls };
 }
@@ -429,22 +443,23 @@ test('EXECUTED policies hollow create: success reported, nothing materialized �
 for (const env of ['dev', 'pilot']) {
   const cfg = ENVS[env];
 
-  test(`EXECUTED bootstrap fresh (${env}): snapshot equality gates the mutation; exact args; full read-back`, () => {
+  test(`EXECUTED bootstrap fresh (${env}, r3-F1): the EXACT snapshot bytes go to CloudFormation; npx never runs; full read-back`, () => {
     const r = run(env, 'bootstrap', { stackExists: false });
     assert.equal(r.code, 0, r.out);
-    const boot = r.mutations.filter((m) => m.startsWith('cdk-bootstrap'));
-    assert.equal(boot.length, 1, 'exactly one bootstrap invocation — never a blind retry');
+    const boot = r.mutations.filter((m) => m.startsWith('create-stack'));
+    assert.equal(boot.length, 1, 'exactly one create-stack — never a blind retry');
     const args = boot[0];
-    assert.match(args, new RegExp(`aws://${ACCOUNT}/${REGION}`));
-    assert.match(args, new RegExp(`--qualifier ${cfg.qualifier}`));
-    assert.match(args, new RegExp(`--toolkit-stack-name cba-release-toolkit-${env}`));
-    assert.ok(args.includes(`--cloudformation-execution-policies ${cfg.execArn}`));
-    assert.match(args, /--termination-protection/);
-    assert.match(args, /--template /);
-    assert.ok(!args.includes('--trust'), 'no cross-account trust, ever');
-    assert.ok(!args.includes('--force'), 'no forced update, ever');
+    // EXECUTOR BINDING: the fake computed the sha256 of the bytes it was HANDED — they must be
+    // the committed snapshot's, so "an executor that ignores --template" has nowhere to hide.
+    assert.ok(args.includes(`sha256=${SNAPSHOT_SHA256}`), 'the submitted template bytes are the reviewed snapshot');
+    assert.match(args, new RegExp(`--stack-name cba-release-toolkit-${env}`));
+    assert.ok(args.includes(`ParameterKey=Qualifier,ParameterValue=${cfg.qualifier}`));
+    assert.ok(args.includes(`ParameterKey=CloudFormationExecutionPolicies,ParameterValue=${cfg.execArn}`));
+    assert.match(args, /--capabilities CAPABILITY_NAMED_IAM/);
+    assert.match(args, /--enable-termination-protection/);
     assert.equal(r.mutations.filter((m) => m.startsWith('create-policy')).length, 0, 'this phase never creates a policy');
-    assert.match(r.out, /gerado == snapshot revisado/);
+    assert.deepEqual(r.npxCalls, [], 'npx/cdk NEVER runs under the operator script (r3-F1)');
+    assert.match(r.out, /snapshot revisado do SHA autorizado/);
     assert.match(r.out, /READ-BACK OK/);
     assert.ok(!r.out.includes(ACCOUNT), 'no account id in the output');
   });
@@ -453,14 +468,8 @@ for (const env of ['dev', 'pilot']) {
     const r = run(env, 'bootstrap', {});
     assert.equal(r.code, 0, r.out);
     assert.deepEqual(r.mutations, []);
+    assert.deepEqual(r.npxCalls, []);
     assert.match(r.out, /reentrada, zero mutacao/);
-  });
-
-  test(`EXECUTED bootstrap TEMPLATE_DRIFT (${env}, r2-F1): a tampered toolchain product never deploys`, () => {
-    const r = run(env, 'bootstrap', { stackExists: false, tamperShowTemplate: true });
-    assert.notEqual(r.code, 0);
-    assert.match(r.out, /TEMPLATE_DRIFT/);
-    assert.deepEqual(r.mutations, [], 'refused BEFORE any mutation');
   });
 }
 
@@ -510,6 +519,12 @@ test('EXECUTED bootstrap stack/resource/data divergences (r2-F1): each refuses w
     ['ecr lifecycle divergence', (S) => { S.live.ecr.lifecycle = { rules: [] }; }, /lifecycle policy diverges/],
     ['kms key policy divergence', (S) => { S.live.kms.keyPolicy = { Version: '2012-10-17', Statement: [] }; }, /key policy diverges/],
     ['kms alias absent', (S) => { S.aliasesOverride = []; }, /template alias is absent/],
+    // r3-F3: the three named adversarials — destructive lifecycle, 12h sessions, BootstrapVariant.
+    ['DESTRUCTIVE bucket lifecycle rule', (S) => { S.live.bucketLifecycle = [...S.live.bucketLifecycle, { Id: 'ExpireEverything', Status: 'Enabled', Expiration: { Days: 1 } }]; }, /lifecycle configuration diverges .* expire live assets/],
+    ['12-hour session on the deploy role', (S) => { const n = Object.keys(S.live.roles).find((k) => k.includes('-deploy-role-')); S.live.roles[n].maxSession = 43200; }, /MaxSessionDuration diverges/],
+    ['BootstrapVariant divergence', (S) => { S.live.stackParams = S.live.stackParams.map((p) => (p.ParameterKey === 'BootstrapVariant' ? { ...p, ParameterValue: 'Someone Elses Bootstrap' } : p)); }, /parameter BootstrapVariant diverges/],
+    ['smuggled extra parameter', (S) => { S.live.stackParams.push({ ParameterKey: 'Backdoor', ParameterValue: 'x' }); }, /unexpected parameter Backdoor/],
+    ['non-owner ACL grant', (S) => { S.aclOverride = [{ Grantee: { ID: 'owner-id', Type: 'CanonicalUser' }, Permission: 'FULL_CONTROL' }, { Grantee: { URI: 'http://acs.amazonaws.com/groups/global/AllUsers', Type: 'Group' }, Permission: 'READ' }]; }, /ACL is not owner-only/],
   ];
   for (const [label, mutate, re] of mutCases) {
     const r = run('dev', 'bootstrap', {}, mutate);
@@ -519,30 +534,67 @@ test('EXECUTED bootstrap stack/resource/data divergences (r2-F1): each refuses w
   }
 });
 
-test('EXECUTED bootstrap precondition: absent/divergent policy stops before any CDK (dev)', () => {
+test('EXECUTED bootstrap precondition: absent/divergent policy stops before any mutation (dev)', () => {
   const r = run('dev', 'bootstrap', { policyAbsent: [ENVS.dev.policyNames[2]], stackExists: false });
   assert.notEqual(r.code, 0);
   assert.deepEqual(r.mutations, []);
-  assert.ok(!r.npxCalls.some((c) => c.includes('bootstrap') && !c.includes('--version')), 'no cdk bootstrap reached');
+  assert.deepEqual(r.npxCalls, []);
 });
 
-test('EXECUTED bootstrap failure and TIMEOUTS (r2-F5): named refusals, read-only reconciliation, one attempt', () => {
-  const fail = run('dev', 'bootstrap', { stackExists: false, bootstrapRc: 1 });
-  assert.notEqual(fail.code, 0);
-  assert.match(fail.out, /read-only reconciliation follows; no retry/);
-  assert.equal(fail.mutations.filter((m) => m.startsWith('cdk-bootstrap')).length, 1);
-  assert.ok(!fail.out.includes(ACCOUNT));
+test('EXECUTED bootstrap failure and TIMEOUTS (r2-F5/r3-F2): named refusals, reconciliation, one attempt', () => {
+  const createFail = run('dev', 'bootstrap', { stackExists: false, createRc: 1 });
+  assert.notEqual(createFail.code, 0);
+  assert.match(createFail.out, /FAILED at create-stack/);
+  assert.equal(createFail.mutations.filter((m) => m.startsWith('create-stack')).length, 1);
+  assert.ok(!createFail.out.includes(ACCOUNT));
+
+  const waitFail = run('dev', 'bootstrap', { stackExists: false, waitRc: 255 });
+  assert.notEqual(waitFail.code, 0);
+  assert.match(waitFail.out, /read-only reconciliation follows; no retry/);
+  assert.equal(waitFail.mutations.filter((m) => m.startsWith('create-stack')).length, 1);
 
   const hungObs = run('dev', 'policies', { hang: 'iam get-policy', timeouts: { CBA_OBSERVE_TIMEOUT_SECONDS: '1' } });
   assert.notEqual(hungObs.code, 0);
   assert.match(hungObs.out, /OBSERVATION_TIMEOUT/);
   assert.deepEqual(hungObs.mutations, [], 'a hung observation mutates nothing');
 
-  const hungBoot = run('dev', 'bootstrap', { stackExists: false, hangBootstrap: true, timeouts: { CBA_BOOTSTRAP_TIMEOUT_SECONDS: '1' } });
+  const hungBoot = run('dev', 'bootstrap', { stackExists: false, hangWait: true, timeouts: { CBA_BOOTSTRAP_TIMEOUT_SECONDS: '1' } });
   assert.notEqual(hungBoot.code, 0);
   assert.match(hungBoot.out, /BOOTSTRAP TIMEOUT .*INDETERMINATE/);
   assert.match(hungBoot.out, /reconciliation/);
-  assert.equal(hungBoot.mutations.filter((m) => m.startsWith('cdk-bootstrap')).length, 1, 'exactly one attempt, never retried');
+  assert.equal(hungBoot.mutations.filter((m) => m.startsWith('create-stack')).length, 1, 'exactly one attempt, never retried');
+});
+
+test('EXECUTED r3-F2: a same-group child trying a DELAYED mutation dies with the group — the mutation never lands', async () => {
+  const r = run('dev', 'bootstrap', { stackExists: false, hangWait: true, delayedChild: true, keepDir: true, timeouts: { CBA_BOOTSTRAP_TIMEOUT_SECONDS: '1' } });
+  try {
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /killed and reaped/);
+    // The child scheduled its write for T+3s; the group was killed at T+1s. The mutations file
+    // SURVIVES past T+3s (keepDir), so a still-alive child could land its write — re-read and
+    // prove it never does.
+    await new Promise((resolve) => { setTimeout(resolve, 3500); });
+    const after = fs.readFileSync(r.mutPath, 'utf8').split('\n').filter(Boolean);
+    assert.ok(!after.includes('delayed-mutation'), 'the delayed mutation must never land');
+  } finally {
+    fs.rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r3-F2: zero, garbage and above-ceiling timeouts are REFUSED — never a disabled deadline', () => {
+  const cases = [
+    [{ CBA_OBSERVE_TIMEOUT_SECONDS: '0' }, /must be a positive integer no greater than 600/],
+    [{ CBA_OBSERVE_TIMEOUT_SECONDS: 'abc' }, /must be a positive integer no greater than 600/],
+    [{ CBA_OBSERVE_TIMEOUT_SECONDS: '9999' }, /must be a positive integer no greater than 600/],
+    [{ CBA_BOOTSTRAP_TIMEOUT_SECONDS: '0' }, /must be a positive integer no greater than 7200/],
+    [{ CBA_BOOTSTRAP_TIMEOUT_SECONDS: '99999' }, /must be a positive integer no greater than 7200/],
+  ];
+  for (const [timeouts, re] of cases) {
+    const r = run('dev', 'policies', { timeouts });
+    assert.notEqual(r.code, 0, JSON.stringify(timeouts));
+    assert.match(r.out, re, JSON.stringify(timeouts));
+    assert.deepEqual(r.mutations, [], 'zero mutation');
+  }
 });
 
 /* ═══════════ common bindings and the closed CLI ═══════════ */
@@ -558,7 +610,6 @@ test('EXECUTED bindings: account, SHA, worktree, CDK — each refuses with ZERO 
     ['policies', { authorizedSha: 'abc123' }, /CBA_AUTHORIZED_SHA is required/],
     ['policies', { gitHead: 'e'.repeat(40) }, /HEAD does not match/],
     ['policies', { gitDirty: true }, /worktree is dirty/],
-    ['bootstrap', { cdkVersion: '1.0.0 (build old)' }, /does not match the lockfile/],
   ];
   for (const [phase, scen, re] of cases) {
     const r = run('dev', phase, scen);

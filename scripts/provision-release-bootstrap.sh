@@ -9,13 +9,17 @@
 #     creates/revalidates the CDK release toolkit; NEVER creates or alters a policy.
 # No "all" mode, no default, no chaining.
 #
-# THE REVIEWED TEMPLATE IS THE AUTHORITY (r2-F1/F4): the canonical bootstrap template is COMMITTED
-# (infra/aws/bootstrap/cdk-bootstrap-template.yaml, produced by the pinned CDK and reviewed); the
-# locally generated `--show-template` output must equal it BYTE FOR BYTE before any mutation, the
-# deploy uses exactly those bytes via --template, and the read-back compares the live stack — the
-# FULL resource set, the five roles' trust/tags/managed/inline documents, bucket, ECR, KMS, SSM —
-# against expectations RESOLVED FROM THAT SNAPSHOT (scripts/lib/bootstrap-expected-state.py), so
-# a compromised node_modules can neither widen the deployment nor validate its own product.
+# THE REVIEWED TEMPLATE IS THE AUTHORITY, AND NO LOCAL NODE PACKAGE EVER RUNS UNDER PRIVILEGED
+# CREDENTIALS (r2-F1/F4, r3-F1): the canonical bootstrap template is COMMITTED
+# (infra/aws/bootstrap/cdk-bootstrap-template.yaml, produced once by the pinned CDK, reviewed,
+# digest pinned by test) and this script deploys it DIRECTLY through CloudFormation via the AWS
+# CLI — `cdk`/`npx` are never executed here, so a compromised node_modules has no path to the
+# operator's credentials. The lockfile-CDK ↔ snapshot agreement is proven by a CI test
+# (test/provision-release-bootstrap.test.js), credential-free. The read-back compares the live
+# stack — full resource set, the five roles' trust/tags/managed/inline/session-duration, the
+# COMPLETE parameter map, bucket (policy, lifecycle, ACL), ECR, KMS, SSM — against expectations
+# RESOLVED FROM THE SNAPSHOT (scripts/lib/bootstrap-expected-state.py, closed by resource type
+# AND by property: anything the model does not consume refuses the snapshot).
 #
 # OBSERVE-THEN-ACT: account bound first (CBA_EXPECTED_ACCOUNT_ID, never echoed) and re-checked
 # immediately before the first mutation; CBA_AUTHORIZED_SHA must equal HEAD of a clean worktree
@@ -48,21 +52,43 @@ SNAPSHOT_PATH="infra/aws/bootstrap/cdk-bootstrap-template.yaml"
 RESOLVER="${REPO_ROOT}/scripts/lib/bootstrap-expected-state.py"
 mask() { sed -E 's/[0-9]{12}/ACCOUNT/g'; }
 
-# ── wall-clock deadlines (r2-F5): every external call is bounded; 124 is a NAMED refusal ──
+# ── wall-clock deadlines (r2-F5, r3-F2): positive integers with REVIEWED CEILINGS — zero or
+# garbage would silently disable the limit; every external command runs in its OWN process group
+# through scripts/lib/bounded-run.py, which kills and REAPS the whole group on deadline and
+# captures output to FILES, never a command substitution a surviving grandchild could hold open.
 OBS_T="${CBA_OBSERVE_TIMEOUT_SECONDS:-60}"
-CDK_T="${CBA_CDK_TIMEOUT_SECONDS:-300}"
 BOOT_T="${CBA_BOOTSTRAP_TIMEOUT_SECONDS:-3600}"
-aws_() { timeout --foreground --kill-after=10 "$OBS_T" aws --cli-connect-timeout 10 --cli-read-timeout 55 "$@"; }
+printf '%s' "$OBS_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$OBS_T" -le 600 ] \
+  || { echo "REFUSED: CBA_OBSERVE_TIMEOUT_SECONDS must be a positive integer no greater than 600 — zero would disable the deadline"; exit 1; }
+printf '%s' "$BOOT_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$BOOT_T" -le 7200 ] \
+  || { echo "REFUSED: CBA_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer no greater than 7200 — zero would disable the deadline"; exit 1; }
+BOUNDED="$(cd "$(dirname "$0")" && pwd)/lib/bounded-run.py"
+RUN_OUT=""; RUN_ERR=""
+aws_() { # bounded aws with file capture; caller reads $RUN_OUT / $RUN_ERR afterwards
+  # NEVER toggles set -e: a callee flipping errexit back on would undo the CALLER's guard and
+  # turn every nonzero observation into a silent exit — `|| rc=$?` is errexit-safe by itself.
+  local rc=0
+  python3 "$BOUNDED" "$OBS_T" "$TMP/.out" "$TMP/.err" aws --cli-connect-timeout 10 --cli-read-timeout 55 "$@" || rc=$?
+  RUN_OUT=$(cat "$TMP/.out" 2>/dev/null || true)
+  RUN_ERR=$(cat "$TMP/.err" 2>/dev/null || true)
+  return "$rc"
+}
+
+# ── the private working dir exists FIRST: every bounded call captures into it ──
+TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)
+chmod 700 "$TMP"
+trap 'rm -rf "$TMP"' EXIT
 
 # ── the ACCOUNT binds before anything; neither value is ever echoed ──
 EXPECTED="${CBA_EXPECTED_ACCOUNT_ID:-}"
 printf '%s' "$EXPECTED" | LC_ALL=C grep -qzE '^[0-9]{12}$' \
   || { echo "REFUSED: CBA_EXPECTED_ACCOUNT_ID is required (12 digits, supplied outside Git); the value is not echoed"; exit 1; }
 check_account() { # $1 = when
-  local got rc
-  set +e; got=$(aws_ sts get-caller-identity --query Account --output text 2>/dev/null); rc=$?; set -e
+  local rc
+  set +e; aws_ sts get-caller-identity --query Account --output text; rc=$?; set -e
   [ "$rc" -eq 124 ] && { echo "REFUSED ($1): STS observation exceeded its wall-clock deadline (OBSERVATION_TIMEOUT)"; exit 1; }
   [ "$rc" -eq 0 ] || { echo "REFUSED ($1): STS identity observation failed — nothing was mutated"; exit 1; }
+  local got="$RUN_OUT"
   printf '%s' "$got" | LC_ALL=C grep -qzE '^[0-9]{12}$' \
     || { echo "REFUSED ($1): the STS account is malformed; the value is not echoed"; exit 1; }
   [ "$got" = "$EXPECTED" ] \
@@ -83,9 +109,6 @@ HEAD_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null) \
   || { echo "REFUSED: the worktree is dirty — the authorized SHA must be the whole story"; exit 1; }
 
 # ── fresh private render, per phase; nothing is transported between phases ──
-TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)
-chmod 700 "$TMP"
-trap 'rm -rf "$TMP"' EXIT
 canon() { python3 -c '
 import json, sys
 def c(x):
@@ -120,17 +143,17 @@ done
 OBS_STATE=""; OBS_OUT=""
 observe() {
   local desc="$1" marker="$2"; shift 2
-  local out rc
-  set +e; out=$(aws_ "$@" 2>&1); rc=$?; set -e
+  local rc
+  set +e; aws_ "$@"; rc=$?; set -e
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
     echo "REFUSED: observation of ${desc} exceeded its wall-clock deadline (OBSERVATION_TIMEOUT) — nothing was mutated"; exit 1
   fi
   if [ "$rc" -eq 0 ]; then
-    grep -q '"NextToken"\|"IsTruncated": true' <<<"$out" \
+    grep -q '"NextToken"\|"IsTruncated": true' <<<"$RUN_OUT" \
       && { echo "REFUSED: observation of ${desc} was paginated/truncated — an incomplete read proves nothing"; exit 1; }
-    OBS_STATE=EXISTS; OBS_OUT="$out"; return 0
+    OBS_STATE=EXISTS; OBS_OUT="$RUN_OUT"; return 0
   fi
-  if [ -n "$marker" ] && grep -q "$marker" <<<"$out"; then OBS_STATE=ABSENT; OBS_OUT=""; return 0; fi
+  if [ -n "$marker" ] && grep -q "$marker" <<<"$RUN_ERR$RUN_OUT"; then OBS_STATE=ABSENT; OBS_OUT=""; return 0; fi
   echo "REFUSED: observation of ${desc} failed (not a proven absence) — nothing was mutated"; exit 1
 }
 jqpy() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
@@ -230,13 +253,10 @@ if [ "$PHASE" = "policies" ]; then
 fi
 
 # ════════════════════════════ PHASE: bootstrap ════════════════════════════
-# The LOCAL CDK must be the lockfile's; always npx --no-install. This check lives INSIDE the
-# bootstrap phase because the policies phase never executes the CDK at all — not even --version.
-CDK_EXPECTED=$(node -p "require('${REPO_ROOT}/infra/aws/package-lock.json').packages['node_modules/aws-cdk'].version" 2>/dev/null) \
-  || { echo "REFUSED: the pinned aws-cdk version could not be read from the lockfile"; exit 1; }
-CDK_GOT=$( (cd "$REPO_ROOT/infra/aws" && timeout --foreground --kill-after=10 "$CDK_T" npx --no-install cdk --version 2>/dev/null) ) \
-  || { echo "REFUSED: the local CDK is not installed or did not answer within its deadline (npx --no-install)"; exit 1; }
-case "$CDK_GOT" in "$CDK_EXPECTED"*) : ;; *) echo "REFUSED: the local CDK does not match the lockfile — no mutation is attempted through a drifted toolchain"; exit 1 ;; esac
+# NO cdk, NO npx, NO node_modules code runs in this phase (r3-F1): the mutation is the reviewed
+# snapshot submitted DIRECTLY to CloudFormation by the AWS CLI. The lockfile-CDK ↔ snapshot
+# agreement is a credential-free CI proof (test/provision-release-bootstrap.test.js), not an
+# operator-shell execution.
 
 # The policies are a PRECONDITION here, observed read-only: this phase never creates or alters one.
 for name in "${POLICY_NAMES[@]}"; do
@@ -245,19 +265,11 @@ for name in "${POLICY_NAMES[@]}"; do
 done
 EXEC_ARN="arn:aws:iam::${ACCOUNT}:policy/${EXEC_POLICY}"
 
-# ── THE REVIEWED SNAPSHOT IS THE AUTHORITY (r2-F1): committed bytes, from the authorized SHA ──
+# ── THE REVIEWED SNAPSHOT IS THE AUTHORITY (r2-F1/r3-F1): committed bytes, from the SHA ──
 git -C "$REPO_ROOT" show "${SHA}:${SNAPSHOT_PATH}" > "$TMP/toolkit.yaml" 2>/dev/null \
   || { echo "REFUSED: the committed bootstrap template snapshot could not be read from the authorized SHA"; exit 1; }
 TEMPLATE_SHA=$(sha256sum "$TMP/toolkit.yaml" | cut -d' ' -f1)
-set +e
-( cd "$REPO_ROOT/infra/aws" && timeout --foreground --kill-after=10 "$CDK_T" npx --no-install cdk bootstrap --show-template > "$TMP/generated.yaml" 2>"$TMP/generated.err" )
-RC=$?
-set -e
-[ "$RC" -eq 124 ] && { echo "REFUSED: cdk bootstrap --show-template exceeded its wall-clock deadline (CDK_TIMEOUT) — nothing was mutated"; exit 1; }
-[ "$RC" -eq 0 ] || { echo "REFUSED: cdk bootstrap --show-template failed — nothing was mutated"; exit 1; }
-cmp -s "$TMP/toolkit.yaml" "$TMP/generated.yaml" \
-  || { echo "REFUSED (TEMPLATE_DRIFT): the locally generated template does not equal the reviewed snapshot byte for byte — a drifted or compromised toolchain must not deploy; nothing was mutated"; exit 1; }
-echo "toolkit template: gerado == snapshot revisado, sha256 ${TEMPLATE_SHA}"
+echo "toolkit template: snapshot revisado do SHA autorizado, sha256 ${TEMPLATE_SHA}"
 
 # ── full read-back against the model RESOLVED FROM THE SNAPSHOT (r2-F1/F2/F4) ──
 readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at once
@@ -314,6 +326,10 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
   printf '%s' "$OBS_OUT" > "$TMP/obs.s3-pab.json"
   observe "bucket policy (${when})" "" s3api get-bucket-policy --bucket "$bucket" --output json
   printf '%s' "$OBS_OUT" > "$TMP/obs.s3-policy.json"
+  observe "bucket lifecycle (${when})" "" s3api get-bucket-lifecycle-configuration --bucket "$bucket" --output json
+  printf '%s' "$OBS_OUT" > "$TMP/obs.s3-lifecycle.json"
+  observe "bucket acl (${when})" "" s3api get-bucket-acl --bucket "$bucket" --output json
+  printf '%s' "$OBS_OUT" > "$TMP/obs.s3-acl.json"
   repo=$(pyq "print(json.load(open('$TMP/model.json'))['ecr']['name'])")
   observe "the container repository (${when})" "" ecr describe-repositories --repository-names "$repo" --output json
   printf '%s' "$OBS_OUT" > "$TMP/obs.ecr.json"
@@ -351,28 +367,45 @@ if [ "$OBS_STATE" = "EXISTS" ]; then
 fi
 
 check_account "immediately before the first mutation"
+# The ONE mutation: the reviewed snapshot bytes go to CloudFormation directly — the AWS CLI is
+# the executor, the same trust root as every observation; no local package touches credentials.
+# Omitted parameters take the template defaults the resolver models.
 set +e
-( cd "$REPO_ROOT/infra/aws" && timeout --foreground --kill-after=30 "$BOOT_T" npx --no-install cdk bootstrap "aws://${ACCOUNT}/us-east-1" \
-    --qualifier "$QUALIFIER" \
-    --toolkit-stack-name "$TOOLKIT" \
-    --cloudformation-execution-policies "$EXEC_ARN" \
-    --termination-protection \
-    --template "$TMP/toolkit.yaml" ) > "$TMP/bootstrap.log" 2>&1
+python3 "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
+  aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation create-stack \
+    --stack-name "$TOOLKIT" \
+    --template-body "file://$TMP/toolkit.yaml" \
+    --parameters "ParameterKey=Qualifier,ParameterValue=${QUALIFIER}" \
+                 "ParameterKey=CloudFormationExecutionPolicies,ParameterValue=${EXEC_ARN}" \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --enable-termination-protection \
+    --output json
+RC=$?
+set -e
+[ "$RC" -eq 124 ] && { echo "REFUSED: create-stack exceeded its wall-clock deadline (MUTATION_TIMEOUT) — the result is INDETERMINATE; reconcile read-only before any new gate"; exit 1; }
+[ "$RC" -eq 0 ] || { echo "BOOTSTRAP FAILED at create-stack — read-only reconciliation follows; no retry is attempted:"; sed -E 's/[0-9]{12}/ACCOUNT/g' "$TMP/create.err" | tail -3; exit 1; }
+set +e
+python3 "$BOUNDED" "$BOOT_T" "$TMP/wait.out" "$TMP/wait.err" \
+  aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation wait stack-create-complete --stack-name "$TOOLKIT"
 RC=$?
 set -e
 if [ "$RC" -ne 0 ]; then
   if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
-    echo "BOOTSTRAP TIMEOUT (wall-clock deadline exceeded) — the result is INDETERMINATE; read-only reconciliation follows and NOTHING is retried:"
+    echo "BOOTSTRAP TIMEOUT (wall-clock deadline exceeded; the process group was killed and reaped) — the result is INDETERMINATE; read-only reconciliation follows and NOTHING is retried:"
   else
     echo "BOOTSTRAP FAILED — read-only reconciliation follows; no retry is attempted:"
   fi
   set +e
-  aws_ cloudformation describe-stacks --stack-name "$TOOLKIT" --output json 2>/dev/null \
-    | jqpy "s=d['Stacks'][0]; print('stack status:', s['StackStatus'])" 2>/dev/null \
-    || echo "stack status: not observable (it may not exist)"
+  aws_ cloudformation describe-stacks --stack-name "$TOOLKIT" --output json 2>/dev/null
+  if [ -n "$RUN_OUT" ]; then
+    printf '%s' "$RUN_OUT" | jqpy "s=d['Stacks'][0]; print('stack status:', s['StackStatus'])" 2>/dev/null \
+      || echo "stack status: unparseable"
+  else
+    echo "stack status: not observable (it may not exist)"
+  fi
   set -e
-  tail -5 "$TMP/bootstrap.log" | mask
+  sed -E 's/[0-9]{12}/ACCOUNT/g' "$TMP/wait.err" | tail -3
   exit 1
 fi
 readback "read-back, AFTER bootstrap"
-echo "BOOTSTRAP OK (${ENV_NAME}): ${TOOLKIT} criado (qualifier ${QUALIFIER}); evidencia acima carrega nomes e digests apenas"
+echo "BOOTSTRAP OK (${ENV_NAME}): ${TOOLKIT} criado (qualifier ${QUALIFIER}) com os bytes exatos do snapshot revisado; evidencia acima carrega nomes e digests apenas"

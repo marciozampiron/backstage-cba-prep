@@ -328,13 +328,15 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
     mutation, and read-backs the full surface before reporting OK. The toolkit template is the
     COMMITTED, reviewed snapshot `infra/aws/bootstrap/cdk-bootstrap-template.yaml` (digest pinned
-    by test): the locally generated `--show-template` must equal it BYTE FOR BYTE before any
-    mutation, the deploy uses exactly those bytes via `--template`, and the read-back validates
-    the live stack — full resource set, the five `cdk-<qualifier>-*` roles' trust/tags/managed/
-    inline documents, execution-policy exclusivity, SSM version, bucket (policy included), ECR
-    (lifecycle + policy), KMS (policy + alias) — against expectations RESOLVED from that snapshot
-    (`scripts/lib/bootstrap-expected-state.py`), with every external call under a wall-clock
-    deadline. Evidence carries names and digests only:
+    by test) and it deploys DIRECTLY through CloudFormation via the AWS CLI — no `cdk`/`npx`, no
+    node_modules code ever runs under the operator's credentials; the pinned-CDK ↔ snapshot
+    agreement is a credential-free CI proof (`infra/aws/test/bootstrap-template-snapshot.test.js`).
+    The read-back validates the live stack — full resource set, the COMPLETE parameter map, the
+    five `cdk-<qualifier>-*` roles' trust/tags/managed/inline/session-duration, execution-policy
+    exclusivity, SSM version, bucket (policy, lifecycle, ACL), ECR (lifecycle + policy), KMS
+    (policy + alias) — against expectations RESOLVED from that snapshot
+    (`scripts/lib/bootstrap-expected-state.py`, closed by resource type AND property), with every
+    external call in its own bounded, group-killed process. Evidence carries names and digests:
 
     ```bash
     # Gate 1 — the three operator policies (never runs CDK/CloudFormation):

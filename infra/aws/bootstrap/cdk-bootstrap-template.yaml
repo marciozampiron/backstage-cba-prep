@@ -774,4 +774,3 @@ Outputs:
   BootstrapVersion:
     Description: The version of the bootstrap resources that are currently mastered in this stack
     Value: "32"
-

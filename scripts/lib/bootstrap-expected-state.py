@@ -156,6 +156,34 @@ def main():
             continue
         live[lid] = res
 
+    # CLOSED MODEL (r3-F3): every materialized resource type must be one this resolver handles,
+    # and every declared property must be one it CONSUMES — a security property left unread would
+    # let the template acquire behavior the read-back never checks. Refusing forces the review.
+    HANDLED_TYPES = {
+        'AWS::KMS::Key', 'AWS::KMS::Alias', 'AWS::S3::Bucket', 'AWS::S3::BucketPolicy',
+        'AWS::ECR::Repository', 'AWS::IAM::Role', 'AWS::IAM::Policy', 'AWS::SSM::Parameter',
+    }
+    CONSUMED = {
+        'AWS::KMS::Key': {'KeyPolicy'},
+        'AWS::KMS::Alias': {'AliasName', 'TargetKeyId'},
+        'AWS::S3::Bucket': {'BucketName', 'AccessControl', 'BucketEncryption',
+                            'PublicAccessBlockConfiguration', 'VersioningConfiguration',
+                            'LifecycleConfiguration'},
+        'AWS::S3::BucketPolicy': {'Bucket', 'PolicyDocument'},
+        'AWS::ECR::Repository': {'ImageTagMutability', 'LifecyclePolicy', 'RepositoryName',
+                                 'RepositoryPolicyText'},
+        'AWS::IAM::Role': {'AssumeRolePolicyDocument', 'RoleName', 'Tags', 'ManagedPolicyArns',
+                           'Policies', 'PermissionsBoundary', 'MaxSessionDuration', 'Description'},
+        'AWS::IAM::Policy': {'PolicyDocument', 'Roles', 'PolicyName'},
+        'AWS::SSM::Parameter': {'Type', 'Name', 'Value'},
+    }
+    for lid, res in live.items():
+        if res['Type'] not in HANDLED_TYPES:
+            raise SystemExit(f"REFUSED: resource {lid} has type {res['Type']} this model does not handle — review the template change")
+        extra = sorted(k for k in res.get('Properties', {}) if k not in CONSUMED[res['Type']])
+        if extra:
+            raise SystemExit(f'REFUSED: {lid} declares unconsumed propert(ies) {extra} — a property the read-back never checks must be reviewed, not ignored')
+
     model = {
         'templateVersion': str(tpl['Resources']['CdkBootstrapVersion']['Properties']['Value']),
         'resources': {lid: r['Type'] for lid, r in live.items()},
@@ -165,6 +193,13 @@ def main():
         'ecr': None,
         'kms': None,
         'ssm': {'name': f'/cdk-bootstrap/{qualifier}/version'},
+        # The COMPLETE resolved parameter map, exactly as CloudFormation reports it back
+        # (CommaDelimitedList values come back comma-joined). The read-back compares the whole
+        # map in both directions — a divergent BootstrapVariant or DenyExternalId refuses.
+        'stackParameters': {
+            name: (','.join(params[name]) if isinstance(params[name], list) else str(params[name]))
+            for name in tpl.get('Parameters', {})
+        },
     }
     model['ssm']['value'] = model['templateVersion']
 
@@ -192,6 +227,9 @@ def main():
             'managed': sorted(managed if isinstance(managed, list) else [managed]),
             'inline': inline,
             'boundary': p.get('PermissionsBoundary'),
+            # IAM's default when the template declares none; UpdateRole can silently raise it to
+            # twelve hours, so the read-back pins it (r3-F3).
+            'maxSessionDuration': p.get('MaxSessionDuration', 3600),
         }
 
     bucket = resolve(live['StagingBucket']['Properties'])
@@ -204,6 +242,10 @@ def main():
         'publicAccessBlock': bucket.get('PublicAccessBlockConfiguration'),
         'versioning': bucket['VersioningConfiguration']['Status'],
         'policy': policy['PolicyDocument'],
+        'accessControl': bucket.get('AccessControl'),
+        # The template's own lifecycle rules — an EXTERNAL rule expiring current assets would
+        # silently destroy deployed artifacts, so the read-back demands exact equality (r3-F3).
+        'lifecycle': bucket.get('LifecycleConfiguration', {}).get('Rules'),
     }
 
     ecr = resolve(live['ContainerAssetsRepository']['Properties'])
