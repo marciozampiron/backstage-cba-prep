@@ -43,12 +43,13 @@
 # process group, output to files, group killed and reaped on deadline. Local text utilities on
 # files this script itself created are NOT wrapped: they touch no network, hold no credentials and
 # read bounded local data. That exception set is CLOSED and enumerated here — the external
-# programs this file executes DIRECTLY are exactly
-# (cat/chmod/cp/cut/dirname/find/grep/head/mkdir/mktemp/python3/sed/sha256sum/tail) — and a test
-# tokenizes this file with a real shell lexer (statement boundaries and `$( )` bodies included)
-# and compares that inventory to this list in BOTH directions. `aws` never appears there because
-# it is never executed directly: it only ever runs as an argument to the bounded runner, which is
-# the property a separate assertion pins.
+# programs this file can execute are exactly
+# (cat/chmod/cp/cut/dirname/find/grep/head/mkdir/mktemp/python3/sed/sha256sum/sort/tail) — and a
+# test inventories this file through BASH'S OWN PARSER (`bash --pretty-print`, then a lexer that
+# follows wrappers like `command`/`env`/`timeout`, absolute paths and `$( )` bodies, and reports a
+# variable command name as DYNAMIC_COMMAND) and compares that inventory to this list in BOTH
+# directions. `aws` never appears there because it is never executed directly: it only ever runs
+# as an argument to the bounded runner, which is the property a separate assertion pins.
 set -euo pipefail
 umask 077
 export AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1
@@ -121,14 +122,26 @@ MANIFEST="$MAT_ROOT/.cba-manifest"
   || { echo "REFUSED: the materialized tree carries no manifest"; exit 1; }
 [ "$(head -n1 "$MANIFEST")" = "SHA ${SHA}" ] \
   || { echo "REFUSED: the manifest does not name the authorized SHA — this tree belongs to another authorization"; exit 1; }
-# Both directions: every manifest entry matches, and no file exists outside the manifest.
+# EXACT SET EQUALITY, not counts (r7-F3): a duplicated valid line used to compensate for an
+# omitted path, so a swapped file could hide behind a manifest that merely had the right length.
+# Every line must be well formed and canonical, and the SORTED PATH LISTS must be identical
+# strings — which is set AND multiplicity equality, so a duplicate and an omission both refuse.
+if tail -n +2 "$MANIFEST" | LC_ALL=C grep -qvE '^[0-9a-f]{64}  \./[^/]'; then
+  echo "REFUSED: the manifest carries a malformed or non-canonical entry"; exit 1
+fi
+if tail -n +2 "$MANIFEST" | LC_ALL=C grep -qE '(^|/)\.\.(/|$)'; then
+  echo "REFUSED: the manifest carries a path-traversal entry"; exit 1
+fi
+MANIFEST_PATHS=$(tail -n +2 "$MANIFEST" | sed -E 's/^[0-9a-f]{64}  //' | LC_ALL=C sort)
+# The manifest cannot carry its own digest, so it is the one file outside the comparison.
+ACTUAL_PATHS=$(cd "$MAT_ROOT" && find . -type f -not -name .cba-manifest | LC_ALL=C sort)
+[ "$MANIFEST_PATHS" = "$ACTUAL_PATHS" ] \
+  || { echo "REFUSED: the manifest path set is not exactly the tree's contents (duplicate, missing or extra path)"; exit 1; }
+# Then the digests themselves, every line checked.
 ( cd "$MAT_ROOT" && tail -n +2 .cba-manifest | sha256sum -c --status - ) \
   || { echo "REFUSED: the materialized tree diverges from its manifest"; exit 1; }
-MANIFEST_COUNT=$(tail -n +2 "$MANIFEST" | grep -c . || true)
-ACTUAL_COUNT=$(find "$MAT_ROOT" -type f -not -name .cba-manifest | grep -c . || true)
-[ "$MANIFEST_COUNT" = "$ACTUAL_COUNT" ] \
-  || { echo "REFUSED: the materialized tree carries files the manifest does not list"; exit 1; }
-echo "execucao: arvore materializada verificada (raiz nao-worktree, somente leitura, manifesto ${MANIFEST_COUNT} arquivos vinculado ao SHA); nenhum git roda nesta fase"
+MANIFEST_COUNT=$(printf '%s\n' "$MANIFEST_PATHS" | grep -c . || true)
+echo "execucao: arvore materializada verificada (raiz nao-worktree, somente leitura, manifesto ${MANIFEST_COUNT} arquivos, conjunto de caminhos identico, digests conferidos); nenhum git roda nesta fase"
 
 # ── the private working dir; every bounded call captures into it ──
 TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)

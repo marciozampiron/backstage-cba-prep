@@ -5,13 +5,21 @@
 # this file. The runbook command extracts these bytes from the OBJECT STORE of the authorized
 # commit and runs THAT:
 #
-#   L=$(mktemp /tmp/cba-launch.XXXXXX)
-#   git -C <repo> show <SHA>:scripts/provision.sh > "$L"
-#   CBA_REPO_ROOT=<repo> CBA_AUTHORIZED_SHA=<SHA> CBA_EXPECTED_ACCOUNT_ID=<acct> \
-#     bash "$L" <dev|pilot> <policies|bootstrap>; rm -f "$L"
+#   (
+#     set -euo pipefail
+#     L=$(mktemp /tmp/cba-launch.XXXXXX); trap 'rm -f "$L"' EXIT
+#     git -C <repo> show <SHA>:scripts/provision.sh > "$L"
+#     CBA_REPO_ROOT=<repo> CBA_AUTHORIZED_SHA=<SHA> CBA_EXPECTED_ACCOUNT_ID=<acct> \
+#       bash -p "$L" <dev|pilot> <policies|bootstrap>
+#   )
 #
-# so a tampered worktree copy of this launcher is never executed. What remains trusted is `git`
-# itself and the operator's shell — tools, not this repository's code.
+# so a tampered worktree copy of this launcher is never executed. `-p` is load-bearing (r7-F1):
+# a non-interactive bash SOURCES $BASH_ENV and imports exported shell functions BEFORE the
+# script's first line — privileged mode does neither, so ambient code cannot run ahead of the
+# reviewed bytes. The strict subshell and the trap are load-bearing too (r7-F2): they keep a
+# failed extraction or a failed provisioning from being masked by the cleanup's exit status.
+# What remains trusted is `git` itself and the operator's shell — tools, not this repository's
+# code.
 #
 # WHAT IT DOES. Validates the SHA binding (every git probe's exit status checked BEFORE its output
 # is read), extracts `scripts/` and `infra/aws/bootstrap/` of that commit into a private tree,
@@ -77,5 +85,8 @@ chmod -R a-w "$MAT"
 echo "launcher: SHA autorizado == HEAD, worktree limpa, arvore materializada do commit (somente leitura, manifesto vinculado)"
 # NOT `exec`: this process owns the cleanup trap, so the private tree cannot outlive the run.
 rc=0
-CBA_MATERIALIZED_ROOT="$MAT" bash "$MAT/scripts/provision-release-bootstrap.sh" "$ENV_NAME" "$PHASE" || rc=$?
+# Second hop, same protection (r7-F1): `-p` blocks $BASH_ENV and inherited functions, and the
+# env is scrubbed of both anyway so nothing depends on a single mechanism.
+CBA_MATERIALIZED_ROOT="$MAT" env -u BASH_ENV -u ENV \
+  bash -p "$MAT/scripts/provision-release-bootstrap.sh" "$ENV_NAME" "$PHASE" || rc=$?
 exit "$rc"

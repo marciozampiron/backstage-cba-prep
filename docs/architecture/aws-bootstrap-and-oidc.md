@@ -351,13 +351,20 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
 
     ```bash
     # Once per gate. SHA is the commit the gate authorizes; REPO is the local clone.
-    L=$(mktemp /tmp/cba-launch.XXXXXX)
-    git -C "$REPO" show "$SHA:scripts/provision.sh" > "$L"
-    CBA_REPO_ROOT="$REPO" CBA_AUTHORIZED_SHA="$SHA" CBA_EXPECTED_ACCOUNT_ID=<account> \
-      bash "$L" dev policies     # Gate 1 — the three operator policies (no CDK, no CloudFormation)
-    rm -f "$L"
-    # Gate 2 repeats the same three lines with `dev bootstrap` (re-observes the policies
-    # read-only; never creates or alters one).
+    # Strict subshell + trap: an extraction failure or a refusal from the provisioner must reach
+    # you as a nonzero status, never be masked by the cleanup. `bash -p` keeps $BASH_ENV and
+    # inherited shell functions from running before the reviewed bytes.
+    (
+      set -euo pipefail
+      L=$(mktemp /tmp/cba-launch.XXXXXX)
+      trap 'rm -f "$L"' EXIT
+      git -C "$REPO" show "$SHA:scripts/provision.sh" > "$L"
+      CBA_REPO_ROOT="$REPO" CBA_AUTHORIZED_SHA="$SHA" CBA_EXPECTED_ACCOUNT_ID=<account> \
+        bash -p "$L" dev policies
+    )
+    # Gate 1 = `dev policies` (the three operator policies; no CDK, no CloudFormation).
+    # Gate 2 = the same block with `dev bootstrap` (re-observes the policies read-only; never
+    # creates or alters one). Check the exit status before treating a phase as done.
     ```
 
     The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary

@@ -345,7 +345,8 @@ switch (sub) {
     entry = scen.extractLauncherTo;
   }
   try {
-    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), entry, env, phase], {
+    // `-p` exactly as the runbook prescribes: BASH_ENV and inherited functions must not run.
+    outText = execFileSync('bash', ['-p', ...(process.env.DBGX ? ['-x'] : []), entry, env, phase], {
       encoding: 'utf8',
       env: {
         PATH: `${dir}:${process.env.PATH}`,
@@ -734,7 +735,7 @@ test('EXECUTED r6-F2: a FORGED materialized root is refused — worktree, writab
     execFileSync('chmod', ['-R', 'a-w', fake]);
     const extra = attempt(fake);
     assert.notEqual(extra.code, 0);
-    assert.match(extra.out, /files the manifest does not list|diverges from its manifest/);
+    assert.match(extra.out, /path set is not exactly the tree's contents/);
   } finally {
     try { execFileSync('chmod', ['-R', 'u+w', fake]); } catch { /* already writable */ }
     fs.rmSync(fake, { recursive: true, force: true });
@@ -764,6 +765,138 @@ test('EXECUTED r6-F4: ambient PYTHONPATH/sitecustomize cannot inject code into a
     assert.match(r.out, /POLICIES OK/);
   } finally {
     fs.rmSync(evil, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r7-F1: BASH_ENV and exported functions never run before the reviewed bytes', () => {
+  // A non-interactive bash SOURCES $BASH_ENV and imports exported functions before the script's
+  // first line — so `bash -p` at BOTH hops is the control, not a nicety.
+  const evil = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-bashenv-'));
+  try {
+    const marker = path.join(evil, 'marker.txt');
+    fs.writeFileSync(path.join(evil, 'bashenv.sh'), `echo "BASH_ENV EXECUTED"; printf ran > '${marker}'\n`);
+    const r = run('dev', 'policies', {
+      pythonEnv: {
+        BASH_ENV: path.join(evil, 'bashenv.sh'),
+        ENV: path.join(evil, 'bashenv.sh'),
+        // An exported shell function that would shadow a real command if inherited.
+        'BASH_FUNC_sha256sum%%': '() { echo "FUNCTION HIJACK"; }',
+      },
+    });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(!r.out.includes('BASH_ENV EXECUTED'), 'BASH_ENV must never execute');
+    assert.ok(!r.out.includes('FUNCTION HIJACK'), 'an inherited function must never shadow a command');
+    assert.equal(fs.existsSync(marker), false, 'BASH_ENV left no side effect');
+    assert.match(r.out, /POLICIES OK/);
+  } finally {
+    fs.rmSync(evil, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r7-F2: the LITERAL runbook block propagates failure and leaves no launcher file', () => {
+  // The canonical command is executed exactly as documented — extracted from the runbook — so a
+  // masked status cannot hide behind a helper the tests wrote themselves.
+  const doc = fs.readFileSync(path.join(ROOT, 'docs/architecture/aws-bootstrap-and-oidc.md'), 'utf8');
+  const fences = [...doc.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const block = fences.filter((b) => b.includes('git -C "$REPO" show'));
+  assert.equal(block.length, 1, 'exactly one runbook block carries the canonical launcher command');
+  const template = block[0]
+    .split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    .replace('<account>', ACCOUNT)
+    .replace(/dev policies\s*$/m, 'dev policies');
+  assert.match(template, /set -euo pipefail/, 'the block runs strict');
+  assert.match(template, /trap 'rm -f "\$L"' EXIT/, 'the block cleans up through a trap');
+  assert.match(template, /bash -p "\$L"/, 'the block invokes bash in privileged mode');
+
+  const before = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-launch.')).length;
+  const runBlock = (scen) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-block-'));
+    // Reuse the harness's fakes by running one normal scenario first to materialize them.
+    const shim = run('dev', 'policies', { ...scen, keepDir: true });
+    const script = `REPO='${ROOT}'\nSHA='${scen.badSha ?? SHA}'\n${template}`;
+    let out = ''; let code = 0;
+    try {
+      out = execFileSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { PATH: `${shim.dir}:${process.env.PATH}`, CBA_REPO_ROOT: ROOT },
+      });
+    } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+    fs.rmSync(shim.dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { out, code };
+  };
+
+  const ok = runBlock({});
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /POLICIES OK/);
+
+  // (a) extraction fails (a SHA the object store does not carry) — the block must NOT report 0.
+  const badExtract = runBlock({ badSha: '0'.repeat(40), probeFail: 'cat-file' });
+  assert.notEqual(badExtract.code, 0, 'a failed extraction must not be masked by the cleanup');
+
+  // (b) the provisioner itself refuses — its status must reach the operator.
+  const childFails = runBlock({ policyErr: { [ENVS.dev.policyNames[0]]: 'An error occurred (AccessDenied)' } });
+  assert.notEqual(childFails.code, 0, "the child's failure must not be masked");
+
+  const after = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-launch.')).length;
+  assert.equal(after, before, 'the block leaves no extracted launcher behind');
+});
+
+test('EXECUTED r7-F3: a manifest that duplicates one path to hide another is refused', () => {
+  // Codex's repro: omit one digest line, duplicate a valid one so the COUNT still matches, and
+  // change the omitted file. Counting accepted it; exact path-set equality does not.
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-dup-manifest-'));
+  try {
+    fs.cpSync(path.join(ROOT, 'scripts'), path.join(fake, 'scripts'), { recursive: true, filter: (s) => !s.includes('__pycache__') });
+    const digests = execFileSync('bash', ['-c', `cd '${fake}' && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum`], { encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    const victim = digests.findIndex((l) => l.endsWith('bounded-run.py'));
+    assert.notEqual(victim, -1);
+    const other = digests[victim === 0 ? 1 : 0];
+    const forged = digests.filter((_, i) => i !== victim).concat([other]);   // same COUNT, one path duplicated
+    fs.writeFileSync(path.join(fake, '.cba-manifest'), `SHA ${SHA}\n${forged.join('\n')}\n`);
+    fs.appendFileSync(path.join(fake, 'scripts/lib/bounded-run.py'), '\n# swapped behind the count\n');
+    execFileSync('chmod', ['-R', 'a-w', fake]);
+    let out = ''; let code = 0;
+    try {
+      out = execFileSync('bash', ['-p', path.join(fake, 'scripts/provision-release-bootstrap.sh'), 'dev', 'policies'], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH, CBA_EXPECTED_ACCOUNT_ID: ACCOUNT, CBA_AUTHORIZED_SHA: SHA, CBA_MATERIALIZED_ROOT: fake },
+      });
+    } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+    assert.notEqual(code, 0);
+    assert.match(out, /path set is not exactly the tree's contents/);
+    assert.ok(!out.includes('arvore materializada verificada'), 'the forged tree never verifies');
+  } finally {
+    try { execFileSync('chmod', ['-R', 'u+w', fake]); } catch { /* already writable */ }
+    fs.rmSync(fake, { recursive: true, force: true });
+  }
+});
+
+test('r7-F4: the inventory catches wrapper, absolute-path and dynamic command forms', () => {
+  // The bypasses Codex demonstrated, pinned as executed proofs of the TOOL itself.
+  const probe = path.join(os.tmpdir(), `cba-inv-probe-${process.pid}.sh`);
+  fs.writeFileSync(probe, [
+    '#!/usr/bin/env bash',
+    'command curl -s https://evil.example',
+    '/usr/bin/wget http://evil.example',
+    '$CMD --do-it',
+    'env -u X bash -p ./child.sh',
+    'timeout 5 git status',
+    'timeout "$T" git log',
+    'case "$X" in dev|pilot) : ;; esac',
+    'A=( "$B" "$C" )',
+    'for n in "${A[@]}"; do echo "$n" > "$F"; done',
+    '',
+  ].join('\n'));
+  try {
+    const found = execFileSync('python3', [path.join(ROOT, 'test/lib/shell-command-inventory.py'), probe], { encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    for (const expected of ['curl', 'wget', 'DYNAMIC_COMMAND', 'bash', 'git', 'env', 'timeout']) {
+      assert.ok(found.includes(expected), `the inventory must report ${expected}: got ${found.join(',')}`);
+    }
+  } finally {
+    fs.rmSync(probe, { force: true });
   }
 });
 
@@ -922,7 +1055,7 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
   //    fails, and a declared-but-unused one fails too, so the header cannot drift from the code.
   //    `aws` and `git` are absent by construction — they only ever run as ARGUMENTS to the
   //    bounded runner and to `timeout`, which checks 2 and 6 pin separately.
-  const declared = body.match(/executes DIRECTLY are exactly\s*#?\s*\(([^)]+)\)/);
+  const declared = body.match(/can execute are exactly\s*#?\s*\(([^)]+)\)/);
   assert.ok(declared, 'the script must enumerate the external programs it executes directly');
   const DECLARED = declared[1].split('/').map((s) => s.trim()).sort();
   const inventory = execFileSync('python3', [path.join(ROOT, 'test/lib/shell-command-inventory.py'), SCRIPT], { encoding: 'utf8' })
@@ -939,7 +1072,7 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
   const launcherBody = fs.readFileSync(LAUNCHER, 'utf8');
   const launcherInventory = execFileSync('python3', [path.join(ROOT, 'test/lib/shell-command-inventory.py'), LAUNCHER], { encoding: 'utf8' })
     .split('\n').filter(Boolean).sort();
-  assert.deepEqual(launcherInventory, ['bash', 'cat', 'chmod', 'find', 'grep', 'mktemp', 'rm', 'sort', 'tar', 'timeout', 'xargs'],
+  assert.deepEqual(launcherInventory, ['bash', 'cat', 'chmod', 'env', 'find', 'git', 'grep', 'mktemp', 'rm', 'sha256sum', 'sort', 'tar', 'timeout', 'xargs'],
     'the launcher executes exactly these programs — a change is a review event');
   assert.match(launcherBody, /timeout --kill-after=5 "\$GIT_T" git/, 'every git call in the launcher is deadline-bounded');
   assert.equal(/(?:^|[;&|(]\s*|\$\(\s*)git\s/m.test(launcherBody.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')), false,
