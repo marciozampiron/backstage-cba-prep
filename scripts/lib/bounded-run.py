@@ -86,8 +86,12 @@ def main():
         return 2
     out_path, err_path = sys.argv[2], sys.argv[3]
     cmd = sys.argv[4:]
+    # r6-F4: children inherit a SCRUBBED environment. `python3 -I` already ignores PYTHON*, and
+    # this is the second half of the same guarantee — a non-Python child (aws) must not be steered
+    # by an inherited interpreter setting either.
+    env = {k: v for k, v in os.environ.items() if not k.startswith('PYTHON')}
     with open(out_path, 'wb') as out, open(err_path, 'wb') as err:
-        proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True)
+        proc = subprocess.Popen(cmd, stdout=out, stderr=err, start_new_session=True, env=env)
         pgid = proc.pid  # start_new_session makes the child its own group leader
         try:
             rc = proc.wait(timeout=int(seconds))

@@ -162,6 +162,13 @@ if (rest[0] === 'status') {
   if (S.probeHang === 'status') { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
   process.stdout.write(S.gitDirty ? ' M x\\n' : ''); process.exit(0);
 }
+if (rest[0] === 'cat-file') { process.exit(S.probeFail === 'cat-file' ? 128 : 0); }
+if (rest[0] === 'show') {
+  const p2 = rest[1].split(':')[1];
+  const src = S.pristineRoot || '${ROOT}';
+  process.stdout.write(fs.readFileSync(path.join(src, p2), 'utf8'));
+  process.exit(0);
+}
 if (rest[0] === 'archive') {
   // The authorized commit's tree, as a tar stream — exactly what the launcher extracts. The
   // SOURCE is a pristine copy of the repo files, so a tampered WORKTREE file (S.tamperedWorktree)
@@ -326,16 +333,26 @@ switch (sub) {
 }
 `, { mode: 0o755 });
 
-  // The LAUNCHER is the entrypoint under test (r5-F1): it binds the SHA, materializes the
-  // authorized commit and execs the provisioning script from that private tree.
+  // The LAUNCHER is the entrypoint under test (r5-F1/r6-F1): the runbook extracts ITS bytes from
+  // the commit object store and runs that copy, which materializes the tree and runs the child.
   let outText = ''; let code = 0;
+  let entry = scen.entrypoint ?? LAUNCHER;
+  if (scen.extractLauncherTo) {
+    // The runbook's own first step, performed for real: the launcher bytes come from the commit
+    // object store (served here by the fake git), never from the worktree file.
+    const shown = execFileSync(path.join(dir, 'git'), ['-C', scen.repoRoot ?? ROOT, 'show', `${S.gitHead}:scripts/provision.sh`], { encoding: 'utf8' });
+    fs.writeFileSync(scen.extractLauncherTo, shown);
+    entry = scen.extractLauncherTo;
+  }
   try {
-    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), scen.entrypoint ?? LAUNCHER, env, phase], {
+    outText = execFileSync('bash', [...(process.env.DBGX ? ['-x'] : []), entry, env, phase], {
       encoding: 'utf8',
       env: {
         PATH: `${dir}:${process.env.PATH}`,
+        CBA_REPO_ROOT: scen.repoRoot ?? ROOT,
         ...(S.expectedEnv !== null ? { CBA_EXPECTED_ACCOUNT_ID: S.expectedEnv } : {}),
         ...(S.authorizedSha !== null ? { CBA_AUTHORIZED_SHA: S.authorizedSha } : {}),
+        ...(scen.pythonEnv ?? {}),
         ...(scen.timeouts ?? {}),
       },
     });
@@ -620,10 +637,10 @@ test('EXECUTED r3-F2: a same-group child trying a DELAYED mutation dies with the
   }
 });
 
-test('EXECUTED r5-F1: a TAMPERED worktree copy never runs — the materialized commit does', () => {
-  // The strongest form of the claim: tamper the WORKTREE script with a prefix that would fire
-  // before any in-script guard (an `exit 0` at the very top), while the authorized commit's tree
-  // stays pristine. If the worktree copy were what executes, the run would end silently at once.
+test('EXECUTED r6-F1: the launcher that RUNS comes from the commit object store, not the worktree', () => {
+  // The runbook sequence, performed literally: `git show <SHA>:scripts/provision.sh > L; bash L`.
+  // The worktree's launcher is tampered with a prefix that would fire before any check; the
+  // commit's copy is pristine. If the worktree bytes were what ran, the marker would appear.
   const pristine = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-pristine-'));
   const tampered = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-tampered-'));
   try {
@@ -631,18 +648,24 @@ test('EXECUTED r5-F1: a TAMPERED worktree copy never runs — the materialized c
       fs.cpSync(path.join(ROOT, sub), path.join(pristine, sub), { recursive: true, filter: (s) => !s.includes('__pycache__') });
       fs.cpSync(path.join(ROOT, sub), path.join(tampered, sub), { recursive: true, filter: (s) => !s.includes('__pycache__') });
     }
-    const victim = path.join(tampered, 'scripts/provision-release-bootstrap.sh');
-    const body = fs.readFileSync(victim, 'utf8').split('\n');
-    body.splice(1, 0, 'echo "TAMPERED PREFIX RAN"; exit 0');
-    fs.writeFileSync(victim, body.join('\n'));
-
+    fs.writeFileSync(path.join(tampered, '.git'), 'gitdir: fake');
+    for (const victim of ['scripts/provision.sh', 'scripts/provision-release-bootstrap.sh']) {
+      const f = path.join(tampered, victim);
+      const bodyLines = fs.readFileSync(f, 'utf8').split('\n');
+      bodyLines.splice(1, 0, 'echo "TAMPERED PREFIX RAN"; exit 0');
+      fs.writeFileSync(f, bodyLines.join('\n'));
+    }
+    // The operator's command extracts the launcher from the SHA — the fake git serves the
+    // pristine commit content — and runs THAT copy, with the tampered worktree as CBA_REPO_ROOT.
+    const extracted = path.join(tampered, 'extracted-launcher.sh');
     const r = run('dev', 'policies', {
-      entrypoint: path.join(tampered, 'scripts/provision.sh'),
+      repoRoot: tampered,
       pristineRoot: pristine,
+      extractLauncherTo: extracted,
     });
-    assert.ok(!r.out.includes('TAMPERED PREFIX RAN'), 'the tampered worktree prefix must never execute');
+    assert.ok(!r.out.includes('TAMPERED PREFIX RAN'), 'no tampered prefix may execute');
     assert.equal(r.code, 0, r.out);
-    assert.match(r.out, /arvore materializada do commit autorizado/);
+    assert.match(r.out, /arvore materializada verificada/);
     assert.match(r.out, /POLICIES OK/);
   } finally {
     fs.rmSync(pristine, { recursive: true, force: true });
@@ -650,18 +673,97 @@ test('EXECUTED r5-F1: a TAMPERED worktree copy never runs — the materialized c
   }
 });
 
-test('EXECUTED r5-F1: the provisioning script REFUSES to run outside the materialized tree', () => {
-  // Direct invocation is the bypass this closes: no CBA_MATERIALIZED_ROOT, no run.
-  for (const envExtra of [{}, { CBA_MATERIALIZED_ROOT: '/tmp/somewhere-else' }]) {
+test('EXECUTED r6-F2: a FORGED materialized root is refused — worktree, writable, or stale', () => {
+  // Round 5 compared two controllable strings, so CBA_MATERIALIZED_ROOT=<worktree> walked in.
+  // The tree must now BE the launcher's product: outside any worktree, write-stripped, and
+  // carrying a manifest that names this SHA and matches its contents exactly.
+  const commonEnv = { PATH: process.env.PATH, CBA_EXPECTED_ACCOUNT_ID: ACCOUNT, CBA_AUTHORIZED_SHA: SHA };
+  const attempt = (root, script) => {
     let out = ''; let code = 0;
     try {
-      out = execFileSync('bash', [SCRIPT, 'dev', 'policies'], {
-        encoding: 'utf8',
-        env: { PATH: process.env.PATH, CBA_EXPECTED_ACCOUNT_ID: ACCOUNT, CBA_AUTHORIZED_SHA: SHA, ...envExtra },
-      });
+      out = execFileSync('bash', [script ?? path.join(root, 'scripts/provision-release-bootstrap.sh'), 'dev', 'policies'],
+        { encoding: 'utf8', env: { ...commonEnv, CBA_MATERIALIZED_ROOT: root } });
     } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
-    assert.notEqual(code, 0);
-    assert.match(out, /materialized|scripts\/provision\.sh/);
+    return { out, code };
+  };
+
+  // (a) the WORKTREE itself — the attack round 5 allowed.
+  const worktree = attempt(ROOT);
+  assert.notEqual(worktree.code, 0);
+  assert.match(worktree.out, /inside a git worktree/);
+
+  // (b) a hand-made tree outside any worktree: writable, so refused before anything else.
+  const fake = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-fake-root-'));
+  const pristineRunner = fs.readFileSync(path.join(ROOT, 'scripts/lib/bounded-run.py'));
+  try {
+    fs.mkdirSync(path.join(fake, 'scripts/lib'), { recursive: true });
+    fs.cpSync(path.join(ROOT, 'scripts'), path.join(fake, 'scripts'), { recursive: true, filter: (s) => !s.includes('__pycache__') });
+    const writable = attempt(fake);
+    assert.notEqual(writable.code, 0);
+    assert.match(writable.out, /is writable/);
+
+    // (c) write-stripped but with NO manifest.
+    execFileSync('chmod', ['-R', 'a-w', fake]);
+    const noManifest = attempt(fake);
+    assert.notEqual(noManifest.code, 0);
+    assert.match(noManifest.out, /carries no manifest/);
+
+    // (d) a STALE tree: a real manifest, but naming a different authorization.
+    execFileSync('chmod', ['-R', 'u+w', fake]);
+    const digests = execFileSync('bash', ['-c', `cd '${fake}' && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum`], { encoding: 'utf8' });
+    fs.writeFileSync(path.join(fake, '.cba-manifest'), `SHA ${'a'.repeat(40)}\n${digests}`);
+    execFileSync('chmod', ['-R', 'a-w', fake]);
+    const stale = attempt(fake);
+    assert.notEqual(stale.code, 0);
+    assert.match(stale.out, /does not name the authorized SHA/);
+
+    // (e) right SHA, but a file was edited after the manifest was written.
+    execFileSync('chmod', ['-R', 'u+w', fake]);
+    fs.writeFileSync(path.join(fake, '.cba-manifest'), `SHA ${SHA}\n${digests}`);
+    fs.appendFileSync(path.join(fake, 'scripts/lib/bounded-run.py'), '\n# swapped after the manifest\n');
+    execFileSync('chmod', ['-R', 'a-w', fake]);
+    const swapped = attempt(fake);
+    assert.notEqual(swapped.code, 0);
+    assert.match(swapped.out, /diverges from its manifest/);
+
+    // (f) an EXTRA file the manifest does not list. (The swapped file is restored from the bytes
+    //     captured at the top of this test — a test must never write to the real worktree.)
+    execFileSync('chmod', ['-R', 'u+w', fake]);
+    fs.writeFileSync(path.join(fake, 'scripts/lib/bounded-run.py'), pristineRunner);
+    fs.writeFileSync(path.join(fake, 'scripts/lib/sitecustomize.py'), 'print("injected")\n');
+    execFileSync('chmod', ['-R', 'a-w', fake]);
+    const extra = attempt(fake);
+    assert.notEqual(extra.code, 0);
+    assert.match(extra.out, /files the manifest does not list|diverges from its manifest/);
+  } finally {
+    try { execFileSync('chmod', ['-R', 'u+w', fake]); } catch { /* already writable */ }
+    fs.rmSync(fake, { recursive: true, force: true });
+  }
+});
+
+test('EXECUTED r6-F2: the launcher LEAVES NO TREE behind — the cleanup trap survives the run', () => {
+  const before = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-relboot-src.')).length;
+  const ok = run('dev', 'policies', {});
+  assert.equal(ok.code, 0, ok.out);
+  const failed = run('dev', 'policies', { policyErr: { [ENVS.dev.policyNames[0]]: 'An error occurred (AccessDenied)' } });
+  assert.notEqual(failed.code, 0);
+  const after = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-relboot-src.')).length;
+  assert.equal(after, before, 'neither a successful nor a failed run may leave a materialized tree in /tmp');
+});
+
+test('EXECUTED r6-F4: ambient PYTHONPATH/sitecustomize cannot inject code into any helper', () => {
+  // `python3 -I` plus the runner's scrubbed child environment: a sitecustomize on PYTHONPATH
+  // would otherwise execute at interpreter start-up, under the operator's credentials and before
+  // any deadline applies.
+  const evil = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-evil-py-'));
+  try {
+    fs.writeFileSync(path.join(evil, 'sitecustomize.py'), 'import sys; sys.stderr.write("SITECUSTOMIZE EXECUTED\\n")\n');
+    const r = run('dev', 'policies', { pythonEnv: { PYTHONPATH: evil, PYTHONSTARTUP: path.join(evil, 'sitecustomize.py') } });
+    assert.equal(r.code, 0, r.out);
+    assert.ok(!r.out.includes('SITECUSTOMIZE EXECUTED'), 'ambient Python code must never execute');
+    assert.match(r.out, /POLICIES OK/);
+  } finally {
+    fs.rmSync(evil, { recursive: true, force: true });
   }
 });
 
@@ -814,23 +916,37 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
     const inline = INLINE_PARSERS.some((p) => line.includes(p)) || /python3 -c/.test(line);
     assert.ok(bounded || inline, `python3 call is neither bounded nor a pinned inline parser: ${line.trim()}`);
   }
-  // 4. The unwrapped exception set is ENUMERATED IN THE SCRIPT ITSELF and pinned here, so the
-  //    contract and the code cannot drift apart silently. (A shell tokenizer is the wrong tool
-  //    for this job: quoting, case arms and embedded Python make it fragile, and a fragile guard
-  //    that trips on prose only teaches people to loosen it.)
-  const declared = body.match(/files this script itself created\s*#?\s*\(([^)]+)\)/);
-  assert.ok(declared, 'the script must enumerate its unwrapped-utility exception set in the header');
-  assert.match(body, /are NOT wrapped/, 'the exception set must be stated as an explicit exception');
-  const ALLOWED_LOCAL = ['printf', 'grep', 'sed', 'cat', 'cp', 'sha256sum', 'mktemp', 'chmod', 'mkdir', 'tail'];
-  assert.deepEqual(declared[1].split('/').map((s) => s.trim()), ALLOWED_LOCAL,
-    'the declared exception set changed — a new unwrapped external command is a review event');
-  for (const u of ALLOWED_LOCAL) {
-    assert.ok(new RegExp(`(?:^\\s*|[;&|(]\\s*|\\$\\(\\s*)${u}\\s`, 'm').test(code),
-      `declared exception "${u}" is not actually used — the contract must describe the code`);
-  }
+  // 4. BIDIRECTIONAL, STRUCTURAL inventory (r6-F3). A real shell lexer — statement boundaries and
+  //    `$( )` bodies included — lists every external program the script EXECUTES DIRECTLY. The
+  //    declared set and that inventory must be equal in both directions: an undeclared command
+  //    fails, and a declared-but-unused one fails too, so the header cannot drift from the code.
+  //    `aws` and `git` are absent by construction — they only ever run as ARGUMENTS to the
+  //    bounded runner and to `timeout`, which checks 2 and 6 pin separately.
+  const declared = body.match(/executes DIRECTLY are exactly\s*#?\s*\(([^)]+)\)/);
+  assert.ok(declared, 'the script must enumerate the external programs it executes directly');
+  const DECLARED = declared[1].split('/').map((s) => s.trim()).sort();
+  const inventory = execFileSync('python3', [path.join(ROOT, 'test/lib/shell-command-inventory.py'), SCRIPT], { encoding: 'utf8' })
+    .split('\n').filter(Boolean).sort();
+  assert.deepEqual(inventory, DECLARED,
+    'the external-command inventory and the declared set must agree exactly — in both directions');
+
   // 5. And no OTHER interpreter or transfer tool may be invoked, however it is spelled.
   for (const forbidden of ['scp', 'rsync', 'docker', 'kubectl', 'perl', 'ruby', 'php', 'telnet', 'ftp']) {
-    const atCommandPosition = new RegExp(`(?:^\\s*|[;&|(]\\s*|\\$\\(\\s*|\\bexec\\s+)${forbidden}\\s`, 'm');
-    assert.equal(atCommandPosition.test(code), false, `${forbidden} must not be invoked by the provisioning script`);
+    assert.equal(inventory.includes(forbidden), false, `${forbidden} must not be invoked by the provisioning script`);
+  }
+
+  // 6. The LAUNCHER gets the same treatment, with its own declared set.
+  const launcherBody = fs.readFileSync(LAUNCHER, 'utf8');
+  const launcherInventory = execFileSync('python3', [path.join(ROOT, 'test/lib/shell-command-inventory.py'), LAUNCHER], { encoding: 'utf8' })
+    .split('\n').filter(Boolean).sort();
+  assert.deepEqual(launcherInventory, ['bash', 'cat', 'chmod', 'find', 'grep', 'mktemp', 'rm', 'sort', 'tar', 'timeout', 'xargs'],
+    'the launcher executes exactly these programs — a change is a review event');
+  assert.match(launcherBody, /timeout --kill-after=5 "\$GIT_T" git/, 'every git call in the launcher is deadline-bounded');
+  assert.equal(/(?:^|[;&|(]\s*|\$\(\s*)git\s/m.test(launcherBody.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')), false,
+    'the launcher never calls git outside the bounded wrapper');
+
+  // 7. Every Python entry is ISOLATED (r6-F4): no PYTHONPATH/sitecustomize can inject code.
+  for (const line of code.split('\n').filter((l) => /python3/.test(l))) {
+    assert.match(line, /python3 -I\b/, `python3 must run isolated: ${line.trim()}`);
   }
 });

@@ -21,24 +21,34 @@
 # RESOLVED FROM THE SNAPSHOT (scripts/lib/bootstrap-expected-state.py, closed by resource type
 # AND by property: anything the model does not consume refuses the snapshot).
 #
-# NEVER RUN THIS FILE DIRECTLY (r5-F1). `scripts/provision.sh` is the entrypoint: it binds the
-# SHA, materializes THIS script and every reviewed input from the authorized commit into a
-# private write-stripped tree, and execs the materialized copy. Self-verification from inside a
-# running script is circular (the prefix already ran) and racy (compare-then-execute), so this
-# file does not attempt it — it REFUSES unless it is the materialized copy, and reads every
-# reviewed byte from that tree. No `git` runs here at all.
+# NEVER RUN THIS FILE DIRECTLY (r5-F1, r6-F1/F2). `scripts/provision.sh` is the entrypoint, and
+# the runbook runs THAT from the commit object store, not from the worktree. It materializes this
+# script and every reviewed input into a private write-stripped tree with a manifest, and runs the
+# materialized copy. Self-verification from inside a running script is circular (the prefix already
+# ran) and racy (compare-then-execute), so this file does not attempt it — it verifies the TREE it
+# runs from (non-worktree, write-stripped, manifest bound to the authorized SHA, exact in both
+# directions) and reads every reviewed byte from there. No `git` runs here at all.
+#
+# PYTHON RUNS ISOLATED (r6-F4): every interpreter entry uses `python3 -I`, so PYTHONPATH,
+# PYTHONHOME, user site-packages and the current directory cannot inject code that would execute
+# under the operator's credentials before any deadline applies; the bounded runner additionally
+# scrubs PYTHON* from the environment it hands to children.
 #
 # OBSERVE-THEN-ACT: account bound (CBA_EXPECTED_ACCOUNT_ID, never echoed) and re-checked
 # immediately before the first mutation; renders are per phase, private (0700 mktemp, umask 077),
 # trap-removed; only a proven absence may create; any divergence refuses with zero mutation.
 #
-# DEADLINE SCOPE, stated exactly (r5-F3): every command that reaches the NETWORK or carries
+# DEADLINE SCOPE, stated exactly (r5-F3, r6-F3): every command that reaches the NETWORK or carries
 # CREDENTIALS (`aws`) and every Python helper runs through scripts/lib/bounded-run.py — own
 # process group, output to files, group killed and reaped on deadline. Local text utilities on
-# files this script itself created (printf/grep/sed/cat/cp/sha256sum/mktemp/chmod/mkdir/tail)
-# are NOT wrapped: they touch no network, hold no credentials, and read bounded local data. A
-# test pins that closed set AND proves every entry is really used, so the contract cannot drift
-# from the code and a future edit cannot smuggle an unbounded network call in.
+# files this script itself created are NOT wrapped: they touch no network, hold no credentials and
+# read bounded local data. That exception set is CLOSED and enumerated here — the external
+# programs this file executes DIRECTLY are exactly
+# (cat/chmod/cp/cut/dirname/find/grep/head/mkdir/mktemp/python3/sed/sha256sum/tail) — and a test
+# tokenizes this file with a real shell lexer (statement boundaries and `$( )` bodies included)
+# and compares that inventory to this list in BOTH directions. `aws` never appears there because
+# it is never executed directly: it only ever runs as an argument to the bounded runner, which is
+# the property a separate assertion pins.
 set -euo pipefail
 umask 077
 export AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1 AWS_MAX_ATTEMPTS=1
@@ -74,19 +84,51 @@ printf '%s' "$BOOT_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$BOOT_T" -le 72
   || { echo "REFUSED: CBA_BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer no greater than 7200 — zero would disable the deadline"; exit 1; }
 BOUNDED="${REPO_ROOT}/scripts/lib/bounded-run.py"
 
-# ═══════════ ONLY THE MATERIALIZED COPY RUNS (r5-F1) ═══════════
-# scripts/provision.sh extracted the authorized commit into a private write-stripped tree and
-# exported CBA_MATERIALIZED_ROOT. Refusing here means the worktree copy — the one an attacker can
-# edit between a check and an exec — is never the thing that provisions.
+# ═══════════ ROOT + MANIFEST + SHA ARE VERIFIED TOGETHER (r5-F1, r6-F2) ═══════════
+# An environment variable alone proves nothing: round 5 accepted any path, so pointing
+# CBA_MATERIALIZED_ROOT at the worktree walked straight past the guard. The tree must now BE what
+# the launcher produces — a non-worktree, write-stripped directory whose manifest names the
+# authorized SHA and matches its contents EXACTLY, in both directions. A stale tree from an older
+# run fails the same way the moment its bytes or its SHA differ.
+#
+# Residual, stated: a local actor who can set this process's environment can also run any code as
+# this user; no in-process check fixes that. What these checks do close is executing the WRONG
+# BYTES — a worktree copy, a leftover tree, a hand-made directory — which is the reachable
+# failure. Unforgeable provenance needs signing (#91 Stage B).
 MAT_ROOT="${CBA_MATERIALIZED_ROOT:-}"
-[ -n "$MAT_ROOT" ] \
+[ -n "$MAT_ROOT" ] && [ -d "$MAT_ROOT" ] \
   || { echo "REFUSED: run scripts/provision.sh — this script only executes from the tree materialized out of the authorized commit"; exit 1; }
+case "$MAT_ROOT" in /*) : ;; *) echo "REFUSED: the materialized root must be an absolute path"; exit 1 ;; esac
 [ "$REPO_ROOT" = "$MAT_ROOT" ] \
   || { echo "REFUSED: this copy is not the materialized one (run scripts/provision.sh)"; exit 1; }
 SHA="${CBA_AUTHORIZED_SHA:-}"
 printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
   || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
-echo "execucao: arvore materializada do commit autorizado (somente leitura); nenhum git roda nesta fase"
+# A worktree is never a materialized tree: it carries git metadata, at the root or above it.
+probe_dir="$MAT_ROOT"
+while : ; do
+  [ -e "$probe_dir/.git" ] \
+    && { echo "REFUSED: the materialized root is inside a git worktree — the worktree is exactly what must not run"; exit 1; }
+  [ "$probe_dir" = "/" ] && break
+  probe_dir=$(dirname "$probe_dir")
+done
+# Write-stripped, as the launcher leaves it: a writable tree can be edited between check and use.
+if find "$MAT_ROOT" -perm -u+w -print -quit | grep -q . ; then
+  echo "REFUSED: the materialized tree is writable — only a write-stripped tree may provision"; exit 1
+fi
+MANIFEST="$MAT_ROOT/.cba-manifest"
+[ -f "$MANIFEST" ] \
+  || { echo "REFUSED: the materialized tree carries no manifest"; exit 1; }
+[ "$(head -n1 "$MANIFEST")" = "SHA ${SHA}" ] \
+  || { echo "REFUSED: the manifest does not name the authorized SHA — this tree belongs to another authorization"; exit 1; }
+# Both directions: every manifest entry matches, and no file exists outside the manifest.
+( cd "$MAT_ROOT" && tail -n +2 .cba-manifest | sha256sum -c --status - ) \
+  || { echo "REFUSED: the materialized tree diverges from its manifest"; exit 1; }
+MANIFEST_COUNT=$(tail -n +2 "$MANIFEST" | grep -c . || true)
+ACTUAL_COUNT=$(find "$MAT_ROOT" -type f -not -name .cba-manifest | grep -c . || true)
+[ "$MANIFEST_COUNT" = "$ACTUAL_COUNT" ] \
+  || { echo "REFUSED: the materialized tree carries files the manifest does not list"; exit 1; }
+echo "execucao: arvore materializada verificada (raiz nao-worktree, somente leitura, manifesto ${MANIFEST_COUNT} arquivos vinculado ao SHA); nenhum git roda nesta fase"
 
 # ── the private working dir; every bounded call captures into it ──
 TMP=$(mktemp -d /tmp/cba-relboot.XXXXXX)
@@ -99,7 +141,7 @@ run_() { # bounded ANY external command through the verified runner; $1 = deadli
   # turn every nonzero result into a silent exit — `|| rc=$?` is errexit-safe by itself.
   local deadline="$1"; shift
   local rc=0
-  python3 "$BOUNDED" "$deadline" "$TMP/.out" "$TMP/.err" "$@" || rc=$?
+  python3 -I "$BOUNDED" "$deadline" "$TMP/.out" "$TMP/.err" "$@" || rc=$?
   RUN_OUT=$(cat "$TMP/.out" 2>/dev/null || true)
   RUN_ERR=$(cat "$TMP/.err" 2>/dev/null || true)
   [ "$rc" -eq 125 ] && { echo "REFUSED: processes SURVIVED the deadline kill — the result is INDETERMINATE; reconcile read-only before any new gate"; exit 1; }
@@ -126,14 +168,14 @@ check_account() { # $1 = when
 check_account "binding"
 
 # ── fresh private render, per phase; nothing is transported between phases ──
-canon() { python3 -c '
+canon() { python3 -I -c '
 import json, sys
 def c(x):
     if isinstance(x, dict): return {k: c(v) for k, v in sorted(x.items())}
     if isinstance(x, list): return [c(v) for v in x]
     return x
 print(json.dumps(c(json.load(open(sys.argv[1])))))' "$1"; }
-same_doc() { python3 -c '
+same_doc() { python3 -I -c '
 import json, sys
 def c(x):
     if isinstance(x, dict): return {k: c(v) for k, v in sorted(x.items())}
@@ -173,8 +215,8 @@ observe() {
   if [ -n "$marker" ] && grep -q "$marker" <<<"$RUN_ERR$RUN_OUT"; then OBS_STATE=ABSENT; OBS_OUT=""; return 0; fi
   echo "REFUSED: observation of ${desc} failed (not a proven absence) — nothing was mutated"; exit 1
 }
-jqpy() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
-pyq() { python3 -c "import json,sys; $1"; }
+jqpy() { python3 -I -c "import json,sys; d=json.load(sys.stdin); $1"; }
+pyq() { python3 -I -c "import json,sys; $1"; }
 
 # ── policy consumers (r2-F3): a boundary attached as a NORMAL policy grants its actions ──
 validate_policy_usage() { # $1 = policy name
@@ -305,7 +347,7 @@ readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at 
   jqpy "
 phys={r['LogicalResourceId']: r.get('PhysicalResourceId','') for r in d['StackResourceSummaries']}
 print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
-  run_ "$OBS_T" python3 "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARN" "$TMP/phys.json" \
+  run_ "$OBS_T" python3 -I "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARN" "$TMP/phys.json" \
     || { echo "REFUSED (${when}): the expected-state resolver refused the reviewed snapshot"; sed -E 's/[0-9]{12}/ACCOUNT/g' <<<"$RUN_ERR"; exit 1; }
   printf '%s\n' "$RUN_OUT" > "$TMP/model.json"
 
@@ -368,7 +410,7 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
 
   # ONE validator, comparing EVERYTHING against the resolved model; never short-circuits.
   local vrc=0
-  run_ "$OBS_T" python3 "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARN" "$TOOLKIT" || vrc=$?
+  run_ "$OBS_T" python3 -I "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARN" "$TOOLKIT" || vrc=$?
   printf '%s\n%s\n' "$RUN_OUT" "$RUN_ERR" | grep -v '^$' | sed -E 's/[0-9]{12}/ACCOUNT/g' || true
   [ "$vrc" -eq 0 ] || { echo "REFUSED (${when}): the live stack diverges from the reviewed template — every divergence is listed above"; exit 1; }
   echo "READ-BACK OK (${when}): conjunto completo de recursos, 5 roles (trust/tags/managed/inline exatos), exec policy exclusiva, SSM, bucket (policy incluida), ECR (lifecycle+policy), KMS (policy+alias) — tudo igual ao snapshot revisado sha256 ${TEMPLATE_SHA}"
@@ -409,7 +451,7 @@ check_account "immediately before the first mutation"
 # the executor, the same trust root as every observation; no local package touches credentials.
 # Omitted parameters take the template defaults the resolver models.
 RC=0
-python3 "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
+python3 -I "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
   aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation create-stack \
     --stack-name "$TOOLKIT" \
     --template-body "file://$TMP/toolkit.yaml" \
@@ -425,7 +467,7 @@ case "$RC" in
   *) reconcile_and_stop "BOOTSTRAP FAILED at create-stack — the request may still have been accepted before the error surfaced:" "$TMP/create.err" ;;
 esac
 RC=0
-python3 "$BOUNDED" "$BOOT_T" "$TMP/wait.out" "$TMP/wait.err" \
+python3 -I "$BOUNDED" "$BOOT_T" "$TMP/wait.out" "$TMP/wait.err" \
   aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation wait stack-create-complete --stack-name "$TOOLKIT" || RC=$?
 case "$RC" in
   0) : ;;

@@ -13,3 +13,7 @@ sync-output.txt
 # Cloudflare / OpenNext build output (#67) — generated, never committed
 web/.open-next
 web/.wrangler
+
+# Python bytecode caches (never tracked; a stale .pyc can shadow a module)
+__pycache__/
+*.pyc

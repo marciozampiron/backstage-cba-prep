@@ -1,46 +1,41 @@
 #!/usr/bin/env bash
-# THE LAUNCHER (#111 r5-F1) — the only supported way to run the release-bootstrap provisioning.
+# THE LAUNCHER (#111 r6) — materializes the authorized commit and runs the provisioning from it.
 #
-# WHY IT EXISTS. A script cannot verify itself: bytes at the top of the file have already run by
-# the time any integrity check appears, and helpers compared on disk can be swapped between the
-# comparison and the execution (TOCTOU). This launcher removes both by never running the
-# worktree's copies at all: it MATERIALIZES the authorized commit's `scripts/` and
-# `infra/aws/bootstrap/` into a private, write-stripped directory with `git archive` — one atomic
-# extraction, no per-file compare — and execs the provisioning script FROM THERE. Every byte the
-# provisioning run then reads or executes came out of the commit, and the worktree can change
-# underneath without affecting the run.
+# HOW IT IS INVOKED (this is load-bearing, r6-F1). The operator NEVER runs the worktree's copy of
+# this file. The runbook command extracts these bytes from the OBJECT STORE of the authorized
+# commit and runs THAT:
 #
-# THE ROOT OF TRUST, STATED PLAINLY: this launcher's own bytes are not self-verified — nothing can
-# do that from inside. What bounds the residual is that this file is deliberately tiny and does
-# exactly one thing (materialize, then exec), so the operator can read it whole before running it,
-# and `git status` + the SHA binding below prove the worktree it materializes from is the reviewed
-# commit. An unforgeable answer needs signed artifacts and remote enforcement (#91 Stage B); until
-# then this is a declared residual, not a solved problem.
+#   L=$(mktemp /tmp/cba-launch.XXXXXX)
+#   git -C <repo> show <SHA>:scripts/provision.sh > "$L"
+#   CBA_REPO_ROOT=<repo> CBA_AUTHORIZED_SHA=<SHA> CBA_EXPECTED_ACCOUNT_ID=<acct> \
+#     bash "$L" <dev|pilot> <policies|bootstrap>; rm -f "$L"
 #
-# usage: CBA_EXPECTED_ACCOUNT_ID=<12 digits> CBA_AUTHORIZED_SHA=<40 hex> \
-#          bash scripts/provision.sh <dev|pilot> <policies|bootstrap>
+# so a tampered worktree copy of this launcher is never executed. What remains trusted is `git`
+# itself and the operator's shell — tools, not this repository's code.
+#
+# WHAT IT DOES. Validates the SHA binding (every git probe's exit status checked BEFORE its output
+# is read), extracts `scripts/` and `infra/aws/bootstrap/` of that commit into a private tree,
+# writes a MANIFEST of digests into it, strips write permission, and RUNS (never `exec`s — the
+# cleanup trap must survive) the provisioning script from there, cleaning the tree up afterwards.
 set -euo pipefail
 umask 077
 
 ENV_NAME="${1:?usage: provision.sh dev|pilot policies|bootstrap}"
 PHASE="${2:?usage: provision.sh dev|pilot policies|bootstrap}"
 [ "$#" -eq 2 ] || { echo "REFUSED: exactly two arguments — environment and phase"; exit 1; }
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="${CBA_REPO_ROOT:-}"
+[ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/.git" ] \
+  || { echo "REFUSED: CBA_REPO_ROOT must name the repository this launcher materializes from"; exit 1; }
 GIT_T="${CBA_GIT_TIMEOUT_SECONDS:-60}"
 printf '%s' "$GIT_T" | LC_ALL=C grep -qzE '^[1-9][0-9]*$' && [ "$GIT_T" -le 300 ] \
   || { echo "REFUSED: CBA_GIT_TIMEOUT_SECONDS must be a positive integer no greater than 300 — zero would disable the deadline"; exit 1; }
 
-# Every git probe's EXIT STATUS is captured and validated BEFORE its output is interpreted
-# (r5-F2): a failed `status` produces no output, and empty output must never read as "clean";
-# a failed `ls-files` must never read as "no shadow files". `timeout` is the mechanism here —
-# these are read-only local git calls, and the bounded runner lives in the tree they are about
-# to prove.
 git_() { timeout --kill-after=5 "$GIT_T" git -C "$REPO_ROOT" "$@"; }
 probe() { # $1 = description; rest = git args. Sets PROBE_OUT. Refuses on ANY nonzero/timeout.
   local desc="$1"; shift
   local rc=0
   PROBE_OUT=$(git_ "$@" 2>/dev/null) || rc=$?
-  [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] \
+  { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } \
     && { echo "REFUSED: the git probe for ${desc} exceeded its deadline — nothing ran"; exit 1; }
   [ "$rc" -eq 0 ] \
     || { echo "REFUSED: the git probe for ${desc} failed (status ${rc}) — a failed probe is never a clean answer; nothing ran"; exit 1; }
@@ -49,6 +44,7 @@ probe() { # $1 = description; rest = git args. Sets PROBE_OUT. Refuses on ANY no
 SHA="${CBA_AUTHORIZED_SHA:-}"
 printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
   || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
+probe "the authorized commit" cat-file -e "${SHA}^{commit}"
 probe "HEAD" rev-parse HEAD
 [ "$PROBE_OUT" = "$SHA" ] \
   || { echo "REFUSED: HEAD does not match CBA_AUTHORIZED_SHA — run from the authorized commit"; exit 1; }
@@ -56,18 +52,30 @@ probe "the worktree state" status --porcelain
 [ -z "$PROBE_OUT" ] \
   || { echo "REFUSED: the worktree is dirty — the authorized SHA must be the whole story"; exit 1; }
 
-# MATERIALIZE: one extraction of the authorized commit's executable and reviewed inputs. The
-# extracted tree is private (0700) and write-stripped, and it — not the worktree — is what runs.
+# MATERIALIZE from the commit OBJECT — the worktree's file contents never take part.
 MAT=$(mktemp -d /tmp/cba-relboot-src.XXXXXX)
 chmod 700 "$MAT"
-trap 'chmod -R u+w "$MAT" 2>/dev/null || true; rm -rf "$MAT"' EXIT
+cleanup() { chmod -R u+w "$MAT" 2>/dev/null || true; rm -rf "$MAT"; }
+trap cleanup EXIT INT TERM
 rc=0
 git_ archive --format=tar "$SHA" scripts infra/aws/bootstrap 2>/dev/null | tar -x -C "$MAT" || rc=$?
 [ "$rc" -eq 0 ] \
   || { echo "REFUSED: the authorized commit's scripts and bootstrap inputs could not be materialized"; exit 1; }
 [ -f "$MAT/scripts/provision-release-bootstrap.sh" ] && [ -f "$MAT/scripts/lib/bounded-run.py" ] \
   || { echo "REFUSED: the materialized tree is incomplete"; exit 1; }
+
+# The MANIFEST binds root + contents + SHA, and the child re-verifies it in both directions.
+# The digest list is built OUTSIDE the tree: a temp file inside it would list itself.
+MANIFEST_TMP=$(mktemp /tmp/cba-manifest.XXXXXX)
+cleanup() { rm -f "$MANIFEST_TMP"; chmod -R u+w "$MAT" 2>/dev/null || true; rm -rf "$MAT"; }
+( cd "$MAT" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > "$MANIFEST_TMP" ) \
+  || { echo "REFUSED: the materialized tree could not be digested"; exit 1; }
+{ printf 'SHA %s\n' "$SHA"; cat "$MANIFEST_TMP"; } > "$MAT/.cba-manifest"
+rm -f "$MANIFEST_TMP"
 chmod -R a-w "$MAT"
 
-echo "launcher: SHA autorizado == HEAD, worktree limpa, arvore materializada do commit (somente leitura)"
-CBA_MATERIALIZED_ROOT="$MAT" exec bash "$MAT/scripts/provision-release-bootstrap.sh" "$ENV_NAME" "$PHASE"
+echo "launcher: SHA autorizado == HEAD, worktree limpa, arvore materializada do commit (somente leitura, manifesto vinculado)"
+# NOT `exec`: this process owns the cleanup trap, so the private tree cannot outlive the run.
+rc=0
+CBA_MATERIALIZED_ROOT="$MAT" bash "$MAT/scripts/provision-release-bootstrap.sh" "$ENV_NAME" "$PHASE" || rc=$?
+exit "$rc"

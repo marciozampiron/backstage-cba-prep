@@ -346,13 +346,18 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     (`scripts/lib/bootstrap-expected-state.py`, closed by resource type AND property), with every
     external call in its own bounded, group-killed process. Evidence carries names and digests:
 
+    The launcher itself is run from the COMMIT, not from the worktree — that is what keeps a
+    tampered checkout from executing anything:
+
     ```bash
-    # Gate 1 — the three operator policies (never runs CDK/CloudFormation):
-    CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
-      bash scripts/provision.sh dev policies
-    # Gate 2 — the toolkit (re-observes the policies read-only; never creates/alters one):
-    CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
-      bash scripts/provision.sh dev bootstrap
+    # Once per gate. SHA is the commit the gate authorizes; REPO is the local clone.
+    L=$(mktemp /tmp/cba-launch.XXXXXX)
+    git -C "$REPO" show "$SHA:scripts/provision.sh" > "$L"
+    CBA_REPO_ROOT="$REPO" CBA_AUTHORIZED_SHA="$SHA" CBA_EXPECTED_ACCOUNT_ID=<account> \
+      bash "$L" dev policies     # Gate 1 — the three operator policies (no CDK, no CloudFormation)
+    rm -f "$L"
+    # Gate 2 repeats the same three lines with `dev bootstrap` (re-observes the policies
+    # read-only; never creates or alters one).
     ```
 
     The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary
