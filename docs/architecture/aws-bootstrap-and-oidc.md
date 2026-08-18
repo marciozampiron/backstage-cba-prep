@@ -326,9 +326,15 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     reviewed commit (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree), renders the step-4
     trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
     absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
-    mutation, and read-backs the full surface (stack, template bytes, closed resource set, the
-    five `cdk-<qualifier>-*` roles, policy attachment exclusivity, SSM version, bucket hardening,
-    ECR immutability) before reporting OK. Evidence carries names and digests only:
+    mutation, and read-backs the full surface before reporting OK. The toolkit template is the
+    COMMITTED, reviewed snapshot `infra/aws/bootstrap/cdk-bootstrap-template.yaml` (digest pinned
+    by test): the locally generated `--show-template` must equal it BYTE FOR BYTE before any
+    mutation, the deploy uses exactly those bytes via `--template`, and the read-back validates
+    the live stack — full resource set, the five `cdk-<qualifier>-*` roles' trust/tags/managed/
+    inline documents, execution-policy exclusivity, SSM version, bucket (policy included), ECR
+    (lifecycle + policy), KMS (policy + alias) — against expectations RESOLVED from that snapshot
+    (`scripts/lib/bootstrap-expected-state.py`), with every external call under a wall-clock
+    deadline. Evidence carries names and digests only:
 
     ```bash
     # Gate 1 — the three operator policies (never runs CDK/CloudFormation):
