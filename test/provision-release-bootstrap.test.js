@@ -136,7 +136,7 @@ function run(env, phase, scen = {}, mutate = null) {
     stackRoleArn: null, storedTemplate: null,
     resourcesNextToken: false, stackPolicy: false, createRc: 0, waitRc: 0,
     hang: null, hangWait: false, hangCreate: false, delayedChild: false, stubbornChild: false,
-    probeFail: null, probeHang: null, pristineRoot: null, archiveFail: false,
+    probeFail: null, probeHang: null, pristineRoot: null, archiveFail: false, showFail: false,
     live: liveStateFor(env),
     docs: cfg.docs,
     ...scen,
@@ -164,6 +164,7 @@ if (rest[0] === 'status') {
 }
 if (rest[0] === 'cat-file') { process.exit(S.probeFail === 'cat-file' ? 128 : 0); }
 if (rest[0] === 'show') {
+  if (S.showFail) { process.stderr.write('fatal: path does not exist in ' + rest[1] + String.fromCharCode(10)); process.exit(128); }
   const p2 = rest[1].split(':')[1];
   const src = S.pristineRoot || '${ROOT}';
   process.stdout.write(fs.readFileSync(path.join(src, p2), 'utf8'));
@@ -830,9 +831,12 @@ test('EXECUTED r7-F2: the LITERAL runbook block propagates failure and leaves no
   assert.equal(ok.code, 0, ok.out);
   assert.match(ok.out, /POLICIES OK/);
 
-  // (a) extraction fails (a SHA the object store does not carry) — the block must NOT report 0.
-  const badExtract = runBlock({ badSha: '0'.repeat(40), probeFail: 'cat-file' });
+  // (a) EXTRACTION itself fails — `git show` errors and emits no bytes (r8-F2). The status must
+  //     survive the cleanup, and the launcher must never have started.
+  const badExtract = runBlock({ showFail: true });
   assert.notEqual(badExtract.code, 0, 'a failed extraction must not be masked by the cleanup');
+  assert.ok(!badExtract.out.includes('launcher:'), 'the launcher must not run when extraction failed');
+  assert.ok(!badExtract.out.includes('POLICIES OK'), 'nothing may be provisioned after a failed extraction');
 
   // (b) the provisioner itself refuses — its status must reach the operator.
   const childFails = runBlock({ policyErr: { [ENVS.dev.policyNames[0]]: 'An error occurred (AccessDenied)' } });
@@ -1062,6 +1066,14 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
     .split('\n').filter(Boolean).sort();
   assert.deepEqual(inventory, DECLARED,
     'the external-command inventory and the declared set must agree exactly — in both directions');
+
+  // 4b. The inline Python bodies are outside the SHELL inventory's reach by nature, so they are
+  //     pinned directly: no interpreter body may spawn a process (r8-F1's stated boundary).
+  for (const m of code.matchAll(/python3 -I -c ('|")([\s\S]*?)\1/g)) {
+    for (const forbidden of ['subprocess', 'os.system', 'os.popen', 'os.exec', 'pty.spawn', '__import__']) {
+      assert.equal(m[2].includes(forbidden), false, `an inline Python body must not use ${forbidden}`);
+    }
+  }
 
   // 5. And no OTHER interpreter or transfer tool may be invoked, however it is spelled.
   for (const forbidden of ['scp', 'rsync', 'docker', 'kubectl', 'perl', 'ruby', 'php', 'telnet', 'ftp']) {
