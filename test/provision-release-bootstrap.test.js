@@ -877,6 +877,35 @@ test('EXECUTED r7-F3: a manifest that duplicates one path to hide another is ref
   }
 });
 
+test('r9: MUTATING THE REAL LAUNCHER with each bypass form changes the inventory', () => {
+  // The strongest form of the guarantee: the probes are appended to the ACTUAL launcher, and the
+  // inventory must differ. Codex's three round-9 forms are the first three; the last three prove
+  // the analyzer FAILS CLOSED on options it does not model instead of skipping them.
+  const tool = path.join(ROOT, 'test/lib/shell-command-inventory.py');
+  const inventoryOf = (file) => execFileSync('python3', [tool, file], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  const baseline = inventoryOf(LAUNCHER);
+  const cases = [
+    ['bash -lc "curl https://example.invalid"', 'curl'],          // bundle carrying `c`
+    ['timeout -k 1 5 curl https://example.invalid', 'curl'],      // option with its own argument
+    ['! curl https://example.invalid', 'curl'],                   // negation keeps command position
+    ['bash --unknown-opt x', 'UNMODELED_WRAPPER_OPTION'],
+    ['timeout --bogus 5 curl x', 'UNMODELED_WRAPPER_OPTION'],
+    ['env -S "curl -s x"', 'ENV_SPLIT_STRING'],
+  ];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-inv-mut-'));
+  try {
+    for (const [probe, expected] of cases) {
+      const mutated = path.join(dir, 'mutated.sh');
+      fs.writeFileSync(mutated, `${fs.readFileSync(LAUNCHER, 'utf8')}\n${probe}\n`);
+      const found = inventoryOf(mutated);
+      assert.ok(found.includes(expected), `"${probe}" must add ${expected}: got ${found.join(',')}`);
+      assert.notDeepEqual(found, baseline, `"${probe}" must change the inventory`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('r7-F4: the inventory catches wrapper, absolute-path and dynamic command forms', () => {
   // The bypasses Codex demonstrated, pinned as executed proofs of the TOOL itself.
   const probe = path.join(os.tmpdir(), `cba-inv-probe-${process.pid}.sh`);

@@ -51,6 +51,33 @@ WRAPPERS = set(WRAPPER_MODES)
 # one interpreter deep. A Python `-c` body is Python, not shell — outside this analyzer's reach
 # and covered instead by `python3 -I` plus an explicit no-subprocess assertion in the test.
 SHELLS = {'bash', 'sh', 'dash', 'ksh', 'zsh'}
+
+# EXPLICIT OPTION ARITY, and FAIL CLOSED on anything unmodeled (r9). Skipping options generically
+# hid two real forms: `timeout -k 1 5 curl` (the option's own argument was eaten as the duration,
+# so `curl` never reached command position) and `bash -lc 'curl …'` (a bundle carrying `c`, whose
+# body was never analyzed). An option this table does not know emits a marker no allowlist can
+# carry, so an unmodeled form fails the comparison instead of passing silently.
+UNMODELED = 'UNMODELED_WRAPPER_OPTION'
+SHELL_INLINE = 'SHELL_INLINE_CODE'
+WRAPPER_OPTIONS = {
+    'timeout': {'-k': 1, '--kill-after': 1, '-s': 1, '--signal': 1, '--foreground': 0,
+                '--preserve-status': 0, '-v': 0, '--verbose': 0},
+    'env': {'-i': 0, '--ignore-environment': 0, '-0': 0, '--null': 0, '-u': 1, '--unset': 1,
+            '-C': 1, '--chdir': 1, '-S': 'split', '--split-string': 'split', '--': 0},
+    'xargs': {'-0': 0, '--null': 0, '-r': 0, '--no-run-if-empty': 0, '-t': 0, '-p': 0,
+              '-n': 1, '-I': 1, '-i': 1, '-P': 1, '-d': 1, '-L': 1, '-a': 1, '-E': 1, '-s': 1},
+    'command': {'-p': 0, '-v': 0, '-V': 0},
+    'nohup': {}, 'exec': {'-c': 0, '-l': 0, '-a': 1}, 'builtin': {},
+    'sudo': {'-u': 1, '-n': 0, '-E': 0}, 'doas': {'-u': 1}, 'nice': {'-n': 1},
+    'ionice': {'-c': 1, '-n': 1, '-p': 1}, 'stdbuf': {'-i': 1, '-o': 1, '-e': 1},
+    'setsid': {'-w': 0, '-f': 0}, 'time': {'-p': 0}, 'flock': {'-n': 0, '-x': 0, '-s': 0},
+    'chroot': {}, 'unshare': {}, 'watch': {'-n': 1},
+}
+# A shell's own options: zero-argument switches, `-o NAME`, and anything carrying `c`, whose next
+# word is a shell body to inventory.
+SHELL_ZERO_OPTS = set('peuxilsvBCHmnTaftk')
+SHELL_LONG_OPTS = {'--norc': 0, '--noprofile': 0, '--posix': 0, '--login': 0, '--rcfile': 1,
+                   '--restricted': 0, '--verbose': 0, '--pretty-print': 0}
 REDIRECTS = re.compile(r'^\d*(>>?|<<?|>&|<&|&>)$')
 ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*\+?=')
 
@@ -108,6 +135,7 @@ def inventory(text):
     found = set()
     at_command = True
     wrapper_mode = None     # per-wrapper rule in force, see WRAPPER_MODES
+    wrapper_name = None     # the wrapper whose option table applies
     duration_used = False
     skip_next = False       # `env -u NAME`, a redirect target, a `for` variable
     case_state = None       # 'subject' -> until `in`; 'arm' -> until `)`
@@ -166,8 +194,14 @@ def inventory(text):
             at_command = False
             prev = tok
             continue
+        if tok == '!' and at_command:
+            # Negation PRESERVES command position — filtering it dropped the command it negates.
+            # Only at command position: inside `[ ! -L x ]` the `!` is test's operator, and the
+            # words after it are arguments, not a call.
+            prev = tok
+            continue
         if tok in SEPARATORS or tok in KEYWORDS:
-            at_command, wrapper_mode, shell_cmd = True, None, False
+            at_command, wrapper_mode, shell_cmd, wrapper_name = True, None, False, None
             duration_used = False
             prev = tok
             continue
@@ -175,8 +209,27 @@ def inventory(text):
             skip_next = True
             prev = tok
             continue
-        if shell_cmd and tok == '-c':
-            capture_shell_body = True
+        if shell_cmd and tok.startswith('-') and tok != '-':
+            if tok.startswith('--'):
+                base, attached = (tok.split('=', 1) + [None])[:2]
+                arity = SHELL_LONG_OPTS.get(base)
+                if arity is None:
+                    found.add(UNMODELED)
+                elif arity == 1 and attached is None:
+                    skip_next = True
+            elif 'c' in tok[1:]:
+                # `-c`, and BUNDLES that carry it (`-lc`, `-ic`): the next word is a shell body.
+                capture_shell_body = True
+            elif tok[1:] and set(tok[1:]) <= SHELL_ZERO_OPTS:
+                pass
+            elif tok in ('-o', '+o'):
+                skip_next = True
+            else:
+                found.add(UNMODELED)
+            prev = tok
+            continue
+        if shell_cmd and tok == '+o':
+            skip_next = True
             prev = tok
             continue
         if at_command:
@@ -185,7 +238,7 @@ def inventory(text):
                 continue
             if tok in WRAPPERS:
                 found.add(tok)
-                wrapper_mode = WRAPPER_MODES[tok]
+                wrapper_mode, wrapper_name = WRAPPER_MODES[tok], tok
                 duration_used = False
                 if wrapper_mode == 'forbidden':
                     # `eval` executes text no static analysis can follow. It is reported by a name
@@ -193,13 +246,18 @@ def inventory(text):
                     found.add('EVAL_UNANALYZABLE')
                 prev = tok
                 continue
-            if tok.startswith('-'):
-                if wrapper_mode == 'env':
-                    if tok in ('-u', '--unset'):
-                        skip_next = True
-                    elif tok in ('-S', '--split-string') or tok.startswith('-S'):
+            if tok.startswith('-') and tok != '-':
+                base, attached = (tok.split('=', 1) + [None])[:2]
+                table = WRAPPER_OPTIONS.get(wrapper_name, {}) if wrapper_name else {}
+                if wrapper_name:
+                    arity = table.get(base)
+                    if arity == 'split':
                         # `env -S 'cmd args'` smuggles a whole command line past every rule here.
                         found.add('ENV_SPLIT_STRING')
+                    elif arity is None:
+                        found.add(UNMODELED)          # fail closed: unknown option, unknown effect
+                    elif arity == 1 and attached is None:
+                        skip_next = True
                 prev = tok
                 continue
             if wrapper_mode == 'env' and ASSIGNMENT.match(tok):
@@ -225,7 +283,7 @@ def inventory(text):
             else:
                 found.add(tok)
                 shell_cmd = tok in SHELLS
-            at_command, wrapper_mode = False, None
+            at_command, wrapper_mode, wrapper_name = False, None, None
         prev = tok
     return found
 
