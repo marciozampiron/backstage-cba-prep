@@ -313,34 +313,30 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
 11. **Harden (recommended)**: create the `ai-batch` Environment with a required reviewer, add
     `environment: ai-batch` to the workflow's `refresh` job, and switch the trust policy subject to
     the environment-scoped form (§2).
-12. **Release bootstraps (#70 Slice B1)** — a SEPARATE CDK bootstrap PER ENVIRONMENT (dev:
-    qualifier `cbardev`, pilot: `cbarpil` — reviewed constants in `lib/context.js`), each with its
-    OWN toolkit stack, execution role and policy, so dev authority reaches only dev and neither
-    tier touches the #66 foundation bootstrap. `--toolkit-stack-name` is REQUIRED: without it the
-    CDK would update the existing `CDKToolkit` stack instead of creating the separate bootstrap
-    this design names. Rendered per step 4; each creation is human-gated:
+12. **Release bootstraps (#70 Slice B1; #111 operator machine)** — a SEPARATE CDK bootstrap PER
+    ENVIRONMENT (dev: qualifier `cbardev`, pilot: `cbarpil` — reviewed constants in
+    `lib/context.js`), each with its OWN toolkit stack, execution role and policy, so dev
+    authority reaches only dev and neither tier touches the #66 foundation bootstrap.
+    `--toolkit-stack-name` is REQUIRED: without it the CDK would update the existing `CDKToolkit`
+    stack instead of creating the separate bootstrap this design names.
+
+    Both steps run through the operator-managed `scripts/provision-release-bootstrap.sh` — TWO
+    MUTUALLY EXCLUSIVE PHASES, one human gate each, never a combined mode. The script binds the
+    account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately before the first mutation) and the
+    reviewed commit (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree), renders the step-4
+    trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
+    absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
+    mutation, and read-backs the full surface (stack, template bytes, closed resource set, the
+    five `cdk-<qualifier>-*` roles, policy attachment exclusivity, SSM version, bucket hardening,
+    ECR immutability) before reporting OK. Evidence carries names and digests only:
 
     ```bash
-    for e in dev pilot; do
-      case "$e" in dev) q=cbardev;; pilot) q=cbarpil;; esac
-      # Operator-managed policies (outside CloudFormation), one set per tier:
-      aws iam create-policy \
-        --policy-name "cba-study-coach-boundary-gha-deploy-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/gha-deploy-boundary-$e.json"
-      aws iam create-policy \
-        --policy-name "cba-study-coach-boundary-runtime-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/runtime-boundary-$e.json"
-      RELEASE_EXEC_ARN=$(aws iam create-policy \
-        --policy-name "cba-study-coach-cfn-exec-release-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/cfn-exec-release-$e.json" \
-        --query 'Policy.Arn' --output text)
-
-      (cd infra/aws && npx --no-install cdk bootstrap "aws://$ACCT/us-east-1" \
-        --qualifier "$q" \
-        --toolkit-stack-name "cba-release-toolkit-$e" \
-        --cloudformation-execution-policies "$RELEASE_EXEC_ARN" \
-        --termination-protection)
-    done
+    # Gate 1 — the three operator policies (never runs CDK/CloudFormation):
+    CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
+      bash scripts/provision-release-bootstrap.sh dev policies
+    # Gate 2 — the toolkit (re-observes the policies read-only; never creates/alters one):
+    CBA_EXPECTED_ACCOUNT_ID=<account> CBA_AUTHORIZED_SHA=<full sha> \
+      bash scripts/provision-release-bootstrap.sh dev bootstrap
     ```
 
     The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary
