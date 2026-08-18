@@ -4,7 +4,7 @@
 // Extracted from bin/cba-pilot.js so tests can assert the REAL app wiring.
 const { DefaultStackSynthesizer } = require('aws-cdk-lib');
 const iam = require('aws-cdk-lib/aws-iam');
-const { resolveEnvironment, getContext, RELEASE_BOOTSTRAP_QUALIFIERS, stackNameFor } = require('./context');
+const { resolveEnvironment, getContext, FOUNDATION_STACK_NAME, RELEASE_BOOTSTRAP_QUALIFIERS, stackNameFor } = require('./context');
 const { SecurityStack } = require('./security-stack');
 const { IdentityStack } = require('./identity-stack');
 const { DataStack } = require('./data-stack');
@@ -38,10 +38,13 @@ function buildStacks(app) {
   const base = `cba-study-coach-${environment}`;
   const releaseSynthesizer = () => new DefaultStackSynthesizer({ qualifier: RELEASE_BOOTSTRAP_QUALIFIERS[environment] });
 
+  // #111 F1: the foundation is ONE physical stack, referenced by EVERY assembly under its
+  // deployed name — never `${base}-security`, which would mint a second stack whose fixed-name
+  // account-globals (OIDC provider, refresh role, deploy roles) collide with the deployed ones.
   const security = new SecurityStack(app, 'SecurityStack', {
-    stackName: `${base}-security`,
+    stackName: FOUNDATION_STACK_NAME,
     description:
-      'CBA Study Coach pilot security: GitHub OIDC provider + blueprint-refresh Bedrock role (#53/#54). Synth-only in CI; deploys are human-gated.',
+      'CBA Study Coach foundation (account-global, shared by dev and pilot): GitHub OIDC provider, blueprint-refresh Bedrock role, and both tiers\' GitHub deploy roles (#53/#54/#111). Synth-only in CI; deploys are human-gated.',
   });
 
   return {

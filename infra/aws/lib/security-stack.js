@@ -103,57 +103,87 @@ class SecurityStack extends Stack {
       }),
     );
 
-    // --- GitHub Actions deploy role (#70 Slice B1) ---------------------------------------------
-    // The deployment authority the release lane assumes via OIDC — publish its ARN as the
-    // Environment-scoped secret AWS_DEPLOY_ROLE_ARN (canonical name, security-rules.md §6 /
-    // design §3). Trust is pinned to the GitHub ENVIRONMENT subject, not a branch: only a run
-    // that passed the Environment's protection rules can mint a token with this sub. Least
-    // privilege is structural: the role itself can ONLY assume the three CDK bootstrap roles
+    // --- GitHub Actions deploy roles (#70 Slice B1; #111 F1: BOTH tiers, ONE foundation) -------
+    // The deployment authorities the release lane assumes via OIDC — each published as ITS
+    // Environment's secret AWS_DEPLOY_ROLE_ARN (canonical name, security-rules.md §6 / design §3).
+    // This stack used to create only the role selected by the `environment` context, which made
+    // "synthesize the dev assembly" mean "a second foundation stack" — and a second stack's
+    // fixed-name account-globals (the OIDC provider, the refresh role) collide with the deployed
+    // ones. Both tier roles are therefore created HERE, in the single physical foundation, and the
+    // `environment` context no longer reaches this stack at all: every assembly synthesizes the
+    // SAME template (a test pins that invariance).
+    //
+    // CONSTRUCT IDS ARE LOAD-BEARING. `GithubDeployRole` is the DEPLOYED pilot role's construct id
+    // (logical id GithubDeployRoleB0CF66A5 → cba-study-coach-gha-deploy-pilot, observed read-only
+    // 2026-08-17); changing it would make CloudFormation REPLACE a live, trusted role. The dev
+    // tier gets a NEW id, so the F1 diff is a pure addition — provider, refresh role and pilot
+    // role survive untouched (a test pins the deployed logical ids).
+    //
+    // Trust is pinned to the GitHub ENVIRONMENT subject, not a branch: only a run that passed the
+    // Environment's protection rules can mint a token with this sub. Least privilege is
+    // structural, per tier: each role can ONLY assume ITS tier's three CDK bootstrap roles
     // (deploy, file-publishing, lookup — no image-publishing: this app builds no container
     // assets), so its ceiling is whatever the #66-scoped bootstrap execution allows, and the
-    // operator-managed boundary (bootstrap/policies/gha-deploy-boundary.template.json) caps it
-    // at exactly that even if this inline policy ever widens. The scoped CloudFormation exec
-    // policy pins iam:CreateRole for this role name to that boundary and denies boundary
-    // tampering, mirroring the BedrockRefreshRole pattern above.
-    const environment = ctx('environment', 'pilot');
-    const deployBoundaryArn = ctx(
-      'ghaDeployBoundaryArn',
-      `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-${environment}`,
-    );
-    // THIS TIER'S release bootstrap roles (per-environment qualifier, lib/context.js): the dev
-    // deploy role can assume only cdk-cbardev-* — it cannot execute a pilot change, and neither
-    // tier can reach the #66 SecurityStack bootstrap (hnb659fds) at all.
-    const releaseQualifier = RELEASE_BOOTSTRAP_QUALIFIERS[environment];
-    const cdkBootstrapRoleArn = (name) =>
-      `arn:${this.partition}:iam::${this.account}:role/cdk-${releaseQualifier}-${name}-role-${this.account}-${this.region}`;
+    // TIER'S operator-managed boundary (bootstrap/policies/gha-deploy-boundary.template.json,
+    // rendered per environment) caps it at exactly that even if this inline policy ever widens.
+    // The scoped CloudFormation exec policy pins iam:CreateRole for BOTH role names to their
+    // boundaries (a bootstrap-policies test counts the three grants) and denies boundary
+    // tampering, mirroring the BedrockRefreshRole pattern above. The qualifiers keep the tiers
+    // apart: dev assumes only cdk-cbardev-*, pilot only cdk-cbarpil-*, and neither tier can reach
+    // the #66 SecurityStack bootstrap (hnb659fds) at all.
+    const deployBoundaryArns = {
+      pilot: ctx(
+        'ghaDeployBoundaryArnPilot',
+        `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-pilot`,
+      ),
+      dev: ctx(
+        'ghaDeployBoundaryArnDev',
+        `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-dev`,
+      ),
+    };
+    const deployRoles = {};
+    for (const [tier, ids] of [
+      ['pilot', { role: 'GithubDeployRole', boundary: 'GhaDeployBoundary' }],
+      ['dev', { role: 'GithubDeployRoleDev', boundary: 'GhaDeployBoundaryDev' }],
+    ]) {
+      const releaseQualifier = RELEASE_BOOTSTRAP_QUALIFIERS[tier];
+      const cdkBootstrapRoleArn = (name) =>
+        `arn:${this.partition}:iam::${this.account}:role/cdk-${releaseQualifier}-${name}-role-${this.account}-${this.region}`;
 
-    const deployRole = new iam.Role(this, 'GithubDeployRole', {
-      roleName: `cba-study-coach-gha-deploy-${environment}`,
-      description:
-        'GitHub Actions release lane (#70): assumes the CDK bootstrap roles to deploy the closed environment stack set through bin/deploy-release.js. No direct service permissions.',
-      permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, 'GhaDeployBoundary', deployBoundaryArn),
-      assumedBy: new iam.WebIdentityPrincipal(providerArn, {
-        StringEquals: {
-          [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
-          [`${GITHUB_OIDC_HOST}:sub`]: `repo:${githubRepo}:environment:${environment}`,
-        },
-      }),
-    });
+      const deployRole = new iam.Role(this, ids.role, {
+        roleName: `cba-study-coach-gha-deploy-${tier}`,
+        description:
+          'GitHub Actions release lane (#70): assumes the CDK bootstrap roles to deploy the closed environment stack set through bin/deploy-release.js. No direct service permissions.',
+        permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, ids.boundary, deployBoundaryArns[tier]),
+        assumedBy: new iam.WebIdentityPrincipal(providerArn, {
+          StringEquals: {
+            [`${GITHUB_OIDC_HOST}:aud`]: 'sts.amazonaws.com',
+            [`${GITHUB_OIDC_HOST}:sub`]: `repo:${githubRepo}:environment:${tier}`,
+          },
+        }),
+      });
 
-    deployRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: 'AssumeCdkBootstrapRolesOnly',
-        actions: ['sts:AssumeRole'],
-        resources: [
-          cdkBootstrapRoleArn('deploy'),
-          cdkBootstrapRoleArn('file-publishing'),
-          cdkBootstrapRoleArn('lookup'),
-        ],
-      }),
-    );
+      deployRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'AssumeCdkBootstrapRolesOnly',
+          actions: ['sts:AssumeRole'],
+          resources: [
+            cdkBootstrapRoleArn('deploy'),
+            cdkBootstrapRoleArn('file-publishing'),
+            cdkBootstrapRoleArn('lookup'),
+          ],
+        }),
+      );
+
+      deployRoles[tier] = deployRole;
+    }
 
     // --- Conventions + outputs -----------------------------------------------------------------
-    applyFoundationTags(this, environment);
+    // Tag family pinned to the DEPLOYED foundation's values (#111 F1): this physical stack was
+    // created under the pilot family and tags reach every resource in it — a tag flip would touch
+    // the account-globals in the same update that must otherwise be a pure addition. The
+    // foundation is account-global; its Environment tag records history, not tier selection.
+    applyFoundationTags(this, 'pilot');
 
     new CfnOutput(this, 'BedrockRefreshRoleArn', {
       value: role.roleArn,
@@ -163,9 +193,15 @@ class SecurityStack extends Stack {
       value: providerArn,
       description: 'Account-global GitHub OIDC provider (reuse via -c githubOidcProviderArn=...)',
     });
+    // Separate outputs per tier (#111 F1). The pilot one keeps its DEPLOYED output id and text —
+    // `${environment}` resolved to "pilot" in the deployed template, so the literal preserves it.
     new CfnOutput(this, 'GithubDeployRoleArn', {
-      value: deployRole.roleArn,
-      description: `Publish as the ${environment} Environment secret AWS_DEPLOY_ROLE_ARN`,
+      value: deployRoles.pilot.roleArn,
+      description: 'Publish as the pilot Environment secret AWS_DEPLOY_ROLE_ARN',
+    });
+    new CfnOutput(this, 'GithubDeployRoleDevArn', {
+      value: deployRoles.dev.roleArn,
+      description: 'Publish as the dev Environment secret AWS_DEPLOY_ROLE_ARN',
     });
   }
 }

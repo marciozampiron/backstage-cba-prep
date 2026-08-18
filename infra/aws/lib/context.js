@@ -62,7 +62,8 @@ const DEPLOY_CONTEXT_KEYS = [
   'bedrockRoutedModelArns',
   'bedrockStandardInferenceProfileId',
   'corsAllowedOrigins',
-  'ghaDeployBoundaryArn',
+  'ghaDeployBoundaryArnDev',
+  'ghaDeployBoundaryArnPilot',
   'githubOidcProviderArn',
   'githubRepo',
   'githubTrustSub',
@@ -84,6 +85,15 @@ const DEPLOYABLE_STACK_IDS = Object.freeze(['ApiStack', 'DataStack', 'IdentitySt
 // decision behind it.
 // [SPEC-DEPLOY-015]
 const EXCLUDED_STACK_IDS = Object.freeze(['AiOrchestrationStack', 'SecurityStack']);
+
+// THE ONE PHYSICAL FOUNDATION (#111 F1). The SecurityStack owns account-global, fixed-name
+// resources — the GitHub OIDC provider, the blueprint-refresh role, and BOTH tiers' deploy
+// roles — so there is exactly ONE deployed instance, and every assembly (dev or pilot) must
+// reference it by this name. The name is historical: the stack was deployed before the dev tier
+// existed, and a CloudFormation stack cannot be renamed — a "rename" is a delete-and-recreate of
+// everything it owns, including the provider every OIDC trust in the account points at. Reviewed
+// constant, never context, for the same reason as the qualifiers below.
+const FOUNDATION_STACK_NAME = 'cba-study-coach-pilot-security';
 
 // PER-ENVIRONMENT release bootstraps (#70 Slice B1 round 4). One qualifier — one toolkit stack,
 // one set of cdk-<qualifier>-* roles, one execution policy, one deploy-role boundary — PER TIER,
@@ -233,6 +243,7 @@ module.exports = {
   DEPLOY_CONTEXT_KEYS,
   DEPLOYABLE_STACK_IDS,
   EXCLUDED_STACK_IDS,
+  FOUNDATION_STACK_NAME,
   RELEASE_BOOTSTRAP_QUALIFIERS,
   DEPLOYMENT_EXECUTION_ORDER,
   DEPLOYMENT_PLAN_GROUPS,

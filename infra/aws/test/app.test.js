@@ -1,10 +1,12 @@
 // Real-app wiring test (#77 review fix): stack names must derive from the `environment` context,
 // keeping dev and pilot stacks physically separate — `-c environment=dev` can never address a
-// pilot stack.
+// pilot stack. ONE exception, by design (#111 F1): the SecurityStack is the account-global
+// foundation, deployed exactly once and REFERENCED by every assembly under its deployed name.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { App } = require('aws-cdk-lib');
 const { buildStacks } = require('../lib/app');
+const { FOUNDATION_STACK_NAME } = require('../lib/context');
 
 test('default environment is pilot and every stack carries the pilot base name', () => {
   const stacks = buildStacks(new App());
@@ -14,14 +16,23 @@ test('default environment is pilot and every stack carries the pilot base name',
   assert.equal(stacks.observability.stackName, 'cba-study-coach-pilot-observability');
 });
 
-test('environment=dev renames EVERY stack to the dev base — no pilot name leaks', () => {
+test('environment=dev renames every RELEASE stack to the dev base — and references the SAME foundation', () => {
   const stacks = buildStacks(new App({ context: { environment: 'dev' } }));
   assert.equal(stacks.environment, 'dev');
-  for (const key of ['security', 'identity', 'data', 'api', 'aiOrchestration', 'observability']) {
+  for (const key of ['identity', 'data', 'api', 'aiOrchestration', 'observability']) {
     assert.match(stacks[key].stackName, /^cba-study-coach-dev-/, `${key} must use the dev base`);
     assert.ok(!stacks[key].stackName.includes('pilot'), `${key} must not reference pilot`);
   }
   assert.equal(stacks.data.stackName, 'cba-study-coach-dev-data');
+  // #111 F1: `cba-study-coach-dev-security` must never exist. A dev assembly references the ONE
+  // deployed foundation — a second stack's fixed-name account-globals (OIDC provider, refresh
+  // role) would collide with the deployed ones on the first create.
+  assert.equal(stacks.security.stackName, FOUNDATION_STACK_NAME);
+  assert.equal(
+    buildStacks(new App()).security.stackName,
+    stacks.security.stackName,
+    'both assemblies must name the SAME physical foundation',
+  );
 });
 
 test('the dev data table itself is dev-named and disposable through the real app', () => {

@@ -42,8 +42,9 @@ test('zero Lambda functions, zero Custom:: resources, zero plumbing roles', () =
   const resources = template.toJSON().Resources ?? {};
   const customTypes = Object.values(resources).filter((r) => r.Type.startsWith('Custom::'));
   assert.equal(customTypes.length, 0, 'no custom resources allowed');
-  // The refresh role and the deploy role are the ONLY IAM roles — no custom-resource plumbing role.
-  template.resourceCountIs('AWS::IAM::Role', 2);
+  // The refresh role and the two tier deploy roles (#111 F1) are the ONLY IAM roles — no
+  // custom-resource plumbing role.
+  template.resourceCountIs('AWS::IAM::Role', 3);
 });
 
 test('bedrock:InvokeModel is granted only on the expected resources, and nothing else', () => {
@@ -52,7 +53,7 @@ test('bedrock:InvokeModel is granted only on the expected resources, and nothing
   const statements = Object.values(policies).flatMap(
     (p) => p.Properties.PolicyDocument.Statement,
   );
-  assert.equal(statements.length, 2, 'exactly two policy statements: the refresh grant and the deploy-role assumption');
+  assert.equal(statements.length, 3, 'exactly three policy statements: the refresh grant and one bootstrap-assumption per tier (#111 F1)');
   const stmt = statements.find((s) => s.Action === 'bedrock:InvokeModel');
   assert.ok(stmt, 'the bedrock grant must exist');
   assert.equal(stmt.Effect, 'Allow');
@@ -70,54 +71,112 @@ test('bedrock:InvokeModel is granted only on the expected resources, and nothing
   assert.equal(flat.split('"bedrock:').length - 1, 1, 'only one bedrock action grant');
 });
 
-test('GithubDeployRole: environment-scoped trust, pinned boundary, and ONLY bootstrap-role assumption', () => {
-  // The deployment authority (#70 Slice B1): published as the Environment secret
-  // AWS_DEPLOY_ROLE_ARN. Trust is the GitHub ENVIRONMENT subject — a token minted outside the
-  // protected Environment carries a different sub and cannot assume it.
-  for (const [environment, context] of [['pilot', {}], ['dev', { environment: 'dev' }]]) {
-    const template = synthTemplate(context);
-    const role = Object.values(template.findResources('AWS::IAM::Role')).find(
-      (r) => r.Properties.RoleName === `cba-study-coach-gha-deploy-${environment}`,
+test('BOTH deploy roles live in the ONE foundation template, each with tier-exclusive trust, boundary and bootstrap authority', () => {
+  // The deployment authorities (#70 Slice B1; #111 F1): each published as ITS Environment's
+  // secret AWS_DEPLOY_ROLE_ARN. Trust is the GitHub ENVIRONMENT subject — a token minted outside
+  // the protected Environment carries a different sub and cannot assume it. Both roles come from
+  // ONE synth of ONE stack: the tier is no longer a context selector.
+  const resources = synthTemplate().toJSON().Resources;
+  for (const [tier, other, qualifier, otherQualifier] of [
+    ['pilot', 'dev', 'cbarpil', 'cbardev'],
+    ['dev', 'pilot', 'cbardev', 'cbarpil'],
+  ]) {
+    const entry = Object.entries(resources).find(
+      ([, r]) => r.Type === 'AWS::IAM::Role' && r.Properties.RoleName === `cba-study-coach-gha-deploy-${tier}`,
     );
-    assert.ok(role, `deploy role for ${environment} must exist`);
+    assert.ok(entry, `deploy role for ${tier} must exist`);
+    const [logicalId, role] = entry;
     const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);
     assert.ok(trust.includes('"sts:AssumeRoleWithWebIdentity"'), 'web-identity trust only');
     assert.ok(
-      trust.includes(`repo:marciozampiron/backstage-cba-prep:environment:${environment}`),
+      trust.includes(`repo:marciozampiron/backstage-cba-prep:environment:${tier}`),
       'the trust subject is the GitHub Environment, never a branch',
     );
+    assert.equal(trust.includes(`environment:${other}`), false, `the ${tier} trust must never name the ${other} Environment`);
     assert.ok(trust.includes('"token.actions.githubusercontent.com:aud":"sts.amazonaws.com"'));
     const boundary = JSON.stringify(role.Properties.PermissionsBoundary);
-    assert.match(boundary, new RegExp(`cba-study-coach-boundary-gha-deploy-${environment}`), "THIS TIER'S deploy boundary is attached — never the other's");
-  }
+    assert.match(boundary, new RegExp(`cba-study-coach-boundary-gha-deploy-${tier}`), "THIS TIER'S deploy boundary is attached — never the other's");
+    assert.equal(boundary.includes(`gha-deploy-${other}`), false, `the ${other} boundary must not leak into the ${tier} role`);
 
-  // Least privilege is structural: the ONLY inline permission is assuming the three CDK
-  // bootstrap roles — deploy, file-publishing, lookup. No image-publishing (this app builds no
-  // container assets), no cfn-execution role, no direct service permission of any kind.
-  const template = synthTemplate();
-  const statements = Object.values(template.findResources('AWS::IAM::Policy')).flatMap(
-    (p) => p.Properties.PolicyDocument.Statement,
+    // Least privilege is structural, per tier: THIS role's own policy grants exactly the three
+    // CDK bootstrap roles of ITS qualifier — deploy, file-publishing, lookup. No image-publishing
+    // (this app builds no container assets), no cfn-execution role, no direct service permission,
+    // and never the OTHER tier's bootstrap.
+    const policy = Object.values(resources).find(
+      (r) => r.Type === 'AWS::IAM::Policy' && JSON.stringify(r.Properties.Roles).includes(`"${logicalId}"`),
+    );
+    assert.ok(policy, `the ${tier} role's default policy must exist`);
+    const stmt = policy.Properties.PolicyDocument.Statement.find((s) => s.Action === 'sts:AssumeRole');
+    assert.ok(stmt, 'the bootstrap-assumption statement must exist');
+    assert.equal(stmt.Effect, 'Allow');
+    assert.equal(stmt.Resource.length, 3, 'exactly the three bootstrap roles');
+    const flatResources = JSON.stringify(stmt.Resource);
+    for (const name of ['deploy', 'file-publishing', 'lookup']) {
+      assert.ok(flatResources.includes(`cdk-${qualifier}-${name}-role-`), `${name} bootstrap role expected (${tier} tier)`);
+    }
+    assert.equal(flatResources.includes(otherQualifier), false, `${tier} authority must not reach the ${other} bootstrap`);
+    assert.equal(flatResources.includes('image-publishing'), false, 'no container-asset authority');
+    assert.equal(flatResources.includes('cfn-exec'), false, 'never the CloudFormation execution role directly');
+  }
+});
+
+test('F1 GUARD: the deployed logical ids survive EXACTLY — the dev role is a pure addition', () => {
+  // Read-only observation of the physical foundation cba-study-coach-pilot-security
+  // (2026-08-17, UPDATE_COMPLETE): these are the logical ids CloudFormation currently binds to
+  // the account-globals and the pilot deploy role. A changed id here means the F1 update would
+  // REPLACE a live, trusted resource instead of adding beside it; this test turns that
+  // replacement into a named failure before any template leaves synth.
+  const resources = synthTemplate().toJSON().Resources;
+  const DEPLOYED = {
+    GithubOidc: 'AWS::IAM::OIDCProvider',
+    BedrockRefreshRole2883EC0D: 'AWS::IAM::Role',
+    BedrockRefreshRoleDefaultPolicyD6CC8AA4: 'AWS::IAM::Policy',
+    GithubDeployRoleB0CF66A5: 'AWS::IAM::Role',
+    GithubDeployRoleDefaultPolicyE8F540D1: 'AWS::IAM::Policy',
+  };
+  for (const [logicalId, type] of Object.entries(DEPLOYED)) {
+    assert.ok(resources[logicalId], `deployed logical id ${logicalId} must survive`);
+    assert.equal(resources[logicalId].Type, type, `${logicalId} must keep its deployed type`);
+  }
+  assert.equal(resources.GithubDeployRoleB0CF66A5.Properties.RoleName, 'cba-study-coach-gha-deploy-pilot');
+  assert.equal(resources.BedrockRefreshRole2883EC0D.Properties.RoleName, 'cba-study-coach-gha-bedrock-refresh');
+  // The dev role is the ADDITION: present, its own name, and under a DIFFERENT logical id.
+  const devEntry = Object.entries(resources).find(
+    ([, r]) => r.Type === 'AWS::IAM::Role' && r.Properties.RoleName === 'cba-study-coach-gha-deploy-dev',
   );
-  const stmt = statements.find((s) => s.Action === 'sts:AssumeRole');
-  assert.ok(stmt, 'the bootstrap-assumption statement must exist');
-  assert.equal(stmt.Effect, 'Allow');
-  const flatResources = JSON.stringify(stmt.Resource);
-  for (const name of ['deploy', 'file-publishing', 'lookup']) {
-    assert.ok(flatResources.includes(`cdk-cbarpil-${name}-role-`), `${name} bootstrap role expected (pilot tier)`);
-  }
-  assert.equal(stmt.Resource.length, 3, 'exactly the three bootstrap roles');
-  assert.equal(flatResources.includes('image-publishing'), false, 'no container-asset authority');
-  assert.equal(flatResources.includes('cfn-exec'), false, 'never the CloudFormation execution role directly');
+  assert.ok(devEntry, 'the dev deploy role must exist');
+  assert.notEqual(devEntry[0], 'GithubDeployRoleB0CF66A5', 'the dev role must not reuse the pilot logical id');
+});
 
-  // Per-environment isolation (round 4): the dev role names ONLY the dev bootstrap.
-  const devTemplate = synthTemplate({ environment: 'dev' });
-  const devStmt = Object.values(devTemplate.findResources('AWS::IAM::Policy'))
-    .flatMap((p) => p.Properties.PolicyDocument.Statement)
-    .find((st) => st.Action === 'sts:AssumeRole');
-  const devFlat = JSON.stringify(devStmt.Resource);
-  assert.ok(devFlat.includes('cdk-cbardev-deploy-role-'), 'the dev tier assumes its own bootstrap');
-  assert.equal(devFlat.includes('cbarpil'), false, 'dev authority must not reach the pilot bootstrap');
-  assert.equal(flatResources.includes('cbardev'), false, 'pilot authority must not reach the dev bootstrap');
+test('F1 GUARD: the foundation template is assembly-invariant — the environment context never reaches it', () => {
+  // Requirement 6 of the F1 design: dev and pilot assemblies reference the SAME foundation. The
+  // strongest synth-time form of "same": the template is identical whatever the ambient tier
+  // context says, so no assembly can even EXPRESS a divergent foundation.
+  const base = synthTemplate().toJSON();
+  for (const context of [{ environment: 'dev' }, { environment: 'pilot' }]) {
+    assert.deepEqual(synthTemplate(context).toJSON(), base, `the template must not vary with ${JSON.stringify(context)}`);
+  }
+});
+
+test('a per-tier boundary override reaches ONLY its tier', () => {
+  // The override keys are per tier BY NAME (ghaDeployBoundaryArnDev/Pilot): an operator renaming
+  // one tier's boundary must not re-aim the other tier's role.
+  const template = synthTemplate({
+    ghaDeployBoundaryArnDev: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/operator-renamed-dev-boundary',
+  });
+  const roles = Object.values(template.findResources('AWS::IAM::Role'));
+  const dev = roles.find((r) => r.Properties.RoleName === 'cba-study-coach-gha-deploy-dev');
+  const pilot = roles.find((r) => r.Properties.RoleName === 'cba-study-coach-gha-deploy-pilot');
+  assert.equal(dev.Properties.PermissionsBoundary, 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/operator-renamed-dev-boundary');
+  assert.match(JSON.stringify(pilot.Properties.PermissionsBoundary), /cba-study-coach-boundary-gha-deploy-pilot/);
+});
+
+test('separate outputs for the two deploy roles, the pilot one under its DEPLOYED output id', () => {
+  const outputs = synthTemplate().toJSON().Outputs;
+  assert.ok(outputs.GithubDeployRoleArn, 'the deployed pilot output id survives');
+  assert.match(outputs.GithubDeployRoleArn.Description, /pilot Environment secret AWS_DEPLOY_ROLE_ARN/);
+  assert.ok(outputs.GithubDeployRoleDevArn, 'the dev role has its own output');
+  assert.match(outputs.GithubDeployRoleDevArn.Description, /dev Environment secret AWS_DEPLOY_ROLE_ARN/);
 });
 
 test('OVERPRIVILEGE CONTROL: the closed action set — no wildcard, no iam:, no admin-shaped grant anywhere', () => {
@@ -166,5 +225,5 @@ test('importing an existing provider by context skips creating a new one', () =>
       'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/token.actions.githubusercontent.com',
   });
   template.resourceCountIs('AWS::IAM::OIDCProvider', 0);
-  template.resourceCountIs('AWS::IAM::Role', 2);
+  template.resourceCountIs('AWS::IAM::Role', 3);
 });
