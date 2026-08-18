@@ -23,8 +23,11 @@ class SecurityStack extends Stack {
     // Trust subject: repo/main for bootstrap; switch to `repo:<repo>:environment:ai-batch` when
     // the ai-batch GitHub Environment hardening lands (see aws-bootstrap-and-oidc.md §2).
     const githubTrustSub = ctx('githubTrustSub', `repo:${githubRepo}:ref:refs/heads/main`);
-    // Reuse an existing account-global provider by ARN, or create one when empty.
-    const existingProviderArn = ctx('githubOidcProviderArn', '');
+    // (#111 F1 round 2) The `githubOidcProviderArn` import path is GONE from this stack: a
+    // supplied ARN used to take `GithubOidc` out of the template, and now that every assembly
+    // targets the ONE deployed foundation, a redeploy with that context would make CloudFormation
+    // DELETE the live provider it owns — severing every OIDC trust in the account. The key
+    // remains in the deploy contract for the ObservabilityStack gate role only.
     // Standard-tier cross-region inference profile (a model id is configuration, not a secret).
     // #117 target (Zamp, 2026-08-15): Claude Sonnet 5. The routed FM ARNs below were enumerated
     // read-only via get-inference-profile on the authorized account. NOTE: the permissions
@@ -45,17 +48,19 @@ class SecurityStack extends Stack {
       'bedrockRoutedModelArns',
     );
 
-    // --- GitHub OIDC identity provider (create or import) -------------------------------------
+    // --- GitHub OIDC identity provider (owned HERE, unconditionally) ---------------------------
     // Native AWS::IAM::OIDCProvider (L1) — NOT iam.OpenIdConnectProvider, whose custom resource
     // would drag a plumbing Lambda + role into the template and force the CloudFormation
     // execution role to hold iam:PassRole + lambda:* (an indirect-escalation chain; #66 review).
     // ThumbprintList is omitted on purpose: IAM retrieves the thumbprint automatically and
     // validates the GitHub IdP against AWS's trusted CA store (aws-bootstrap-and-oidc.md §1).
-    const providerArn = existingProviderArn
-      || new iam.CfnOIDCProvider(this, 'GithubOidc', {
-        url: GITHUB_OIDC_URL,
-        clientIdList: ['sts.amazonaws.com'],
-      }).attrArn;
+    // UNCONDITIONAL (#111 F1 round 2): the deployed foundation owns `GithubOidc`, and no context
+    // may produce this stack's template without it — a regression test synthesizes with the old
+    // import key set and still finds the provider under its deployed logical id.
+    const providerArn = new iam.CfnOIDCProvider(this, 'GithubOidc', {
+      url: GITHUB_OIDC_URL,
+      clientIdList: ['sts.amazonaws.com'],
+    }).attrArn;
 
     // Published so roles in other stacks consume THIS provider instead of reconstructing its ARN
     // from pseudo parameters. A reconstructed ARN synthesises fine and creates no dependency, so in
@@ -131,15 +136,15 @@ class SecurityStack extends Stack {
     // tampering, mirroring the BedrockRefreshRole pattern above. The qualifiers keep the tiers
     // apart: dev assumes only cdk-cbardev-*, pilot only cdk-cbarpil-*, and neither tier can reach
     // the #66 SecurityStack bootstrap (hnb659fds) at all.
+    // Boundary ARNs are PINNED canonical names, never context (#111 F2): the operator-managed
+    // cfn-exec-security policy allows iam:CreateRole for each role ONLY under its canonical
+    // boundary ARN and denies boundary detach/swap outright — an override would synthesize fine
+    // and then fail at deploy, an "accepted but unexecutable" configuration that refuses at the
+    // worst possible moment. Pinning makes the reviewed policy and this template agree by
+    // construction, and an agreement test reads BOTH sides to keep them locked.
     const deployBoundaryArns = {
-      pilot: ctx(
-        'ghaDeployBoundaryArnPilot',
-        `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-pilot`,
-      ),
-      dev: ctx(
-        'ghaDeployBoundaryArnDev',
-        `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-dev`,
-      ),
+      pilot: `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-pilot`,
+      dev: `arn:${this.partition}:iam::${this.account}:policy/cba-study-coach-boundary-gha-deploy-dev`,
     };
     const deployRoles = {};
     for (const [tier, ids] of [
@@ -191,7 +196,7 @@ class SecurityStack extends Stack {
     });
     new CfnOutput(this, 'GithubOidcProviderArn', {
       value: providerArn,
-      description: 'Account-global GitHub OIDC provider (reuse via -c githubOidcProviderArn=...)',
+      description: 'Account-global GitHub OIDC provider, owned by this foundation',
     });
     // Separate outputs per tier (#111 F1). The pilot one keeps its DEPLOYED output id and text —
     // `${environment}` resolved to "pilot" in the deployed template, so the literal preserves it.

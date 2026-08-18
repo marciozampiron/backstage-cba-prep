@@ -3,6 +3,8 @@
 // and bedrock:InvokeModel scoped to exactly the expected resources.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { App } = require('aws-cdk-lib');
 const { Template } = require('aws-cdk-lib/assertions');
 const { SecurityStack } = require('../lib/security-stack');
@@ -158,17 +160,41 @@ test('F1 GUARD: the foundation template is assembly-invariant — the environmen
   }
 });
 
-test('a per-tier boundary override reaches ONLY its tier', () => {
-  // The override keys are per tier BY NAME (ghaDeployBoundaryArnDev/Pilot): an operator renaming
-  // one tier's boundary must not re-aim the other tier's role.
-  const template = synthTemplate({
-    ghaDeployBoundaryArnDev: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/operator-renamed-dev-boundary',
-  });
-  const roles = Object.values(template.findResources('AWS::IAM::Role'));
-  const dev = roles.find((r) => r.Properties.RoleName === 'cba-study-coach-gha-deploy-dev');
-  const pilot = roles.find((r) => r.Properties.RoleName === 'cba-study-coach-gha-deploy-pilot');
-  assert.equal(dev.Properties.PermissionsBoundary, 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/operator-renamed-dev-boundary');
-  assert.match(JSON.stringify(pilot.Properties.PermissionsBoundary), /cba-study-coach-boundary-gha-deploy-pilot/);
+test('F2 GUARD: synthesized boundaries AGREE with the operator cfn-exec-security CreateRole conditions, per tier', () => {
+  // The exec policy allows iam:CreateRole for each deploy role ONLY under its canonical boundary
+  // and denies boundary detach/swap — so a template whose boundary diverges from the policy is
+  // "accepted at synth, unexecutable at deploy". This test reads BOTH sides: the operator policy
+  // names the boundary each tier's CreateRole demands, and the synthesized role must attach a
+  // boundary whose literal policy name is exactly that — no context can widen it (#111 F2: the
+  // ghaDeployBoundaryArn* override keys were removed outright).
+  const execPolicy = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'bootstrap', 'policies', 'cfn-exec-security.template.json'),
+    'utf8',
+  ));
+  const resources = synthTemplate().toJSON().Resources;
+  for (const [tier, sid] of [
+    ['dev', 'CreateGhaDeployRoleDevOnlyWithItsBoundary'],
+    ['pilot', 'CreateGhaDeployRolePilotOnlyWithItsBoundary'],
+  ]) {
+    const stmt = execPolicy.Statement.find((s) => s.Sid === sid);
+    assert.ok(stmt, `${sid} must exist in the operator policy`);
+    const allowedBoundaryName = stmt.Condition.StringEquals['iam:PermissionsBoundary'].split(':policy/')[1];
+    assert.equal(allowedBoundaryName, `cba-study-coach-boundary-gha-deploy-${tier}`);
+
+    const role = Object.values(resources).find(
+      (r) => r.Type === 'AWS::IAM::Role' && r.Properties.RoleName === `cba-study-coach-gha-deploy-${tier}`,
+    );
+    assert.ok(role, `deploy role for ${tier} must exist`);
+    // Agreement on the ROLE name too: the policy's CreateRole Resource is the exact role the
+    // template creates — a drift on either side must fail here by name.
+    assert.equal(stmt.Resource.split(':role/')[1], role.Properties.RoleName);
+    // The synthesized boundary is an Fn::Join over pseudo parameters; its literal tail is the
+    // policy name — the same comparison surface the exec policy pins, with no account id.
+    const flatBoundary = JSON.stringify(role.Properties.PermissionsBoundary);
+    assert.ok(flatBoundary.includes(`:policy/${allowedBoundaryName}`), `the ${tier} role must attach its canonical boundary`);
+    const other = tier === 'dev' ? 'pilot' : 'dev';
+    assert.equal(flatBoundary.includes(`gha-deploy-${other}`), false, `the ${other} boundary must not appear on the ${tier} role`);
+  }
 });
 
 test('separate outputs for the two deploy roles, the pilot one under its DEPLOYED output id', () => {
@@ -219,11 +245,19 @@ test('no literal 12-digit account id in the synthesized template', () => {
   assert.ok(!/\b\d{12}\b/.test(flat), 'pseudo parameters only — no literal account id');
 });
 
-test('importing an existing provider by context skips creating a new one', () => {
-  const template = synthTemplate({
-    githubOidcProviderArn:
-      'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/token.actions.githubusercontent.com',
-  });
-  template.resourceCountIs('AWS::IAM::OIDCProvider', 0);
-  template.resourceCountIs('AWS::IAM::Role', 3);
+test('F1 GUARD round 2: NO context can produce the foundation without its OIDC provider', () => {
+  // The import-an-existing-provider path is GONE from this stack: a template that lost
+  // `GithubOidc` would make the next redeploy of the deployed foundation DELETE the live
+  // provider and sever every OIDC trust in the account. The old key is inert here even when
+  // supplied — it now reaches only the ObservabilityStack gate role.
+  for (const context of [
+    {},
+    { githubOidcProviderArn: 'arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:oidc-provider/token.actions.githubusercontent.com' },
+    { environment: 'dev' },
+  ]) {
+    const template = synthTemplate(context);
+    template.resourceCountIs('AWS::IAM::OIDCProvider', 1);
+    assert.ok(template.toJSON().Resources.GithubOidc, 'the provider must keep its deployed logical id');
+    template.resourceCountIs('AWS::IAM::Role', 3);
+  }
 });

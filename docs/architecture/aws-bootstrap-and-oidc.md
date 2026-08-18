@@ -194,9 +194,19 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
    passed and the paid smoke failed). Confirm the standard inference-profile id with
    `aws bedrock list-inference-profiles`.
 2. **Check for an existing GitHub OIDC provider** (`aws iam list-open-id-connect-providers`).
-   Do **not** create one manually — the SecurityStack creates the native provider (step 7). If the
-   account already has the GitHub provider, pass its ARN at deploy time via
-   `-c githubOidcProviderArn=...` so the stack imports it instead of creating a duplicate.
+   Do **not** create one manually — the foundation SecurityStack **creates and owns** the native
+   provider (step 7), unconditionally. The import path was removed (#111 F1 round 2): a supplied
+   provider ARN used to take `GithubOidc` out of the template, and a REDEPLOY of the deployed
+   foundation with that context would make CloudFormation delete the live provider it owns —
+   severing every OIDC trust in the account. Distinguish the two situations this step can find:
+   - **Initial creation** (the foundation has never deployed): the provider must not pre-exist
+     under another owner — IAM allows one provider per URL, so a `CREATE_FAILED
+     (EntityAlreadyExists)` means the operator first deletes the foreign provider or brings it
+     under the stack with a CloudFormation **resource import** — both human-gated operator
+     actions, never context.
+   - **Redeploy** (the deployed foundation): the stack already owns `GithubOidc`; pass nothing.
+   `-c githubOidcProviderArn=...` now reaches ONLY the ObservabilityStack gate role's trust
+   reference; it never changes foundation ownership.
 3. **Enumerate routed model ARNs** with `aws bedrock get-inference-profile` (§2).
 3b. **Provision the release-preflight role** (#111) with the operator-managed script — it
    renders `preflight-role-trust.template.json` + `preflight-role-policy.template.json`
