@@ -313,34 +313,58 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
 11. **Harden (recommended)**: create the `ai-batch` Environment with a required reviewer, add
     `environment: ai-batch` to the workflow's `refresh` job, and switch the trust policy subject to
     the environment-scoped form (§2).
-12. **Release bootstraps (#70 Slice B1)** — a SEPARATE CDK bootstrap PER ENVIRONMENT (dev:
-    qualifier `cbardev`, pilot: `cbarpil` — reviewed constants in `lib/context.js`), each with its
-    OWN toolkit stack, execution role and policy, so dev authority reaches only dev and neither
-    tier touches the #66 foundation bootstrap. `--toolkit-stack-name` is REQUIRED: without it the
-    CDK would update the existing `CDKToolkit` stack instead of creating the separate bootstrap
-    this design names. Rendered per step 4; each creation is human-gated:
+12. **Release bootstraps (#70 Slice B1; #111 operator machine)** — a SEPARATE CDK bootstrap PER
+    ENVIRONMENT (dev: qualifier `cbardev`, pilot: `cbarpil` — reviewed constants in
+    `lib/context.js`), each with its OWN toolkit stack, execution role and policy, so dev
+    authority reaches only dev and neither tier touches the #66 foundation bootstrap.
+    `--toolkit-stack-name` is REQUIRED: without it the CDK would update the existing `CDKToolkit`
+    stack instead of creating the separate bootstrap this design names.
+
+    Both steps run through the operator-managed launcher `scripts/provision.sh` — TWO MUTUALLY
+    EXCLUSIVE PHASES, one human gate each, never a combined mode. The launcher binds the reviewed
+    commit FIRST (`CBA_AUTHORIZED_SHA` must equal HEAD of a clean worktree; every git probe's exit
+    status is validated before its output is read, so a failed probe is never a clean answer),
+    then MATERIALIZES that commit's `scripts/` and `infra/aws/bootstrap/` into a private,
+    write-stripped directory with `git archive` and execs the provisioning script FROM THERE. The
+    worktree copies never run: self-verification from inside a running script is circular and
+    racy, and the provisioning script refuses outright unless it is the materialized copy. (The
+    launcher's own bytes are not self-verified — nothing can do that from inside; it is kept tiny
+    and single-purpose so it can be read whole, and #91 Stage B is where signing closes it.) The
+    provisioning script then binds the account (`CBA_EXPECTED_ACCOUNT_ID`, re-checked immediately
+    before the first mutation), reads the step-4
+    trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
+    absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
+    mutation, and read-backs the full surface before reporting OK. The toolkit template is the
+    COMMITTED, reviewed snapshot `infra/aws/bootstrap/cdk-bootstrap-template.yaml` (digest pinned
+    by test) and it deploys DIRECTLY through CloudFormation via the AWS CLI — no `cdk`/`npx`, no
+    node_modules code ever runs under the operator's credentials; the pinned-CDK ↔ snapshot
+    agreement is a credential-free CI proof (`infra/aws/test/bootstrap-template-snapshot.test.js`).
+    The read-back validates the live stack — full resource set, the COMPLETE parameter map, the
+    five `cdk-<qualifier>-*` roles' trust/tags/managed/inline/session-duration, execution-policy
+    exclusivity, SSM version, bucket (policy, lifecycle, ACL), ECR (lifecycle + policy), KMS
+    (policy + alias) — against expectations RESOLVED from that snapshot
+    (`scripts/lib/bootstrap-expected-state.py`, closed by resource type AND property), with every
+    external call in its own bounded, group-killed process. Evidence carries names and digests:
+
+    The launcher itself is run from the COMMIT, not from the worktree — that is what keeps a
+    tampered checkout from executing anything:
 
     ```bash
-    for e in dev pilot; do
-      case "$e" in dev) q=cbardev;; pilot) q=cbarpil;; esac
-      # Operator-managed policies (outside CloudFormation), one set per tier:
-      aws iam create-policy \
-        --policy-name "cba-study-coach-boundary-gha-deploy-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/gha-deploy-boundary-$e.json"
-      aws iam create-policy \
-        --policy-name "cba-study-coach-boundary-runtime-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/runtime-boundary-$e.json"
-      RELEASE_EXEC_ARN=$(aws iam create-policy \
-        --policy-name "cba-study-coach-cfn-exec-release-$e" \
-        --policy-document "file:///tmp/cba-bootstrap/cfn-exec-release-$e.json" \
-        --query 'Policy.Arn' --output text)
-
-      (cd infra/aws && npx --no-install cdk bootstrap "aws://$ACCT/us-east-1" \
-        --qualifier "$q" \
-        --toolkit-stack-name "cba-release-toolkit-$e" \
-        --cloudformation-execution-policies "$RELEASE_EXEC_ARN" \
-        --termination-protection)
-    done
+    # Once per gate. SHA is the commit the gate authorizes; REPO is the local clone.
+    # Strict subshell + trap: an extraction failure or a refusal from the provisioner must reach
+    # you as a nonzero status, never be masked by the cleanup. `bash -p` keeps $BASH_ENV and
+    # inherited shell functions from running before the reviewed bytes.
+    (
+      set -euo pipefail
+      L=$(mktemp /tmp/cba-launch.XXXXXX)
+      trap 'rm -f "$L"' EXIT
+      git -C "$REPO" show "$SHA:scripts/provision.sh" > "$L"
+      CBA_REPO_ROOT="$REPO" CBA_AUTHORIZED_SHA="$SHA" CBA_EXPECTED_ACCOUNT_ID=<account> \
+        bash -p "$L" dev policies
+    )
+    # Gate 1 = `dev policies` (the three operator policies; no CDK, no CloudFormation).
+    # Gate 2 = the same block with `dev bootstrap` (re-observes the policies read-only; never
+    # creates or alters one). Check the exit status before treating a phase as done.
     ```
 
     The chain a release then rides, per tier: the GitHub deploy role (SecurityStack, boundary
