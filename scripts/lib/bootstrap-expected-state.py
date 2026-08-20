@@ -71,6 +71,32 @@ def lifecycle_as_returned(rules):
     return out
 
 
+def kms_condition_as_returned(doc):
+    """A KMS key policy in the shape `kms:GetKeyPolicy` returns it.
+
+    KMS COLLAPSES a single-element condition value to a scalar: the template declares
+    `kms:ViaService: [s3.<region>.amazonaws.com]` and the key comes back with the bare string.
+    This is KMS-SPECIFIC and the narrowness is evidenced, not assumed — IAM PRESERVES the same
+    shape, which is why the FilePublishingRole inline policy (`aws:ResourceAccount: [<account>]`)
+    compares equal without any such rule. Observed live on 2026-08-20.
+
+    Only single-element lists inside a Condition collapse; a two-element list stays a list, so a
+    value that gained an entry still refuses.
+    """
+    out = json.loads(json.dumps(doc))
+    for stmt in out.get('Statement', []):
+        cond = stmt.get('Condition')
+        if not isinstance(cond, dict):
+            continue
+        for operator, entries in cond.items():
+            if not isinstance(entries, dict):
+                continue
+            for key, value in entries.items():
+                if isinstance(value, list) and len(value) == 1:
+                    entries[key] = value[0]
+    return out
+
+
 def expected_exec_arns(account, qualifier):
     """The three execution-policy ARNs this account+qualifier must carry, in reviewed order."""
     env = QUALIFIER_TIERS.get(qualifier)
@@ -338,7 +364,8 @@ def main():
     if 'FileAssetsBucketEncryptionKey' in live:
         key = resolve(live['FileAssetsBucketEncryptionKey']['Properties'])
         alias = resolve(live['FileAssetsBucketEncryptionKeyAlias']['Properties'])
-        model['kms'] = {'keyPolicy': as_returned(key['KeyPolicy']), 'aliasName': alias['AliasName']}
+        model['kms'] = {'keyPolicy': kms_condition_as_returned(as_returned(key['KeyPolicy'])),
+                        'aliasName': alias['AliasName']}
 
     json.dump(model, sys.stdout, indent=2, sort_keys=True)
     return 0
