@@ -1373,10 +1373,21 @@ test('r12-F2: the resolver and the read-back BOTH refuse an ARN set that is not 
       `o resolver deve recusar: ${label}`,
     );
   }
-  // And the read-back validator carries the same derivation, so a drifted caller cannot be
-  // blessed by reaching only the second validator.
-  const validator = fs.readFileSync(path.join(ROOT, 'scripts/lib/bootstrap-readback-validate.py'), 'utf8');
-  assert.match(validator, /EXPECTED_EXEC_ARNS/);
-  assert.match(validator, /QUALIFIER_TIERS/);
-  assert.match(validator, /the ARNs are not exactly the reviewed set, in order/);
+  // And the SECOND validator is EXECUTED with the same invalid sets — searching its source for
+  // literals would have been satisfied by a no-op that kept the strings (r13). The observation
+  // directory deliberately does not exist: with the guard in place the run refuses on the ARNs
+  // before reading anything, and if the guard were ever removed the failure would become a
+  // missing-file error and this regression would go red.
+  const readback = path.join(ROOT, 'scripts/lib/bootstrap-readback-validate.py');
+  const nowhere = path.join(os.tmpdir(), `cba-no-such-dir-${process.pid}`);
+  assert.equal(fs.existsSync(nowhere), false, 'the observation directory must not exist');
+  for (const [label, arns] of cases) {
+    let out = ''; let code = 0;
+    try {
+      out = execFileSync('python3', [readback, nowhere, 'cbardev', ACCOUNT, arns.join(','), 'cba-release-toolkit-dev'],
+        { encoding: 'utf8', stdio: 'pipe' });
+    } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+    assert.notEqual(code, 0, `o read-back deve recusar: ${label}`);
+    assert.match(out, /the ARNs are not exactly the reviewed set, in order/, `mensagem especifica para: ${label}`);
+  }
 });
