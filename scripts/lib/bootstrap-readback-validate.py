@@ -34,9 +34,82 @@ def fail(msg):
     failures.append(msg)
 
 
+# THE OBSERVATION CLASSIFICATION (r14). Every observation this validator reads MUST be a present,
+# well-formed JSON object — the snapshot requires each of those resources, so absence, an empty
+# body or a malformed one is DIVERGENCE, never something to tolerate. Exactly ONE call is
+# different, and it is named separately below: `get-stack-policy` on a stack without a policy is
+# documented to return a null value, and the CLI serializes that as an EMPTY BODY. Treating that
+# one empty response as "no policy" is reading the API correctly; doing it generally would turn a
+# lost or truncated observation into a pass.
+#
+# The observations that must be PRESENT, and the absence markers their APIs use — each of which
+# `observe()` in the script already refuses because it passes no absence marker for them:
+#   obs.s3-policy.json          NoSuchBucketPolicy
+#   obs.s3-lifecycle.json       NoSuchLifecycleConfiguration
+#   obs.ecr-lifecycle.json      LifecyclePolicyNotFoundException
+#   obs.ecr-policy.json         RepositoryPolicyNotFoundException
 def load(name):
-    with open(os.path.join(TMP, name)) as f:
-        return json.load(f)
+    """Strict: a present, well-formed JSON object. Anything else is a NAMED divergence.
+
+    Round 14 replaced a bare `json.load` whose failure was a Python traceback — the empty
+    `get-stack-policy` body crashed the validator instead of refusing legibly.
+    """
+    path = os.path.join(TMP, name)
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except OSError:
+        print(f'DIVERGENCE: observation {name} is missing — the read-back cannot conclude')
+        sys.exit(1)
+    if raw.strip() == '':
+        print(f'DIVERGENCE: observation {name} is empty — this API must return a body; an empty '
+              'one is a lost observation, not an absence')
+        sys.exit(1)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print(f'DIVERGENCE: observation {name} is not valid JSON')
+        sys.exit(1)
+    if not isinstance(value, dict):
+        print(f'DIVERGENCE: observation {name} is not a JSON object')
+        sys.exit(1)
+    return value
+
+
+def load_stack_policy():
+    """The ONE observation whose empty body is a legitimate absence.
+
+    `get-stack-policy` on a stack that carries no policy returns a null value, which the CLI
+    serializes as zero bytes. Absence is the DESIRED state here — the toolkit stack must carry no
+    stack policy — so this reads it explicitly rather than crashing on it. Everything that is NOT
+    a clean absence or a clean presence refuses by name: whitespace-only, malformed JSON, a
+    non-object top level, or an unknown key.
+    """
+    path = os.path.join(TMP, 'obs.stackpolicy.json')
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except OSError:
+        print('DIVERGENCE: the stack-policy observation is missing')
+        sys.exit(1)
+    if raw == '':
+        return {}                      # zero bytes: the documented "no stack policy"
+    if raw.strip() == '':
+        print('DIVERGENCE: the stack-policy observation is whitespace only — ambiguous, refusing')
+        sys.exit(1)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print('DIVERGENCE: the stack-policy observation is not valid JSON')
+        sys.exit(1)
+    if not isinstance(value, dict):
+        print('DIVERGENCE: the stack-policy observation is not a JSON object')
+        sys.exit(1)
+    unknown = sorted(set(value) - {'StackPolicyBody'})
+    if unknown:
+        print(f'DIVERGENCE: the stack-policy observation carries unknown key(s) {unknown}')
+        sys.exit(1)
+    return value
 
 
 def norm(x):
@@ -225,7 +298,8 @@ if model.get('kms'):
         fail('kms: the template alias is absent')
 
 # 13. No stack policy.
-if load('obs.stackpolicy.json').get('StackPolicyBody'):
+# A null or absent body is the desired state; a real body is a stack policy this design forbids.
+if load_stack_policy().get('StackPolicyBody') is not None:
     fail('stack: an unexpected stack policy is present')
 
 for f in failures:
