@@ -334,7 +334,19 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
     before the first mutation), reads the step-4
     trio fresh per phase from that SHA into a private 0700 tempdir, creates only what is provably
     absent (`NoSuchEntity` / "does not exist"), refuses any pre-existing divergence with zero
-    mutation, and read-backs the full surface before reporting OK. The toolkit template is the
+    mutation, and read-backs the full surface before reporting OK.
+
+    **FIVE policies per tier, because the execution policy is THREE SHARDS.** IAM caps a managed
+    policy at 6.144 characters (a quota that cannot be raised) and the reviewed execution document
+    measures 10.265, so a single `cba-study-coach-cfn-exec-release-<env>` was never creatable — the
+    first live attempt failed and the phase recorded the partial state honestly. The canonical
+    `cfn-exec-release.template.json` therefore stays in the tree as the SEMANTIC CONTRACT and is
+    never deployed; three shards carry every one of its statements exactly once, unchanged:
+    `-app` (bootstrap reads, Lambda, API Gateway, DynamoDB, Cognito), `-platform` (CloudWatch,
+    Logs, SNS, KMS, runtime-role IAM) and `-guardrails` (every `Deny`). The toolkit receives all
+    three ARNs in `CloudFormationExecutionPolicies` — the parameter is a `CommaDelimitedList`, and
+    they travel as a JSON file so no comma is ever escaped in shell shorthand. If the legacy
+    singular policy still exists, BOTH phases refuse: migrating it is a separate gated decision. The toolkit template is the
     COMMITTED, reviewed snapshot `infra/aws/bootstrap/cdk-bootstrap-template.yaml` (digest pinned
     by test) and it deploys DIRECTLY through CloudFormation via the AWS CLI — no `cdk`/`npx`, no
     node_modules code ever runs under the operator's credentials; the pinned-CDK ↔ snapshot

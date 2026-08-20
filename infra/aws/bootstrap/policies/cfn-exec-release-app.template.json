@@ -1,0 +1,186 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadReleaseBootstrapVersionParameter",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameters",
+      "Resource": "arn:aws:ssm:us-east-1:ACCOUNT_ID_PLACEHOLDER:parameter/cdk-bootstrap/QUALIFIER_PLACEHOLDER/version"
+    },
+    {
+      "Sid": "ReadReleaseAssetsFromBootstrapBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": [
+        "arn:aws:s3:::cdk-QUALIFIER_PLACEHOLDER-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1",
+        "arn:aws:s3:::cdk-QUALIFIER_PLACEHOLDER-assets-ACCOUNT_ID_PLACEHOLDER-us-east-1/*"
+      ]
+    },
+    {
+      "Sid": "LambdaLifecycleOnOwnFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:AddPermission",
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
+        "lambda:DeleteFunctionConcurrency",
+        "lambda:GetFunction",
+        "lambda:GetFunctionCodeSigningConfig",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetPolicy",
+        "lambda:GetRuntimeManagementConfig",
+        "lambda:ListTags",
+        "lambda:ListVersionsByFunction",
+        "lambda:PublishVersion",
+        "lambda:PutFunctionConcurrency",
+        "lambda:RemovePermission",
+        "lambda:TagResource",
+        "lambda:UntagResource",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": "arn:aws:lambda:us-east-1:ACCOUNT_ID_PLACEHOLDER:function:cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
+    },
+    {
+      "Sid": "ApiGatewayV2CreateOnlyProjectTaggedApis",
+      "Effect": "Allow",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/apis",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:PUT"
+      ],
+      "Resource": "arn:aws:apigateway:us-east-1::/apis/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "ApiGatewayV2ChildLifecycleOnlyOnProjectTaggedApis",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:PATCH",
+        "apigateway:POST",
+        "apigateway:PUT"
+      ],
+      "Resource": [
+        "arn:aws:apigateway:us-east-1::/apis/*/routes",
+        "arn:aws:apigateway:us-east-1::/apis/*/routes/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/integrations",
+        "arn:aws:apigateway:us-east-1::/apis/*/integrations/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers",
+        "arn:aws:apigateway:us-east-1::/apis/*/authorizers/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/stages",
+        "arn:aws:apigateway:us-east-1::/apis/*/stages/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments",
+        "arn:aws:apigateway:us-east-1::/apis/*/deployments/*",
+        "arn:aws:apigateway:us-east-1::/apis/*/cors"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources",
+      "Effect": "Allow",
+      "Action": [
+        "apigateway:DELETE",
+        "apigateway:GET",
+        "apigateway:POST"
+      ],
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "DynamoLifecycleOnOwnTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateTimeToLive"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID_PLACEHOLDER:table/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
+    },
+    {
+      "Sid": "CognitoCreateOnlyProjectTaggedPools",
+      "Effect": "Allow",
+      "Action": "cognito-idp:CreateUserPool",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "CognitoLifecycleOnlyOnProjectTaggedPools",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:CreateGroup",
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:DeleteGroup",
+        "cognito-idp:DeleteUserPool",
+        "cognito-idp:DeleteUserPoolClient",
+        "cognito-idp:DeleteUserPoolDomain",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:GetGroup",
+        "cognito-idp:GetUICustomization",
+        "cognito-idp:SetUICustomization",
+        "cognito-idp:SetUserPoolMfaConfig",
+        "cognito-idp:TagResource",
+        "cognito-idp:UntagResource",
+        "cognito-idp:UpdateGroup",
+        "cognito-idp:UpdateUserPool",
+        "cognito-idp:UpdateUserPoolClient"
+      ],
+      "Resource": "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "CBAStudyCoach",
+          "aws:ResourceTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    }
+  ]
+}

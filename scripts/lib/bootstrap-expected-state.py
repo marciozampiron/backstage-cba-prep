@@ -26,9 +26,15 @@ NOVALUE = object()
 
 def main():
     if len(sys.argv) not in (6, 7):
-        print('usage: bootstrap-expected-state.py <template.yaml> <account> <region> <qualifier> <exec-policy-arn> [physical-ids.json]', file=sys.stderr)
+        print('usage: bootstrap-expected-state.py <template.yaml> <account> <region> <qualifier> <exec-policy-arns-csv> [physical-ids.json]', file=sys.stderr)
         return 2
-    template_path, account, region, qualifier, exec_arn = sys.argv[1:6]
+    template_path, account, region, qualifier, exec_arns_csv = sys.argv[1:6]
+    # The execution policy is a CLOSED, ORDERED set of three shards (#111 r11): IAM caps a managed
+    # policy at 6.144 characters and the reviewed document is 10.265, so the toolkit receives
+    # exactly these three ARNs, in this order, and the read-back demands that exact set.
+    exec_arns = [a for a in exec_arns_csv.split(',') if a]
+    if len(exec_arns) != 3 or len(set(exec_arns)) != 3:
+        raise SystemExit('REFUSED: exactly three distinct execution-policy ARNs are required')
     phys = json.load(open(sys.argv[6])) if len(sys.argv) == 7 else {}
     tpl = yaml.safe_load(open(template_path))
 
@@ -44,7 +50,7 @@ def main():
         else:
             params[name] = default
     params['Qualifier'] = qualifier
-    params['CloudFormationExecutionPolicies'] = [exec_arn]
+    params['CloudFormationExecutionPolicies'] = exec_arns
     pseudo = {'AWS::AccountId': account, 'AWS::Region': region, 'AWS::Partition': 'aws', 'AWS::NoValue': NOVALUE}
 
     def cond_eval(node):

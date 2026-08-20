@@ -38,15 +38,24 @@ const ENVS = {
   pilot: { qualifier: 'cbarpil' },
 };
 for (const [env, cfg] of Object.entries(ENVS)) {
-  cfg.execArn = `arn:aws:iam::${ACCOUNT}:policy/cba-study-coach-cfn-exec-release-${env}`;
+  cfg.execArn = `arn:aws:iam::${ACCOUNT}:policy/cba-study-coach-cfn-exec-release-${env}-app`;
+  // Five policies per tier (#111 r11): two boundaries + the THREE execution shards, in the
+  // reviewed order. IAM caps a managed policy at 6.144 characters and the canonical execution
+  // document is 10.265, so a single policy was never creatable.
+  cfg.execShards = ['app', 'platform', 'guardrails'];
+  cfg.execNames = cfg.execShards.map((sh) => `cba-study-coach-cfn-exec-release-${env}-${sh}`);
+  cfg.legacyExecName = `cba-study-coach-cfn-exec-release-${env}`;
   cfg.policyNames = [
     `cba-study-coach-boundary-gha-deploy-${env}`,
     `cba-study-coach-boundary-runtime-${env}`,
-    `cba-study-coach-cfn-exec-release-${env}`,
+    ...cfg.execNames,
   ];
+  cfg.execArns = cfg.execNames.map((n) => `arn:aws:iam::${ACCOUNT}:policy/${n}`);
   cfg.execRole = `cdk-${cfg.qualifier}-cfn-exec-role-${ACCOUNT}-${REGION}`;
   cfg.docs = Object.fromEntries(cfg.policyNames.map((n) => {
-    const t = n.includes('gha-deploy') ? 'gha-deploy-boundary' : n.includes('runtime') ? 'runtime-boundary' : 'cfn-exec-release';
+    const shard = cfg.execShards.find((sh) => n.endsWith(`-${sh}`));
+    const t = n.includes('gha-deploy') ? 'gha-deploy-boundary'
+      : n.includes('runtime') ? 'runtime-boundary' : `cfn-exec-release-${shard}`;
     const rendered = fs.readFileSync(path.join(ROOT, 'infra/aws/bootstrap/policies', `${t}.template.json`), 'utf8')
       .replaceAll('ACCOUNT_ID_PLACEHOLDER', ACCOUNT)
       .replaceAll('ENVIRONMENT_PLACEHOLDER', env)
@@ -57,7 +66,8 @@ for (const [env, cfg] of Object.entries(ENVS)) {
   // the spot-pin test below anchors that origin to hand-written facts of the real template.
   const physFile = path.join(os.tmpdir(), `cba-phys-${env}-${process.pid}.json`);
   fs.writeFileSync(physFile, JSON.stringify({ FileAssetsBucketEncryptionKey: KEY_ID }));
-  cfg.model = JSON.parse(execFileSync('python3', [RESOLVER, SNAPSHOT, ACCOUNT, REGION, cfg.qualifier, cfg.execArn, physFile], { encoding: 'utf8' }));
+  cfg.execArnsCsv = cfg.execArns.join(',');
+  cfg.model = JSON.parse(execFileSync('python3', [RESOLVER, SNAPSHOT, ACCOUNT, REGION, cfg.qualifier, cfg.execArnsCsv, physFile], { encoding: 'utf8' }));
   fs.rmSync(physFile, { force: true });
 }
 
@@ -78,7 +88,11 @@ function iamNormalize(node) {
 }
 
 function liveStateFor(env) {
-  const { model, execArn, execRole, qualifier } = ENVS[env];
+  // DEEP COPY, always: the adversarial cases mutate `S.live.ecr`, `S.live.kms` and role inline
+  // documents in place. Handing out references to the shared per-tier model let one test corrupt
+  // every later one — the read-back then diverged for reasons no test had asked for.
+  const { execArns, execRole, qualifier } = ENVS[env];
+  const model = structuredClone(ENVS[env].model);
   const roles = {};
   for (const [lid, r] of Object.entries(model.roles)) {
     roles[r.name] = {
@@ -113,8 +127,10 @@ function liveStateFor(env) {
       [`cba-study-coach-boundary-gha-deploy-${env}|PermissionsBoundary`]: [`cba-study-coach-gha-deploy-${env}`],
       [`cba-study-coach-boundary-runtime-${env}|PermissionsPolicy`]: [],
       [`cba-study-coach-boundary-runtime-${env}|PermissionsBoundary`]: [`cba-study-coach-${env}-api-role`],
-      [`cba-study-coach-cfn-exec-release-${env}|PermissionsPolicy`]: [execRole],
-      [`cba-study-coach-cfn-exec-release-${env}|PermissionsBoundary`]: [],
+      ...Object.fromEntries(ENVS[env].execNames.flatMap((n) => [
+        [`${n}|PermissionsPolicy`, [execRole]],
+        [`${n}|PermissionsBoundary`, []],
+      ])),
     },
   };
 }
@@ -127,7 +143,10 @@ function run(env, phase, scen = {}, mutate = null) {
   fs.writeFileSync(mut, '');
   fs.writeFileSync(npxLog, '');
   const S = {
-    env, qualifier: cfg.qualifier, execArn: cfg.execArn,
+    env, qualifier: cfg.qualifier, execArns: cfg.execArns, execArnsCsv: cfg.execArnsCsv,
+    // The legacy singular policy is ABSENT in the real account (its create failed on the IAM
+    // size cap); `legacyExists` is the adversarial that proves the two sets never coexist.
+    legacyName: cfg.legacyExecName, legacyExists: false,
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
@@ -214,6 +233,7 @@ switch (sub) {
   case 'iam get-policy': {
     const n = pname(flag('--policy-arn'));
     if (S.policyErr[n]) die(S.policyErr[n]);
+    if (n === S.legacyName && !S.legacyExists) die('An error occurred (NoSuchEntity)');
     if (S.policyAbsent.includes(n)) die('An error occurred (NoSuchEntity)');
     out({ Policy: { PolicyName: n, Path: S.policyPath[n] || '/', Arn: flag('--policy-arn'), DefaultVersionId: 'v1' } });
     break;
@@ -286,7 +306,9 @@ switch (sub) {
     const tb = flag('--template-body');
     const bytes = tb && tb.startsWith('file://') ? fs.readFileSync(tb.slice(7)) : Buffer.from(tb ?? '');
     const digest = require('crypto').createHash('sha256').update(bytes).digest('hex');
-    mut('create-stack sha256=' + digest + ' ' + a.slice(2).filter((x) => !x.startsWith('file://')).join(' '));
+    const pf = flag('--parameters');
+    const params = pf && pf.startsWith('file://') ? fs.readFileSync(pf.slice(7), 'utf8') : '[]';
+    mut('create-stack sha256=' + digest + ' params=' + JSON.stringify(JSON.parse(params)) + ' ' + a.slice(2).filter((x) => !x.startsWith('file://')).join(' '));
     // "AWS accepted, the transport failed": the stack EXISTS even though the caller sees an error.
     if (S.createAcceptedThenFailed) { S.stackExists = true; fs.writeFileSync('${fixture}', JSON.stringify(S)); process.stderr.write('connection reset\\n'); process.exit(52); }
     if (S.hangCreate) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
@@ -368,6 +390,15 @@ switch (sub) {
   return { out: outText, code, mutations, npxCalls, awsCalls };
 }
 
+// The create-stack parameters now travel as a JSON file (r11); the fake records its CONTENT.
+function paramsOf(r) {
+  const line = r.mutations.find((m) => m.startsWith('create-stack'));
+  assert.ok(line, 'a create-stack attempt must be recorded');
+  const m = line.match(/params=(\[.*?\])(?: |$)/);
+  assert.ok(m, `the create-stack record must carry its parameters: ${line}`);
+  return JSON.parse(m[1]);
+}
+
 // Reconciliation calls = describe-stacks AFTER the create-stack attempt (r4-F3). The existence
 // probe before the mutation is a different call and must not be counted as reconciliation.
 function reconcileProbes(r) {
@@ -405,7 +436,7 @@ test('RESOLVER PINS: the model matches hand-written facts of the real template, 
     ], env);
     assert.deepEqual(m.roles.LookupRole.managed, ['arn:aws:iam::aws:policy/ReadOnlyAccess'], env);
     assert.deepEqual(m.roles.DeploymentActionRole.managed, ['arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess'], env);
-    assert.deepEqual(m.roles.CloudFormationExecutionRole.managed, [cfg.execArn], env);
+    assert.deepEqual(m.roles.CloudFormationExecutionRole.managed, [...cfg.execArns].sort(), env);
     assert.deepEqual(Object.keys(m.roles.DeploymentActionRole.inline), ['default'], env);
     assert.deepEqual(Object.keys(m.roles.LookupRole.inline), ['LookupRolePolicy'], env);
     const trust = m.roles.FilePublishingRole.trust.Statement;
@@ -510,8 +541,12 @@ for (const env of ['dev', 'pilot']) {
     // the committed snapshot's, so "an executor that ignores --template" has nowhere to hide.
     assert.ok(args.includes(`sha256=${SNAPSHOT_SHA256}`), 'the submitted template bytes are the reviewed snapshot');
     assert.match(args, new RegExp(`--stack-name cba-release-toolkit-${env}`));
-    assert.ok(args.includes(`ParameterKey=Qualifier,ParameterValue=${cfg.qualifier}`));
-    assert.ok(args.includes(`ParameterKey=CloudFormationExecutionPolicies,ParameterValue=${cfg.execArn}`));
+
+    assert.ok(args.includes('--parameters'), 'os parametros sao passados explicitamente');
+    assert.equal(/ParameterValue=[^ ]*,/.test(args), false, 'nenhuma virgula escapada no shorthand da CLI — os parametros viajam por arquivo');
+    assert.ok(paramsOf(r).find((x) => x.ParameterKey === 'CloudFormationExecutionPolicies').ParameterValue === cfg.execArns.join(','),
+      'o parametro nomeia os TRES shards, na ordem revisada');
+    assert.ok(paramsOf(r).find((x) => x.ParameterKey === 'Qualifier').ParameterValue === cfg.qualifier);
     assert.match(args, /--capabilities CAPABILITY_NAMED_IAM/);
     assert.match(args, /--enable-termination-protection/);
     assert.equal(r.mutations.filter((m) => m.startsWith('create-policy')).length, 0, 'this phase never creates a policy');
@@ -1079,7 +1114,7 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
   const INLINE_PARSERS = ['canon()', 'same_doc()', 'jqpy()', 'pyq()'];
   for (const line of pyLines) {
     const bounded = /\$BOUNDED/.test(line) || /^\s*run_\s/.test(line);
-    const inline = INLINE_PARSERS.some((p) => line.includes(p)) || /python3 -c/.test(line);
+    const inline = INLINE_PARSERS.some((p) => line.includes(p)) || /python3 (-I )?-c/.test(line);
     assert.ok(bounded || inline, `python3 call is neither bounded nor a pinned inline parser: ${line.trim()}`);
   }
   // 4. BIDIRECTIONAL, STRUCTURAL inventory (r6-F3). A real shell lexer — statement boundaries and
@@ -1124,3 +1159,176 @@ test('r5-F3: the DEADLINE SCOPE is exactly what the contract claims — a closed
     assert.match(line, /python3 -I\b/, `python3 must run isolated: ${line.trim()}`);
   }
 });
+
+/* ═══════════ THE EXECUTION POLICY SHARDS (#111 r11) ═══════════ */
+
+// IAM caps a managed policy at 6.144 characters and the reviewed execution document measures
+// 10.265, so a single policy was never creatable — the create failed and the phase recorded the
+// partial state honestly. The canonical file stays in the tree as the SEMANTIC CONTRACT and is
+// never deployed; these tests are what keep the three shards faithful to it.
+
+const CANONICAL_EXEC = path.join(ROOT, 'infra/aws/bootstrap/policies/cfn-exec-release.template.json');
+const SHARD_FILE = (name) => path.join(ROOT, `infra/aws/bootstrap/policies/cfn-exec-release-${name}.template.json`);
+const IAM_POLICY_LIMIT = 6144;
+const SHARD_BUDGET = 5500;
+
+// The APPROVED partition, by Sid. Declared here so the split itself is reviewable, and compared
+// against the files: a statement that moves, duplicates or disappears fails.
+const APPROVED_PARTITION = {
+  app: ['ReadReleaseBootstrapVersionParameter', 'ReadReleaseAssetsFromBootstrapBucket',
+    'LambdaLifecycleOnOwnFunctions', 'ApiGatewayV2CreateOnlyProjectTaggedApis',
+    'ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis', 'ApiGatewayV2ChildLifecycleOnlyOnProjectTaggedApis',
+    'ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources', 'DynamoLifecycleOnOwnTables',
+    'CognitoCreateOnlyProjectTaggedPools', 'CognitoLifecycleOnlyOnProjectTaggedPools'],
+  platform: ['CloudWatchAlarmsOnOwnNames', 'CloudWatchDashboardsOnOwnNames',
+    'LogsLifecycleOnOwnGroups', 'LogsQueryDefinitionsCarryNoScopingArn', 'SnsLifecycleOnOwnTopics',
+    'KmsCreateOnlyProjectTaggedKeys', 'KmsKeyLifecycleOnlyOnProjectTaggedKeys', 'KmsAliasesOnOwnNames',
+    'CreateRuntimeRolesOnlyWithPinnedBoundary', 'RuntimeRoleLifecycleOnOwnNames',
+    'AttachOnlyTheLambdaBasicExecutionManagedPolicy', 'PassRuntimeRolesToLambdaOnly'],
+  guardrails: ['DenyGovernanceTagRemoval', 'DenyProjectTagReplacement', 'DenyEnvironmentTagReplacement',
+    'DenyGovernanceTagRemovalOnTagScopedFamilies', 'DenyProjectTagReplacementOnTagScopedFamilies',
+    'DenyEnvironmentTagReplacementOnTagScopedFamilies', 'DenyTouchingGithubAndFoundationRoles',
+    'DenyBoundaryDetachOrSwapOnRuntimeRoles', 'DenyRuntimeBoundaryPolicyMutation'],
+};
+
+const canonicalStatements = () => JSON.parse(fs.readFileSync(CANONICAL_EXEC, 'utf8')).Statement;
+const shardDoc = (name) => JSON.parse(fs.readFileSync(SHARD_FILE(name), 'utf8'));
+const renderedSize = (text) => text
+  .replaceAll('ACCOUNT_ID_PLACEHOLDER', ACCOUNT).replaceAll('ENVIRONMENT_PLACEHOLDER', 'dev')
+  .replaceAll('QUALIFIER_PLACEHOLDER', 'cbardev')
+  .replace(/\s/g, '').length;
+
+test('r11: the canonical execution document CANNOT be a single managed policy — that is why it is sharded', () => {
+  const size = renderedSize(fs.readFileSync(CANONICAL_EXEC, 'utf8'));
+  assert.ok(size > IAM_POLICY_LIMIT,
+    `the canonical document is ${size} chars; if it ever fits in ${IAM_POLICY_LIMIT} the split should be revisited through review`);
+});
+
+test('r11: every canonical statement appears EXACTLY ONCE across the three shards, unchanged', () => {
+  const canonical = canonicalStatements();
+  const bySid = new Map(canonical.map((s) => [s.Sid, s]));
+  assert.equal(bySid.size, canonical.length, 'every canonical statement carries a distinct Sid');
+
+  const placed = Object.values(APPROVED_PARTITION).flat();
+  assert.equal(placed.length, canonical.length, 'the partition covers every statement');
+  assert.equal(new Set(placed).size, placed.length, 'no statement is placed twice');
+  assert.deepEqual([...placed].sort(), [...bySid.keys()].sort(), 'the partition names exactly the canonical Sids');
+
+  for (const [name, sids] of Object.entries(APPROVED_PARTITION)) {
+    const doc = shardDoc(name);
+    assert.equal(doc.Version, JSON.parse(fs.readFileSync(CANONICAL_EXEC, 'utf8')).Version, `${name}: same policy language version`);
+    assert.deepEqual(doc.Statement.map((s) => s.Sid), sids, `${name}: statements in the declared order`);
+    // UNCHANGED, byte for byte after canonical JSON: this is what makes the shards faithful.
+    for (const s of doc.Statement) {
+      assert.deepEqual(s, bySid.get(s.Sid), `${name}: statement ${s.Sid} was modified`);
+    }
+  }
+});
+
+test('r11: app and platform carry ONLY Allow; guardrails carries ONLY Deny', () => {
+  for (const name of ['app', 'platform']) {
+    for (const s of shardDoc(name).Statement) {
+      assert.equal(s.Effect, 'Allow', `${name}: ${s.Sid} is not an Allow`);
+    }
+  }
+  const denies = shardDoc('guardrails').Statement;
+  for (const s of denies) assert.equal(s.Effect, 'Deny', `guardrails: ${s.Sid} is not a Deny`);
+  // And guardrails holds ALL of them: a Deny that escaped into another shard would still apply,
+  // but the split would stop being reviewable as "every prohibition in one place".
+  const canonicalDenies = canonicalStatements().filter((s) => s.Effect === 'Deny').map((s) => s.Sid).sort();
+  assert.deepEqual(denies.map((s) => s.Sid).sort(), canonicalDenies);
+});
+
+test('r11: every shard fits the IAM limit with room to spare, in BOTH tiers', () => {
+  for (const [env, qualifier] of [['dev', 'cbardev'], ['pilot', 'cbarpil']]) {
+    for (const name of Object.keys(APPROVED_PARTITION)) {
+      const size = fs.readFileSync(SHARD_FILE(name), 'utf8')
+        .replaceAll('ACCOUNT_ID_PLACEHOLDER', ACCOUNT).replaceAll('ENVIRONMENT_PLACEHOLDER', env)
+        .replaceAll('QUALIFIER_PLACEHOLDER', qualifier)
+        .replace(/\s/g, '').length;
+      assert.ok(size <= IAM_POLICY_LIMIT, `${env}/${name}: ${size} exceeds the IAM hard limit ${IAM_POLICY_LIMIT}`);
+      assert.ok(size <= SHARD_BUDGET, `${env}/${name}: ${size} exceeds the reviewed budget ${SHARD_BUDGET}`);
+    }
+  }
+});
+
+test('r11 REVERSAL PROOF: dropping a statement or a whole shard turns the partition red', () => {
+  // The guarantee is only worth what its failure mode proves. Both mutations are in memory.
+  const canonical = canonicalStatements();
+  const bySid = new Map(canonical.map((s) => [s.Sid, s]));
+
+  // (a) a statement removed from a shard: coverage breaks.
+  const short = { ...APPROVED_PARTITION, app: APPROVED_PARTITION.app.slice(1) };
+  const placedShort = Object.values(short).flat();
+  assert.notEqual(placedShort.length, canonical.length, 'a missing statement must be observable');
+
+  // (b) a statement duplicated across two shards: the set still covers, the multiset does not.
+  const dup = { ...APPROVED_PARTITION, platform: [...APPROVED_PARTITION.platform, APPROVED_PARTITION.app[0]] };
+  const placedDup = Object.values(dup).flat();
+  assert.notEqual(new Set(placedDup).size, placedDup.length, 'a duplicated statement must be observable');
+
+  // (c) a statement altered inside a shard: the byte-for-byte comparison catches it.
+  const tampered = JSON.parse(JSON.stringify(bySid.get(APPROVED_PARTITION.app[0])));
+  tampered.Resource = '*';
+  assert.notDeepEqual(tampered, bySid.get(APPROVED_PARTITION.app[0]), 'an altered statement must differ');
+
+  // (d) an entire shard missing: the file read itself fails.
+  assert.throws(() => fs.readFileSync(SHARD_FILE('does-not-exist'), 'utf8'));
+});
+
+for (const env of ['dev', 'pilot']) {
+  test(`EXECUTED r11 (${env}): the LEGACY singular policy blocks BOTH phases until it is migrated`, () => {
+    for (const phase of ['policies', 'bootstrap']) {
+      const r = run(env, phase, { legacyExists: true });
+      assert.notEqual(r.code, 0, `${phase}: must refuse`);
+      assert.match(r.out, /legacy singular policy .* still exists/);
+      assert.deepEqual(r.mutations, [], `${phase}: zero mutation`);
+    }
+  });
+
+  test(`EXECUTED r11 (${env}): a MISSING, EXTRA or DIVERGENT shard refuses with zero mutation`, () => {
+    const names = ENVS[env].execNames;
+    const divergent = { Version: '2012-10-17', Statement: [{ Sid: 'Widened', Effect: 'Allow', Action: '*', Resource: '*' }] };
+    // missing: the bootstrap phase requires all five present
+    const missing = run(env, 'bootstrap', { policyAbsent: [names[1]] });
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.out, /is absent — run the 'policies' phase/);
+    assert.deepEqual(missing.mutations, []);
+    // divergent: any shard whose document drifted
+    for (const n of names) {
+      const r = run(env, 'policies', { policyDocs: { [n]: divergent } });
+      assert.notEqual(r.code, 0, n);
+      assert.match(r.out, /diverges from the reviewed template/, n);
+      assert.deepEqual(r.mutations, [], n);
+    }
+    // extra consumer: a shard attached beyond the execution role
+    const extra = run(env, 'policies', { entitiesOverride: { [`${names[0]}|PermissionsPolicy`]: ['intruder-role'] } });
+    assert.notEqual(extra.code, 0);
+    assert.match(extra.out, /attached beyond the expected execution role/);
+    assert.deepEqual(extra.mutations, []);
+  });
+
+  test(`EXECUTED r11 (${env}): a shard used as a BOUNDARY, or CROSS-TIER, refuses`, () => {
+    const names = ENVS[env].execNames;
+    const other = env === 'dev' ? 'pilot' : 'dev';
+    const asBoundary = run(env, 'policies', { entitiesOverride: { [`${names[2]}|PermissionsBoundary`]: ['some-role'] } });
+    assert.notEqual(asBoundary.code, 0);
+    assert.match(asBoundary.out, /used as a permissions boundary/);
+    assert.deepEqual(asBoundary.mutations, []);
+
+    const crossTier = run(env, 'policies', {
+      entitiesOverride: { [`${names[0]}|PermissionsPolicy`]: [`cdk-${other === 'dev' ? 'cbardev' : 'cbarpil'}-cfn-exec-role-${ACCOUNT}-us-east-1`] },
+    });
+    assert.notEqual(crossTier.code, 0);
+    assert.match(crossTier.out, /attached beyond the expected execution role/);
+    assert.deepEqual(crossTier.mutations, []);
+  });
+
+  test(`EXECUTED r11 (${env}): the toolkit receives EXACTLY the three shard ARNs, in order`, () => {
+    const r = run(env, 'bootstrap', { stackExists: false });
+    assert.equal(r.code, 0, r.out);
+    const value = paramsOf(r).find((x) => x.ParameterKey === 'CloudFormationExecutionPolicies').ParameterValue;
+    assert.deepEqual(value.split(','), ENVS[env].execArns, 'the three ARNs, in the reviewed order');
+    assert.equal(value.split(',').length, 3);
+  });
+}

@@ -1,0 +1,144 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyGovernanceTagRemoval",
+      "Effect": "Deny",
+      "Action": "apigateway:DELETE",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyProjectTagReplacement",
+      "Effect": "Deny",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach"
+        }
+      }
+    },
+    {
+      "Sid": "DenyEnvironmentTagReplacement",
+      "Effect": "Deny",
+      "Action": "apigateway:POST",
+      "Resource": "arn:aws:apigateway:us-east-1::/tags/*",
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Environment"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "DenyGovernanceTagRemovalOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:UntagResource",
+        "kms:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyProjectTagReplacementOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:TagResource",
+        "kms:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Project"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach"
+        }
+      }
+    },
+    {
+      "Sid": "DenyEnvironmentTagReplacementOnTagScopedFamilies",
+      "Effect": "Deny",
+      "Action": [
+        "cognito-idp:TagResource",
+        "kms:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:ACCOUNT_ID_PLACEHOLDER:userpool/*",
+        "arn:aws:kms:us-east-1:ACCOUNT_ID_PLACEHOLDER:key/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEquals": {
+          "aws:TagKeys": [
+            "Environment"
+          ]
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        }
+      }
+    },
+    {
+      "Sid": "DenyTouchingGithubAndFoundationRoles",
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-gha-*",
+        "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cdk-hnb659fds-*"
+      ]
+    },
+    {
+      "Sid": "DenyBoundaryDetachOrSwapOnRuntimeRoles",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:role/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
+    },
+    {
+      "Sid": "DenyRuntimeBoundaryPolicyMutation",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicy",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion"
+      ],
+      "Resource": "arn:aws:iam::ACCOUNT_ID_PLACEHOLDER:policy/cba-study-coach-boundary-runtime-ENVIRONMENT_PLACEHOLDER"
+    }
+  ]
+}

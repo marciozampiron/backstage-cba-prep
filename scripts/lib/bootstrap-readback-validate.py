@@ -11,7 +11,8 @@ import json
 import os
 import sys
 
-TMP, QUALIFIER, ACCOUNT, EXEC_ARN, TOOLKIT = sys.argv[1:6]
+TMP, QUALIFIER, ACCOUNT, EXEC_ARNS_CSV, TOOLKIT = sys.argv[1:6]
+EXEC_ARNS = [a for a in EXEC_ARNS_CSV.split(',') if a]
 failures = []
 
 
@@ -144,11 +145,15 @@ for lid, exp in sorted(model['roles'].items()):
             if not same(got, pdoc):
                 fail(f'{lid}: inline policy {pname} diverges from the template')
 
-# 5. The execution policy is attached to the execution role and NOTHING else.
-ent = load('obs.exec-entities.json')
+# 5. EVERY execution-policy shard is attached to the execution role and NOTHING else (r11).
 exec_role = f'cdk-{QUALIFIER}-cfn-exec-role-{ACCOUNT}-us-east-1'
-if [r['RoleName'] for r in ent.get('PolicyRoles', [])] != [exec_role] or ent.get('PolicyUsers') or ent.get('PolicyGroups'):
-    fail('exec policy: attached beyond the expected execution role')
+for i, arn in enumerate(EXEC_ARNS):
+    ent = load(f'obs.exec-entities.{i}.json')
+    shard = arn.rsplit('/', 1)[1]
+    if [r['RoleName'] for r in ent.get('PolicyRoles', [])] != [exec_role]:
+        fail(f'exec shard {shard}: attached beyond the expected execution role')
+    if ent.get('PolicyUsers') or ent.get('PolicyGroups'):
+        fail(f'exec shard {shard}: attached to a user or group')
 
 # 6. SSM carries the template's own version value.
 ssm = load('obs.ssm.json')['Parameter']
