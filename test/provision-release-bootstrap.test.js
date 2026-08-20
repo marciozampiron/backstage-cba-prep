@@ -148,6 +148,7 @@ function run(env, phase, scen = {}, mutate = null) {
     // size cap); `legacyExists` is the adversarial that proves the two sets never coexist.
     legacyName: cfg.legacyExecName, legacyExists: false, boundaryAfterCreate: null,
     stackPolicyRaw: null, emptyObs: null, lifecycleOverride: null, trustVersionOverride: null,
+    kmsPolicyOverride: null,
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
@@ -370,7 +371,7 @@ switch (sub) {
   case 'ecr get-lifecycle-policy': out({ lifecyclePolicyText: JSON.stringify(S.live.ecr.lifecycle) }); break;
   case 'ecr get-repository-policy': out({ policyText: JSON.stringify(S.live.ecr.policy) }); break;
   case 'kms describe-key': out({ KeyMetadata: { KeyId: flag('--key-id'), Enabled: true } }); break;
-  case 'kms get-key-policy': out({ Policy: JSON.stringify(S.live.kms.keyPolicy) }); break;
+  case 'kms get-key-policy': out({ Policy: JSON.stringify(S.kmsPolicyOverride ?? S.live.kms.keyPolicy) }); break;
   case 'kms list-aliases': out({ Aliases: S.aliasesOverride ?? [{ AliasName: S.live.kms.aliasName }] }); break;
   default: die('unexpected aws ' + a.join(' '));
 }
@@ -1564,5 +1565,39 @@ test('r16: an UNMODELLED lifecycle shape in the template refuses the snapshot ou
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('r17: KMS collapses a single-element condition value; IAM does not — both modelled from live observation', () => {
+  const m = ENVS.dev.model;
+  // KMS returned the bare string for a template list of one (observed 2026-08-20)…
+  assert.equal(m.kms.keyPolicy.Statement[1].Condition.StringEquals['kms:ViaService'], `s3.${REGION}.amazonaws.com`);
+  // …while IAM PRESERVES the same shape, which is the control that keeps the rule narrow: if
+  // the collapse were applied globally, this inline policy would stop matching the live account.
+  const inlineName = `cdk-cbardev-file-publishing-role-default-policy-${ACCOUNT}-${REGION}`;
+  const resourceAccount = m.roles.FilePublishingRole.inline[inlineName].Statement[0].Condition.StringEquals['aws:ResourceAccount'];
+  assert.deepEqual(resourceAccount, [ACCOUNT], 'IAM keeps the single-element list');
+});
+
+test('r17: a KMS key policy that really diverges still refuses', () => {
+  const base = ENVS.dev.model.kms.keyPolicy;
+  const cases = [
+    ['principal alargado', { ...base, Statement: base.Statement.map((st, i) => (i === 0 ? { ...st, Principal: { AWS: '*' } } : st)) }],
+    ['ViaService com DOIS destinos', {
+      ...base,
+      Statement: base.Statement.map((st, i) => (i === 1
+        ? { ...st, Condition: { StringEquals: { ...st.Condition.StringEquals, 'kms:ViaService': [`s3.${REGION}.amazonaws.com`, 'lambda.amazonaws.com'] } } }
+        : st)),
+    }],
+    ['condicao removida', {
+      ...base,
+      Statement: base.Statement.map((st, i) => { if (i !== 1) return st; const { Condition, ...rest } = st; return rest; }),
+    }],
+  ];
+  for (const [label, kmsPolicyOverride] of cases) {
+    const r = run('dev', 'bootstrap', { kmsPolicyOverride });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.out, /kms: the key policy diverges/, label);
+    assert.ok(!r.out.includes('READ-BACK OK'), label);
   }
 });
