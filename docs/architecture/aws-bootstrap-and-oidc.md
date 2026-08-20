@@ -374,7 +374,7 @@ Run once, by an operator with AWS admin in the pilot account. No CI runs this; i
       CBA_REPO_ROOT="$REPO" CBA_AUTHORIZED_SHA="$SHA" CBA_EXPECTED_ACCOUNT_ID=<account> \
         bash -p "$L" dev policies
     )
-    # Gate 1 = `dev policies` (the three operator policies; no CDK, no CloudFormation).
+    # Gate 1 = `dev policies` (the five operator policies (two boundaries and three execution shards); no CDK, no CloudFormation).
     # Gate 2 = the same block with `dev bootstrap` (re-observes the policies read-only; never
     # creates or alters one). Check the exit status before treating a phase as done.
     ```

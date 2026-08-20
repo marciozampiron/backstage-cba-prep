@@ -146,7 +146,7 @@ function run(env, phase, scen = {}, mutate = null) {
     env, qualifier: cfg.qualifier, execArns: cfg.execArns, execArnsCsv: cfg.execArnsCsv,
     // The legacy singular policy is ABSENT in the real account (its create failed on the IAM
     // size cap); `legacyExists` is the adversarial that proves the two sets never coexist.
-    legacyName: cfg.legacyExecName, legacyExists: false,
+    legacyName: cfg.legacyExecName, legacyExists: false, boundaryAfterCreate: null,
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
@@ -250,7 +250,16 @@ switch (sub) {
     break;
   }
   case 'iam list-entities-for-policy': {
-    const key = pname(flag('--policy-arn')) + '|' + flag('--policy-usage-filter');
+    const name = pname(flag('--policy-arn'));
+    const key = name + '|' + flag('--policy-usage-filter');
+    // r12-F1: a boundary use that appears only AFTER the mutation — the precondition pass is
+    // clean, so only the FINAL read-back can catch it.
+    const afterCreate = fs.existsSync('${mut}')
+      && fs.readFileSync('${mut}', 'utf8').includes('create-stack');
+    if (S.boundaryAfterCreate === name && flag('--policy-usage-filter') === 'PermissionsBoundary' && afterCreate) {
+      out({ PolicyRoles: [{ RoleName: 'sneaky-role' }], PolicyUsers: [], PolicyGroups: [] });
+      break;
+    }
     const roles = S.entitiesOverride?.[key] ?? S.live.entities[key] ?? [];
     out({ PolicyRoles: roles.map((r) => ({ RoleName: r })), PolicyUsers: S.entitiesUsers ?? [], PolicyGroups: [] });
     break;
@@ -1332,3 +1341,42 @@ for (const env of ['dev', 'pilot']) {
     assert.equal(value.split(',').length, 3);
   });
 }
+
+test('EXECUTED r12-F1: a boundary use introduced DURING the bootstrap is caught by the read-back', () => {
+  // The precondition pass sees a clean policy; the usage appears only after create-stack. Before
+  // r12 the final read-back queried PermissionsPolicy alone, so this reached READ-BACK OK.
+  const name = ENVS.dev.execNames[1];
+  const r = run('dev', 'bootstrap', { stackExists: false, boundaryAfterCreate: name });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /used as a permissions BOUNDARY/);
+  assert.ok(!r.out.includes('READ-BACK OK'), 'a shard that also bounds a principal never reads back OK');
+  // The mutation DID happen — this is a post-mutation refusal, and the message must not pretend
+  // otherwise; what it proves is that the run cannot end in a false OK.
+  assert.equal(r.mutations.filter((m) => m.startsWith('create-stack')).length, 1);
+});
+
+test('r12-F2: the resolver and the read-back BOTH refuse an ARN set that is not the reviewed one', () => {
+  // Same closed set, derived independently in each validator: name, account, shape and ORDER.
+  const tool = path.join(ROOT, 'scripts/lib/bootstrap-expected-state.py');
+  const good = ENVS.dev.execArns;
+  const cases = [
+    ['estrangeiros', [0, 1, 2].map((i) => `arn:aws:iam::${ACCOUNT}:policy/foreign-${i}`)],
+    ['ordem trocada', [good[1], good[0], good[2]]],
+    ['conta errada', good.map((a) => a.replace(ACCOUNT, '999988887777'))],
+    ['tier errado', good.map((a) => a.replace('-dev-', '-pilot-'))],
+    ['formato errado', good.map((a) => a.replace('arn:aws:iam::', 'arn:aws:iam:'))],
+  ];
+  for (const [label, arns] of cases) {
+    assert.throws(
+      () => execFileSync('python3', [tool, SNAPSHOT, ACCOUNT, REGION, 'cbardev', arns.join(','), '/dev/null'], { encoding: 'utf8', stdio: 'pipe' }),
+      /not exactly the reviewed set|REFUSED/,
+      `o resolver deve recusar: ${label}`,
+    );
+  }
+  // And the read-back validator carries the same derivation, so a drifted caller cannot be
+  // blessed by reaching only the second validator.
+  const validator = fs.readFileSync(path.join(ROOT, 'scripts/lib/bootstrap-readback-validate.py'), 'utf8');
+  assert.match(validator, /EXPECTED_EXEC_ARNS/);
+  assert.match(validator, /QUALIFIER_TIERS/);
+  assert.match(validator, /the ARNs are not exactly the reviewed set, in order/);
+});

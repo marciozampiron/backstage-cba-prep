@@ -323,7 +323,7 @@ if [ "$PHASE" = "policies" ]; then
     if validate_policy "$name"; then PRESENT+=("$name"); else ABSENT+=("$name"); fi
   done
   if [ "${#ABSENT[@]}" -eq 0 ]; then
-    echo "POLICIES OK (${ENV_NAME}): as tres policies existem, sao semanticamente identicas e seus consumidores estao no conjunto nominal — reentrada, zero mutacao"
+    echo "POLICIES OK (${ENV_NAME}): as cinco policies existem, sao semanticamente identicas e seus consumidores estao no conjunto nominal — reentrada, zero mutacao"
     echo "PROXIMA FASE: 'bootstrap' exige o seu proprio gate; nada de CDK correu nesta fase"
     exit 0
   fi
@@ -416,6 +416,8 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
   for _arn in "${EXEC_ARNS[@]}"; do
     observe "policy attachments of shard ${_i} (${when})" "" iam list-entities-for-policy --policy-arn "$_arn" --policy-usage-filter PermissionsPolicy --output json
     printf '%s' "$OBS_OUT" > "$TMP/obs.exec-entities.${_i}.json"
+    observe "boundary usage of shard ${_i} (${when})" "" iam list-entities-for-policy --policy-arn "$_arn" --policy-usage-filter PermissionsBoundary --output json
+    printf '%s' "$OBS_OUT" > "$TMP/obs.exec-boundary-entities.${_i}.json"
     _i=$((_i + 1))
   done
 

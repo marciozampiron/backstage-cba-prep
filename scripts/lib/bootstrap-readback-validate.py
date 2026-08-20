@@ -13,6 +13,20 @@ import sys
 
 TMP, QUALIFIER, ACCOUNT, EXEC_ARNS_CSV, TOOLKIT = sys.argv[1:6]
 EXEC_ARNS = [a for a in EXEC_ARNS_CSV.split(',') if a]
+
+# The SAME closed set the resolver derives (r12-F2), mirrored here so neither validator can bless
+# a drifted caller: name, account, shape and ORDER, not just "three distinct values".
+QUALIFIER_TIERS = {'cbardev': 'dev', 'cbarpil': 'pilot'}
+EXEC_SHARDS = ('app', 'platform', 'guardrails')
+_env = QUALIFIER_TIERS.get(QUALIFIER)
+if _env is None:
+    print(f'DIVERGENCE: unknown release qualifier {QUALIFIER}')
+    sys.exit(1)
+EXPECTED_EXEC_ARNS = [f'arn:aws:iam::{ACCOUNT}:policy/cba-study-coach-cfn-exec-release-{_env}-{s}'
+                      for s in EXEC_SHARDS]
+if EXEC_ARNS != EXPECTED_EXEC_ARNS:
+    print('DIVERGENCE: exec policies: the ARNs are not exactly the reviewed set, in order')
+    sys.exit(1)
 failures = []
 
 
@@ -145,15 +159,20 @@ for lid, exp in sorted(model['roles'].items()):
             if not same(got, pdoc):
                 fail(f'{lid}: inline policy {pname} diverges from the template')
 
-# 5. EVERY execution-policy shard is attached to the execution role and NOTHING else (r11).
+# 5. EVERY execution-policy shard, in BOTH usage modes (r11, r12-F1). Checking only the normal
+# attachment left a hole: a boundary use introduced DURING the bootstrap still reached OK, and a
+# policy that also bounds a principal is a different authority than the one that was reviewed.
 exec_role = f'cdk-{QUALIFIER}-cfn-exec-role-{ACCOUNT}-us-east-1'
 for i, arn in enumerate(EXEC_ARNS):
-    ent = load(f'obs.exec-entities.{i}.json')
     shard = arn.rsplit('/', 1)[1]
+    ent = load(f'obs.exec-entities.{i}.json')
     if [r['RoleName'] for r in ent.get('PolicyRoles', [])] != [exec_role]:
         fail(f'exec shard {shard}: attached beyond the expected execution role')
     if ent.get('PolicyUsers') or ent.get('PolicyGroups'):
         fail(f'exec shard {shard}: attached to a user or group')
+    bound = load(f'obs.exec-boundary-entities.{i}.json')
+    if bound.get('PolicyRoles') or bound.get('PolicyUsers') or bound.get('PolicyGroups'):
+        fail(f'exec shard {shard}: used as a permissions BOUNDARY — it is an execution policy, never a cap')
 
 # 6. SSM carries the template's own version value.
 ssm = load('obs.ssm.json')['Parameter']
