@@ -371,6 +371,22 @@ function assumeBootstrapRole(run, { account, region, qualifier, name, session })
 /** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
 const CHANGE_SET_PAGE_LIMIT = 40;
 
+/* ROUND 18 (review F1): the canonical identity of a page MINUS its changes and its own cursor.
+ *
+ * The merge below keeps every page's `Changes` but only the FIRST page's other members, so a
+ * later page carrying a different OnStackFailure, a wider Capabilities, or another change set's
+ * identity was read and then dropped: it never reached the digest, never reached the rendering,
+ * and the plan was approved on metadata the response did not actually agree on. Round 18's first
+ * cut closed that hole for DeploymentConfig alone; the hole was the MERGE, not the member.
+ *
+ * The comparison is canonical (key order does not matter) and it is JSON — so an absent member
+ * and an explicitly null one remain different, exactly as round 14 requires.
+ */
+const pageMetadataKey = (body) => {
+  const { Changes: _changes, NextToken: _cursor, ...metadata } = body;
+  return JSON.stringify(deepSortKeys(metadata));
+};
+
 // [SPEC-DEPLOY-012]
 function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
   // ROUND 11: DescribeChangeSet PAGINATES. A first page that carries a NextToken describes only
@@ -403,6 +419,8 @@ function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
     if (pageViolations.length > 0) return { schemaViolations: pageViolations };
     pages.push(body);
     if (!base) base = body;
+    // Every page describes the SAME change set or the response is not one description.
+    if (pageMetadataKey(body) !== pageMetadataKey(base)) return { pagesDiverge: true };
     changes.push(...(body.Changes || []));
     token = typeof body.NextToken === 'string' && body.NextToken !== '' ? body.NextToken : null;
     if (!token) {
@@ -1318,6 +1336,10 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
+      if (described.pagesDiverge) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_PAGES_DIVERGE', field: stackId });
+        continue;
+      }
       if (described.paginationUnconsumed) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_PAGINATION_UNCONSUMED', field: stackId });
         continue;
@@ -1338,16 +1360,21 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
-      // ROUND 18: EVERY page is judged, not only the assembled body. The pagination merge keeps
-      // the FIRST page's non-Changes members, so a later page carrying EXPRESS or a disabled
-      // rollback would be dropped on the floor and never reach a digest — read, then discarded,
-      // then approved. What was read is what must be approvable.
-      const configRefusal = [...(described.pages ?? []), described.described]
-        .map((body) => deploymentConfigRefusal(body))
-        .find(Boolean);
-      if (configRefusal) {
-        failures.push({ check: 'PLAN', code: configRefusal, field: stackId });
-        continue;
+      // ROUND 18 (review F2): the deployment-configuration policy decides what this lane may
+      // APPROVE or EXECUTE — never what it may DELETE. An abandon removes an exact plan that was
+      // already declined, and it is bound by the schema and by digest equality with the gate;
+      // subjecting it to the execution policy would strand an executable change set the moment
+      // the policy tightened, which is the opposite of what SPEC-RUN-008 exists to do.
+      // Judged on EVERY page as well as the assembled body: F1 closes the merge for metadata at
+      // large, and this stays page-wise so the two controls remain independent.
+      if (gate.mode !== 'abandon') {
+        const configRefusal = [...(described.pages ?? []), described.described]
+          .map((body) => deploymentConfigRefusal(body))
+          .find(Boolean);
+        if (configRefusal) {
+          failures.push({ check: 'PLAN', code: configRefusal, field: stackId });
+          continue;
+        }
       }
       const entry = canonicalChangeSet(stackId, stackName, described.described);
       if (entry.status !== 'NO_CHANGES' && entry.status !== 'CREATE_COMPLETE') {

@@ -2584,9 +2584,11 @@ test('ROUND-18: an unapprovable deployment configuration refuses BEFORE any dige
   });
 });
 
-test('ROUND-18: a LATER page cannot smuggle a configuration the merge would discard', () => {
-  // The pagination merge keeps the FIRST page's non-Changes members. A second page carrying
-  // EXPRESS would be read, dropped, and never reach the digest — approved by being forgotten.
+test('ROUND-18: the deployment configuration is judged on EVERY page, not only the assembled body', () => {
+  // Review F1 closed the merge for metadata at large, so a page that DISAGREES now refuses as
+  // CHANGE_SET_PAGES_DIVERGE. This control is the other half and stays independent of it: pages
+  // that agree perfectly on a configuration this lane will not approve are refused by the
+  // POLICY, by name, on every page as well as on the body the merge produced.
   withRelease((p, asm, manifest) => {
     const pages = new Map();
     const run = cloudRun({
@@ -2595,41 +2597,191 @@ test('ROUND-18: a LATER page cannot smuggle a configuration the merge would disc
         const stackName = args[args.indexOf('--stack-name') + 1];
         const seen = (pages.get(stackName) ?? 0) + 1;
         pages.set(stackName, seen);
-        if (seen === 1) return { status: 0, stdout: JSON.stringify({ ...describedFor(stackName), NextToken: 'page-2' }), stderr: '' };
-        return { status: 0, stdout: JSON.stringify(describedFor(stackName, { DeploymentConfig: { Mode: 'EXPRESS', DisableRollback: true } })), stderr: '' };
+        const body = describedFor(stackName, { DeploymentConfig: { Mode: 'EXPRESS', DisableRollback: false } });
+        if (seen === 1) return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page-2' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify(body), stderr: '' };
       },
     });
     const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run }));
     assert.equal(r.exit, 1);
     assert.match(r.output, /CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED/);
+    assert.equal(r.output.includes('CHANGE_SET_PAGES_DIVERGE'), false, 'agreeing pages do not diverge — this is the policy speaking');
     assert.equal(r.output.includes('PLAN_DIGEST'), false);
     assert.equal(run.of('execute-change-set').length, 0);
   });
 });
 
-test('ROUND-18: the deployment-configuration policy holds in EVERY mode, abandon included', () => {
-  // A deliberate consequence, pinned so it stays visible: abandon describes before it deletes,
-  // so a change set this lane will not approve is also one it will not delete. Cleaning up such
-  // a set is a separate, human-gated operation — not a side effect of a lane that refused it.
+test('ROUND-18 (review F2): the execution policy binds APPROVAL and EXECUTION — never deletion', () => {
+  // A deployment configuration this lane will not approve is still an exact, already-declined
+  // plan. Refusing to DELETE it would strand an executable change set the moment the policy
+  // tightened — the opposite of what the abandon lane exists to do. What still binds an abandon
+  // is the closed schema and exact digest equality with the gate; nothing else is relaxed.
+  const OUTSIDE_POLICY = { Mode: 'EXPRESS', DisableRollback: true };
+  const declinedPlan = (config = OUTSIDE_POLICY) => {
+    const describes = fullDescribes();
+    describes[PILOT_STACK_NAMES[1]] = describedFor(PILOT_STACK_NAMES[1], { DeploymentConfig: config });
+    return describes;
+  };
+  const abandonRun = (p, asm, manifest, artifact, describes, gateOver) => {
+    const run = cloudRun({ describes, stackStatus: 'REVIEW_IN_PROGRESS' });
+    const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
+      run,
+      git: happyGit(),
+      cdkJsonPath: CDK_JSON,
+      env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon', ...gateOver }) },
+      now: () => GATE_NOW,
+      sleep: () => {},
+      exec: () => assert.fail('abandon spawns no cdk child'),
+    });
+    return { r, run };
+  };
+
+  // A. Outside the execution policy, but the EXACT plan the gate names: it is deleted.
   withRelease((p, asm, manifest) => {
     withArtifact((artifact) => {
-      const describes = fullDescribes();
-      describes[PILOT_STACK_NAMES[1]] = describedFor(PILOT_STACK_NAMES[1], { DeploymentConfig: { Mode: 'EXPRESS', DisableRollback: false } });
-      const run = cloudRun({ describes, stackStatus: 'REVIEW_IN_PROGRESS' });
-      const r = runDeployRelease([...releaseArgs(p, asm), '--artifact-out', artifact], {
-        run,
-        git: happyGit(),
-        cdkJsonPath: CDK_JSON,
-        env: { PATH: '/usr/bin', CORRELATION_ID: CORRELATION, DISPATCH_MODE: 'abandon', CBA_CLOUD_GATE: gateFor(manifest, { mode: 'abandon' }) },
-        now: () => GATE_NOW,
-        sleep: () => {},
-        exec: () => assert.fail('abandon spawns no cdk child'),
-      });
-      assert.equal(r.exit, 1);
-      assert.match(r.output, /CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED/);
-      assert.equal(run.of('delete-change-set').length, 0, 'nothing is deleted on a refused abandon');
-      assert.equal(run.of('execute-change-set').length, 0);
+      const describes = declinedPlan();
+      const { r, run } = abandonRun(p, asm, manifest, artifact, describes, { planDigest: digestOf(describes) });
+      assert.equal(r.exit, 0, r.output);
+      assert.equal(run.of('delete-change-set').length, 4, 'a declined plan is deletable whether or not it was approvable');
+      assert.equal(run.of('execute-change-set').length, 0, 'an abandon executes nothing, ever');
+      assert.equal(r.output.includes('CHANGE_SET_DEPLOYMENT_CONFIG'), false, 'the execution policy has no say here');
     });
+  });
+
+  // B. The same configuration, a digest that is not this plan's: PLAN_CHANGED, nothing deleted.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const { r, run } = abandonRun(p, asm, manifest, artifact, declinedPlan(), { planDigest: digestOf(fullDescribes()) });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /PLAN_CHANGED/);
+      assert.equal(run.of('delete-change-set').length, 0, 'a plan the gate does not name is never deleted');
+    });
+  });
+
+  // C. The exemption is NARROW: the closed schema still binds an abandon, before any deletion.
+  withRelease((p, asm, manifest) => {
+    withArtifact((artifact) => {
+      const describes = declinedPlan({ Mode: 'STANDARD', DisableRollback: false, Sneaky: 'x' });
+      const { r, run } = abandonRun(p, asm, manifest, artifact, describes, { planDigest: digestOf(describes) });
+      assert.equal(r.exit, 1);
+      assert.match(r.output, /CHANGE_SET_SCHEMA_UNKNOWN/);
+      assert.equal(run.of('delete-change-set').length, 0, 'a malformed description authorizes no deletion either');
+    });
+  });
+
+  // D. And plan_only/deploy still refuse the very configuration abandon may delete.
+  withRelease((p, asm, manifest) => {
+    const describes = declinedPlan();
+    const run = cloudRun({ describes });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, { run, env: { CBA_CLOUD_GATE: gateFor(manifest, { planDigest: digestOf(describes) }) } }));
+    assert.equal(r.exit, 1);
+    assert.match(r.output, /CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED/);
+    assert.equal(run.of('execute-change-set').length, 0);
+  });
+});
+
+test('ROUND-18 (review F1): pages that disagree about the change set describe no change set at all', () => {
+  // The merge keeps every page's Changes but only the FIRST page's other members. A later page
+  // that disagrees was read and then dropped — its semantics never reached the digest, the
+  // rendering, or the human. Disagreement is now a named refusal, not a silent discard.
+  const DIVERGENCES = [
+    ['on-failure behaviour', { OnStackFailure: 'DELETE' }],
+    ['a wider capability set', { Capabilities: ['CAPABILITY_NAMED_IAM'] }],
+    ['another change set\'s identity', { ChangeSetId: CS_ARN(PILOT_STACK_NAMES[3]) }],
+    ['a different stack', { StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT}:stack/${PILOT_STACK_NAMES[3]}/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee` }],
+    ['drift state', { StackDriftStatus: 'DRIFTED' }],
+    ['a deployment configuration', { DeploymentConfig: { Mode: 'EXPRESS', DisableRollback: true } }],
+    ['nested-stack semantics', { IncludeNestedStacks: false }],
+    ['a parameter set', { Parameters: [{ ParameterKey: 'BootstrapVersion', ParameterValue: '/cdk-bootstrap/other/version' }] }],
+  ];
+  for (const [label, divergence] of DIVERGENCES) {
+    withRelease((p, asm, manifest) => {
+      const pages = new Map();
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] !== 'describe-change-set') return null;
+          const stackName = args[args.indexOf('--stack-name') + 1];
+          const seen = (pages.get(stackName) ?? 0) + 1;
+          pages.set(stackName, seen);
+          const first = { ...describedFor(stackName, { StatusReason: null }), NextToken: 'page-2' };
+          if (seen === 1) return { status: 0, stdout: JSON.stringify(first), stderr: '' };
+          return { status: 0, stdout: JSON.stringify(describedFor(stackName, { StatusReason: null, ...divergence })), stderr: '' };
+        },
+      });
+      const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+        run,
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        exec: happyExec,
+      }));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CHANGE_SET_PAGES_DIVERGE/, label);
+      assert.equal(r.output.includes('PLAN_DIGEST'), false, `${label}: no digest may exist for a description that contradicts itself`);
+      assert.equal(run.of('execute-change-set').length, 0, label);
+    });
+  }
+});
+
+test('ROUND-18 (review F1): page agreement distinguishes an absent member from an explicitly null one', () => {
+  // Round 14 bought that distinction; the page comparison must not spend it. A page that omits
+  // a member does NOT agree with a page that states it as null, and vice versa.
+  for (const [label, firstPage, secondPage] of [
+    ['null then absent', { StatusReason: null }, {}],
+    ['absent then null', {}, { StatusReason: null }],
+    ['null then absent, drift member', { DeploymentMode: null }, {}],
+  ]) {
+    withRelease((p, asm, manifest) => {
+      const pages = new Map();
+      const run = cloudRun({
+        onCall: (args) => {
+          if (args[1] !== 'describe-change-set') return null;
+          const stackName = args[args.indexOf('--stack-name') + 1];
+          const seen = (pages.get(stackName) ?? 0) + 1;
+          pages.set(stackName, seen);
+          const body = describedFor(stackName, seen === 1 ? firstPage : secondPage);
+          return { status: 0, stdout: JSON.stringify(seen === 1 ? { ...body, NextToken: 'page-2' } : body), stderr: '' };
+        },
+      });
+      const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+        run,
+        env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+        exec: happyExec,
+      }));
+      assert.equal(r.exit, 1, label);
+      assert.match(r.output, /CHANGE_SET_PAGES_DIVERGE/, label);
+      assert.equal(run.of('execute-change-set').length, 0, label);
+    });
+  }
+});
+
+test('ROUND-18 (review F1): pages that AGREE still paginate — key order is not disagreement', () => {
+  // The control that proves the check is not a blanket refusal of pagination: two pages whose
+  // members are identical but serialized in a different order are the same description.
+  withRelease((p, asm, manifest) => {
+    const pages = new Map();
+    const run = cloudRun({
+      onCall: (args) => {
+        if (args[1] !== 'describe-change-set') return null;
+        const stackName = args[args.indexOf('--stack-name') + 1];
+        const seen = (pages.get(stackName) ?? 0) + 1;
+        pages.set(stackName, seen);
+        const body = describedFor(stackName, {
+          StatusReason: null,
+          Changes: [{ Type: 'Resource', ResourceChange: { Action: 'Modify', LogicalResourceId: `R${seen}`, ResourceType: 'AWS::DynamoDB::Table' } }],
+        });
+        // Page two serializes the SAME members with the keys reversed.
+        const reordered = Object.fromEntries(Object.entries(body).reverse());
+        if (seen === 1) return { status: 0, stdout: JSON.stringify({ ...body, NextToken: 'page-2' }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify(reordered), stderr: '' };
+      },
+    });
+    const r = runDeployRelease(releaseArgs(p, asm), deployOpts(manifest, {
+      run,
+      env: { CBA_CLOUD_GATE: gateFor(manifest, { mode: 'plan_only', planDigest: null }) },
+      exec: happyExec,
+    }));
+    assert.equal(r.exit, 0, r.output);
+    assert.match(r.output, /R1/);
+    assert.match(r.output, /R2/, 'both pages\' changes reach the material');
   });
 });
 
