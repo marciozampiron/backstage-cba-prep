@@ -63,12 +63,27 @@ case "$ENV_NAME" in dev) QUALIFIER=cbardev ;; pilot) QUALIFIER=cbarpil ;; esac
 TOOLKIT="cba-release-toolkit-${ENV_NAME}"
 GHA_BOUNDARY="cba-study-coach-boundary-gha-deploy-${ENV_NAME}"
 RUNTIME_BOUNDARY="cba-study-coach-boundary-runtime-${ENV_NAME}"
-EXEC_POLICY="cba-study-coach-cfn-exec-release-${ENV_NAME}"
-POLICY_NAMES=("$GHA_BOUNDARY" "$RUNTIME_BOUNDARY" "$EXEC_POLICY")
+# THE EXECUTION POLICY IS THREE SHARDS (#111 r11). The reviewed document measures 10.265
+# characters without whitespace and IAM caps a managed policy at 6.144 — a quota that cannot be
+# raised — so a single policy was never creatable; the create failed and the phase recorded the
+# partial state honestly. The canonical file stays in the tree as the SEMANTIC CONTRACT and is
+# never deployed: these three shards carry every statement of it exactly once, unchanged, split
+# app / platform / guardrails, each well inside a 5.500-character budget. The set is CLOSED and
+# ORDERED — the toolkit receives exactly these three ARNs, in this order.
+EXEC_SHARDS=(app platform guardrails)
+EXEC_POLICY_LEGACY="cba-study-coach-cfn-exec-release-${ENV_NAME}"
+EXEC_POLICIES=()
+for _shard in "${EXEC_SHARDS[@]}"; do
+  EXEC_POLICIES+=("cba-study-coach-cfn-exec-release-${ENV_NAME}-${_shard}")
+done
+POLICY_NAMES=("$GHA_BOUNDARY" "$RUNTIME_BOUNDARY" "${EXEC_POLICIES[@]}")
+is_exec_policy() { case " ${EXEC_POLICIES[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 TEMPLATE_OF() { case "$1" in
   "$GHA_BOUNDARY") echo gha-deploy-boundary ;;
   "$RUNTIME_BOUNDARY") echo runtime-boundary ;;
-  "$EXEC_POLICY") echo cfn-exec-release ;;
+  "cba-study-coach-cfn-exec-release-${ENV_NAME}-app") echo cfn-exec-release-app ;;
+  "cba-study-coach-cfn-exec-release-${ENV_NAME}-platform") echo cfn-exec-release-platform ;;
+  "cba-study-coach-cfn-exec-release-${ENV_NAME}-guardrails") echo cfn-exec-release-guardrails ;;
 esac; }
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SNAPSHOT_PATH="infra/aws/bootstrap/cdk-bootstrap-template.yaml"
@@ -238,7 +253,7 @@ validate_policy_usage() { # $1 = policy name
   local perm="$OBS_OUT"
   observe "boundary-usage of ${name}" "" iam list-entities-for-policy --policy-arn "$arn" --policy-usage-filter PermissionsBoundary --output json
   local bound="$OBS_OUT"
-  if [ "$name" = "$EXEC_POLICY" ]; then
+  if is_exec_policy "$name"; then
     # The execution policy is a NORMAL policy for exactly the toolkit execution role — and it is
     # never anyone's permissions boundary. Before the bootstrap phase runs, zero consumers is fine.
     printf '%s' "$perm" | jqpy "
@@ -267,6 +282,17 @@ sys.exit(0 if ok else 1)" \
   fi
 }
 
+# ── the LEGACY singular execution policy must not coexist (r11) ──
+# Before the sharded set was reviewed, one policy carried every statement. If that name is still
+# present the account is mid-migration: the toolkit could end up pointing at the old ARN while the
+# new shards sit unused. Detect it and refuse; migrating it is a separate, gated decision.
+check_no_legacy_exec_policy() {
+  observe "the legacy singular execution policy" "NoSuchEntity" \
+    iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT}:policy/${EXEC_POLICY_LEGACY}" --output json
+  [ "$OBS_STATE" = "ABSENT" ] \
+    || { echo "REFUSED: the legacy singular policy ${EXEC_POLICY_LEGACY} still exists — the sharded set must not coexist with it; migrate it under its own gate first"; exit 1; }
+}
+
 # ── full policy validation: identity, default version, document, version set, consumers ──
 validate_policy() { # $1 name; refuses on ANY divergence; returns 1 only on proven absence
   local name="$1" t arn ver
@@ -291,12 +317,13 @@ validate_policy() { # $1 name; refuses on ANY divergence; returns 1 only on prov
 
 # ════════════════════════════ PHASE: policies ════════════════════════════
 if [ "$PHASE" = "policies" ]; then
+  check_no_legacy_exec_policy
   ABSENT=(); PRESENT=()
   for name in "${POLICY_NAMES[@]}"; do
     if validate_policy "$name"; then PRESENT+=("$name"); else ABSENT+=("$name"); fi
   done
   if [ "${#ABSENT[@]}" -eq 0 ]; then
-    echo "POLICIES OK (${ENV_NAME}): as tres policies existem, sao semanticamente identicas e seus consumidores estao no conjunto nominal — reentrada, zero mutacao"
+    echo "POLICIES OK (${ENV_NAME}): as cinco policies existem, sao semanticamente identicas e seus consumidores estao no conjunto nominal — reentrada, zero mutacao"
     echo "PROXIMA FASE: 'bootstrap' exige o seu proprio gate; nada de CDK correu nesta fase"
     exit 0
   fi
@@ -331,11 +358,14 @@ fi
 # operator-shell execution.
 
 # The policies are a PRECONDITION here, observed read-only: this phase never creates or alters one.
+check_no_legacy_exec_policy
 for name in "${POLICY_NAMES[@]}"; do
   validate_policy "$name" \
     || { echo "REFUSED: policy ${name} is absent — run the 'policies' phase (its own gate) first; this phase never creates policies"; exit 1; }
 done
-EXEC_ARN="arn:aws:iam::${ACCOUNT}:policy/${EXEC_POLICY}"
+EXEC_ARNS=()
+for _n in "${EXEC_POLICIES[@]}"; do EXEC_ARNS+=("arn:aws:iam::${ACCOUNT}:policy/${_n}"); done
+EXEC_ARNS_CSV=$(printf '%s,' "${EXEC_ARNS[@]}"); EXEC_ARNS_CSV=${EXEC_ARNS_CSV%,}
 
 # ── THE REVIEWED SNAPSHOT IS THE AUTHORITY (r2-F1/r3-F1): committed bytes, from the SHA ──
 cp "${MAT_ROOT}/${SNAPSHOT_PATH}" "$TMP/toolkit.yaml" 2>/dev/null \
@@ -360,7 +390,7 @@ readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at 
   jqpy "
 phys={r['LogicalResourceId']: r.get('PhysicalResourceId','') for r in d['StackResourceSummaries']}
 print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
-  run_ "$OBS_T" python3 -I "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARN" "$TMP/phys.json" \
+  run_ "$OBS_T" python3 -I "$RESOLVER" "$TMP/toolkit.yaml" "$ACCOUNT" us-east-1 "$QUALIFIER" "$EXEC_ARNS_CSV" "$TMP/phys.json" \
     || { echo "REFUSED (${when}): the expected-state resolver refused the reviewed snapshot"; sed -E 's/[0-9]{12}/ACCOUNT/g' <<<"$RUN_ERR"; exit 1; }
   printf '%s\n' "$RUN_OUT" > "$TMP/model.json"
 
@@ -382,8 +412,14 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
       printf '%s' "$OBS_OUT" > "$TMP/obs.inline.$lid/$p.json"
     done
   done
-  observe "policy attachments (${when})" "" iam list-entities-for-policy --policy-arn "$EXEC_ARN" --policy-usage-filter PermissionsPolicy --output json
-  printf '%s' "$OBS_OUT" > "$TMP/obs.exec-entities.json"
+  local _i=0 _arn
+  for _arn in "${EXEC_ARNS[@]}"; do
+    observe "policy attachments of shard ${_i} (${when})" "" iam list-entities-for-policy --policy-arn "$_arn" --policy-usage-filter PermissionsPolicy --output json
+    printf '%s' "$OBS_OUT" > "$TMP/obs.exec-entities.${_i}.json"
+    observe "boundary usage of shard ${_i} (${when})" "" iam list-entities-for-policy --policy-arn "$_arn" --policy-usage-filter PermissionsBoundary --output json
+    printf '%s' "$OBS_OUT" > "$TMP/obs.exec-boundary-entities.${_i}.json"
+    _i=$((_i + 1))
+  done
 
   # SSM, S3, ECR, KMS — the surfaces the template declares.
   observe "the bootstrap version parameter (${when})" "ParameterNotFound" ssm get-parameter --name "/cdk-bootstrap/${QUALIFIER}/version" --output json
@@ -423,7 +459,7 @@ print(json.dumps(phys))" < "$TMP/obs.resources.json" > "$TMP/phys.json"
 
   # ONE validator, comparing EVERYTHING against the resolved model; never short-circuits.
   local vrc=0
-  run_ "$OBS_T" python3 -I "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARN" "$TOOLKIT" || vrc=$?
+  run_ "$OBS_T" python3 -I "${REPO_ROOT}/scripts/lib/bootstrap-readback-validate.py" "$TMP" "$QUALIFIER" "$ACCOUNT" "$EXEC_ARNS_CSV" "$TOOLKIT" || vrc=$?
   printf '%s\n%s\n' "$RUN_OUT" "$RUN_ERR" | grep -v '^$' | sed -E 's/[0-9]{12}/ACCOUNT/g' || true
   [ "$vrc" -eq 0 ] || { echo "REFUSED (${when}): the live stack diverges from the reviewed template — every divergence is listed above"; exit 1; }
   echo "READ-BACK OK (${when}): conjunto completo de recursos, 5 roles (trust/tags/managed/inline exatos), exec policy exclusiva, SSM, bucket (policy incluida), ECR (lifecycle+policy), KMS (policy+alias) — tudo igual ao snapshot revisado sha256 ${TEMPLATE_SHA}"
@@ -460,6 +496,17 @@ reconcile_and_stop() { # $1 = headline, $2 = stderr file to tail
 }
 
 check_account "immediately before the first mutation"
+# The parameters travel as a JSON FILE: a CommaDelimitedList value cannot be expressed in the
+# CLI's shorthand without escaping each comma, and escaping is exactly where a destination
+# quietly changes shape (r11).
+python3 -I -c "
+import json, sys
+json.dump([
+  {'ParameterKey': 'Qualifier', 'ParameterValue': sys.argv[1]},
+  {'ParameterKey': 'CloudFormationExecutionPolicies', 'ParameterValue': sys.argv[2]},
+], open(sys.argv[3], 'w'))
+" "$QUALIFIER" "$EXEC_ARNS_CSV" "$TMP/params.json" \
+  || { echo "REFUSED: os parametros da stack nao puderam ser escritos"; exit 1; }
 # The ONE mutation: the reviewed snapshot bytes go to CloudFormation directly — the AWS CLI is
 # the executor, the same trust root as every observation; no local package touches credentials.
 # Omitted parameters take the template defaults the resolver models.
@@ -468,8 +515,7 @@ python3 -I "$BOUNDED" "$OBS_T" "$TMP/create.out" "$TMP/create.err" \
   aws --cli-connect-timeout 10 --cli-read-timeout 55 cloudformation create-stack \
     --stack-name "$TOOLKIT" \
     --template-body "file://$TMP/toolkit.yaml" \
-    --parameters "ParameterKey=Qualifier,ParameterValue=${QUALIFIER}" \
-                 "ParameterKey=CloudFormationExecutionPolicies,ParameterValue=${EXEC_ARN}" \
+    --parameters "file://$TMP/params.json" \
     --capabilities CAPABILITY_NAMED_IAM \
     --enable-termination-protection \
     --output json || RC=$?

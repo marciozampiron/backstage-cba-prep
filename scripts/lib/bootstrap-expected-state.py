@@ -23,12 +23,38 @@ except ImportError:
 
 NOVALUE = object()
 
+# The tier each release qualifier belongs to — the inverse of RELEASE_BOOTSTRAP_QUALIFIERS in
+# infra/aws/lib/context.js, a reviewed constant there and here.
+QUALIFIER_TIERS = {'cbardev': 'dev', 'cbarpil': 'pilot'}
+EXEC_SHARDS = ('app', 'platform', 'guardrails')
+
+
+def expected_exec_arns(account, qualifier):
+    """The three execution-policy ARNs this account+qualifier must carry, in reviewed order."""
+    env = QUALIFIER_TIERS.get(qualifier)
+    if env is None:
+        raise SystemExit(f'REFUSED: unknown release qualifier {qualifier}')
+    return [f'arn:aws:iam::{account}:policy/cba-study-coach-cfn-exec-release-{env}-{s}'
+            for s in EXEC_SHARDS]
+
 
 def main():
     if len(sys.argv) not in (6, 7):
-        print('usage: bootstrap-expected-state.py <template.yaml> <account> <region> <qualifier> <exec-policy-arn> [physical-ids.json]', file=sys.stderr)
+        print('usage: bootstrap-expected-state.py <template.yaml> <account> <region> <qualifier> <exec-policy-arns-csv> [physical-ids.json]', file=sys.stderr)
         return 2
-    template_path, account, region, qualifier, exec_arn = sys.argv[1:6]
+    template_path, account, region, qualifier, exec_arns_csv = sys.argv[1:6]
+    # The execution policy is a CLOSED, ORDERED set of three shards (#111 r11): IAM caps a managed
+    # policy at 6.144 characters and the reviewed document is 10.265, so the toolkit receives
+    # exactly these three ARNs, in this order, and the read-back demands that exact set.
+    exec_arns = [a for a in exec_arns_csv.split(',') if a]
+    # The set is CLOSED, not merely "three of something" (r12-F2): counting distinct values
+    # blessed three foreign ARNs in arbitrary order. The expected ARNs are DERIVED here from the
+    # account and the qualifier, and equality is POSITIONAL — name, account, shape and order.
+    expected_arns = expected_exec_arns(account, qualifier)
+    if exec_arns != expected_arns:
+        raise SystemExit(
+            'REFUSED: the execution-policy ARNs are not exactly the reviewed set, in order '
+            '(app, platform, guardrails) for this account and qualifier')
     phys = json.load(open(sys.argv[6])) if len(sys.argv) == 7 else {}
     tpl = yaml.safe_load(open(template_path))
 
@@ -44,7 +70,7 @@ def main():
         else:
             params[name] = default
     params['Qualifier'] = qualifier
-    params['CloudFormationExecutionPolicies'] = [exec_arn]
+    params['CloudFormationExecutionPolicies'] = exec_arns
     pseudo = {'AWS::AccountId': account, 'AWS::Region': region, 'AWS::Partition': 'aws', 'AWS::NoValue': NOVALUE}
 
     def cond_eval(node):
