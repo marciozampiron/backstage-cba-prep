@@ -115,6 +115,16 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    wrong. Stop; fresh decision; windows are never widened.
 3. `CHANGE_SET_MISSING` / `CHANGE_SET_UNAVAILABLE` / `CHANGE_SET_SCHEMA_UNKNOWN` — the prepared
    sets are not in a reviewed state. Stop and investigate; never retried blind.
+3a. `CHANGE_SET_DEPLOYMENT_CONFIG_ABSENT` / `CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED` /
+   `CHANGE_SET_PAGES_DIVERGE` — the plan states a deployment configuration this lane does not
+   approve (only `STANDARD` mode with rollback-on-failure enabled), states none at all, or its
+   pages contradict each other about what the change set is. None of these is visible in the
+   resource diff, so none is waivable by reading the plan harder. Stop. These sets are NOT
+   re-preparable in place: the change-set name is deterministic per release and CloudFormation
+   refuses a second set under an existing name, so the existing sets must be removed first — by
+   [abandon](aws-dev-release-abandon.md) when a reviewed digest names them, otherwise by the
+   exceptional reviewed cleanup described in the
+   [plan runbook](aws-dev-release-plan.md#rollback). Never a raw CLI deletion.
 4. `EXECUTE_FAILED` / `STACK_EXECUTION_FAILED` — execution refused or a stack failed mid-wave.
    The output records exactly which stacks executed. Stop; continue in the
    [recovery runbook](aws-dev-release-recovery.md).

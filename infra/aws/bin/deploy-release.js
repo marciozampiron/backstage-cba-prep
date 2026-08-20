@@ -371,6 +371,22 @@ function assumeBootstrapRole(run, { account, region, qualifier, name, session })
 /** Describe one named change set. `{missing: true}` when it does not exist; `{error}` otherwise. */
 const CHANGE_SET_PAGE_LIMIT = 40;
 
+/* ROUND 18 (review F1): the canonical identity of a page MINUS its changes and its own cursor.
+ *
+ * The merge below keeps every page's `Changes` but only the FIRST page's other members, so a
+ * later page carrying a different OnStackFailure, a wider Capabilities, or another change set's
+ * identity was read and then dropped: it never reached the digest, never reached the rendering,
+ * and the plan was approved on metadata the response did not actually agree on. Round 18's first
+ * cut closed that hole for DeploymentConfig alone; the hole was the MERGE, not the member.
+ *
+ * The comparison is canonical (key order does not matter) and it is JSON — so an absent member
+ * and an explicitly null one remain different, exactly as round 14 requires.
+ */
+const pageMetadataKey = (body) => {
+  const { Changes: _changes, NextToken: _cursor, ...metadata } = body;
+  return JSON.stringify(deepSortKeys(metadata));
+};
+
 // [SPEC-DEPLOY-012]
 function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
   // ROUND 11: DescribeChangeSet PAGINATES. A first page that carries a NextToken describes only
@@ -403,6 +419,8 @@ function describePlannedChangeSet(run, credEnv, stackName, changeSetName) {
     if (pageViolations.length > 0) return { schemaViolations: pageViolations };
     pages.push(body);
     if (!base) base = body;
+    // Every page describes the SAME change set or the response is not one description.
+    if (pageMetadataKey(body) !== pageMetadataKey(base)) return { pagesDiverge: true };
     changes.push(...(body.Changes || []));
     token = typeof body.NextToken === 'string' && body.NextToken !== '' ? body.NextToken : null;
     if (!token) {
@@ -657,6 +675,19 @@ const fingerprintSanitize = (text) => (text ? sanitizeScalarString(text) : '');
  *     position documented as nullable is HookInvocationCount ("is either null, if no Hooks
  *     invoke, or contains the number"). Everywhere else an explicit null is a malformed response.
  */
+/* ROUND 18: the FIRST live DescribeChangeSet of the dev tier refused with
+ * CHANGE_SET_SCHEMA_UNKNOWN, and both causes were real.
+ *   - SIX positions arrive as an explicit `null` when they do not apply: StatusReason,
+ *     ParentChangeSetId, RootChangeSetId, OnStackFailure, StackDriftStatus, DeploymentMode.
+ *     Each one is marked nullable INDIVIDUALLY — by position, never by a global tolerance — and
+ *     `null` stays a value: an explicitly-null member and an absent member sanitize differently
+ *     and digest differently, which is exactly what round 14 bought and this round keeps.
+ *   - DeploymentConfig is a genuinely NEW member, and it is semantic: it carries the deployment
+ *     Mode (STANDARD | EXPRESS — EXPRESS changes when resources are considered complete) and
+ *     DisableRollback (true removes the automatic undo of a failed execution). Both change what
+ *     an approval MEANS, so neither is merely tolerated: see DEPLOYMENT_CONFIG_ACCEPTED below.
+ *     It is NOT DeploymentMode — a different member, whose only documented value is REVERT_DRIFT.
+ */
 const OPAQUE = { kind: 'opaque' };
 const BOOLEAN = { kind: 'boolean' };
 /** A POSITIONAL ARN contract (round 15): the field names WHICH service and WHICH resource shape
@@ -689,23 +720,30 @@ const CHANGE_SET_SCHEMA = object({
   ChangeSetId: CHANGE_SET_ARN,
   StackId: STACK_ARN,
   StackName: { kind: 'stackName' },
-  ParentChangeSetId: CHANGE_SET_ARN,
-  RootChangeSetId: CHANGE_SET_ARN,
+  ParentChangeSetId: nullable(CHANGE_SET_ARN),
+  RootChangeSetId: nullable(CHANGE_SET_ARN),
   CreationTime: INSTANT,
   Description: OPAQUE,
   NextToken: { kind: 'pageToken' },
   // ---- executable semantics -------------------------------------------------------------------
   Status: vocab('CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'DELETE_PENDING', 'DELETE_IN_PROGRESS', 'DELETE_COMPLETE', 'DELETE_FAILED', 'FAILED'),
-  StatusReason: OPAQUE,
+  StatusReason: nullable(OPAQUE),
   ExecutionStatus: vocab('UNAVAILABLE', 'AVAILABLE', 'EXECUTE_IN_PROGRESS', 'EXECUTE_COMPLETE', 'EXECUTE_FAILED', 'OBSOLETE'),
-  OnStackFailure: vocab('DO_NOTHING', 'ROLLBACK', 'DELETE'),
+  OnStackFailure: nullable(vocab('DO_NOTHING', 'ROLLBACK', 'DELETE')),
   Capabilities: list(vocab('CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND')),
   IncludeNestedStacks: BOOLEAN,
   ImportExistingResources: BOOLEAN,
+  // ROUND 18: a CLOSED object — the structural contract knows both documented modes, the LANE
+  // POLICY below accepts only one of them. An extra key, a null, or a value of another type is
+  // a malformed response; an absent property is an incomplete authorization (both refuse).
+  DeploymentConfig: object({
+    Mode: vocab('STANDARD', 'EXPRESS'),
+    DisableRollback: BOOLEAN,
+  }),
   // Drift-aware members. `REVERT_DRIFT` is the ONLY documented DeploymentMode value — the round-12
   // schema invented `STANDARD`, which would have accepted a mode AWS never sends.
-  DeploymentMode: vocab('REVERT_DRIFT'),
-  StackDriftStatus: vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED'),
+  DeploymentMode: nullable(vocab('REVERT_DRIFT')),
+  StackDriftStatus: nullable(vocab('DRIFTED', 'IN_SYNC', 'UNKNOWN', 'NOT_CHECKED')),
   NotificationARNs: list(SNS_TOPIC_ARN),
   RollbackConfiguration: object({
     RollbackTriggers: list(object({ Arn: CLOUDWATCH_ALARM_ARN, Type: RESOURCE_TYPE })),
@@ -838,6 +876,43 @@ function validateChangeSet(value, node = CHANGE_SET_SCHEMA, path = '$') {
   return out;
 }
 
+/* ROUND 18: STRUCTURE IS NOT PERMISSION.
+ *
+ * `DeploymentConfig` passes the schema with either documented Mode and with either boolean — the
+ * schema describes what AWS may SEND. What this lane may APPROVE is narrower, and deliberately so:
+ *
+ *   - `EXPRESS` changes when CloudFormation considers a resource complete. A plan reviewed under
+ *     STANDARD semantics and executed under EXPRESS semantics is not the same plan, and nothing
+ *     in the resource diff would show the difference — it would have been approved by looking
+ *     right, which is exactly the failure mode this lane exists to prevent.
+ *   - `DisableRollback: true` removes the automatic undo of a failed execution. A half-applied
+ *     stack left standing is a state nobody reviewed, produced by an authorization nobody read.
+ *
+ * So both are pinned, and a response outside the pin gets its OWN refusal code — never a silent
+ * pass and never the generic schema refusal, because "AWS sent something new" and "AWS sent
+ * something this lane will not approve" are different facts and lead to different human decisions.
+ * Both are decided BEFORE any digest exists: an unapprovable plan never receives a reviewable
+ * digest to collect a gate against.
+ */
+const DEPLOYMENT_CONFIG_ACCEPTED = Object.freeze({ Mode: 'STANDARD', DisableRollback: false });
+
+/** `null` when the deployment configuration is complete AND within this lane's policy; otherwise
+ * the refusal code that says which of the two it failed. Absence is NOT innocence: a description
+ * that does not state its mode and its rollback behaviour states an incomplete authorization. */
+function deploymentConfigRefusal(described) {
+  const config = described == null ? undefined : described.DeploymentConfig;
+  if (config === undefined || config === null || typeof config !== 'object' || Array.isArray(config)) {
+    return 'CHANGE_SET_DEPLOYMENT_CONFIG_ABSENT';
+  }
+  for (const key of Object.keys(DEPLOYMENT_CONFIG_ACCEPTED)) {
+    if (config[key] === undefined) return 'CHANGE_SET_DEPLOYMENT_CONFIG_ABSENT';
+  }
+  for (const [key, accepted] of Object.entries(DEPLOYMENT_CONFIG_ACCEPTED)) {
+    if (config[key] !== accepted) return 'CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED';
+  }
+  return null;
+}
+
 /** Render `value` at its schema POSITION. Content positions — and any value its position rejects
  * — become the CONSTANT redaction for their class. */
 function sanitizeBySchema(value, node = CHANGE_SET_SCHEMA) {
@@ -902,6 +977,14 @@ function renderPlan(planEntries) {
     // The executable semantics, named — never inferred from the resource diff.
     lines.push(`      execution: ${describe.ExecutionStatus ?? 'unknown'}   on-failure: ${describe.OnStackFailure ?? 'unspecified'}   nested-stacks: ${describe.IncludeNestedStacks ?? 'unspecified'}   import-existing: ${describe.ImportExistingResources ?? 'unspecified'}`);
     lines.push(`      deployment-mode: ${describe.DeploymentMode ?? 'unspecified'}   drift: ${describe.StackDriftStatus ?? 'unspecified'}`);
+    // ROUND 18: DeploymentConfig is NOT DeploymentMode above — a different member with a
+    // different vocabulary — so it is printed on its own line, spelled out. A rendering that
+    // hid EXPRESS or a disabled rollback would be review material that omits what it authorizes.
+    const deploymentConfig = describe.DeploymentConfig ?? {};
+    const rollbackReading = deploymentConfig.DisableRollback === true
+      ? 'DISABLED'
+      : (deploymentConfig.DisableRollback === false ? 'enabled' : 'unspecified');
+    lines.push(`      deployment-config: mode ${deploymentConfig.Mode ?? 'unspecified'}   rollback-on-failure ${rollbackReading}`);
     lines.push(`      capabilities: ${list(describe.Capabilities)}`);
     lines.push(`      notifications: ${list(describe.NotificationARNs)}`);
     const rollback = describe.RollbackConfiguration ?? {};
@@ -1253,6 +1336,10 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
       }
+      if (described.pagesDiverge) {
+        failures.push({ check: 'PLAN', code: 'CHANGE_SET_PAGES_DIVERGE', field: stackId });
+        continue;
+      }
       if (described.paginationUnconsumed) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_PAGINATION_UNCONSUMED', field: stackId });
         continue;
@@ -1272,6 +1359,22 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
       if (rawViolations.length > 0 || validateChangeSet(described.described).length > 0) {
         failures.push({ check: 'PLAN', code: 'CHANGE_SET_SCHEMA_UNKNOWN', field: stackId });
         continue;
+      }
+      // ROUND 18 (review F2): the deployment-configuration policy decides what this lane may
+      // APPROVE or EXECUTE — never what it may DELETE. An abandon removes an exact plan that was
+      // already declined, and it is bound by the schema and by digest equality with the gate;
+      // subjecting it to the execution policy would strand an executable change set the moment
+      // the policy tightened, which is the opposite of what SPEC-RUN-008 exists to do.
+      // Judged on EVERY page as well as the assembled body: F1 closes the merge for metadata at
+      // large, and this stays page-wise so the two controls remain independent.
+      if (gate.mode !== 'abandon') {
+        const configRefusal = [...(described.pages ?? []), described.described]
+          .map((body) => deploymentConfigRefusal(body))
+          .find(Boolean);
+        if (configRefusal) {
+          failures.push({ check: 'PLAN', code: configRefusal, field: stackId });
+          continue;
+        }
       }
       const entry = canonicalChangeSet(stackId, stackName, described.described);
       if (entry.status !== 'NO_CHANGES' && entry.status !== 'CREATE_COMPLETE') {
@@ -1593,7 +1696,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, entryDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, deploymentConfigRefusal, DEPLOYMENT_CONFIG_ACCEPTED, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, entryDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

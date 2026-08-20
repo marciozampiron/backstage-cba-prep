@@ -140,6 +140,14 @@ One operation: prepare ONE wave's change sets and put the plan on the record.
 6. Run resolution returns zero matches after the tenth attempt, or more than one at any point —
    stop (SPEC-LANE-007). Waiting longer is not a remedy for a run that never started, and a
    second run bearing this correlation id is never disambiguated by taking the newer one.
+7a. `CHANGE_SET_DEPLOYMENT_CONFIG_ABSENT` / `CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED` /
+   `CHANGE_SET_PAGES_DIVERGE` / `CHANGE_SET_SCHEMA_UNKNOWN` — the description CloudFormation
+   returned is one this lane cannot approve: it states a deployment configuration outside
+   `STANDARD` with rollback-on-failure enabled, states none at all, contradicts itself across
+   pages, or carries a member nobody reviewed. None of these is visible in the resource diff, so
+   none is waivable by reading the plan harder, and none is a retry: the same preparation will
+   return the same description. Stop, understand the cause, and read the paragraph below before
+   touching anything — the refusal happened AFTER preparation, so change sets exist.
 7. `PLAN_RENDERING_TOO_LARGE` — the wave's evidence record cannot cross the evidence transport
    complete (the narrowest hop is a single environment entry, bounded well under the job-output
    store), so the plan REFUSED after preparation. Evidence is never truncated. The prepared
@@ -155,6 +163,22 @@ creating a change set with an existing name fails. A plan Zamp declines therefor
 EXECUTABLE change sets behind, and removing them is its own authorized operation:
 [abandon](aws-dev-release-abandon.md) (SPEC-RUN-008). No stack state changed here; the change
 sets are the thing to clean up.
+
+**A plan that refused BEFORE producing a digest is a different case, and the difference decides
+the instrument.** The change sets were prepared and still exist, but no `planDigest` and no
+per-entry digests were ever produced. The [abandon](aws-dev-release-abandon.md) lane identifies
+what it deletes by exactly those digests (SPEC-RUN-008), so it has nothing here to identify them
+with. Planning again is not available either: the change-set name is deterministic per release and
+CloudFormation refuses to create a second set under a name that already exists. That state is cleaned up by an exceptional,
+reviewed operation under its own human gate, which proves identity (account, region, stack id,
+name, status) before deleting by full ARN and reconciles read-only afterwards. Never a blind
+retry, never a raw CLI deletion outside an instrument:
+
+| the plan… | the instrument |
+| --- | --- |
+| produced a digest and Zamp declined it | [abandon](aws-dev-release-abandon.md) (SPEC-RUN-008) |
+| refused before any digest existed | exceptional cleanup, reviewed, under its own gate |
+| never reached preparation | nothing to clean up — no change set was created |
 
 ## Cleanup
 
