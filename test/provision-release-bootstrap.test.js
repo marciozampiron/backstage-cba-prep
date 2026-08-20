@@ -1410,10 +1410,15 @@ test('r12-F2: the resolver and the read-back BOTH refuse an ARN set that is not 
 // The fix is one dedicated loader for that ONE call — not tolerance everywhere, because for every
 // other observation an empty body is a LOST observation, not an absence.
 
-test('r14: an EMPTY stack-policy body is the documented absence, and the run completes', () => {
-  const r = run('dev', 'bootstrap', {});           // the default fake now writes zero bytes
+test('r14/r15: ZERO BYTES is the documented absence — and only zero bytes', () => {
+  const r = run('dev', 'bootstrap', {});           // the default fake writes nothing at all
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /READ-BACK OK/);
+  // The distinction that matters: an explicitly empty string is still zero bytes and passes,
+  // while any body with content — even a single line break — does not (cases above).
+  const explicit = run('dev', 'bootstrap', { stackPolicyRaw: '' });
+  assert.equal(explicit.code, 0, explicit.out);
+  assert.match(explicit.out, /READ-BACK OK/);
 });
 
 test('r14: a stack policy that IS present still refuses', () => {
@@ -1422,8 +1427,13 @@ test('r14: a stack policy that IS present still refuses', () => {
   assert.match(r.out, /unexpected stack policy/);
 });
 
-test('r14: every ambiguous stack-policy body refuses BY NAME', () => {
+test('r14/r15: every ambiguous stack-policy body refuses BY NAME', () => {
+  // r15: the newline-only bodies are the ones command substitution used to erase. `"   \n"`
+  // keeps its spaces and reaches the loader; `"\n"` and `"\n\n"` collapse to the empty string
+  // and must be caught on the RAW FILE, before the exception can read them as an absence.
   const cases = [
+    ['newline only', '\n', /carries only line breaks/],
+    ['duas newlines', '\n\n', /carries only line breaks/],
     ['whitespace only', '   \n', /whitespace only/],
     ['JSON malformado', '{"StackPolicyBody":', /not valid JSON/],
     ['topo nao-objeto', '["StackPolicyBody"]', /not a JSON object/],

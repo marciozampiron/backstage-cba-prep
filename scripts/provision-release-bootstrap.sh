@@ -240,10 +240,21 @@ observe() {
       && { echo "REFUSED: observation of ${desc} was paginated/truncated — an incomplete read proves nothing"; exit 1; }
     # An EMPTY body on a successful call is a LOST observation, not an answer (r14). Every API
     # this script reads returns a body — with ONE documented exception, `get-stack-policy` on a
-    # stack that carries no policy, which sets OBS_ALLOW_EMPTY for that single call. Without this
-    # the empty body reached a downstream parser and refused under someone else's name.
-    if [ -z "$RUN_OUT" ] && [ "${OBS_ALLOW_EMPTY:-0}" != "1" ]; then
-      echo "REFUSED: observation of ${desc} came back EMPTY — a body was required; this is a lost observation, not an absence"; exit 1
+    # stack that carries no policy, which sets OBS_ALLOW_EMPTY for that single call.
+    #
+    # EMPTINESS IS DECIDED ON THE RAW FILE, never on $RUN_OUT (r15): command substitution strips
+    # trailing newlines, so a body of exactly "\n" collapsed to the empty string and became
+    # indistinguishable from zero bytes — it would have walked through the exception and been
+    # rewritten as a zero-byte file. Zero bytes is the only shape the exception accepts; a
+    # non-empty body that merely COLLAPSES to empty is ambiguous and refuses by name.
+    if [ ! -s "$TMP/.out" ]; then
+      if [ "${OBS_ALLOW_EMPTY:-0}" != "1" ]; then
+        OBS_ALLOW_EMPTY=0
+        echo "REFUSED: observation of ${desc} came back EMPTY — a body was required; this is a lost observation, not an absence"; exit 1
+      fi
+    elif [ -z "$RUN_OUT" ]; then
+      OBS_ALLOW_EMPTY=0
+      echo "REFUSED: observation of ${desc} carries only line breaks — an ambiguous body is never read as an absence"; exit 1
     fi
     OBS_ALLOW_EMPTY=0
     OBS_STATE=EXISTS; OBS_OUT="$RUN_OUT"; return 0
@@ -396,7 +407,7 @@ readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at 
   # read-back validator, which is the only place that reads such a body.
   OBS_ALLOW_EMPTY=1
   observe "the stack policy (${when})" "" cloudformation get-stack-policy --stack-name "$TOOLKIT" --output json
-  printf '%s' "$OBS_OUT" > "$TMP/obs.stackpolicy.json"
+  cp "$TMP/.out" "$TMP/obs.stackpolicy.json"
 
   # Physical ids feed the resolver (the KMS key id is only nameable by the live stack).
   jqpy "
