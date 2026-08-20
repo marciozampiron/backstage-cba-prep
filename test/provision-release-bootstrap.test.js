@@ -147,7 +147,7 @@ function run(env, phase, scen = {}, mutate = null) {
     // The legacy singular policy is ABSENT in the real account (its create failed on the IAM
     // size cap); `legacyExists` is the adversarial that proves the two sets never coexist.
     legacyName: cfg.legacyExecName, legacyExists: false, boundaryAfterCreate: null,
-    stackPolicyRaw: null, emptyObs: null,
+    stackPolicyRaw: null, emptyObs: null, lifecycleOverride: null, trustVersionOverride: null,
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
@@ -277,7 +277,8 @@ switch (sub) {
   case 'iam get-role': {
     const r = S.live.roles[flag('--role-name')];
     if (!r) die('An error occurred (NoSuchEntity)');
-    out({ Role: { Path: r.path || '/', Arn: 'arn:aws:iam::${ACCOUNT}:role/' + flag('--role-name'), AssumeRolePolicyDocument: r.trust, Tags: r.tags, MaxSessionDuration: r.maxSession ?? 3600, ...(r.boundary ? { PermissionsBoundary: { PermissionsBoundaryArn: r.boundary } } : {}) } });
+    const trust = S.trustVersionOverride ? { ...r.trust, Version: S.trustVersionOverride } : r.trust;
+    out({ Role: { Path: r.path || '/', Arn: 'arn:aws:iam::${ACCOUNT}:role/' + flag('--role-name'), AssumeRolePolicyDocument: trust, Tags: r.tags, MaxSessionDuration: r.maxSession ?? 3600, ...(r.boundary ? { PermissionsBoundary: { PermissionsBoundaryArn: r.boundary } } : {}) } });
     break;
   }
   case 'iam list-attached-role-policies': {
@@ -350,7 +351,7 @@ switch (sub) {
     if (S.waitRc !== 0) { process.stderr.write('waiter failed\\n'); process.exit(S.waitRc); }
     break;
   }
-  case 's3api get-bucket-lifecycle-configuration': out({ Rules: S.live.bucketLifecycle }); break;
+  case 's3api get-bucket-lifecycle-configuration': out({ Rules: S.lifecycleOverride ?? S.live.bucketLifecycle }); break;
   case 's3api get-bucket-acl':
     out({ Owner: { ID: 'owner-id' }, Grants: S.aclOverride ?? [{ Grantee: { ID: 'owner-id', Type: 'CanonicalUser' }, Permission: 'FULL_CONTROL' }] });
     break;
@@ -798,13 +799,17 @@ test('EXECUTED r6-F2: a FORGED materialized root is refused — worktree, writab
 });
 
 test('EXECUTED r6-F2: the launcher LEAVES NO TREE behind — the cleanup trap survives the run', () => {
-  const before = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-relboot-src.')).length;
+  // Compare the SET, not the count: a tree left behind by an earlier test would otherwise make
+  // this one fail for someone else's reason, and a tree cleaned up by an earlier test would mask
+  // a leak here. What this proves is that THESE two runs leave nothing of their own.
+  const trees = () => new Set(fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-relboot-src.')));
+  const before = trees();
   const ok = run('dev', 'policies', {});
   assert.equal(ok.code, 0, ok.out);
   const failed = run('dev', 'policies', { policyErr: { [ENVS.dev.policyNames[0]]: 'An error occurred (AccessDenied)' } });
   assert.notEqual(failed.code, 0);
-  const after = fs.readdirSync('/tmp').filter((n) => n.startsWith('cba-relboot-src.')).length;
-  assert.equal(after, before, 'neither a successful nor a failed run may leave a materialized tree in /tmp');
+  const leaked = [...trees()].filter((n) => !before.has(n));
+  assert.deepEqual(leaked, [], 'neither a successful nor a failed run may leave a materialized tree in /tmp');
 });
 
 test('EXECUTED r6-F4: ambient PYTHONPATH/sitecustomize cannot inject code into any helper', () => {
@@ -1484,4 +1489,80 @@ test('r14: the permissive loader has EXACTLY ONE call site; everything else stay
   const strictCalls = src.match(/\bload\('obs\.[a-z0-9.$-]+/g) ?? [];
   assert.ok(strictCalls.length >= 10, `the strict loader still reads the other observations: ${strictCalls.length}`);
   assert.equal(/load\('obs\.stackpolicy/.test(src), false, 'the stack policy never goes through the strict loader');
+});
+
+/* ═══════════ THE API SHAPES THE READ-BACK MUST EXPECT (#111 r16) ═══════════ */
+
+// The first reentrant read-back against the REAL toolkit refused with six divergences, and all
+// six were AWS normalizations rather than drift: IAM and KMS return a document stored without a
+// `Version` carrying "2008-10-17", and S3 returns lifecycle rules with `ID` plus a materialized
+// `Filter: {"Prefix": ""}`. The model now says what the API RETURNS — and still refuses anything
+// else, which is what these tests pin.
+
+test('r16: documents WITHOUT a template Version are modelled as the API returns them', () => {
+  const m = ENVS.dev.model;
+  // Observed live: these four trust documents and the KMS key policy carry 2008-10-17…
+  for (const lid of ['FilePublishingRole', 'ImagePublishingRole', 'LookupRole', 'DeploymentActionRole']) {
+    assert.equal(m.roles[lid].trust.Version, '2008-10-17', `${lid}: implicit policy version`);
+  }
+  assert.equal(m.kms.keyPolicy.Version, '2008-10-17');
+  // …while a document that DECLARES 2012-10-17 keeps it. This is the control that shows the
+  // rule is "fill in the implicit version", not "ignore versions".
+  assert.equal(m.roles.CloudFormationExecutionRole.trust.Version, '2012-10-17');
+  assert.equal(m.bucket.policy.Version, '2012-10-17');
+  assert.equal(m.ecr.policy.Version, '2012-10-17');
+});
+
+test('r16: a trust document coming back with a DIFFERENT version still refuses', () => {
+  const r = run('dev', 'bootstrap', { trustVersionOverride: '2012-10-17' });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /the trust document diverges from the template/);
+  assert.ok(!r.out.includes('READ-BACK OK'));
+});
+
+test('r16: lifecycle rules are modelled in the S3 API shape — ID and the materialized filter', () => {
+  const rules = ENVS.dev.model.bucket.lifecycle;
+  assert.equal(rules.length, 2);
+  for (const rule of rules) {
+    assert.ok(rule.ID, 'the API returns ID, not the CloudFormation property Id');
+    assert.equal(rule.Id, undefined);
+    assert.deepEqual(rule.Filter, { Prefix: '' }, 'S3 materializes an empty filter');
+  }
+  assert.deepEqual(rules.map((r) => r.ID), ['CleanupOldVersions', 'AbortIncompleteMultipartUploads']);
+});
+
+test('r16: a lifecycle rule with a REAL prefix or an extra rule still refuses', () => {
+  const base = ENVS.dev.model.bucket.lifecycle;
+  const cases = [
+    ['prefixo real', base.map((r, i) => (i === 0 ? { ...r, Filter: { Prefix: 'assets/' } } : r))],
+    ['regra destrutiva extra', [...base, { ID: 'ExpireEverything', Status: 'Enabled', Filter: { Prefix: '' }, Expiration: { Days: 1 } }]],
+    ['regra desabilitada', base.map((r, i) => (i === 0 ? { ...r, Status: 'Disabled' } : r))],
+  ];
+  for (const [label, lifecycleOverride] of cases) {
+    const r = run('dev', 'bootstrap', { lifecycleOverride });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.out, /lifecycle configuration diverges/, label);
+    assert.ok(!r.out.includes('READ-BACK OK'), label);
+  }
+});
+
+test('r16: an UNMODELLED lifecycle shape in the template refuses the snapshot outright', () => {
+  // If the reviewed template ever declares a Filter or a Prefix, the API shape for it is a
+  // guess — and guessing is what this validator must never do.
+  const tool = path.join(ROOT, 'scripts/lib/bootstrap-expected-state.py');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-lc-'));
+  try {
+    const tpl = fs.readFileSync(SNAPSHOT, 'utf8')
+      .replace('          - Id: CleanupOldVersions', '          - Id: CleanupOldVersions\n            Prefix: assets/');
+    const p = path.join(dir, 'tampered.yaml');
+    fs.writeFileSync(p, tpl);
+    const phys = path.join(dir, 'phys.json');
+    fs.writeFileSync(phys, JSON.stringify({ FileAssetsBucketEncryptionKey: KEY_ID }));
+    assert.throws(
+      () => execFileSync('python3', [tool, p, ACCOUNT, REGION, 'cbardev', ENVS.dev.execArns.join(','), phys], { encoding: 'utf8', stdio: 'pipe' }),
+      /unmodelled|REFUSED/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -29,6 +29,48 @@ QUALIFIER_TIERS = {'cbardev': 'dev', 'cbarpil': 'pilot'}
 EXEC_SHARDS = ('app', 'platform', 'guardrails')
 
 
+# AWS NORMALIZATIONS, MODELLED EXPLICITLY (#111 r16). The live read-back is compared against
+# this model, so the model must be what the API RETURNS, not what the template SAYS. Each entry
+# below was OBSERVED on the real toolkit stack on 2026-08-20 — none of them is a guess, and none
+# of them loosens a comparison: a document coming back with a DIFFERENT version, or a rule with a
+# non-empty prefix, still refuses.
+#
+#   1. A policy document stored WITHOUT an explicit `Version` is returned carrying
+#      `"Version": "2008-10-17"` — observed on the four bootstrap role trust documents and on the
+#      KMS key policy. Documents that declare 2012-10-17 come back unchanged.
+#   2. S3 returns lifecycle rules with `ID` (not the CloudFormation property name `Id`) and
+#      materializes `Filter: {"Prefix": ""}` for a rule that declares no filter.
+IMPLICIT_POLICY_VERSION = '2008-10-17'
+
+
+def as_returned(doc):
+    """A policy document in the shape the API returns it."""
+    if not isinstance(doc, dict):
+        return doc
+    if 'Version' in doc:
+        return doc
+    return {'Version': IMPLICIT_POLICY_VERSION, **doc}
+
+
+def lifecycle_as_returned(rules):
+    """S3 lifecycle rules in the shape `get-bucket-lifecycle-configuration` returns them."""
+    out = []
+    for rule in rules or []:
+        shaped = {}
+        for k, v in rule.items():
+            if k == 'Id':
+                shaped['ID'] = v
+            elif k in ('Filter', 'Prefix'):
+                # Not modelled: the reviewed template declares neither, and guessing how S3 would
+                # echo one back is exactly the kind of assumption this validator must not make.
+                raise SystemExit(f'REFUSED: lifecycle rule {rule.get("Id")} declares {k}; the API shape for it is unmodelled — review it')
+            else:
+                shaped[k] = v
+        shaped.setdefault('Filter', {'Prefix': ''})
+        out.append(shaped)
+    return out
+
+
 def expected_exec_arns(account, qualifier):
     """The three execution-policy ARNs this account+qualifier must carry, in reviewed order."""
     env = QUALIFIER_TIERS.get(qualifier)
@@ -55,7 +97,18 @@ def main():
         raise SystemExit(
             'REFUSED: the execution-policy ARNs are not exactly the reviewed set, in order '
             '(app, platform, guardrails) for this account and qualifier')
-    phys = json.load(open(sys.argv[6])) if len(sys.argv) == 7 else {}
+    if len(sys.argv) == 7:
+        # A named refusal, never a traceback (r16, same lesson as the read-back loader): the
+        # physical-ids file is an input this tool is handed, and a malformed one must say so.
+        try:
+            with open(sys.argv[6]) as f:
+                phys = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            raise SystemExit('REFUSED: the physical-ids file is missing or is not valid JSON')
+        if not isinstance(phys, dict):
+            raise SystemExit('REFUSED: the physical-ids file must be a JSON object')
+    else:
+        phys = {}
     tpl = yaml.safe_load(open(template_path))
 
     # The default parameterization this project deploys: everything at template default except
@@ -237,18 +290,18 @@ def main():
         p = resolve(res['Properties'])
         for role_ref in res['Properties']['Roles']:
             target = role_ref['Ref']
-            external_inline.setdefault(target, {})[p['PolicyName']] = p['PolicyDocument']
+            external_inline.setdefault(target, {})[p['PolicyName']] = as_returned(p['PolicyDocument'])
 
     for lid, res in live.items():
         if res['Type'] != 'AWS::IAM::Role':
             continue
         p = resolve(res['Properties'])
-        inline = {pol['PolicyName']: pol['PolicyDocument'] for pol in p.get('Policies', [])}
+        inline = {pol['PolicyName']: as_returned(pol['PolicyDocument']) for pol in p.get('Policies', [])}
         inline.update(external_inline.get(lid, {}))
         managed = p.get('ManagedPolicyArns', [])
         model['roles'][lid] = {
             'name': p['RoleName'],
-            'trust': p['AssumeRolePolicyDocument'],
+            'trust': as_returned(p['AssumeRolePolicyDocument']),
             'tags': p.get('Tags', []),
             'managed': sorted(managed if isinstance(managed, list) else [managed]),
             'inline': inline,
@@ -267,11 +320,11 @@ def main():
         'sseKmsKeyArn': sse.get('KMSMasterKeyID'),
         'publicAccessBlock': bucket.get('PublicAccessBlockConfiguration'),
         'versioning': bucket['VersioningConfiguration']['Status'],
-        'policy': policy['PolicyDocument'],
+        'policy': as_returned(policy['PolicyDocument']),
         'accessControl': bucket.get('AccessControl'),
         # The template's own lifecycle rules — an EXTERNAL rule expiring current assets would
         # silently destroy deployed artifacts, so the read-back demands exact equality (r3-F3).
-        'lifecycle': bucket.get('LifecycleConfiguration', {}).get('Rules'),
+        'lifecycle': lifecycle_as_returned(bucket.get('LifecycleConfiguration', {}).get('Rules')),
     }
 
     ecr = resolve(live['ContainerAssetsRepository']['Properties'])
@@ -279,13 +332,13 @@ def main():
         'name': ecr['RepositoryName'],
         'imageTagMutability': ecr['ImageTagMutability'],
         'lifecycle': json.loads(ecr['LifecyclePolicy']['LifecyclePolicyText']),
-        'policy': ecr['RepositoryPolicyText'],
+        'policy': as_returned(ecr['RepositoryPolicyText']),
     }
 
     if 'FileAssetsBucketEncryptionKey' in live:
         key = resolve(live['FileAssetsBucketEncryptionKey']['Properties'])
         alias = resolve(live['FileAssetsBucketEncryptionKeyAlias']['Properties'])
-        model['kms'] = {'keyPolicy': key['KeyPolicy'], 'aliasName': alias['AliasName']}
+        model['kms'] = {'keyPolicy': as_returned(key['KeyPolicy']), 'aliasName': alias['AliasName']}
 
     json.dump(model, sys.stdout, indent=2, sort_keys=True)
     return 0
