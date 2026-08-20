@@ -147,6 +147,7 @@ function run(env, phase, scen = {}, mutate = null) {
     // The legacy singular policy is ABSENT in the real account (its create failed on the IAM
     // size cap); `legacyExists` is the adversarial that proves the two sets never coexist.
     legacyName: cfg.legacyExecName, legacyExists: false, boundaryAfterCreate: null,
+    stackPolicyRaw: null, emptyObs: null,
     stsOut: ACCOUNT, stsErr: '',
     expectedEnv: ACCOUNT, authorizedSha: SHA,
     gitHead: SHA, gitDirty: false,
@@ -221,6 +222,9 @@ const S = JSON.parse(fs.readFileSync('${fixture}', 'utf8'));
 const raw = process.argv.slice(2);
 const a = raw.filter((x, i) => !(x.startsWith('--cli-') || (i > 0 && raw[i - 1].startsWith('--cli-'))));
 const sub = a[0] + ' ' + a[1];
+// r14: an observation that comes back with an EMPTY body. For every API except get-stack-policy
+// that is a lost observation, never an absence.
+if (S.emptyObs === sub) { process.exit(0); }
 fs.appendFileSync('${path.join(dir, 'aws-calls')}', sub + '\\n');
 if (S.hang === sub) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000); }
 const flag = (n) => { const i = a.indexOf(n); return i >= 0 ? a[i + 1] : null; };
@@ -310,7 +314,13 @@ switch (sub) {
   case 'cloudformation list-stack-resources':
     out({ StackResourceSummaries: S.live.resources, ...(S.resourcesNextToken ? { NextToken: 'more' } : {}) });
     break;
-  case 'cloudformation get-stack-policy': out(S.stackPolicy ? { StackPolicyBody: '{}' } : {}); break;
+  case 'cloudformation get-stack-policy': {
+    // The real CLI serializes the documented null value as ZERO BYTES; modelling it as an
+    // empty object is what let the validator crash in the live run (r14).
+    if (S.stackPolicyRaw !== null && S.stackPolicyRaw !== undefined) { process.stdout.write(S.stackPolicyRaw); break; }
+    if (S.stackPolicy) { out({ StackPolicyBody: '{"Statement":[]}' }); break; }
+    break;   // no policy: write nothing at all
+  }
   case 'cloudformation create-stack': {
     const tb = flag('--template-body');
     const bytes = tb && tb.startsWith('file://') ? fs.readFileSync(tb.slice(7)) : Buffer.from(tb ?? '');
@@ -1390,4 +1400,78 @@ test('r12-F2: the resolver and the read-back BOTH refuse an ARN set that is not 
     assert.notEqual(code, 0, `o read-back deve recusar: ${label}`);
     assert.match(out, /the ARNs are not exactly the reviewed set, in order/, `mensagem especifica para: ${label}`);
   }
+});
+
+/* ═══════════ THE OBSERVATION CLASSIFICATION (#111 r14) ═══════════ */
+
+// The live gate-2 run created the toolkit correctly and then the READ-BACK crashed: a stack with
+// no stack policy makes `get-stack-policy` return the documented null value, which the CLI
+// serializes as ZERO BYTES, and a bare `json.load` blew up on it. The fake had modelled `{}`.
+// The fix is one dedicated loader for that ONE call — not tolerance everywhere, because for every
+// other observation an empty body is a LOST observation, not an absence.
+
+test('r14: an EMPTY stack-policy body is the documented absence, and the run completes', () => {
+  const r = run('dev', 'bootstrap', {});           // the default fake now writes zero bytes
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /READ-BACK OK/);
+});
+
+test('r14: a stack policy that IS present still refuses', () => {
+  const r = run('dev', 'bootstrap', { stackPolicy: true });
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /unexpected stack policy/);
+});
+
+test('r14: every ambiguous stack-policy body refuses BY NAME', () => {
+  const cases = [
+    ['whitespace only', '   \n', /whitespace only/],
+    ['JSON malformado', '{"StackPolicyBody":', /not valid JSON/],
+    ['topo nao-objeto', '["StackPolicyBody"]', /not a JSON object/],
+    ['chave desconhecida', '{"SomethingElse":"x"}', /unknown key/],
+  ];
+  for (const [label, body, re] of cases) {
+    const r = run('dev', 'bootstrap', { stackPolicyRaw: body });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.out, re, label);
+    assert.ok(!r.out.includes('READ-BACK OK'), `${label}: nunca conclui OK`);
+  }
+});
+
+test('r14: a NULL StackPolicyBody is an absence, not a policy', () => {
+  const r = run('dev', 'bootstrap', { stackPolicyRaw: '{"StackPolicyBody": null}' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /READ-BACK OK/);
+});
+
+test('r14: for every OTHER observation, an empty body is a LOST observation and refuses', () => {
+  // The snapshot requires each of these resources, so absence is divergence. Their APIs signal a
+  // real absence with a named error (NoSuchBucketPolicy, NoSuchLifecycleConfiguration,
+  // LifecyclePolicyNotFoundException, RepositoryPolicyNotFoundException), which `observe()`
+  // already refuses — an EMPTY success body is the case this pins.
+  const mustBePresent = [
+    's3api get-bucket-policy',
+    's3api get-bucket-lifecycle-configuration',
+    'ecr get-lifecycle-policy',
+    'ecr get-repository-policy',
+    'cloudformation get-template',
+    'iam list-entities-for-policy',
+  ];
+  for (const sub of mustBePresent) {
+    const r = run('dev', 'bootstrap', { emptyObs: sub });
+    assert.notEqual(r.code, 0, sub);
+    assert.match(r.out, /came back EMPTY — a body was required|is empty — this API must return a body/, sub);
+    assert.ok(!r.out.includes('READ-BACK OK'), `${sub}: nunca conclui OK`);
+  }
+});
+
+test('r14: the permissive loader has EXACTLY ONE call site; everything else stays strict', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts/lib/bootstrap-readback-validate.py'), 'utf8');
+  const defs = src.match(/^def load_stack_policy\(\):/gm) ?? [];
+  assert.equal(defs.length, 1, 'exactly one definition');
+  const calls = src.match(/load_stack_policy\(\)/g) ?? [];
+  assert.equal(calls.length, 2, 'the definition plus exactly ONE call site');
+  // And every other observation goes through the strict loader.
+  const strictCalls = src.match(/\bload\('obs\.[a-z0-9.$-]+/g) ?? [];
+  assert.ok(strictCalls.length >= 10, `the strict loader still reads the other observations: ${strictCalls.length}`);
+  assert.equal(/load\('obs\.stackpolicy/.test(src), false, 'the stack policy never goes through the strict loader');
 });

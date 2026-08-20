@@ -227,7 +227,7 @@ for name in "${POLICY_NAMES[@]}"; do
 done
 
 # ── observe(desc, absence-marker, aws args...): EXISTS / proven ABSENT / named refusal ──
-OBS_STATE=""; OBS_OUT=""
+OBS_STATE=""; OBS_OUT=""; OBS_ALLOW_EMPTY=0
 observe() {
   local desc="$1" marker="$2"; shift 2
   local rc
@@ -238,8 +238,17 @@ observe() {
   if [ "$rc" -eq 0 ]; then
     grep -q '"NextToken"\|"IsTruncated": true' <<<"$RUN_OUT" \
       && { echo "REFUSED: observation of ${desc} was paginated/truncated — an incomplete read proves nothing"; exit 1; }
+    # An EMPTY body on a successful call is a LOST observation, not an answer (r14). Every API
+    # this script reads returns a body — with ONE documented exception, `get-stack-policy` on a
+    # stack that carries no policy, which sets OBS_ALLOW_EMPTY for that single call. Without this
+    # the empty body reached a downstream parser and refused under someone else's name.
+    if [ -z "$RUN_OUT" ] && [ "${OBS_ALLOW_EMPTY:-0}" != "1" ]; then
+      echo "REFUSED: observation of ${desc} came back EMPTY — a body was required; this is a lost observation, not an absence"; exit 1
+    fi
+    OBS_ALLOW_EMPTY=0
     OBS_STATE=EXISTS; OBS_OUT="$RUN_OUT"; return 0
   fi
+  OBS_ALLOW_EMPTY=0
   if [ -n "$marker" ] && grep -q "$marker" <<<"$RUN_ERR$RUN_OUT"; then OBS_STATE=ABSENT; OBS_OUT=""; return 0; fi
   echo "REFUSED: observation of ${desc} failed (not a proven absence) — nothing was mutated"; exit 1
 }
@@ -383,6 +392,9 @@ readback() { # $1 = when; refuses on ANY divergence, reporting EVERY failure at 
   printf '%s' "$OBS_OUT" > "$TMP/obs.template.json"
   observe "the stack resources (${when})" "" cloudformation list-stack-resources --stack-name "$TOOLKIT" --output json
   printf '%s' "$OBS_OUT" > "$TMP/obs.resources.json"
+  # THE one call whose empty body is a documented absence — see load_stack_policy() in the
+  # read-back validator, which is the only place that reads such a body.
+  OBS_ALLOW_EMPTY=1
   observe "the stack policy (${when})" "" cloudformation get-stack-policy --stack-name "$TOOLKIT" --output json
   printf '%s' "$OBS_OUT" > "$TMP/obs.stackpolicy.json"
 
