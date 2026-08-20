@@ -115,6 +115,11 @@ One operation: execute exactly the change sets whose digest Zamp reviewed, for O
    wrong. Stop; fresh decision; windows are never widened.
 3. `CHANGE_SET_MISSING` / `CHANGE_SET_UNAVAILABLE` / `CHANGE_SET_SCHEMA_UNKNOWN` — the prepared
    sets are not in a reviewed state. Stop and investigate; never retried blind.
+3a. `CHANGE_SET_DEPLOYMENT_CONFIG_ABSENT` / `CHANGE_SET_DEPLOYMENT_CONFIG_UNSUPPORTED` — the plan
+   states a deployment configuration this lane does not approve (only `STANDARD` mode with
+   rollback-on-failure enabled), or does not state one at all. Neither is visible in the resource
+   diff, so neither is waivable by reading the plan harder. Stop; the change sets must be
+   re-prepared, not re-gated.
 4. `EXECUTE_FAILED` / `STACK_EXECUTION_FAILED` — execution refused or a stack failed mid-wave.
    The output records exactly which stacks executed. Stop; continue in the
    [recovery runbook](aws-dev-release-recovery.md).
