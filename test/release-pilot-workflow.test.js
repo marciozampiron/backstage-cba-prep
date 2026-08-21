@@ -133,8 +133,7 @@ const EXPECTED_WORKFLOW = {
           "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
           "with": {
             "node-version": 22,
-            "cache": "npm",
-            "cache-dependency-path": "infra/aws/package-lock.json"
+            "package-manager-cache": false
           }
         },
         {
@@ -250,8 +249,7 @@ const EXPECTED_WORKFLOW = {
           "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
           "with": {
             "node-version": 22,
-            "cache": "npm",
-            "cache-dependency-path": "infra/aws/package-lock.json"
+            "package-manager-cache": false
           }
         },
         {
@@ -404,8 +402,7 @@ const EXPECTED_WORKFLOW = {
           "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
           "with": {
             "node-version": 22,
-            "cache": "npm",
-            "cache-dependency-path": "infra/aws/package-lock.json"
+            "package-manager-cache": false
           }
         },
         {
@@ -472,7 +469,8 @@ const EXPECTED_WORKFLOW = {
         {
           "uses": "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
           "with": {
-            "node-version": 22
+            "node-version": 22,
+            "package-manager-cache": false
           }
         },
         {
@@ -1537,4 +1535,53 @@ test('#111-3: CORS is wired at the CLOSED matrix of six {job, step} sites — mo
   // MUTATION: remove one argument — the per-site count refuses even though another site could gain one.
   const one = raw.replace('-c "corsAllowedOrigins=$CBA_CORS_ALLOWED_ORIGINS" \\\n', '');
   assert.ok(checker(one).some((f) => f.cors === 0), 'individual removal is visible at its own site');
+});
+
+test('CodeQL #8: package caching is OFF in every job that checks out release_sha — a closed inventory', () => {
+  // These jobs check out an operator-supplied SHA and later hold OIDC authority. Code from that
+  // SHA runs during install/test and can write anything into a package cache; a cache saved
+  // under main's key and restored by main's runs is the poisoning path CodeQL #8 names. The lane
+  // therefore neither restores nor saves any package cache — and the flag is EXPLICIT on every
+  // setup-node, because setup-node can enable caching by itself when a packageManager field
+  // appears in package.json. This guard is semantic, on the parsed object: reintroducing a cache
+  // anywhere stays red even if EXPECTED_WORKFLOW above is updated to match.
+  const doc = parseDocument(raw, { uniqueKeys: true });
+  const workflow = doc.toJS();
+  const found = [];
+  for (const [jobId, job] of Object.entries(workflow.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (typeof step.uses === 'string' && step.uses.startsWith('actions/setup-node@')) {
+        found.push({ jobId, with: step.with ?? {} });
+      }
+    }
+  }
+  assert.deepEqual(
+    found.map((f) => f.jobId),
+    ['dev-preflight', 'dev-stage', 'pilot-preflight', 'pilot-stage'],
+    'exactly the four lane jobs use setup-node — a fifth consumer is a new review, not a drive-by',
+  );
+  for (const { jobId, with: w } of found) {
+    assert.equal(w['package-manager-cache'], false, `${jobId}: package-manager-cache must be EXPLICITLY false`);
+    assert.equal(Object.hasOwn(w, 'cache'), false, `${jobId}: no cache restore/save may exist`);
+    assert.equal(Object.hasOwn(w, 'cache-dependency-path'), false, `${jobId}: no cache key derivation may exist`);
+  }
+  // And no job smuggles a cache through the generic actions/cache either.
+  for (const [jobId, job] of Object.entries(workflow.jobs)) {
+    for (const step of job.steps ?? []) {
+      assert.equal(
+        typeof step.uses === 'string' && /^actions\/cache[@/]/.test(step.uses),
+        false,
+        `${jobId}: actions/cache is the same poisoning surface under another name`,
+      );
+    }
+  }
+  // MUTATIONS, executed against edited text: each reintroduction path is individually red.
+  const flagGone = raw.replace('          package-manager-cache: false\n', '');
+  const flagParsed = parseDocument(flagGone, { uniqueKeys: true }).toJS();
+  const flagFound = Object.values(flagParsed.jobs).flatMap((j) => (j.steps ?? []).filter((s) => typeof s.uses === 'string' && s.uses.startsWith('actions/setup-node@')));
+  assert.ok(flagFound.some((s) => (s.with ?? {})['package-manager-cache'] !== false), 'removing one explicit flag is visible');
+  const cacheBack = raw.replace('          package-manager-cache: false', '          package-manager-cache: false\n          cache: npm');
+  const cacheParsed = parseDocument(cacheBack, { uniqueKeys: true }).toJS();
+  const cacheFound = Object.values(cacheParsed.jobs).flatMap((j) => (j.steps ?? []).filter((s) => typeof s.uses === 'string' && s.uses.startsWith('actions/setup-node@')));
+  assert.ok(cacheFound.some((s) => Object.hasOwn(s.with ?? {}, 'cache')), 'reintroducing cache: npm is visible');
 });
