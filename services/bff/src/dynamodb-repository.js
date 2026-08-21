@@ -262,6 +262,33 @@ export class DynamoDbSimulationRepository {
     return `${prefix}_${Number(res.Attributes.n).toString(36)}`;
   }
 
+  /* Rate windows (#90): one conditional UpdateItem is the whole operation — the check and the
+     increment cannot be separated by another container's request. `attribute_not_exists(pk)`
+     admits the window's first unit; `n < :limit` admits the rest; ConditionalCheckFailed IS the
+     refusal, not an error. The item is keyed by the canonical window key, so every Lambda
+     container lands the same caller in the same window. `expiresAt` (epoch seconds) is written
+     for table-level TTL; until TTL is enabled on the table the items are small bounded garbage —
+     one per (learner, operation, minute) — and that residual is declared, not hidden. */
+  async consumeRateBudget({ key, limit, windowStartMs, windowMs }) {
+    try {
+      await this.client.update({
+        TableName: this.tableName,
+        Key: { pk: `RATE#${key}`, sk: REC },
+        UpdateExpression: 'ADD n :one SET expiresAt = :ttl',
+        ConditionExpression: 'attribute_not_exists(pk) OR n < :limit',
+        ExpressionAttributeValues: {
+          ':one': 1,
+          ':limit': limit,
+          ':ttl': Math.floor((windowStartMs + 2 * windowMs) / 1000),
+        },
+      });
+      return { allowed: true };
+    } catch (err) {
+      if (err?.name === 'ConditionalCheckFailedException') return { allowed: false };
+      throw err;
+    }
+  }
+
   /* ORDINARY reads are filtered; cleanup uses the RAW path. */
   async getSession(id) {
     const found = await this.#getRecord('SESSION', id);

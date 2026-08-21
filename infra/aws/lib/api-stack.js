@@ -83,6 +83,25 @@ const LOG_RETENTION = {
   pilot: logs.RetentionDays.ONE_MONTH, // 30 days
 };
 
+// #90 (SEC-WEB-01 / SYS-T05): the REVIEWED stage throttle baseline, per environment. These are
+// conservative starting values from docs/architecture/security-assurance-baseline.md — not a
+// capacity promise — and any increase requires traffic/cost evidence and human security review.
+// The table is CLOSED: an environment without a reviewed row must not synthesize a stage at all,
+// because an unthrottled stage invokes the Lambda without the reviewed bound.
+const STAGE_THROTTLE = {
+  dev: { ratePerSecond: 10, burst: 20 },
+  pilot: { ratePerSecond: 25, burst: 50 },
+};
+
+// #90: the Lambda's EXPLICIT concurrency ceiling, aligned with the stage rate above. Reserved
+// concurrency is the account-level backstop the stage throttle cannot provide: a caller that
+// reaches the function through any future path beyond this stage still cannot fan out unbounded
+// executions. Same closed-table contract as the throttle.
+const LAMBDA_CONCURRENCY = {
+  dev: 10,
+  pilot: 25,
+};
+
 // API Gateway access-log ALLOWLIST (`aws-observability-baseline.md` §7). Access logs may carry
 // only these fields: correlation id, route key, status, latency and integration status. No path
 // with ids, no query string, no headers, no bodies, no source IP, no user-agent.
@@ -210,6 +229,12 @@ class ApiStack extends Stack {
 
     const durable = environment === 'pilot';
     const retention = LOG_RETENTION[environment];
+    const throttle = STAGE_THROTTLE[environment];
+    const concurrency = LAMBDA_CONCURRENCY[environment];
+    if (!throttle || !concurrency) {
+      // Fail closed at synth: a tier without reviewed throughput bounds has no reviewed API.
+      throw new Error(`ApiStack has no reviewed throttle baseline for environment "${environment}" (#90).`);
+    }
 
     // EXPLICIT Lambda log group (#82). Without it the runtime creates the group implicitly with
     // NEVER-EXPIRING retention, which the observability baseline forbids. See the adoption note
@@ -240,6 +265,7 @@ class ApiStack extends Stack {
       handler: 'handler',
       memorySize: 512,
       timeout: Duration.seconds(15),
+      reservedConcurrentExecutions: concurrency,
       environment: {
         CBA_RUNTIME_ENV: environment,
         CBA_WEB_STORE: 'dynamodb',
@@ -339,6 +365,14 @@ class ApiStack extends Stack {
     defaultStage.accessLogSettings = {
       destinationArn: this.accessLogGroup.logGroupArn,
       format: ACCESS_LOG_FORMAT,
+    };
+    // #90: the stage-wide throttle, on the SAME escape hatch. Every route inherits it — the
+    // anonymous /readiness included, which is exactly the route an unauthenticated caller can
+    // spin on. Route-level overrides are deliberately absent: one reviewed bound, no quiet
+    // exceptions; the per-operation application bounds live in the BFF where the principal is.
+    defaultStage.defaultRouteSettings = {
+      throttlingRateLimit: throttle.ratePerSecond,
+      throttlingBurstLimit: throttle.burst,
     };
     defaultStage.node.addDependency(this.accessLogGroup);
 

@@ -41,6 +41,7 @@ import {
 } from './store.js';
 import { dashboard, practiceOptions } from './views.js';
 import { emitCompletionEvent } from './telemetry.js';
+import { RATE_BOUNDS, windowStartOf, rateWindowKey } from './rate-limit.js';
 
 /** Runtime tier for telemetry only — never throws, so a config problem cannot break a request. */
 function safeRuntimeEnv() {
@@ -347,6 +348,29 @@ export async function handleApiRequest({
         throw new ApiError(409, 'RUN_CLOSED', 'This smoke run has been cleaned up and accepts no new records.');
       }
       smokeRun = { runId: owned.runId };
+    }
+    // #90 (SEC-WEB-01): the per-principal bound on expensive creations, enforced HERE — after
+    // the identity is resolved from authorizer-validated claims and BEFORE the body is even
+    // parsed, so nothing a caller supplies has run yet when the refusal happens. The partition is
+    // (learnerId, matched route PATTERN): the learnerId comes from the trusted principal, never
+    // from the request, so a caller-supplied identifier cannot move the request into another
+    // caller's window; the pattern is bounded vocabulary, so no concrete id enters storage.
+    // The window instant comes from the composition clock the dispatcher already carries.
+    const bound = matched.route.auth ? RATE_BOUNDS[routeKey] : undefined;
+    if (bound) {
+      const nowMs = now();
+      const windowStartMs = windowStartOf(nowMs, bound.windowMs);
+      const { allowed } = await activeRepository().consumeRateBudget({
+        key: rateWindowKey(learnerId, routeKey, windowStartMs),
+        limit: bound.limit,
+        windowStartMs,
+        windowMs: bound.windowMs,
+      });
+      if (!allowed) {
+        // Stable, privacy-safe contract: the envelope names the OPERATION CLASS only — no
+        // learner data, no counts, no window internals a probe could calibrate against.
+        throw new ApiError(429, 'RATE_LIMITED', 'Too many requests for this operation. Retry shortly.');
+      }
     }
     const parsedBody = parseBody(body, matched.route.bodyPolicy);
     const result = await matched.route.handler({
