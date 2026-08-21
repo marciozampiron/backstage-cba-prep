@@ -131,7 +131,11 @@ test('every wildcard is a NAMED exception, and each is confined by the PROJECT A
   const RESOURCE_TAGGED = { 'aws:ResourceTag/Project': 'CBAStudyCoach', 'aws:ResourceTag/Environment': 'ENVIRONMENT_PLACEHOLDER' };
   assert.deepEqual(asArray(byId.CognitoCreateOnlyProjectTaggedPools.Action), ['cognito-idp:CreateUserPool']);
   assert.deepEqual(byId.CognitoCreateOnlyProjectTaggedPools.Condition.StringEquals, REQUEST_TAGGED);
-  assert.deepEqual(asArray(byId.KmsCreateOnlyProjectTaggedKeys.Action), ['kms:CreateKey']);
+  // #111 wave-2 postmortem: CreateKey --tags ALSO evaluates the nominal kms:TagResource, and the
+  // lifecycle grant is ResourceTag-conditioned — unmatchable on a key that does not exist yet.
+  // The nominal action therefore lives HERE, under the same REQUEST-tag confinement as the
+  // create itself; wave 3 would have failed exactly as the ApiStack stage did without it.
+  assert.deepEqual(asArray(byId.KmsCreateOnlyProjectTaggedKeys.Action), ['kms:CreateKey', 'kms:TagResource']);
   assert.deepEqual(byId.KmsCreateOnlyProjectTaggedKeys.Condition.StringEquals, REQUEST_TAGGED);
   // Lifecycle over generated-id families demands the RESOURCE tags — a foreign pool or key,
   // whoever created it, refuses by tag, not by luck of the id.

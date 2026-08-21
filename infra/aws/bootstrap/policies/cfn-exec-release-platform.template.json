@@ -21,7 +21,10 @@
       "Action": [
         "cloudwatch:DeleteDashboards",
         "cloudwatch:GetDashboard",
-        "cloudwatch:PutDashboard"
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:PutDashboard",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource"
       ],
       "Resource": "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
@@ -66,7 +69,10 @@
     {
       "Sid": "KmsCreateOnlyProjectTaggedKeys",
       "Effect": "Allow",
-      "Action": "kms:CreateKey",
+      "Action": [
+        "kms:CreateKey",
+        "kms:TagResource"
+      ],
       "Resource": "*",
       "Condition": {
         "StringEquals": {

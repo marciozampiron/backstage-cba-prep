@@ -105,6 +105,30 @@
       }
     },
     {
+      "Sid": "ApiGatewayV2StageTaggingOnlyWithFoundationTags",
+      "Effect": "Allow",
+      "Action": "apigateway:TagResource",
+      "Resource": "arn:aws:apigateway:us-east-1::/apis/*/stages",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        },
+        "StringEqualsIfExists": {
+          "aws:RequestTag/ManagedBy": "CDK",
+          "aws:RequestTag/CostCenter": "pilot"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment",
+            "ManagedBy",
+            "CostCenter"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources",
       "Effect": "Allow",
       "Action": [
