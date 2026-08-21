@@ -337,3 +337,37 @@ test('the #75 cleanup surface is authenticated and stays off the browser CORS me
   assert.deepEqual(api.Properties.CorsConfiguration.AllowMethods, ['GET', 'POST', 'PUT']);
   assert.equal(api.Properties.CorsConfiguration.AllowMethods.includes('DELETE'), false);
 });
+
+/* ---------------- #90: throughput bounds (SEC-WEB-01 / SYS-T05) ---------------- */
+
+test('#90: the stage throttle is the REVIEWED baseline, per environment, on the default stage', () => {
+  // pilot: 25 r/s burst 50; dev: 10 r/s burst 20 — the closed table from the security baseline.
+  const expectations = [
+    ['pilot', 25, 50],
+    ['dev', 10, 20],
+  ];
+  for (const [environment, rate, burst] of expectations) {
+    const template = apiTemplate(environment);
+    const stages = template.findResources('AWS::ApiGatewayV2::Stage');
+    const names = Object.keys(stages);
+    assert.equal(names.length, 1, `${environment}: exactly one stage — a second stage would be an unthrottled door`);
+    const settings = stages[names[0]].Properties.DefaultRouteSettings;
+    assert.deepEqual(
+      { ThrottlingRateLimit: settings?.ThrottlingRateLimit, ThrottlingBurstLimit: settings?.ThrottlingBurstLimit },
+      { ThrottlingRateLimit: rate, ThrottlingBurstLimit: burst },
+      `${environment}: the default-route throttle is explicit and exact`,
+    );
+    // No route-level override may quietly widen what the stage bounds.
+    assert.equal(stages[names[0]].Properties.RouteSettings, undefined, `${environment}: no per-route exceptions`);
+  }
+});
+
+test('#90: the Lambda concurrency ceiling is explicit and matches the stage rate', () => {
+  for (const [environment, ceiling] of [['pilot', 25], ['dev', 10]]) {
+    const template = apiTemplate(environment);
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      FunctionName: `cba-study-coach-${environment}-bff`,
+      ReservedConcurrentExecutions: ceiling,
+    });
+  }
+});

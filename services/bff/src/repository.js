@@ -103,7 +103,7 @@ function countAnswers(record) {
 }
 
 function emptyState() {
-  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {}, smokeRuns: {}, profileLeases: {} };
+  return { counter: 0, sessions: {}, attempts: {}, mocks: {}, activeMocks: {}, profiles: {}, smokeRuns: {}, profileLeases: {}, rateWindows: {} };
 }
 
 export class InMemorySimulationRepository {
@@ -433,6 +433,28 @@ export class InMemorySimulationRepository {
 
   async getSmokeRun(runId) {
     return this.state.smokeRuns[runId] ?? null;
+  }
+
+  /* Rate windows (#90, SEC-WEB-01): consume one unit of a (learner, operation, window) budget.
+     The CHECK and the INCREMENT are one operation at the storage layer — in this single-process
+     adapter by construction, in the managed adapter by a conditional write — because a separate
+     read-then-write would admit exactly the burst it exists to refuse. Old windows are pruned on
+     touch: the previous window is kept (it still bounds the boundary-crossing burst the fixed
+     window admits), everything older is dead weight. */
+  async consumeRateBudget({ key, limit, windowStartMs, windowMs }) {
+    const windows = this.state.rateWindows;
+    for (const stored of Object.keys(windows)) {
+      if (windows[stored].windowStartMs < windowStartMs - windowMs) delete windows[stored];
+    }
+    const entry = windows[key] ?? { windowStartMs, count: 0 };
+    if (entry.count >= limit) {
+      this.persist();
+      return { allowed: false };
+    }
+    entry.count += 1;
+    windows[key] = entry;
+    this.persist();
+    return { allowed: true };
   }
 
   /**

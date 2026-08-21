@@ -95,3 +95,20 @@ test('the table has TTL for the #75 run tombstones', () => {
     assert.deepEqual(table.Properties.TimeToLiveSpecification, { AttributeName: 'ttl', Enabled: true }, env);
   }
 });
+
+test('#90: the rate-window rows expire on the SAME attribute the table\'s TTL reads', async () => {
+  // The review reproduction: the adapter stamped `expiresAt` while the table's TTL reads `ttl`,
+  // so every (learner, operation, minute) left a permanent row — retention and cost growth with
+  // no bound (SEC-DATA-01/SYS-T05). This confronts the two PHYSICAL names directly: the ESM
+  // adapter's exported attribute against the synthesized TimeToLiveSpecification, per
+  // environment. Renaming either side alone goes red here.
+  const { RATE_TTL_ATTRIBUTE } = await import('../../../services/bff/src/dynamodb-repository.js');
+  for (const env of ['dev', 'pilot']) {
+    const table = Object.values(synth(env).findResources('AWS::DynamoDB::Table'))[0];
+    assert.deepEqual(
+      table.Properties.TimeToLiveSpecification,
+      { AttributeName: RATE_TTL_ATTRIBUTE, Enabled: true },
+      `${env}: the adapter writes what TTL deletes`,
+    );
+  }
+});

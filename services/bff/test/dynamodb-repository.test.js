@@ -54,7 +54,27 @@ export function createFakeDynamoClient(store, { failNextPutWith, queryPageSize }
       }
       store.items.set(key, structuredClone(Item));
     },
-    async update({ Key, UpdateExpression, ExpressionAttributeValues }) {
+    async update({ Key, UpdateExpression, ConditionExpression, ExpressionAttributeNames, ExpressionAttributeValues }) {
+      // Rate window (#90): the condition is pinned VERBATIM — a drifted production expression
+      // must break here, not be silently accommodated.
+      if (UpdateExpression === 'ADD n :one SET #ttl = :ttl') {
+        if (ConditionExpression !== 'attribute_not_exists(pk) OR n < :limit') {
+          throw new Error(`fake client: unsupported rate-window condition "${ConditionExpression}"`);
+        }
+        // The alias must bind the LIVE table attribute: the r-review reproduction was a window
+        // row stamped on a name TTL never reads, permanent by construction.
+        if (ExpressionAttributeNames?.['#ttl'] !== 'ttl') {
+          throw new Error('fake client: the rate-window TTL alias must bind #ttl=ttl');
+        }
+        const key = keyOf(Key);
+        const existing = store.items.get(key);
+        if (existing && !(existing.n < ExpressionAttributeValues[':limit'])) throw conditionalError();
+        const next = existing ?? { ...Key, n: 0 };
+        next.n += 1;
+        next.ttl = ExpressionAttributeValues[':ttl'];
+        store.items.set(key, structuredClone(next));
+        return {};
+      }
       if (UpdateExpression !== 'ADD n :one') {
         throw new Error(`fake client: unsupported update "${UpdateExpression}"`);
       }

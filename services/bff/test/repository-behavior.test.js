@@ -12,6 +12,21 @@ import {
 } from '../src/repository.js';
 
 export function runRepositorySuite(name, makeRepo, { reopen, corruptAnchor, inProcess } = {}) {
+  test(`${name}: consumeRateBudget admits exactly the limit, atomically per window key (#90)`, async () => {
+    const repo = await makeRepo();
+    const args = (key) => ({ key, limit: 3, windowStartMs: 60_000, windowMs: 60_000 });
+    for (let i = 0; i < 3; i += 1) {
+      assert.deepEqual(await repo.consumeRateBudget(args('learner_a POST /mock-exams 60000')), { allowed: true }, `unit ${i + 1}`);
+    }
+    assert.deepEqual(await repo.consumeRateBudget(args('learner_a POST /mock-exams 60000')), { allowed: false }, 'the limit is the limit');
+    // The partition is the KEY: another learner, another operation and another window each have
+    // their own untouched budget — and the exhausted one stays exhausted.
+    assert.deepEqual(await repo.consumeRateBudget(args('learner_b POST /mock-exams 60000')), { allowed: true });
+    assert.deepEqual(await repo.consumeRateBudget(args('learner_a POST /coach/message 60000')), { allowed: true });
+    assert.deepEqual(await repo.consumeRateBudget({ key: 'learner_a POST /mock-exams 120000', limit: 3, windowStartMs: 120_000, windowMs: 60_000 }), { allowed: true });
+    assert.deepEqual(await repo.consumeRateBudget(args('learner_a POST /mock-exams 60000')), { allowed: false });
+  });
+
   test(`${name}: nextId is awaitable, unique, and prefix-scoped`, async () => {
     const repo = await makeRepo();
     const a = await repo.nextId('att');
