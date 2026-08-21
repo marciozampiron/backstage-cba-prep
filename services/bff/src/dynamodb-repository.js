@@ -273,7 +273,9 @@ export class DynamoDbSimulationRepository {
      container lands the same caller in the same window. The row is stamped on the table's LIVE
      TTL attribute (r-review: the table already enables TTL on `ttl` — writing any other name is
      permanent garbage, which is exactly the defect this sentence replaced), so every window item
-     is deleted by DynamoDB two windows after it closes. `TTL` is a DynamoDB RESERVED WORD: the
+     becomes ELIGIBLE for asynchronous TTL deletion at windowStart + 2*windowMs — one full window
+     after it closes — and DynamoDB removes it on its own schedule, typically within days; TTL is
+     cleanup, never authorization. `TTL` is a DynamoDB RESERVED WORD: the
      attribute must ride an ExpressionAttributeNames alias, never appear bare in the expression. */
   async consumeRateBudget({ key, limit, windowStartMs, windowMs }) {
     try {
