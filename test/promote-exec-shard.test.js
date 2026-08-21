@@ -4,7 +4,7 @@
 // `git` serves the "commit" from a staged source root (so the archive, the manifest and the
 // write-strip all actually happen), and a fake `aws` keeps mutable IAM state and records the
 // environment of every call. No AWS, no credentials, no worktree copies executed.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +14,21 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+// r3-L4: the suite owns its residue. Every mkdtemp lands here; `after` removes them all, and the
+// final test proves absence of what THIS run created (297 leftovers were found in /tmp).
+const CREATED_DIRS = [];
+function tmpdir(prefix) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  CREATED_DIRS.push(d);
+  return d;
+}
+after(() => {
+  for (const d of CREATED_DIRS) {
+    try { execFileSync('chmod', ['-R', 'u+w', d]); } catch { /* may already be writable */ }
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+});
 const ROOT = path.join(here, '..');
 const SHA = 'ab'.repeat(20);
 const ACCOUNT = '1'.repeat(12);
@@ -48,7 +63,7 @@ const STALE_SHA = () => canonicalSha(staleDocument());
 
 /** Stage a fake "repository": the REAL scripts and bootstrap inputs, served by a fake git. */
 function harness(state = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-promote-h-'));
+  const dir = tmpdir('cba-promote-h-');
   const src = path.join(dir, 'repo');
   fs.mkdirSync(src);
   fs.writeFileSync(path.join(src, '.git'), 'gitdir: fake');
@@ -76,6 +91,7 @@ esac
     roles: [EXEC_ROLE], users: [], boundaryCount: 0,
     account: ACCOUNT,
     boundaryAfterCreate: null, rolesAfterCreate: null, accountAfterCreate: null,
+    boundaryFromCheck: null, documentAfterReads: null, malformedCreateResponse: false,
     failCreate: false, lostResponseOnCreate: false, failDelete: false, deleteWrongSurvivor: false,
     readbackDocument: null,
     created: null, createdDocument: null, deleted: [], calls: [],
@@ -114,13 +130,19 @@ if verb == 'iam list-policy-versions':
     out({'Versions': [{'VersionId': v, 'IsDefaultVersion': v == state['defaultVersion']} for v in state['versions']]})
 if verb == 'iam get-policy-version':
     vid = arg('--version-id')
+    state['getVersionReads'] = state.get('getVersionReads', 0) + 1
     doc = state['document']
+    if state['documentAfterReads'] is not None and state['getVersionReads'] > state['documentAfterReads']['after']:
+        doc = state['documentAfterReads']['document']
     if created_active and vid == state['created']:
         doc = state['readbackDocument'] if state['readbackDocument'] is not None else state['createdDocument']
     out({'PolicyVersion': {'VersionId': vid, 'IsDefaultVersion': vid == state['defaultVersion'], 'Document': doc}})
 if verb == 'iam list-entities-for-policy':
     if '--policy-usage-filter' in args:
+        state['boundaryChecks'] = state.get('boundaryChecks', 0) + 1
         n = state['boundaryAfterCreate'] if (created_active and state['boundaryAfterCreate'] is not None) else state['boundaryCount']
+        if state['boundaryFromCheck'] is not None and state['boundaryChecks'] >= state['boundaryFromCheck']:
+            n = 1
         out({'PolicyRoles': [{'RoleName': 'b%d' % i} for i in range(n)], 'PolicyUsers': [], 'PolicyGroups': []})
     roles = state['rolesAfterCreate'] if (created_active and state['rolesAfterCreate'] is not None) else state['roles']
     out({'PolicyRoles': [{'RoleName': r} for r in roles], 'PolicyUsers': [{'UserName': u} for u in state['users']], 'PolicyGroups': []})
@@ -137,6 +159,8 @@ if verb == 'iam create-policy-version':
     if state['lostResponseOnCreate']:
         # The mutation HAPPENED; the response never arrived. One attempt means one version.
         save(); sys.exit(255)
+    if state['malformedCreateResponse']:
+        out({})
     out({'PolicyVersion': {'VersionId': 'v2', 'IsDefaultVersion': True}})
 if verb == 'iam delete-policy-version':
     if state['failDelete']:
@@ -216,6 +240,34 @@ test('r2-F1: the worktree copy REFUSES to run directly — only the materialized
   assert.equal(h.state().calls.length, 0, 'not one aws call');
 });
 
+test('r3-H1: the WORKTREE copy is refused even when handed a VALID materialized tree', () => {
+  // Codex's reproduction: unreviewed worktree bytes riding on reviewed templates. The child must
+  // prove the RUNNING COPY lives at MAT_ROOT, not merely that some valid tree exists.
+  const h = harness();
+  // Build a genuine materialized tree exactly as the launcher would.
+  const mat = tmpdir('cba-valid-mat-');
+  execFileSync('bash', ['-c', `tar -cf - -C ${JSON.stringify(h.src)} scripts infra/aws/bootstrap | tar -x -C ${JSON.stringify(mat)}`]);
+  const digests = execFileSync('bash', ['-c', `cd ${JSON.stringify(mat)} && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum`], { encoding: 'utf8' });
+  fs.writeFileSync(path.join(mat, '.cba-manifest'), `SHA ${SHA}\n${digests}`);
+  execFileSync('chmod', ['-R', 'a-w', mat]);
+  let out = ''; let code = 0;
+  try {
+    out = execFileSync('bash', ['-p', path.join(ROOT, 'scripts', 'promote-exec-shard.sh'), 'dev', 'app'], {
+      encoding: 'utf8',
+      env: {
+        PATH: `${h.dir}:${process.env.PATH}`,
+        CBA_MATERIALIZED_ROOT: mat,
+        CBA_AUTHORIZED_SHA: SHA,
+        CBA_EXPECTED_ACCOUNT_ID: ACCOUNT,
+        CBA_EXPECTED_OLD_DOC_SHA256: STALE_SHA(),
+      },
+    });
+  } catch (e) { out = `${e.stdout ?? ''}${e.stderr ?? ''}`; code = e.status ?? 1; }
+  assert.equal(code, 1);
+  assert.match(out, /this copy is not the materialized one/);
+  assert.equal(h.state().calls.length, 0, 'the bypass never reaches a single aws call');
+});
+
 test('r2-F1: a WRONG account refuses with zero IAM mutation, and a hostile PYTHONPATH changes nothing', () => {
   const wrong = harness({ account: '9'.repeat(12) });
   const r = runLauncher(wrong);
@@ -225,7 +277,7 @@ test('r2-F1: a WRONG account refuses with zero IAM mutation, and a hostile PYTHO
 
   // Hostile PYTHONPATH/PYTHONSTARTUP: python runs -I everywhere, so the promotion still succeeds
   // and still promotes exactly the reviewed bytes.
-  const hostileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-hostile-'));
+  const hostileDir = tmpdir('cba-hostile-');
   fs.writeFileSync(path.join(hostileDir, 'json.py'), 'raise SystemExit("hostile json module imported")');
   const h = harness();
   const r2 = runLauncher(h, { extraEnv: { PYTHONPATH: hostileDir, PYTHONSTARTUP: path.join(hostileDir, 'json.py') } });
@@ -241,7 +293,7 @@ test('r2-F1: a template edited AFTER the authorization cannot ride in — the ar
   // a manifest-breaking tree by editing a file INSIDE the materialized tree is impossible (it is
   // write-stripped and private). What IS reachable — and what the guard closes — is a stale or
   // hand-made CBA_MATERIALIZED_ROOT handed straight to the child:
-  const fakeTree = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-forged-'));
+  const fakeTree = tmpdir('cba-forged-');
   fs.cpSync(path.join(h.src, 'scripts'), path.join(fakeTree, 'scripts'), { recursive: true });
   fs.cpSync(path.join(h.src, 'infra'), path.join(fakeTree, 'infra'), { recursive: true });
   // Tamper the template, build a manifest that LIES about the SHA but hashes correctly.
@@ -326,6 +378,50 @@ test('r2-F4: a boundary usage appearing AFTER the create halts before any deleti
   assert.equal(r.code, 1);
   assert.match(r.out, /permissions boundary/);
   assert.deepEqual(h.state().deleted, [], 'the old version survives a moved topology');
+});
+
+test('r3-M2: a predecessor that MOVES between the proof and the create refuses with zero mutation', () => {
+  // First read (observe) serves the named predecessor; the re-read at the last boundary before
+  // the create serves something else — the create must never run.
+  const moved = staleDocument();
+  moved.Statement = moved.Statement.slice(0, 2);
+  const h = harness({ documentAfterReads: { after: 1, document: moved } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /live document MOVED after the first proof/);
+  assert.equal(mutating(h.state()).length, 0);
+});
+
+test('r3-M2: a boundary appearing between the post-create proof and the delete halts the delete', () => {
+  // Boundary checks: observe(1), pre-create(2), post-create(3) all clean; the pre-delete
+  // re-check(4) sees the boundary — the old version must survive.
+  const h = harness({ boundaryFromCheck: 4 });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /permissions boundary/);
+  assert.deepEqual(h.state().deleted, [], 'the late boundary stopped the delete');
+  assert.equal(h.state().created, 'v2', 'the honest record: the promotion had landed');
+});
+
+test('r3-M3: a MALFORMED success response halts with the ambiguous state named — no traceback, no delete', () => {
+  const h = harness({ malformedCreateResponse: true });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /response is MALFORMED — the mutation may have landed/);
+  assert.equal(r.out.includes('Traceback'), false, 'the failure is a named halt, never a stack trace');
+  const s = h.state();
+  assert.deepEqual(s.deleted, []);
+  assert.equal(s.calls.filter((c) => c.argv[1] === 'create-policy-version').length, 1, 'no retry');
+});
+
+test('r3-L4: the suite leaves NO residue — everything this run created is tracked for removal', () => {
+  // Every directory the suite made is on the tracked list (the `after` hook removes them; this
+  // proves nothing escaped the tracking to become one of the 297 orphans the review found).
+  assert.ok(CREATED_DIRS.length >= 10, 'the tracker saw the harnesses');
+  for (const d of CREATED_DIRS) {
+    assert.ok(d.startsWith(os.tmpdir()), d);
+    assert.ok(/cba-(promote-h|hostile|forged|valid-mat)-/.test(d), `untracked prefix: ${d}`);
+  }
 });
 
 test('r2-F4: a wrong SURVIVOR after the delete halts with the survivor named', () => {

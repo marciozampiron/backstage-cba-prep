@@ -48,6 +48,12 @@ MAT_ROOT="${CBA_MATERIALIZED_ROOT:-}"
 [ -n "$MAT_ROOT" ] && [ -d "$MAT_ROOT" ] \
   || { echo "REFUSED: run scripts/provision.sh — this script only executes from the tree materialized out of the authorized commit"; exit 1; }
 case "$MAT_ROOT" in /*) : ;; *) echo "REFUSED: the materialized root must be an absolute path"; exit 1 ;; esac
+# r3-H1: the RUNNING COPY must itself be the materialized one. Without this, a worktree copy
+# handed a VALID materialized root sails through the manifest guard and executes unreviewed
+# bytes against reviewed templates — the exact bypass the guard exists to close.
+SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ "$SELF_ROOT" = "$MAT_ROOT" ] \
+  || { echo "REFUSED: this copy is not the materialized one (run scripts/provision.sh)"; exit 1; }
 SHA="${CBA_AUTHORIZED_SHA:-}"
 printf '%s' "$SHA" | LC_ALL=C grep -qzE '^[0-9a-f]{40}$' \
   || { echo "REFUSED: CBA_AUTHORIZED_SHA is required (full 40-hex commit SHA)"; exit 1; }
@@ -212,16 +218,50 @@ echo "  materialized tree verified · account bound · topology proven (role-onl
 echo "  predecessor    : ${OLD_DEFAULT} (canonical sha256 ${OLD_SHA}, matches the decision)"
 echo "  reviewed bytes : canonical sha256 ${NEW_SHA}"
 
-# ═══ 3. CREATE the new default — account and topology re-checked IMMEDIATELY before ═══
+# ═══ 3. CREATE the new default — account, topology AND predecessor re-proven IMMEDIATELY before ═
 check_account "before CreatePolicyVersion"
 check_topology "before CreatePolicyVersion"
+# r3-M2: the state proven at observe can move while the proofs above run. The predecessor is
+# re-read at the last possible boundary; the API's own gap between THIS read and the create is
+# the declared, unclosable TOCTOU — everything wider than the API is closed here.
+verify_predecessor() { # $1 = when
+  local rc=0
+  aws_ iam get-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLD_DEFAULT" || rc=$?
+  [ "$rc" -eq 0 ] || { echo "REFUSED ($1): the predecessor could not be re-observed — nothing was mutated at this step"; exit 1; }
+  printf '%s' "$RUN_OUT" > "$TMP/pre-recheck.json"
+  python3 -I -c '
+import json, sys, urllib.parse
+doc = json.load(open(sys.argv[1]))["PolicyVersion"]["Document"]
+if isinstance(doc, str):
+    doc = json.loads(urllib.parse.unquote(doc))
+json.dump(doc, open(sys.argv[2], "w"), sort_keys=True, separators=(",", ":"))
+' "$TMP/pre-recheck.json" "$TMP/pre-recheck-doc.json"
+  [ "$(canon_sha "$TMP/pre-recheck-doc.json")" = "$EXPECTED_OLD" ] \
+    || { echo "REFUSED ($1): the live document MOVED after the first proof — a surprised operation stops; zero mutation at this step"; exit 1; }
+}
+verify_predecessor "immediately before CreatePolicyVersion"
 rc=0
 aws_ iam create-policy-version --policy-arn "$POLICY_ARN" \
   --policy-document "file://$TMP/expected.json" --set-as-default || rc=$?
 [ "$rc" -eq 0 ] || {
   echo "HALTED at CreatePolicyVersion: the ONE attempt failed or its response was lost (no retry was made). The state is AMBIGUOUS: reconcile read-only — list the versions; if a new default exists it carries the reviewed bytes and the old ${OLD_DEFAULT} awaits verified deletion under a NEW decision."; exit 1; }
 printf '%s' "$RUN_OUT" > "$TMP/new-version.json"
-NEW_ID=$(python3 -I -c "import json,sys;print(json.load(open(sys.argv[1]))['PolicyVersion']['VersionId'])" "$TMP/new-version.json")
+# r3-M3: an rc=0 response can still be malformed or truncated, and by now the mutation MAY have
+# landed — a traceback here would exit without the honest record. The parser is CLOSED: object,
+# PolicyVersion, a version id of the documented shape — anything else is the same ambiguous halt
+# as a lost response, with no delete and no retry.
+NEW_ID=$(python3 -I -c '
+import json, re, sys
+try:
+    body = json.load(open(sys.argv[1]))
+    vid = body["PolicyVersion"]["VersionId"]
+except Exception:
+    sys.exit(3)
+if not isinstance(vid, str) or not re.fullmatch(r"v[0-9]+", vid):
+    sys.exit(3)
+print(vid)
+' "$TMP/new-version.json") || {
+  echo "HALTED after CreatePolicyVersion: the call returned success but its response is MALFORMED — the mutation may have landed. State: reconcile read-only (list the versions); ${OLD_DEFAULT} was NOT deleted; no retry was made."; exit 1; }
 
 # ═══ 4. PROVE the new default, the reviewed bytes, and the UNMOVED topology ═══
 rc=0
@@ -241,8 +281,24 @@ if not rb.get("IsDefaultVersion"): print("not-default"); sys.exit(1)
   || { echo "HALTED: the read-back of ${NEW_ID} does not prove the reviewed default — do NOT delete anything; reconcile before any further step."; exit 1; }
 check_topology "after CreatePolicyVersion"
 
-# ═══ 5. RESTORE the single-version invariant — account re-checked before THIS mutation too ═══
+# ═══ 5. RESTORE the single-version invariant — account, topology AND the promoted state
+#        re-proven at the LAST boundary before THIS mutation too (r3-M2) ═══
 check_account "before DeletePolicyVersion"
+check_topology "before DeletePolicyVersion"
+rc=0
+aws_ iam get-policy-version --policy-arn "$POLICY_ARN" --version-id "$NEW_ID" || rc=$?
+[ "$rc" -eq 0 ] || { echo "REFUSED (before DeletePolicyVersion): the promoted version could not be re-observed — nothing further was mutated"; exit 1; }
+printf '%s' "$RUN_OUT" > "$TMP/pre-delete.json"
+python3 -I -c '
+import json, sys, urllib.parse
+rb = json.load(open(sys.argv[1]))["PolicyVersion"]
+doc = rb["Document"]
+if isinstance(doc, str):
+    doc = json.loads(urllib.parse.unquote(doc))
+expected = json.load(open(sys.argv[2]))
+if doc != expected or not rb.get("IsDefaultVersion"): sys.exit(1)
+' "$TMP/pre-delete.json" "$TMP/expected.json" \
+  || { echo "REFUSED (before DeletePolicyVersion): the promoted default MOVED after its proof — the old version was NOT deleted; reconcile before any new decision"; exit 1; }
 rc=0
 aws_ iam delete-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLD_DEFAULT" || rc=$?
 [ "$rc" -eq 0 ] || {
