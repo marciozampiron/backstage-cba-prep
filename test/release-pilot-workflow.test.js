@@ -1548,9 +1548,10 @@ test('CodeQL #8: package caching is OFF in every job that checks out release_sha
   const doc = parseDocument(raw, { uniqueKeys: true });
   const workflow = doc.toJS();
   const found = [];
+  const usesOf = (step) => (typeof step.uses === 'string' ? step.uses.toLowerCase() : '');
   for (const [jobId, job] of Object.entries(workflow.jobs)) {
     for (const step of job.steps ?? []) {
-      if (typeof step.uses === 'string' && step.uses.startsWith('actions/setup-node@')) {
+      if (usesOf(step).startsWith('actions/setup-node@')) {
         found.push({ jobId, with: step.with ?? {} });
       }
     }
@@ -1569,7 +1570,7 @@ test('CodeQL #8: package caching is OFF in every job that checks out release_sha
   for (const [jobId, job] of Object.entries(workflow.jobs)) {
     for (const step of job.steps ?? []) {
       assert.equal(
-        typeof step.uses === 'string' && /^actions\/cache[@/]/.test(step.uses),
+        /^actions\/cache[@/]/.test(usesOf(step)),
         false,
         `${jobId}: actions/cache is the same poisoning surface under another name`,
       );
@@ -1582,6 +1583,25 @@ test('CodeQL #8: package caching is OFF in every job that checks out release_sha
   assert.ok(flagFound.some((s) => (s.with ?? {})['package-manager-cache'] !== false), 'removing one explicit flag is visible');
   const cacheBack = raw.replace('          package-manager-cache: false', '          package-manager-cache: false\n          cache: npm');
   const cacheParsed = parseDocument(cacheBack, { uniqueKeys: true }).toJS();
-  const cacheFound = Object.values(cacheParsed.jobs).flatMap((j) => (j.steps ?? []).filter((s) => typeof s.uses === 'string' && s.uses.startsWith('actions/setup-node@')));
+  const cacheFound = Object.values(cacheParsed.jobs).flatMap((j) => (j.steps ?? []).filter((s) => usesOf(s).startsWith('actions/setup-node@')));
   assert.ok(cacheFound.some((s) => Object.hasOwn(s.with ?? {}, 'cache')), 'reintroducing cache: npm is visible');
+  // MUTATIONS (review LOW): GitHub is case-insensitive about the owner, so the guard must be too.
+  // A mixed-case setup-node WITH caching still lands in the inventory and still fails the flags…
+  const mixedNode = raw.replace(
+    '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        with:\n          node-version: 22\n          package-manager-cache: false',
+    '      - uses: Actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6\n        with:\n          node-version: 22\n          cache: npm',
+  );
+  assert.notEqual(mixedNode, raw, 'the mutation must actually edit a block');
+  const mixedNodeFound = Object.values(parseDocument(mixedNode, { uniqueKeys: true }).toJS().jobs)
+    .flatMap((j) => (j.steps ?? []).filter((s) => usesOf(s).startsWith('actions/setup-node@')));
+  assert.equal(mixedNodeFound.length, 4, 'a mixed-case spelling cannot leave the inventory');
+  assert.ok(mixedNodeFound.some((s) => Object.hasOwn(s.with ?? {}, 'cache')), 'its cache is visible to the flag checks');
+  // …and a mixed-case Actions/cache is still the forbidden surface.
+  const mixedCache = raw.replace(
+    '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6',
+    '      - uses: Actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4\n        with:\n          path: ~/.npm\n          key: poison\n      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6',
+  );
+  const mixedCacheSteps = Object.values(parseDocument(mixedCache, { uniqueKeys: true }).toJS().jobs)
+    .flatMap((j) => j.steps ?? []);
+  assert.ok(mixedCacheSteps.some((s) => /^actions\/cache[@/]/.test(usesOf(s))), 'Actions/cache@… is caught by the normalized check');
 });
