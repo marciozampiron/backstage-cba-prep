@@ -220,8 +220,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: infra/aws/package-lock.json
+          package-manager-cache: false
       - name: Install dependencies
         run: |
           npm ci
@@ -378,8 +377,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: infra/aws/package-lock.json
+          package-manager-cache: false
       - name: Install dependencies
         run: |
           npm ci
@@ -569,8 +567,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: infra/aws/package-lock.json
+          package-manager-cache: false
       - name: Install dependencies
         run: |
           npm ci
@@ -641,6 +638,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
+          package-manager-cache: false
       - name: Verify the preflight manifest
         env:
           RELEASE_SHA: ${{ needs.global-preflight.outputs.release_sha }}
