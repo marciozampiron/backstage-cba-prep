@@ -177,8 +177,34 @@ retry, never a raw CLI deletion outside an instrument:
 | the plan… | the instrument |
 | --- | --- |
 | produced a digest and Zamp declined it | [abandon](aws-dev-release-abandon.md) (SPEC-RUN-008) |
-| refused before any digest existed | exceptional cleanup, reviewed, under its own gate |
+| refused before any digest existed | `infra/aws/bin/recover-declined-plan.js` — `inspect` (read-only, mints the digest) then `abandon`, authorized exactly as the [abandon runbook](aws-dev-release-abandon.md) prescribes; procedure below |
 | never reached preparation | nothing to clean up — no change set was created |
+
+### Recovery procedure (exceptional; change sets only)
+
+Run by Zamp, from a clean checkout of the reviewed executor commit on `main` (the instrument
+refuses a dirty tree and records the HEAD it ran as). Credentials are the operator's AWS profile;
+the instrument itself resolves the account, assumes this tier's `cdk-<qualifier>-deploy-role` —
+the same least-privilege role the lane uses — and imposes the manifest's region on every call.
+It cannot delete stacks: `delete-stack` is outside its per-phase command allowlist by
+construction. The empty `REVIEW_IN_PROGRESS` stack records are only ever REPORTED — removing one
+is reserved to a human by `spec/authority-policy.json` and no lane or instrument performs it.
+
+1. Obtain the TARGET release's verified manifest (the bind artifact of the release whose change
+   sets are stranded) — the instrument derives the release SHA, environment, region and the
+   change-set name from it and computes its bundle digest itself; nothing is typed.
+2. `inspect` (read-only): names the source run, decision and correlation of the refusal, and
+   writes the closed evidence file with the per-entry digests and the plan root. It prints the
+   evidence file's SHA-256 — record it with the decision.
+3. Zamp authors the abandon authorization exactly as the
+   [abandon runbook](aws-dev-release-abandon.md) prescribes — naming this manifest's bundle
+   digest, the plan root the inspect minted, the reviewed group and a bounded window. Recovery
+   adds no authorization schema of its own.
+4. `abandon`: validates that authorization AND the inspect evidence (`--evidence`) against each
+   other, re-describes the group, recomputes the root, and deletes by full ChangeSetId — one
+   attempt, account and window revalidated before each deletion. Every outcome writes a
+   continuation record (`--evidence-out`); a halted run resumes under a NEW decision that copies
+   the deleted prefix's digests into `absentEntryDigests`, exactly like the lane.
 
 ## Cleanup
 

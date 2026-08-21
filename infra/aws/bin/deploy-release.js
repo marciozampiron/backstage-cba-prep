@@ -1696,7 +1696,7 @@ function runDeployRelease(argv, { run = defaultRun, exec = defaultExec, git = de
   }
 }
 
-module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, deploymentConfigRefusal, DEPLOYMENT_CONFIG_ACCEPTED, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, entryDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
+module.exports = { runDeployRelease, childEvidence, setReviewedStackNames, fingerprintSanitize, sanitizeBySchema, validateChangeSet, describePlannedChangeSet, assumeBootstrapRole, deploymentConfigRefusal, DEPLOYMENT_CONFIG_ACCEPTED, CHANGE_SET_SCHEMA, REDACT, checkCloudGate, planDigestOf, entryDigestOf, canonicalChangeSet, deepSortKeys, renderPlan, strictUtcInstant, CLOUD_GATE_KEYS, CLOUD_GATE_MODES, CLOUD_GATE_MAX_TTL_MS, EVIDENCE_MAX_BYTES, boundedEvidence, EXIT };
 
 if (require.main === module) {
   const { exit, output } = runDeployRelease(process.argv.slice(2));

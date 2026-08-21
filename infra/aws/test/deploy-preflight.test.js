@@ -2785,6 +2785,44 @@ test('ROUND-18 (review F1): pages that AGREE still paginate — key order is not
   });
 });
 
+test('ROUND-18 (recovery): the change-set reader is EXPORTED, and it is the lane\'s own', () => {
+  // The recovery instrument (recover-declined-plan.js) reads change sets through
+  // describePlannedChangeSet so the lane and the instrument can never disagree about what a
+  // description is — pagination, page agreement and the r18 schema included. This test pins the
+  // export: removing it would silently fork the reading contract into a second copy.
+  const { describePlannedChangeSet } = require('../bin/deploy-release');
+  assert.equal(typeof describePlannedChangeSet, 'function');
+  // And it is the REAL reader: a page carrying an unreviewed field refuses through it.
+  const one = describePlannedChangeSet(
+    () => ({ status: 0, stdout: JSON.stringify({ ...describedFor(PILOT_STACK_NAMES[0]), Sneaky: 'x' }), stderr: '' }),
+    {}, PILOT_STACK_NAMES[0], 'cba-70-abcdef123456',
+  );
+  assert.ok(Array.isArray(one.schemaViolations) && one.schemaViolations.length === 1);
+  // And pages that disagree refuse through it too — the same contract, not a lookalike.
+  let page = 0;
+  const two = describePlannedChangeSet(
+    () => {
+      page += 1;
+      if (page === 1) return { status: 0, stdout: JSON.stringify({ ...describedFor(PILOT_STACK_NAMES[0]), NextToken: 'p2' }), stderr: '' };
+      return { status: 0, stdout: JSON.stringify(describedFor(PILOT_STACK_NAMES[0], { OnStackFailure: 'DELETE' })), stderr: '' };
+    },
+    {}, PILOT_STACK_NAMES[0], 'cba-70-abcdef123456',
+  );
+  assert.equal(two.pagesDiverge, true);
+
+  // r19: assumeBootstrapRole is exported for the same reason — the recovery instrument assumes
+  // the SAME tier deploy role the lane does, one least-privilege path, never a parallel one.
+  const { assumeBootstrapRole } = require('../bin/deploy-release');
+  assert.equal(typeof assumeBootstrapRole, 'function');
+  const calls = [];
+  const creds = assumeBootstrapRole((args, opts) => {
+    calls.push(args);
+    return { status: 0, stdout: JSON.stringify({ Credentials: { AccessKeyId: 'A', SecretAccessKey: 'S', SessionToken: 'T' } }), stderr: '' };
+  }, { account: ACCOUNT, region: 'us-east-1', qualifier: 'cbardev', name: 'deploy', session: 's' });
+  assert.deepEqual(creds, { AWS_ACCESS_KEY_ID: 'A', AWS_SECRET_ACCESS_KEY: 'S', AWS_SESSION_TOKEN: 'T' });
+  assert.equal(calls[0][calls[0].indexOf('--role-arn') + 1], `arn:aws:iam::${ACCOUNT}:role/cdk-cbardev-deploy-role-${ACCOUNT}-us-east-1`);
+});
+
 test('ROUND-14: ARN-typed fields demand strict ARNs — the permissive reference is only CausingEntity', () => {
   const { validateChangeSet, renderPlan } = require('../bin/deploy-release');
   // The exact round-14 reproduction: it validated AND published `supersecret` before.
