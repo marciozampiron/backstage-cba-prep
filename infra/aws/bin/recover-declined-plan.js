@@ -2,101 +2,94 @@
 'use strict';
 
 /* =================================================================================================
- * RECOVER A DECLINED PLAN — an exceptional, narrow instrument (#111, review r18)
+ * RECOVER A DECLINED PLAN — an exceptional, narrow instrument (#111, reviews r18–r19)
  *
  * WHY THIS EXISTS, AND WHY IT IS NOT THE LANE.
  *
  * The first plan_only of the dev tier refused with CHANGE_SET_SCHEMA_UNKNOWN. The refusal was
- * correct and nothing was deployed, but it happened AFTER preparation: two change sets exist,
- * CREATE_COMPLETE and AVAILABLE — that is, EXECUTABLE — carrying a plan no human ever approved,
- * and no `planDigest` was ever minted for them because the run refused before producing one.
+ * correct and nothing was deployed, but it happened AFTER preparation: change sets exist,
+ * CREATE_COMPLETE and AVAILABLE — that is, EXECUTABLE — carrying a plan no human approved, and
+ * no digest was ever minted for them because the run refused before producing one.
  *
- * The release lane cannot remove them. Its abandon mode deletes EXACTLY the plan a gate names by
- * digest, and there is no digest to name. Worse, the lane is CHECKED OUT AT THE RELEASE SHA it
- * operates: running abandon against the release that produced these sets would execute the
- * PRE-r18 code, which refuses these very describes; running the fixed code means a different
- * release SHA, and the change-set name is derived from it (`cba-70-<releaseSha[0:12]>`), so the
- * fixed code addresses change sets that do not exist. Executor and target are coupled in the lane
- * and cannot be separated there. Codex found this; a local test of the new code against the live
- * describes does NOT prove the gated path.
+ * The release lane cannot remove them: its abandon mode deletes EXACTLY the plan a gate names by
+ * digest, and there is none — and the lane runs the CODE of the release it addresses, so the
+ * release that names these sets runs the pre-r18 code that refuses their describes, while the
+ * fixed code derives a different change-set name. Executor and target are COUPLED there.
  *
- * So this instrument SEPARATES THEM EXPLICITLY: `executorSha` is the code doing the work,
- * `targetReleaseSha` is the release whose change sets are addressed. They differ by design here,
- * and both are bound by the gate.
+ * This instrument separates them. The EXECUTOR is this worktree's clean HEAD; the TARGET is the
+ * release the verified manifest names, and the change-set name derives from the manifest — never
+ * from the code that is running.
  *
- * WHAT IT MAY DO — and the boundary is mechanical, not a promise:
- *   - `inspect`  : read-only. Describes the reviewed group with the r18 schema and MINTS the
- *                  evidence (per-entry digests and the plan root) that a gate may then name.
+ * THE AUTHORITY IS THE CANONICAL ONE (review r19, F1). There is no new gate schema and no new
+ * mode: the abandon phase consumes the same eleven-key CBA_CLOUD_GATE the policy declares
+ * (`cloud-authorization`, mode `abandon`, SPEC-DEPLOY-019), validated by the lane's own
+ * `checkCloudGate` — closed keys, issue pin, mode enum, window, TTL, reviewed stack group,
+ * manifest bundle digest and the continuation law over `absentEntryDigests`. The instrument adds
+ * ZERO authority; it changes only WHERE the reviewed code runs.
+ *
+ * TWO PHASES, mutually exclusive:
+ *   - `inspect`  : read-only. Describes the reviewed group through the lane's own reader and
+ *                  MINTS the evidence (per-entry digests and the plan root) a gate may then name.
  *                  No mutation is reachable: the phase's command allowlist has no deletion in it.
  *   - `abandon`  : deletes change sets, by their FULL observed ChangeSetId, one attempt each,
- *                  under a gate that names the root minted by `inspect`.
+ *                  under the canonical gate, consuming the inspect evidence as its binding.
  *
- * WHAT IT MAY NEVER DO: `DeleteStack`. Not "does not"; CANNOT — `cloudformation delete-stack` is
+ * WHAT IT MAY NEVER DO: `DeleteStack`. Not "does not" — CANNOT: `cloudformation delete-stack` is
  * absent from every phase's allowlist, and an unlisted command refuses before it is spawned.
  * Removing a REVIEW_IN_PROGRESS stack record is `delete-review-in-progress-stack-record`, which
- * spec/authority-policy.json declares "human-performed only; no automated lane may perform it",
- * with `executableProcedure: false` and `riskAcceptance: null`. No agent may route around that.
- *
- * THE EFFECT IS NOT NEW. This authorizes `abandon-change-sets`, already declared in the policy
- * under `cloud-authorization`. What is new is the INSTRUMENT, not the authority. The gate's mode
- * token is `abandon_declined` precisely so a lane gate can never be replayed here, nor this one
- * there: same effect, two instruments, non-interchangeable authorizations.
+ * spec/authority-policy.json reserves to a human ("human-performed only; no automated lane may
+ * perform it", riskAcceptance null). No agent may route around that.
  * ============================================================================================= */
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
-const { PreflightError } = require('../lib/deploy-preflight');
-const { DEPLOYMENT_PLAN_GROUPS, stackNameFor } = require('../lib/context');
+const { PreflightError, CODES, manifestBundleDigest } = require('../lib/deploy-preflight');
+const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_PLAN_GROUPS, stackNameFor } = require('../lib/context');
+const { validManifestShape } = require('./deploy-preflight');
 const {
   describePlannedChangeSet,
   deploymentConfigRefusal,
   canonicalChangeSet,
   entryDigestOf,
   setReviewedStackNames,
-  strictUtcInstant,
-  CLOUD_GATE_MAX_TTL_MS,
+  checkCloudGate,
+  assumeBootstrapRole,
+  deepSortKeys,
   EXIT,
 } = require('./deploy-release');
 
 /* ---------------------------------------------------------------------------------------------
- * The refusal vocabulary. Deliberately SEPARATE from the lane's CODES table: this instrument is
- * exceptional and narrow, and growing the lane's shared vocabulary with recovery-only states
- * would blur which surface owns which refusal. Unknown code throws, exactly like the lane's.
+ * The refusal vocabulary. Lane codes (CLOUD_GATE_*, CHANGE_SET_*, PLAN_CHANGED, …) render from
+ * the lane's own CODES table so one failure means one thing everywhere; only the states unique
+ * to recovery live here. An unknown code throws, exactly like the lane's.
  * ------------------------------------------------------------------------------------------- */
 const RECOVERY_CODES = {
   PHASE_INVALID: 'is not one of the two phases this instrument has — inspect (read-only) or abandon (deletes change sets); the phases are mutually exclusive and there is no default',
   ARGUMENT_MISSING: 'was not supplied — an instrument that guesses a parameter is addressing something nobody named',
   ARGUMENT_MALFORMED: 'does not satisfy its documented form',
-  GATE_MISSING: 'is not present — deleting a change set requires the human authorization (CBA_CLOUD_GATE) and its absence is a refusal, never a default',
-  GATE_UNREADABLE: 'could not be read as a regular file — a symlink, a device, a directory or an unparseable body authorizes nothing',
-  GATE_MALFORMED: 'is not a well-formed recovery authorization (closed key set)',
-  GATE_MODE_MISMATCH: 'names a mode this instrument does not perform — a release-lane gate is not a recovery gate, and neither may be replayed as the other',
-  GATE_EXPIRED: 'has expired — the authorization is a bounded window and this run is outside it',
-  GATE_NOT_YET_VALID: 'has an approval instant in the future — it authorizes nothing yet',
-  GATE_TTL_EXCEEDED: 'grants a window longer than the maximum — a recovery decision is short-lived, never standing',
-  GATE_STACKS_INVALID: 'does not name a reviewed plan group, in content and in order',
+  MANIFEST_UNREADABLE: 'could not be read as a regular file — a symlink, a device, an oversized or unparseable body binds nothing',
+  MANIFEST_INVALID: 'is not a verified release manifest (closed shape) — the target of a recovery is named by the manifest the bind produced, never by typed text',
+  GATE_MODE_MISMATCH: 'names a gate mode this instrument does not perform — only an abandon authorization is consumable here, and a plan or deploy gate authorizes nothing',
+  EVIDENCE_MISSING: 'was not supplied — the abandon phase consumes the inspect evidence as its binding, and its absence is a refusal, never a default',
+  EVIDENCE_UNREADABLE: 'could not be read as a regular file — a symlink, a device, an oversized or unparseable body binds nothing',
+  EVIDENCE_MALFORMED: 'is not a closed inspect record (exact key set, exact instrument and phase)',
+  EVIDENCE_MISMATCH: 'does not bind to this operation — the inspect record must name this manifest digest, this release, this environment, this region, this stack group, this change-set name and the exact plan digest the gate names',
   EXECUTOR_UNRESOLVED: 'could not be resolved from git — the instrument must know exactly which code is running',
-  EXECUTOR_MISMATCH: 'is not the executor the authorization names — the reviewed code is the only code allowed to perform this',
+  EXECUTOR_MISMATCH: 'is not the executor the inspect evidence names — the tree that minted the digest is the tree allowed to spend it',
   EXECUTOR_WORKTREE_DIRTY: 'has uncommitted changes — a modified tree is not the reviewed executor, whatever its HEAD says',
-  ACCOUNT_UNRESOLVED: 'could not be resolved — an operation that cannot name its account cannot prove where it is acting',
-  ACCOUNT_MISMATCH: 'is not the account the authorization names',
   ACCOUNT_CHANGED: 'changed between the verification and the effect — the world moved under the operation, which therefore stops',
-  CHANGE_SET_MISSING: 'has no change set under the target release name — there is nothing here to delete, and an absence is never assumed to be success elsewhere',
-  CHANGE_SET_UNREADABLE: 'has a change set that could not be described — an unreadable set is never deleted on the assumption it is the right one',
-  CHANGE_SET_SCHEMA_UNKNOWN: 'has a change set carrying a field the reviewed schema does not describe — an unreviewed response cannot be summarized into a digest',
-  CHANGE_SET_PAGES_DIVERGE: 'has a change set whose pages do not describe the same change set — a description that contradicts itself identifies nothing',
-  CHANGE_SET_PAGINATION_UNCONSUMED: 'has a change set whose description did not finish paginating — a partial description is not the set',
-  PLAN_CHANGED: 'does not match the plan the authorization names — the change sets differ from the inspected ones (recreated, drifted or foreign), and NOTHING was deleted',
+  CHANGE_SET_IDENTITY_FOREIGN: 'has a change set whose ARN names another account or region than the one this operation verified — a foreign identity is never deleted, whatever its digest',
   COMMAND_NOT_ALLOWED: 'is not a command this phase may run — the allowlist is the boundary, not the intention of the caller',
-  DELETE_FAILED: 'refused to delete — CloudFormation returned an error, which means the world changed between observation and action; a surprised operation stops, it does not retry',
-  DELETE_STATE_UNKNOWN: 'the delete call failed and bounded re-observation could not prove the set absent or present; recorded as neither, and read-only reconciliation is required before a new decision',
-  EVIDENCE_UNWRITABLE: 'could not be written — an operation whose record cannot be kept does not proceed',
+  ABANDON_DELETE_FAILED: 'refused to delete — CloudFormation returned an error, which means the world changed between observation and action; a surprised operation stops, it does not retry',
+  ABANDON_STATE_UNKNOWN: 'the delete call failed and bounded re-observation could not prove the set absent or present; recorded as neither, and read-only reconciliation is required before a new decision',
+  ABANDON_NOT_A_PREFIX: 'an absence after the first present entry cannot result from this instrument\'s ordered deletion — the observed world is not a state this operation produced; nothing was deleted',
+  EVIDENCE_UNWRITABLE: 'could not be written — an operation whose record cannot be kept does not proceed, and one that already acted says so in its output instead of losing the fact',
 };
 
 function describeRecoveryFailure({ code, field }) {
-  const text = RECOVERY_CODES[code];
+  const text = RECOVERY_CODES[code] ?? CODES[code];
   if (!text) throw new PreflightError(`unknown recovery failure code ${code}`);
   return `${field} ${text} [${code}]`;
 }
@@ -105,31 +98,35 @@ function describeRecoveryFailure({ code, field }) {
  * THE COMMAND ALLOWLIST — the mechanical boundary.
  *
  * Every AWS invocation passes through here, and a command that is not listed for the RUNNING
- * PHASE never reaches the process spawner. `cloudformation delete-stack` appears in neither list,
- * so the stack-record deletion this instrument must never perform is unreachable by construction
- * rather than by the author's care.
+ * PHASE never reaches the process spawner. `cloudformation delete-stack` appears in neither
+ * list, so the stack-record deletion this instrument must never perform is unreachable by
+ * construction rather than by the author's care.
  * ------------------------------------------------------------------------------------------- */
 const PHASE_COMMANDS = Object.freeze({
   inspect: Object.freeze([
     'sts get-caller-identity',
+    'sts assume-role',
     'cloudformation describe-change-set',
     'cloudformation describe-stacks',
   ]),
   abandon: Object.freeze([
     'sts get-caller-identity',
+    'sts assume-role',
     'cloudformation describe-change-set',
     'cloudformation describe-stacks',
     'cloudformation delete-change-set',
   ]),
 });
 
-/** Default AWS runner: ambient credentials, bounded, never widened. */
-function defaultRun(args, { timeoutMs } = {}) {
+/** Default AWS runner. Review r19 F2: `opts.env` MERGES over the process environment — the
+ * assumed-role credentials and the imposed region genuinely reach the child, exactly as the
+ * lane's runner does. Ignoring it made `region` decorative text. */
+function defaultRun(args, { timeoutMs, env } = {}) {
   return spawnSync('aws', [...args, '--cli-connect-timeout', '5', '--cli-read-timeout', '20'], {
     encoding: 'utf8',
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
-    env: process.env,
+    env: env ? { ...process.env, ...env } : process.env,
   });
 }
 
@@ -138,22 +135,26 @@ function defaultGit(args) {
   return spawnSync('git', args, { encoding: 'utf8', timeout: 15_000 });
 }
 
-const SHA40 = /^[0-9a-f]{40}$/;
+/** Review r19 F5: the reconciliation observations form a WINDOW, not a burst — five immediate
+ * reads can all land before an accepted deletion starts to show. Five seconds between reads,
+ * like the lane's own poll; injectable so tests never actually wait. */
+const RECONCILE_SLEEP_MS = 5000;
+function defaultSleep() {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RECONCILE_SLEEP_MS);
+}
+
 const SHA256 = /^[0-9a-f]{64}$/;
 const ACCOUNT_ID = /^[0-9]{12}$/;
 const DECISION_ID = /^[A-Za-z0-9._-]{8,64}$/;
 const CORRELATION_ID = /^[A-Za-z0-9._-]{8,128}$/;
 const RUN_ID = /^[0-9]{1,20}$/;
-const REGION = /^[a-z]{2}(-gov)?-[a-z]+-[0-9]$/;
-const ENVIRONMENT = /^(pilot|dev)$/;
 
-const GATE_KEYS = [
-  'account', 'approvedAt', 'decisionId', 'environment', 'executorSha', 'expiresAt',
-  'issue', 'manifestDigest', 'mode', 'planDigest', 'region', 'stacks', 'targetReleaseSha',
-];
-const GATE_MODE = 'abandon_declined';
-/** The change sets are named `cba-70-…`: this instrument recovers the #70 release lane's plans. */
-const GATE_ISSUE = 70;
+/** The closed key set of an inspect record — the binding the abandon phase consumes. */
+const INSPECT_EVIDENCE_KEYS = Object.freeze([
+  'accountVerified', 'changeSetName', 'entries', 'environment', 'executorSha', 'instrument',
+  'manifestDigest', 'observedAt', 'phase', 'planDigest', 'region', 'source', 'stacks',
+  'targetReleaseSha',
+]);
 
 function parseArgs(argv) {
   const out = {};
@@ -174,32 +175,25 @@ function rootOf(entryDigests) {
   return crypto.createHash('sha256').update(JSON.stringify(entryDigests), 'utf8').digest('hex');
 }
 
-/** Read a gate as a REGULAR file only: no symlink, no fifo, no directory, bounded in size. */
-function readGateFile(path, readFileSync = fs.readFileSync, statSync = fs.lstatSync) {
+/** Read a small JSON document from a REGULAR file only: no symlink, no fifo, bounded in size. */
+function readClosedJson(path, readFileSync, lstatSync) {
   let st;
   try {
-    st = statSync(path);
+    st = lstatSync(path);
   } catch {
-    return { error: 'GATE_UNREADABLE' };
+    return { error: true };
   }
-  if (!st.isFile()) return { error: 'GATE_UNREADABLE' };
-  if (st.size === 0 || st.size > 65536) return { error: 'GATE_UNREADABLE' };
-  let body;
+  if (!st.isFile() || st.size === 0 || st.size > 262144) return { error: true };
   try {
-    body = readFileSync(path, 'utf8');
+    return { value: JSON.parse(readFileSync(path, 'utf8')), raw: readFileSync(path, 'utf8') };
   } catch {
-    return { error: 'GATE_UNREADABLE' };
-  }
-  try {
-    return { value: JSON.parse(body) };
-  } catch {
-    return { error: 'GATE_MALFORMED' };
+    return { error: true, unparseable: true };
   }
 }
 
 /**
- * The whole instrument. `argv` is the phase and its parameters; every effectful dependency is
- * injectable so the tests exercise the REAL control flow with no cloud and no repository.
+ * The whole instrument. Every effectful dependency is injectable so the tests exercise the REAL
+ * control flow with no cloud and no repository; `defaultRun` itself has its own real-spawn test.
  */
 function runRecoverDeclinedPlan(argv, {
   run = defaultRun,
@@ -209,7 +203,7 @@ function runRecoverDeclinedPlan(argv, {
   writeFileSync = fs.writeFileSync,
   readFileSync = fs.readFileSync,
   lstatSync = fs.lstatSync,
-  sleep = () => {},
+  sleep = defaultSleep,
 } = {}) {
   const failures = [];
   const lines = [];
@@ -232,88 +226,104 @@ function runRecoverDeclinedPlan(argv, {
   const phase = args.phase;
   if (phase !== 'inspect' && phase !== 'abandon') return fail('PHASE_INVALID', String(phase ?? '(absent)'));
 
-  // --- the command allowlist, bound to THIS phase --------------------------------------------
+  // --- the command allowlist, bound to THIS phase, with the region imposed on every call -------
   const allowed = PHASE_COMMANDS[phase];
   let blocked = null;
-  const guardedRun = (cmd, opts) => {
+  let regionForCalls = null; // set once the manifest names it; every AWS call carries it
+  const guardedRun = (cmd, opts = {}) => {
     const verb = `${cmd[0]} ${cmd[1]}`;
     if (!allowed.includes(verb)) {
       blocked = verb;
       return null;
     }
-    return run(cmd, opts);
+    // Review r19 F2: the region is not ambient. It rides BOTH channels — the argument the CLI
+    // obeys and the environment the SDK reads — so no profile default can re-aim a call.
+    const withRegion = regionForCalls ? [...cmd, '--region', regionForCalls] : cmd;
+    const withEnv = regionForCalls
+      ? { ...opts, env: { AWS_REGION: regionForCalls, AWS_DEFAULT_REGION: regionForCalls, ...(opts.env ?? {}) } }
+      : opts;
+    return run(withRegion, withEnv);
   };
 
-  // --- the executor: which code is running, and is it exactly the reviewed code ---------------
+  // --- the executor: which code is running, on a clean tree, before ANY cloud call -------------
   const headRes = git(['rev-parse', 'HEAD']);
   const executorSha = headRes && headRes.status === 0 ? String(headRes.stdout || '').trim() : null;
-  if (!executorSha || !SHA40.test(executorSha)) return fail('EXECUTOR_UNRESOLVED', 'executorSha');
+  if (!executorSha || !/^[0-9a-f]{40}$/.test(executorSha)) return fail('EXECUTOR_UNRESOLVED', 'executorSha');
   const statusRes = git(['status', '--porcelain']);
   if (!statusRes || statusRes.status !== 0) return fail('EXECUTOR_UNRESOLVED', 'executorWorktree');
   if (String(statusRes.stdout || '').trim() !== '') return fail('EXECUTOR_WORKTREE_DIRTY', 'executorWorktree');
 
-  // --- the parameters, from the gate in abandon and from the flags in inspect -----------------
+  // --- the TARGET: named by the verified manifest, never by typed text -------------------------
+  // The manifest is the bind artifact of the release whose change sets are addressed. Its shape
+  // is the closed one the lane validates, and its bundle digest is what the gate must name —
+  // review r19 F4: the digest is COMPUTED from these bytes here, not accepted as an argument.
+  if (args.manifest === undefined) return fail('ARGUMENT_MISSING', '--manifest');
+  const manifestRead = readClosedJson(args.manifest, readFileSync, lstatSync);
+  if (manifestRead.error) return fail('MANIFEST_UNREADABLE', '--manifest');
+  const manifest = manifestRead.value;
+  if (!validManifestShape(manifest)) return fail('MANIFEST_INVALID', '--manifest');
+  const manifestDigest = manifestBundleDigest(manifest, deepSortKeys);
+  const targetReleaseSha = manifest.releaseSha;
+  const environment = manifest.environment;
+  const region = manifest.region;
+  const changeSetName = `cba-70-${targetReleaseSha.slice(0, 12)}`;
+
+  // --- phase-specific authorization ------------------------------------------------------------
   let gate = null;
-  let environment;
-  let region;
-  let targetReleaseSha;
   let stacks;
-  let expectedAccount;
-  let decisionId;
-  let manifestDigest;
+  let evidenceIn = null;
 
   if (phase === 'abandon') {
-    const gatePath = env.CBA_CLOUD_GATE;
-    if (!gatePath) return fail('GATE_MISSING', 'CBA_CLOUD_GATE');
-    const read = readGateFile(gatePath, readFileSync, lstatSync);
-    if (read.error) return fail(read.error, 'CBA_CLOUD_GATE');
-    gate = read.value;
-    if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return fail('GATE_MALFORMED', 'CBA_CLOUD_GATE');
-    const keys = Object.keys(gate).sort();
-    if (keys.length !== GATE_KEYS.length || keys.some((k, i) => k !== GATE_KEYS[i])) return fail('GATE_MALFORMED', 'CBA_CLOUD_GATE');
-    if (gate.mode !== GATE_MODE) return fail('GATE_MODE_MISMATCH', 'mode');
-    if (gate.issue !== GATE_ISSUE) return fail('GATE_MALFORMED', 'issue');
-    if (typeof gate.decisionId !== 'string' || !DECISION_ID.test(gate.decisionId)) return fail('GATE_MALFORMED', 'decisionId');
-    if (typeof gate.environment !== 'string' || !ENVIRONMENT.test(gate.environment)) return fail('GATE_MALFORMED', 'environment');
-    if (typeof gate.region !== 'string' || !REGION.test(gate.region)) return fail('GATE_MALFORMED', 'region');
-    if (typeof gate.account !== 'string' || !ACCOUNT_ID.test(gate.account)) return fail('GATE_MALFORMED', 'account');
-    if (typeof gate.targetReleaseSha !== 'string' || !SHA40.test(gate.targetReleaseSha)) return fail('GATE_MALFORMED', 'targetReleaseSha');
-    if (typeof gate.executorSha !== 'string' || !SHA40.test(gate.executorSha)) return fail('GATE_MALFORMED', 'executorSha');
-    if (typeof gate.manifestDigest !== 'string' || !SHA256.test(gate.manifestDigest)) return fail('GATE_MALFORMED', 'manifestDigest');
-    if (typeof gate.planDigest !== 'string' || !SHA256.test(gate.planDigest)) return fail('GATE_MALFORMED', 'planDigest');
-    if (!strictUtcInstant(gate.approvedAt)) return fail('GATE_MALFORMED', 'approvedAt');
-    if (!strictUtcInstant(gate.expiresAt)) return fail('GATE_MALFORMED', 'expiresAt');
-    if (!Array.isArray(gate.stacks) || gate.stacks.some((s) => typeof s !== 'string')) return fail('GATE_MALFORMED', 'stacks');
+    // THE CANONICAL GATE (review r19 F1): the lane's own checkCloudGate — closed eleven keys,
+    // issue 70, the mode enum, the window and TTL, the reviewed stack group, the continuation
+    // law over absentEntryDigests, and the manifest bundle digest — nothing reimplemented here.
+    const checked = checkCloudGate(env.CBA_CLOUD_GATE, manifest, now());
+    if (checked.failures) {
+      for (const f of checked.failures) failures.push({ code: f.code, field: f.field });
+      return refuse();
+    }
+    gate = checked.gate;
+    // This instrument performs ONE effect. A plan_only or deploy gate is well-formed and still
+    // authorizes nothing here — same effect vocabulary, different instrument, no replay.
+    if (gate.mode !== 'abandon') return fail('GATE_MODE_MISMATCH', 'mode');
+    stacks = [...gate.stacks];
 
-    const approved = Date.parse(gate.approvedAt);
-    const expires = Date.parse(gate.expiresAt);
-    if (!(approved < expires)) return fail('GATE_MALFORMED', 'expiresAt');
-    if (expires - approved > CLOUD_GATE_MAX_TTL_MS) return fail('GATE_TTL_EXCEEDED', 'expiresAt');
-    if (now() < approved) return fail('GATE_NOT_YET_VALID', 'approvedAt');
-    if (now() >= expires) return fail('GATE_EXPIRED', 'expiresAt');
-
-    // The executor the authorization names must be the executor running. A gate written for the
-    // fixed code cannot be spent by any other tree, and the target it addresses is separate.
-    if (gate.executorSha !== executorSha) return fail('EXECUTOR_MISMATCH', 'executorSha');
-
-    ({ environment, region, targetReleaseSha, stacks, decisionId, manifestDigest } = gate);
-    expectedAccount = gate.account;
+    // THE INSPECT EVIDENCE IS THE BINDING (review r19 F4): the abandon consumes the record the
+    // inspect minted and confronts every claim in it — the digest the gate names must be the
+    // digest that record minted, for this manifest, this release, this group, this name.
+    if (args.evidence === undefined) return fail('EVIDENCE_MISSING', '--evidence');
+    const evidenceRead = readClosedJson(args.evidence, readFileSync, lstatSync);
+    if (evidenceRead.error) return fail('EVIDENCE_UNREADABLE', '--evidence');
+    evidenceIn = evidenceRead.value;
+    const shapeOk = evidenceIn && typeof evidenceIn === 'object' && !Array.isArray(evidenceIn)
+      && JSON.stringify(Object.keys(evidenceIn).sort()) === JSON.stringify([...INSPECT_EVIDENCE_KEYS])
+      && evidenceIn.instrument === 'recover-declined-plan'
+      && evidenceIn.phase === 'inspect'
+      && typeof evidenceIn.planDigest === 'string' && SHA256.test(evidenceIn.planDigest)
+      && typeof evidenceIn.executorSha === 'string' && /^[0-9a-f]{40}$/.test(evidenceIn.executorSha);
+    if (!shapeOk) return fail('EVIDENCE_MALFORMED', '--evidence');
+    const bindings = [
+      ['manifestDigest', evidenceIn.manifestDigest === manifestDigest],
+      ['targetReleaseSha', evidenceIn.targetReleaseSha === targetReleaseSha],
+      ['environment', evidenceIn.environment === environment],
+      ['region', evidenceIn.region === region],
+      ['changeSetName', evidenceIn.changeSetName === changeSetName],
+      ['stacks', JSON.stringify(evidenceIn.stacks) === JSON.stringify(stacks)],
+      ['planDigest', evidenceIn.planDigest === gate.planDigest],
+    ];
+    const broken = bindings.find(([, ok]) => !ok);
+    if (broken) return fail('EVIDENCE_MISMATCH', broken[0]);
+    // The tree that minted the digest is the tree allowed to spend it. Honest limit: nothing
+    // authenticates a git HEAD — this is a process guardrail, like every executor claim before
+    // #91 Stage B — but it is checked mechanically and a mismatch refuses with zero calls made.
+    if (evidenceIn.executorSha !== executorSha) return fail('EXECUTOR_MISMATCH', 'executorSha');
+    // Every halt of this phase writes a structured record; require the path before acting.
+    if (args.evidenceOut === undefined) return fail('ARGUMENT_MISSING', '--evidence-out');
   } else {
-    environment = args.environment;
-    region = args.region;
-    targetReleaseSha = args.targetReleaseSha;
-    decisionId = args.sourceDecision;
-    manifestDigest = args.manifestDigest;
     stacks = typeof args.stacks === 'string' ? args.stacks.split(',').map((s) => s.trim()).filter(Boolean) : null;
-    expectedAccount = args.account;
     for (const [name, value, shape] of [
-      ['--environment', environment, ENVIRONMENT],
-      ['--region', region, REGION],
-      ['--target-release-sha', targetReleaseSha, SHA40],
-      ['--account', expectedAccount, ACCOUNT_ID],
-      ['--manifest-digest', manifestDigest, SHA256],
-      ['--source-decision', decisionId, DECISION_ID],
       ['--source-run', args.sourceRun, RUN_ID],
+      ['--source-decision', args.sourceDecision, DECISION_ID],
       ['--source-correlation', args.sourceCorrelation, CORRELATION_ID],
       ['--evidence-out', args.evidenceOut, /^\/.+/],
     ]) {
@@ -321,22 +331,19 @@ function runRecoverDeclinedPlan(argv, {
       if (!shape.test(String(value))) return fail('ARGUMENT_MALFORMED', name);
     }
     if (!stacks) return fail('ARGUMENT_MISSING', '--stacks');
+    // The group is a REVIEWED one, in content and in order — never an arbitrary stack list.
+    if (!DEPLOYMENT_PLAN_GROUPS.some((g) => JSON.stringify([...g]) === JSON.stringify(stacks))) {
+      return fail('CLOUD_GATE_STACKS_INVALID', '--stacks');
+    }
   }
 
-  // The group is a REVIEWED one, in content and in order — never an arbitrary stack list.
-  const groupOk = DEPLOYMENT_PLAN_GROUPS.some(
-    (group) => group.length === stacks.length && group.every((id, i) => id === stacks[i]),
-  );
-  if (!groupOk) return fail('GATE_STACKS_INVALID', phase === 'abandon' ? 'stacks' : '--stacks');
-
-  const changeSetName = `cba-70-${targetReleaseSha.slice(0, 12)}`;
   const stackNames = stacks.map((stackId) => stackNameFor(environment, stackId));
-  // Review material may name a stack only when THIS run computed it.
   setReviewedStackNames(stackNames);
+  regionForCalls = region;
 
-  const awsEnv = { AWS_REGION: region, AWS_DEFAULT_REGION: region };
+  // --- identity, then THIS TIER'S deploy role: the least-privilege path the lane itself uses ---
   const accountOf = () => {
-    const res = guardedRun(['sts', 'get-caller-identity', '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: awsEnv });
+    const res = guardedRun(['sts', 'get-caller-identity', '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000 });
     if (!res || res.status !== 0) return null;
     try {
       const body = JSON.parse(res.stdout || '{}');
@@ -345,53 +352,78 @@ function runRecoverDeclinedPlan(argv, {
       return null;
     }
   };
-
   const accountAtVerify = accountOf();
   if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
   if (!accountAtVerify) return fail('ACCOUNT_UNRESOLVED', 'account');
-  if (accountAtVerify !== expectedAccount) return fail('ACCOUNT_MISMATCH', 'account');
+  const qualifier = RELEASE_BOOTSTRAP_QUALIFIERS[environment];
+  const credEnv = assumeBootstrapRole(guardedRun, {
+    account: accountAtVerify,
+    region,
+    qualifier,
+    name: 'deploy',
+    session: `cba-70-recover-${phase}`,
+  });
+  if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
+  if (!credEnv) return fail('BOOTSTRAP_ROLE_UNASSUMABLE', 'deployRole');
+  const cfn = (cmd, opts = {}) => guardedRun(cmd, { ...opts, env: { ...credEnv, ...(opts.env ?? {}) } });
 
   lines.push(`recover-declined-plan — phase ${phase}`);
   lines.push(`  executor sha     : ${executorSha}`);
   lines.push(`  target release   : ${targetReleaseSha}  (change set name ${changeSetName})`);
-  lines.push(`  environment      : ${environment} in ${region}, account verified`);
+  lines.push(`  environment      : ${environment} in ${region}, account verified, deploy role assumed`);
   lines.push(`  group            : ${stacks.join(', ')}`);
 
-  // --- DESCRIBE the whole group, in order, with the reviewed reader ---------------------------
-  // The lane's OWN reader: pagination consumed, pages required to agree, r18 schema enforced.
-  // A separate copy here would be a second contract to keep in step, and the two would drift.
+  // --- DESCRIBE the group, in order, with the lane's own reader --------------------------------
+  // Pagination consumed, pages required to agree, the r18 schema enforced — one reading contract.
+  // In abandon, an absent set is a CLASSIFICATION (the continuation law below decides); in
+  // inspect it is a refusal: a fresh record of a partially-deleted world would mint a digest
+  // no fresh gate should name — continuations derive from the abandon artifact, never from here.
   const entries = [];
+  const absentStacks = new Set();
   for (let i = 0; i < stacks.length; i += 1) {
     const stackId = stacks[i];
     const stackName = stackNames[i];
-    const described = describePlannedChangeSet(guardedRun, awsEnv, stackName, changeSetName);
+    const described = describePlannedChangeSet(cfn, {}, stackName, changeSetName);
     if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
-    if (described.missing) return fail('CHANGE_SET_MISSING', stackId);
+    if (described.missing) {
+      if (phase === 'abandon') {
+        absentStacks.add(stackName);
+        continue;
+      }
+      return fail('CHANGE_SET_MISSING', stackId);
+    }
     if (described.schemaViolations) return fail('CHANGE_SET_SCHEMA_UNKNOWN', stackId);
     if (described.pagesDiverge) return fail('CHANGE_SET_PAGES_DIVERGE', stackId);
     if (described.paginationUnconsumed) return fail('CHANGE_SET_PAGINATION_UNCONSUMED', stackId);
     if (described.error) return fail('CHANGE_SET_UNREADABLE', stackId);
-    // The deployment configuration is REPORTED here, never enforced: this instrument deletes a
+    // Review r19 F2: the identity the response CLAIMS must be the identity this run verified —
+    // an ARN naming another account or region is a foreign object, whatever its digest would be.
+    const body = described.described;
+    const csArnPrefix = `arn:aws:cloudformation:${region}:${accountAtVerify}:changeSet/`;
+    const stackArnPrefix = `arn:aws:cloudformation:${region}:${accountAtVerify}:stack/${stackName}/`;
+    if (typeof body.ChangeSetId !== 'string' || !body.ChangeSetId.startsWith(csArnPrefix)
+      || typeof body.StackId !== 'string' || !body.StackId.startsWith(stackArnPrefix)) {
+      return fail('CHANGE_SET_IDENTITY_FOREIGN', stackId);
+    }
+    // The deployment configuration is REPORTED, never enforced: this instrument removes a
     // declined plan, and refusing to delete what the execution policy would not approve is
-    // exactly the trap review F2 removed from the lane.
-    const configNote = deploymentConfigRefusal(described.described);
-    const entry = canonicalChangeSet(stackId, stackName, described.described);
-    entries.push({ entry, configNote, changeSetId: described.described.ChangeSetId });
+    // exactly the trap review F2 (r18) removed from the lane.
+    const configNote = deploymentConfigRefusal(body);
+    entries.push({ entry: canonicalChangeSet(stackId, stackName, body), configNote, changeSetId: body.ChangeSetId, stackName });
   }
 
-  const entryDigests = entries.map((e) => entryDigestOf(e.entry));
-  const planDigest = rootOf(entryDigests);
   const observedAt = new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-  for (let i = 0; i < entries.length; i += 1) {
-    const { entry, configNote } = entries[i];
-    lines.push(`  ${entry.stackName} — ${entry.status} / ${entry.executionStatus} — entry ${entryDigests[i]}`);
-    if (configNote) lines.push(`      note: deployment configuration outside the execution policy (${configNote}) — reported, not enforced`);
-  }
-  lines.push(`  PLAN_DIGEST ${planDigest}`);
-
   if (phase === 'inspect') {
-    // The closed evidence a gate may then name. No ARN, no account id, no credential: the
+    const entryDigests = entries.map((e) => entryDigestOf(e.entry));
+    const planDigest = rootOf(entryDigests);
+    for (let i = 0; i < entries.length; i += 1) {
+      const { entry, configNote } = entries[i];
+      lines.push(`  ${entry.stackName} — ${entry.status} / ${entry.executionStatus} — entry ${entryDigests[i]}`);
+      if (configNote) lines.push(`      note: deployment configuration outside the execution policy (${configNote}) — reported, not enforced`);
+    }
+    lines.push(`  PLAN_DIGEST ${planDigest}`);
+    // The closed record a gate may then name. No ARN, no account id, no credential: the
     // ChangeSetIds stay in memory and are re-observed at deletion time.
     const evidence = {
       instrument: 'recover-declined-plan',
@@ -403,11 +435,7 @@ function runRecoverDeclinedPlan(argv, {
       environment,
       region,
       accountVerified: true,
-      source: {
-        runId: String(args.sourceRun),
-        decisionId,
-        correlationId: String(args.sourceCorrelation),
-      },
+      source: { runId: String(args.sourceRun), decisionId: String(args.sourceDecision), correlationId: String(args.sourceCorrelation) },
       manifestDigest,
       stacks: [...stacks],
       entries: entries.map((e, i) => ({
@@ -420,8 +448,9 @@ function runRecoverDeclinedPlan(argv, {
       })),
       planDigest,
     };
+    const body = `${JSON.stringify(evidence, null, 2)}\n`;
     try {
-      writeFileSync(args.evidenceOut, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(args.evidenceOut, body, { mode: 0o600 });
     } catch {
       return fail('EVIDENCE_UNWRITABLE', '--evidence-out');
     }
@@ -430,7 +459,8 @@ function runRecoverDeclinedPlan(argv, {
       output: [
         ...lines,
         `INSPECTED (read-only; this phase cannot delete anything): evidence written to ${args.evidenceOut}`,
-        'The plan digest above is what a recovery authorization must name. Nothing was mutated.',
+        `  evidence sha256  : ${crypto.createHash('sha256').update(body, 'utf8').digest('hex')}`,
+        'The plan digest above is what an abandon authorization must name. Nothing was mutated.',
       ].join('\n'),
       deleted: [],
       planDigest,
@@ -438,45 +468,118 @@ function runRecoverDeclinedPlan(argv, {
     };
   }
 
-  // --- ABANDON --------------------------------------------------------------------------------
-  // The root is recomputed over the FULL group, from THIS observation, and compared to the one
-  // the authorization names. A recreated, drifted or foreign set changes its entry digest, the
-  // root dies with it, and nothing is deleted.
-  if (planDigest !== gate.planDigest) return fail('PLAN_CHANGED', 'planDigest');
+  // --- ABANDON: the continuation law, ported member for member from the lane -------------------
+  // The root is recomputed over the FULL reviewed group in order — present entries re-described
+  // and re-digested, absent ones taking their digests from the gate (copied by Zamp from the
+  // newest abandon artifact). The same root must emerge: a recreated set, a foreign set, a
+  // missing digest or a leftover digest all kill it, and NOTHING is deleted on a dead root.
+  const suppliedAbsent = [...(gate.absentEntryDigests ?? [])];
+  const alreadyAbsent = [];
+  const rootList = [];
+  const fullMap = [];
+  const presentByName = new Map(entries.map((e) => [e.stackName, e]));
+  let seenPresent = false;
+  let nonPrefixAbsence = null;
+  let continuationBroken = false;
+  for (let i = 0; i < stacks.length; i += 1) {
+    const stackName = stackNames[i];
+    if (absentStacks.has(stackName)) {
+      // Deletion is ORDERED, so a genuine continuation's absences form a PREFIX. An absence
+      // after the first present entry is a state this operation cannot have produced.
+      if (seenPresent) {
+        nonPrefixAbsence = stacks[i];
+        break;
+      }
+      const supplied = suppliedAbsent.shift();
+      if (supplied === undefined) {
+        continuationBroken = true;
+        break;
+      }
+      rootList.push(supplied);
+      alreadyAbsent.push(stackName);
+      fullMap.push({ stackName, changeSetName, status: 'ALREADY_ABSENT', canonicalSha256: supplied });
+    } else {
+      seenPresent = true;
+      const e = presentByName.get(stackName);
+      const digest = entryDigestOf(e.entry);
+      rootList.push(digest);
+      fullMap.push({ stackName, changeSetName, status: e.entry.status, canonicalSha256: digest });
+    }
+  }
 
   const deleted = [];
+  const reportedRecords = [];
+  // Review r19 F3: EVERY outcome of this phase writes a structured artifact sufficient to build
+  // the next continuation by itself — the ORIGINAL root, the full ordered stack → digest map
+  // (previously-absent positions included), what this run deleted, and how it ended.
+  const writeRecord = (outcome) => {
+    const record = {
+      instrument: 'recover-declined-plan',
+      phase: 'abandon',
+      outcome,
+      observedAt,
+      decisionId: gate.decisionId,
+      executorSha,
+      targetReleaseSha,
+      changeSetName,
+      environment,
+      region,
+      manifestDigest,
+      planDigest: gate.planDigest,
+      changeSets: fullMap,
+      alreadyAbsent: [...alreadyAbsent],
+      deleted: [...deleted],
+      reportedStackRecords: [...reportedRecords],
+      failures: failures.map((f) => f.code),
+    };
+    try {
+      writeFileSync(args.evidenceOut, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const haltWith = (code, field, note) => {
+    failures.push({ code, field });
+    const recorded = writeRecord('REFUSED');
+    const refused = refuse();
+    const tail = recorded ? '' : '\nTHE RECORD COULD NOT BE WRITTEN — the facts above exist only in this output; keep it.';
+    return { ...refused, deleted, output: `${refused.output}${note ? `\n${note}` : ''}${tail}` };
+  };
+
+  if (nonPrefixAbsence !== null) return haltWith('ABANDON_NOT_A_PREFIX', nonPrefixAbsence);
+  if (continuationBroken || suppliedAbsent.length > 0) return haltWith('CHANGE_SET_MISSING', 'absentEntryDigests');
+  const root = rootOf(rootList);
+  if (root !== gate.planDigest) return haltWith('PLAN_CHANGED', 'planDigest');
+
   const partial = () => (deleted.length === 0 ? 'none' : deleted.join(', '));
   for (const { entry, changeSetId } of entries) {
     // Revalidated immediately before EACH deletion: an account that moved or a window that
-    // lapsed stops the operation where it stands, with an honest record of the prefix.
+    // lapsed stops the operation where it stands, with the honest prefix on the record.
     const accountAtEffect = accountOf();
     if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
     if (accountAtEffect !== accountAtVerify) {
-      failures.push({ code: 'ACCOUNT_CHANGED', field: 'account' });
-      const refused = refuse();
-      return { ...refused, deleted, output: `${refused.output}\nDeleted before the halt: ${partial()}. The remaining change sets were NOT deleted.` };
+      return haltWith('ACCOUNT_CHANGED', 'account', `Deleted before the halt: ${partial()}. The remaining change sets were NOT deleted.`);
     }
     if (now() >= Date.parse(gate.expiresAt)) {
-      failures.push({ code: 'GATE_EXPIRED', field: 'expiresAt' });
-      const refused = refuse();
-      return { ...refused, deleted, output: `${refused.output}\nDeleted before the window lapsed: ${partial()}. The remaining change sets were NOT deleted.` };
+      return haltWith('CLOUD_GATE_EXPIRED', 'expiresAt', `Deleted before the window lapsed: ${partial()}. The remaining change sets were NOT deleted.`);
     }
 
     // By the FULL observed ChangeSetId — never by name, which a recreated set would also answer.
-    const deletion = guardedRun(['cloudformation', 'delete-change-set', '--change-set-name', changeSetId, '--no-cli-pager'], { timeoutMs: 30_000, env: awsEnv });
+    const deletion = cfn(['cloudformation', 'delete-change-set', '--change-set-name', changeSetId, '--no-cli-pager'], { timeoutMs: 30_000 });
     if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
     if (!deletion || deletion.status !== 0) {
       // A failed delete CALL is AMBIGUOUS — the service may have accepted it while the transport
-      // died — so the state is reconciled by bounded re-observation before anything is claimed.
-      // Presence is an ALLOWLIST over the documented status enum and requires an UNBROKEN window:
-      // one tainted read taints the whole window, and an unknown status proves nothing.
+      // died — so the state is reconciled by bounded re-observation over a real window before
+      // anything is claimed. Presence is an ALLOWLIST over the documented status enum and
+      // requires an UNBROKEN window: one tainted read taints it all.
       const RECONCILE_ATTEMPTS = 5;
       const STANDING = ['CREATE_PENDING', 'CREATE_IN_PROGRESS', 'CREATE_COMPLETE', 'FAILED', 'DELETE_FAILED'];
       let observedMissing = false;
       let stoodStillAllWindow = true;
       for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt += 1) {
         if (attempt > 0) sleep();
-        const observed = guardedRun(['cloudformation', 'describe-change-set', '--change-set-name', changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: awsEnv });
+        const observed = cfn(['cloudformation', 'describe-change-set', '--change-set-name', changeSetId, '--stack-name', entry.stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000 });
         if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
         if (observed && observed.status !== 0 && /ChangeSetNotFound|does not exist/i.test(`${observed.stderr || ''}${observed.stdout || ''}`)) {
           observedMissing = true;
@@ -495,33 +598,26 @@ function runRecoverDeclinedPlan(argv, {
         if (status === null || !STANDING.includes(status)) stoodStillAllWindow = false;
       }
       if (observedMissing) {
-        // It IS gone — the record says so, and the run still stops on the transport surprise.
         deleted.push(entry.stackName);
-        failures.push({ code: 'DELETE_FAILED', field: entry.stackId });
-        const refused = refuse();
-        return { ...refused, deleted, output: `${refused.output}\nThe delete call for ${entry.stackName} failed in transport but the set is PROVABLY ABSENT — recorded as deleted. Deleted so far: ${partial()}. The remaining change sets were NOT deleted — a surprised operation stops.` };
+        return haltWith('ABANDON_DELETE_FAILED', entry.stackId, `The delete call for ${entry.stackName} failed in transport but the set is PROVABLY ABSENT — recorded as deleted. Deleted so far: ${partial()}. The remaining change sets were NOT deleted — a surprised operation stops.`);
       }
       if (stoodStillAllWindow) {
-        failures.push({ code: 'DELETE_FAILED', field: entry.stackId });
-        const refused = refuse();
-        return { ...refused, deleted, output: `${refused.output}\nDeleted before the failure: ${partial()}. The set is provably still present; the remaining change sets were NOT deleted.` };
+        return haltWith('ABANDON_DELETE_FAILED', entry.stackId, `Deleted before the failure: ${partial()}. The set is provably still present; the remaining change sets were NOT deleted.`);
       }
-      failures.push({ code: 'DELETE_STATE_UNKNOWN', field: entry.stackId });
-      const refused = refuse();
-      return { ...refused, deleted, output: `${refused.output}\nThe delete call for ${entry.stackName} failed AND its state could not be observed — claimed neither deleted nor present. Deleted before it: ${partial()}. Read-only reconciliation of ${entry.stackName} is required before a new decision.` };
+      return haltWith('ABANDON_STATE_UNKNOWN', entry.stackId, `The delete call for ${entry.stackName} failed AND its state could not be observed — claimed neither deleted nor present. Deleted before it: ${partial()}. Read-only reconciliation of ${entry.stackName} is required before a new decision.`);
     }
     deleted.push(entry.stackName);
   }
 
-  // REPORT — never delete — the stack records a CREATE change set leaves behind. An inconclusive
-  // read reports as unverifiable; "no record remains" is claimed only when every query answered.
-  const reported = [];
+  // REPORT — never delete — the stack records a CREATE change set leaves behind, over the FULL
+  // group (the already-absent prefix left its records too). Review r19 F6: ONLY the exact
+  // stack-does-not-exist answer concludes absence; every other failure reports as unverifiable.
   for (const stackName of stackNames) {
-    const described = guardedRun(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000, env: awsEnv });
+    const described = cfn(['cloudformation', 'describe-stacks', '--stack-name', stackName, '--output', 'json', '--no-cli-pager'], { timeoutMs: 30_000 });
     if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
     if (!described || described.status !== 0) {
-      if (described && /does not exist|ValidationError/i.test(`${described.stderr || ''}`)) continue;
-      reported.push(`${stackName} (status unverifiable)`);
+      if (described && /Stack with id [^\n]* does not exist/i.test(`${described.stderr || ''}`)) continue;
+      reportedRecords.push(`${stackName} (status unverifiable)`);
       continue;
     }
     let status = null;
@@ -530,22 +626,25 @@ function runRecoverDeclinedPlan(argv, {
     } catch {
       status = null;
     }
-    if (status === null) reported.push(`${stackName} (status unverifiable)`);
-    else if (status === 'REVIEW_IN_PROGRESS') reported.push(`${stackName} (REVIEW_IN_PROGRESS)`);
+    if (status === null) reportedRecords.push(`${stackName} (status unverifiable)`);
+    else if (status === 'REVIEW_IN_PROGRESS') reportedRecords.push(`${stackName} (REVIEW_IN_PROGRESS)`);
   }
 
+  const recorded = writeRecord('ABANDONED');
   return {
-    exit: EXIT.OK,
+    exit: recorded ? EXIT.OK : EXIT.REFUSED,
     output: [
       ...lines,
-      `  matched the inspected plan; decision ${decisionId}`,
-      `Deleted the declined change sets, in order: ${deleted.join(', ')}.`,
-      reported.length > 0
-        ? `REPORTED (never deleted): ${reported.join(', ')} — resolving a stack record is a separate human decision under its own instrument, and this one has no DeleteStack.`
+      `  PLAN_DIGEST ${root} (matched the declined plan; decision ${gate.decisionId})`,
+      alreadyAbsent.length > 0 ? `  already absent (continuation prefix): ${alreadyAbsent.join(', ')}` : null,
+      `Deleted the declined change sets, in order: ${deleted.length > 0 ? deleted.join(', ') : 'none — the whole group was already absent'}.`,
+      reportedRecords.length > 0
+        ? `REPORTED (never deleted): ${reportedRecords.join(', ')} — resolving a stack record is a separate human decision under its own instrument, and this one has no DeleteStack.`
         : 'No stack record remains to report.',
-    ].join('\n'),
+      recorded ? `Continuation record written to ${args.evidenceOut}.` : `${describeRecoveryFailure({ code: 'EVIDENCE_UNWRITABLE', field: args.evidenceOut })} — THE DELETIONS ABOVE HAPPENED; keep this output.`,
+    ].filter((l) => l !== null).join('\n'),
     deleted,
-    planDigest,
+    planDigest: root,
   };
 }
 
@@ -554,9 +653,10 @@ module.exports = {
   describeRecoveryFailure,
   RECOVERY_CODES,
   PHASE_COMMANDS,
-  GATE_KEYS,
-  GATE_MODE,
-  GATE_ISSUE,
+  INSPECT_EVIDENCE_KEYS,
+  RECONCILE_SLEEP_MS,
+  defaultRun,
+  defaultSleep,
   rootOf,
 };
 
