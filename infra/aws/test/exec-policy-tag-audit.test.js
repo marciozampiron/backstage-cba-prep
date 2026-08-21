@@ -83,8 +83,11 @@ function conditionHolds(condition, context) {
 function evaluate(policy, { action, resource, context = {} }) {
   let allowed = false;
   for (const statement of policy.Statement) {
+    // r2-F5: Action supports IAM's wildcard forms ('*', 'iam:*', 'kms:Tag*') — an evaluator that
+    // only matched exact strings would skip a Deny written with a wildcard, and "Deny wins"
+    // would be a claim about a document this code was not actually reading.
     const actions = asArray(statement.Action);
-    if (!actions.includes(action)) continue;
+    if (!actions.some((a) => globToRegExp(a).test(action))) continue;
     if (!asArray(statement.Resource).some((r) => globToRegExp(r).test(resource))) continue;
     if (!conditionHolds(statement.Condition, context)) continue;
     if (statement.Effect === 'Deny') return 'deny';
@@ -202,6 +205,18 @@ test('the confinement is real: wrong project, cross-tier, extra key and foreign 
     'allow',
     'a foreign-tier function name is outside the dev resource scope',
   );
+});
+
+test('r2-F5: the evaluator reads wildcard Actions — a Deny iam:* really denies', () => {
+  const policy = {
+    Statement: [
+      { Sid: 'AllowExact', Effect: 'Allow', Action: 'iam:TagRole', Resource: '*' },
+      { Sid: 'DenyWild', Effect: 'Deny', Action: 'iam:*', Resource: '*' },
+    ],
+  };
+  assert.equal(evaluate(policy, { action: 'iam:TagRole', resource: 'arn:aws:iam::123:role/x' }), 'deny', 'the wildcard Deny wins over the exact Allow');
+  assert.equal(evaluate({ Statement: [{ Effect: 'Allow', Action: 'kms:Tag*', Resource: '*' }] }, { action: 'kms:TagResource', resource: 'x' }), 'allow', 'a prefix wildcard allows its family');
+  assert.equal(evaluate({ Statement: [{ Effect: 'Allow', Action: 'kms:Tag*', Resource: '*' }] }, { action: 'kms:CreateKey', resource: 'x' }), 'implicit-deny');
 });
 
 test('the documented-versus-real discrepancy is ON RECORD: the nominal action and the verb path coexist', () => {

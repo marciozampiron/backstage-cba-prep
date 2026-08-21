@@ -10,7 +10,7 @@
 #     L=$(mktemp /tmp/cba-launch.XXXXXX); trap 'rm -f "$L"' EXIT
 #     git -C <repo> show <SHA>:scripts/provision.sh > "$L"
 #     CBA_REPO_ROOT=<repo> CBA_AUTHORIZED_SHA=<SHA> CBA_EXPECTED_ACCOUNT_ID=<acct> \
-#       bash -p "$L" <dev|pilot> <policies|bootstrap>
+#       bash -p "$L" <dev|pilot> <policies|bootstrap|promote-app|promote-platform|promote-guardrails>
 #   )
 #
 # so a tampered worktree copy of this launcher is never executed. `-p` is load-bearing (r7-F1):
@@ -28,8 +28,8 @@
 set -euo pipefail
 umask 077
 
-ENV_NAME="${1:?usage: provision.sh dev|pilot policies|bootstrap}"
-PHASE="${2:?usage: provision.sh dev|pilot policies|bootstrap}"
+ENV_NAME="${1:?usage: provision.sh dev|pilot policies|bootstrap|promote-<shard>}"
+PHASE="${2:?usage: provision.sh dev|pilot policies|bootstrap|promote-<shard>}"
 [ "$#" -eq 2 ] || { echo "REFUSED: exactly two arguments — environment and phase"; exit 1; }
 REPO_ROOT="${CBA_REPO_ROOT:-}"
 [ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/.git" ] \
@@ -70,6 +70,7 @@ git_ archive --format=tar "$SHA" scripts infra/aws/bootstrap 2>/dev/null | tar -
 [ "$rc" -eq 0 ] \
   || { echo "REFUSED: the authorized commit's scripts and bootstrap inputs could not be materialized"; exit 1; }
 [ -f "$MAT/scripts/provision-release-bootstrap.sh" ] && [ -f "$MAT/scripts/lib/bounded-run.py" ] \
+  && [ -f "$MAT/scripts/promote-exec-shard.sh" ] \
   || { echo "REFUSED: the materialized tree is incomplete"; exit 1; }
 
 # The MANIFEST binds root + contents + SHA, and the child re-verifies it in both directions.
@@ -87,6 +88,16 @@ echo "launcher: SHA autorizado == HEAD, worktree limpa, arvore materializada do 
 rc=0
 # Second hop, same protection (r7-F1): `-p` blocks $BASH_ENV and inherited functions, and the
 # env is scrubbed of both anyway so nothing depends on a single mechanism.
+# #111 wave-2 postmortem: shard PROMOTION is a third family of phases, same launcher, same
+# materialization — the promote child runs from the SAME verified tree, never the worktree.
+CHILD="$MAT/scripts/provision-release-bootstrap.sh"
+CHILD_PHASE="$PHASE"
+case "$PHASE" in
+  promote-app|promote-platform|promote-guardrails)
+    CHILD="$MAT/scripts/promote-exec-shard.sh"
+    CHILD_PHASE="${PHASE#promote-}"
+    ;;
+esac
 CBA_MATERIALIZED_ROOT="$MAT" env -u BASH_ENV -u ENV \
-  bash -p "$MAT/scripts/provision-release-bootstrap.sh" "$ENV_NAME" "$PHASE" || rc=$?
+  bash -p "$CHILD" "$ENV_NAME" "$CHILD_PHASE" || rc=$?
 exit "$rc"
