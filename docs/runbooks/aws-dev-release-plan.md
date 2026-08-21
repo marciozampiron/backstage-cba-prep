@@ -177,7 +177,7 @@ retry, never a raw CLI deletion outside an instrument:
 | the plan… | the instrument |
 | --- | --- |
 | produced a digest and Zamp declined it | [abandon](aws-dev-release-abandon.md) (SPEC-RUN-008) |
-| refused before any digest existed | exceptional cleanup, reviewed, under its own gate |
+| refused before any digest existed | `infra/aws/bin/recover-declined-plan.js` — `inspect` (read-only, mints the digest) then `abandon` under its own `abandon_declined` gate |
 | never reached preparation | nothing to clean up — no change set was created |
 
 ## Cleanup
