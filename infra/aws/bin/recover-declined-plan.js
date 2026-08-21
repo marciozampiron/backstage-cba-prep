@@ -328,9 +328,9 @@ function runRecoverDeclinedPlan(argv, {
       && Array.isArray(evidenceIn.stacks) && evidenceIn.stacks.every((v) => typeof v === 'string')
       && evidenceIn.source && typeof evidenceIn.source === 'object' && !Array.isArray(evidenceIn.source)
       && JSON.stringify(Object.keys(evidenceIn.source).sort()) === JSON.stringify(['correlationId', 'decisionId', 'runId'])
-      && RUN_ID.test(String(evidenceIn.source.runId))
-      && DECISION_ID.test(String(evidenceIn.source.decisionId))
-      && CORRELATION_ID.test(String(evidenceIn.source.correlationId))
+      && typeof evidenceIn.source.runId === 'string' && RUN_ID.test(evidenceIn.source.runId)
+      && typeof evidenceIn.source.decisionId === 'string' && DECISION_ID.test(evidenceIn.source.decisionId)
+      && typeof evidenceIn.source.correlationId === 'string' && CORRELATION_ID.test(evidenceIn.source.correlationId)
       && Array.isArray(evidenceIn.entries)
       && evidenceIn.entries.length === evidenceIn.stacks.length
       && evidenceIn.entries.every((e, i) => e && typeof e === 'object' && !Array.isArray(e)

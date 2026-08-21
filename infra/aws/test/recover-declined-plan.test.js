@@ -815,6 +815,12 @@ test('r20 F2: forged NESTED evidence refuses before a single cloud call', () => 
     ['an entry out of order', (() => { const e = evidenceFor(); e.entries.reverse(); return e; })()],
     ['an entry digest edited', (() => { const e = evidenceFor(); e.entries[0].entryDigest = 'b'.repeat(64); return e; })()],
     ['a source missing its run', (() => { const e = evidenceFor(); delete e.source.runId; return e; })()],
+    // r21: STRING-SHAPED is not STRING. A numeric runId satisfies the regex through String();
+    // the closed schema demands the type itself, with no coercion anywhere.
+    ['a numeric runId', (() => { const e = evidenceFor(); e.source.runId = 32371072834; return e; })()],
+    ['a numeric decisionId', (() => { const e = evidenceFor(); e.source.decisionId = 12345678; return e; })()],
+    ['a numeric correlationId', (() => { const e = evidenceFor(); e.source.correlationId = 12345678; return e; })()],
+    ['all three numeric at once', (() => { const e = evidenceFor(); e.source = { runId: 32371072834, decisionId: 12345678, correlationId: 87654321 }; return e; })()],
   ];
   for (const [label, evidenceIn] of cases) {
     const run = cloud();
