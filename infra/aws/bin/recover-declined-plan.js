@@ -47,7 +47,8 @@ const { spawnSync } = require('node:child_process');
 
 const { PreflightError, CODES, manifestBundleDigest } = require('../lib/deploy-preflight');
 const { RELEASE_BOOTSTRAP_QUALIFIERS, DEPLOYMENT_PLAN_GROUPS, stackNameFor } = require('../lib/context');
-const { validManifestShape } = require('./deploy-preflight');
+const { validManifestShape, contextDigest, loadContext, parseContextPair } = require('./deploy-preflight');
+const path = require('node:path');
 const {
   describePlannedChangeSet,
   deploymentConfigRefusal,
@@ -57,6 +58,7 @@ const {
   checkCloudGate,
   assumeBootstrapRole,
   deepSortKeys,
+  strictUtcInstant,
   EXIT,
 } = require('./deploy-release');
 
@@ -157,9 +159,17 @@ const INSPECT_EVIDENCE_KEYS = Object.freeze([
 ]);
 
 function parseArgs(argv) {
-  const out = {};
+  const out = { context: {} };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
+    if (a === '-c' || a === '--context') {
+      try {
+        parseContextPair(out, argv[++i]);
+      } catch {
+        return { error: a };
+      }
+      continue;
+    }
     if (!a.startsWith('--')) return { error: a };
     const key = a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     const value = argv[i + 1];
@@ -204,17 +214,23 @@ function runRecoverDeclinedPlan(argv, {
   readFileSync = fs.readFileSync,
   lstatSync = fs.lstatSync,
   sleep = defaultSleep,
+  cdkJsonPath = path.join(__dirname, '..', 'cdk.json'),
 } = {}) {
   const failures = [];
   const lines = [];
+  // Review r20 F3: the header is COMPUTED from the progress, never a constant — a refusal after
+  // one deletion must not open with "nothing was deleted" three lines above the list of what was.
+  const progress = [];
   const refuse = () => ({
     exit: EXIT.REFUSED,
     output: [
       ...lines,
-      'REFUSED — nothing was deleted:',
+      progress.length === 0
+        ? 'REFUSED — nothing was deleted:'
+        : `REFUSED AFTER PARTIAL PROGRESS — ${progress.length} change set(s) had already been deleted (${progress.join(', ')}); the remainder was NOT deleted:`,
       ...failures.map((f) => `  ${describeRecoveryFailure(f)}`),
     ].join('\n'),
-    deleted: [],
+    deleted: [...progress],
   });
   const fail = (code, field) => {
     failures.push({ code, field });
@@ -295,13 +311,41 @@ function runRecoverDeclinedPlan(argv, {
     const evidenceRead = readClosedJson(args.evidence, readFileSync, lstatSync);
     if (evidenceRead.error) return fail('EVIDENCE_UNREADABLE', '--evidence');
     evidenceIn = evidenceRead.value;
+    // Review r20 F2: the schema is CLOSED RECURSIVELY — every nested member is typed, ordered
+    // and internally consistent, or the record binds nothing. A record whose entries are the
+    // string "FORGED" must refuse before a single cloud call, not ride along as decoration.
     const shapeOk = evidenceIn && typeof evidenceIn === 'object' && !Array.isArray(evidenceIn)
       && JSON.stringify(Object.keys(evidenceIn).sort()) === JSON.stringify([...INSPECT_EVIDENCE_KEYS])
       && evidenceIn.instrument === 'recover-declined-plan'
       && evidenceIn.phase === 'inspect'
+      && evidenceIn.accountVerified === true
+      && strictUtcInstant(evidenceIn.observedAt)
       && typeof evidenceIn.planDigest === 'string' && SHA256.test(evidenceIn.planDigest)
-      && typeof evidenceIn.executorSha === 'string' && /^[0-9a-f]{40}$/.test(evidenceIn.executorSha);
+      && typeof evidenceIn.executorSha === 'string' && /^[0-9a-f]{40}$/.test(evidenceIn.executorSha)
+      && typeof evidenceIn.targetReleaseSha === 'string' && /^[0-9a-f]{40}$/.test(evidenceIn.targetReleaseSha)
+      && typeof evidenceIn.changeSetName === 'string' && /^cba-70-[0-9a-f]{12}$/.test(evidenceIn.changeSetName)
+      && typeof evidenceIn.environment === 'string' && typeof evidenceIn.region === 'string'
+      && Array.isArray(evidenceIn.stacks) && evidenceIn.stacks.every((v) => typeof v === 'string')
+      && evidenceIn.source && typeof evidenceIn.source === 'object' && !Array.isArray(evidenceIn.source)
+      && JSON.stringify(Object.keys(evidenceIn.source).sort()) === JSON.stringify(['correlationId', 'decisionId', 'runId'])
+      && RUN_ID.test(String(evidenceIn.source.runId))
+      && DECISION_ID.test(String(evidenceIn.source.decisionId))
+      && CORRELATION_ID.test(String(evidenceIn.source.correlationId))
+      && Array.isArray(evidenceIn.entries)
+      && evidenceIn.entries.length === evidenceIn.stacks.length
+      && evidenceIn.entries.every((e, i) => e && typeof e === 'object' && !Array.isArray(e)
+        && JSON.stringify(Object.keys(e).sort()) === JSON.stringify(['deploymentConfigWithinExecutionPolicy', 'entryDigest', 'executionStatus', 'stackId', 'stackName', 'status'])
+        && e.stackId === evidenceIn.stacks[i]
+        && typeof e.stackName === 'string'
+        && typeof e.status === 'string' && typeof e.executionStatus === 'string'
+        && typeof e.entryDigest === 'string' && SHA256.test(e.entryDigest)
+        && typeof e.deploymentConfigWithinExecutionPolicy === 'boolean');
     if (!shapeOk) return fail('EVIDENCE_MALFORMED', '--evidence');
+    // The record's own root must recompose from its own entries — an edited entry digest or a
+    // reordered list makes planDigest a claim about nothing.
+    if (rootOf(evidenceIn.entries.map((e) => e.entryDigest)) !== evidenceIn.planDigest) {
+      return fail('EVIDENCE_MISMATCH', 'entries');
+    }
     const bindings = [
       ['manifestDigest', evidenceIn.manifestDigest === manifestDigest],
       ['targetReleaseSha', evidenceIn.targetReleaseSha === targetReleaseSha],
@@ -310,6 +354,7 @@ function runRecoverDeclinedPlan(argv, {
       ['changeSetName', evidenceIn.changeSetName === changeSetName],
       ['stacks', JSON.stringify(evidenceIn.stacks) === JSON.stringify(stacks)],
       ['planDigest', evidenceIn.planDigest === gate.planDigest],
+      ['entries', evidenceIn.entries.every((e, i) => e.stackName === stackNameFor(environment, stacks[i]))],
     ];
     const broken = bindings.find(([, ok]) => !ok);
     if (broken) return fail('EVIDENCE_MISMATCH', broken[0]);
@@ -355,6 +400,19 @@ function runRecoverDeclinedPlan(argv, {
   const accountAtVerify = accountOf();
   if (blocked) return fail('COMMAND_NOT_ALLOWED', blocked);
   if (!accountAtVerify) return fail('ACCOUNT_UNRESOLVED', 'account');
+  // Review r20 F1: the manifest is bound to the CURRENT account exactly as the lane binds it —
+  // the context digest is recomputed with the account these credentials resolve to, and a
+  // manifest minted for another account dies HERE, before any role is assumed and before a
+  // single change set is described. Shape and bundle digest alone proved the bytes travelled
+  // intact; only this recompute proves they describe the account the operation is standing in.
+  const recomputed = contextDigest({
+    releaseSha: manifest.releaseSha,
+    environment,
+    region,
+    accountId: accountAtVerify,
+    context: loadContext(args.context, cdkJsonPath),
+  });
+  if (recomputed !== manifest.contextDigest) return fail('MANIFEST_RECOMPUTE_MISMATCH', 'contextDigest');
   const qualifier = RELEASE_BOOTSTRAP_QUALIFIERS[environment];
   const credEnv = assumeBootstrapRole(guardedRun, {
     account: accountAtVerify,
@@ -507,7 +565,7 @@ function runRecoverDeclinedPlan(argv, {
     }
   }
 
-  const deleted = [];
+  const deleted = progress; // ONE list: what haltWith records is what the refusal header reads
   const reportedRecords = [];
   // Review r19 F3: EVERY outcome of this phase writes a structured artifact sufficient to build
   // the next continuation by itself — the ORIGINAL root, the full ordered stack → digest map

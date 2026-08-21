@@ -18,7 +18,7 @@ const {
   rootOf,
 } = require('../bin/recover-declined-plan');
 const { entryDigestOf, canonicalChangeSet, setReviewedStackNames, deepSortKeys } = require('../bin/deploy-release');
-const { MANIFEST_VERSION, MANIFEST_TARGET_SERVICE, MANIFEST_TARGET_STACKS, BOUND_CONTEXT_KEYS } = require('../bin/deploy-preflight');
+const { MANIFEST_VERSION, MANIFEST_TARGET_SERVICE, MANIFEST_TARGET_STACKS, BOUND_CONTEXT_KEYS, contextDigest } = require('../bin/deploy-preflight');
 const { manifestBundleDigest } = require('../lib/deploy-preflight');
 
 /* =================================================================================================
@@ -40,6 +40,19 @@ const STACKS = ['IdentityStack', 'DataStack'];
 const STACK_NAMES = ['cba-study-coach-dev-identity', 'cba-study-coach-dev-data'];
 const NOW = Date.parse('2026-08-21T00:00:00Z');
 
+/** A real cdk.json with an EMPTY context: the recompute (r20 F1) reads it, so the manifest's
+ * contextDigest below is computed the same way the bind computed the real one — with the
+ * ACCOUNT the cloud stub answers. A manifest minted for another account then genuinely fails. */
+const CDK_JSON = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cba-recover-cdk-'));
+  const p = path.join(dir, 'cdk.json');
+  fs.writeFileSync(p, JSON.stringify({ context: {} }));
+  return p;
+})();
+const contextDigestFor = (accountId) => contextDigest({
+  releaseSha: TARGET_SHA, environment: 'dev', region: 'us-east-1', accountId, context: {},
+});
+
 /** A shape-valid manifest for the TARGET release — the bind artifact this instrument consumes. */
 const manifestFor = (over = {}) => ({
   version: MANIFEST_VERSION,
@@ -47,7 +60,7 @@ const manifestFor = (over = {}) => ({
   releaseSha: TARGET_SHA,
   environment: 'dev',
   region: 'us-east-1',
-  contextDigest: 'c'.repeat(64),
+  contextDigest: contextDigestFor('1'.repeat(12)),
   assemblyDigest: 'd'.repeat(64),
   boundContextKeys: [...BOUND_CONTEXT_KEYS].sort(),
   preflight: { PREFLIGHT_1: 'pass', PREFLIGHT_2: 'pass' },
@@ -200,6 +213,7 @@ function runIt(argv, { run, gate, git = cleanGit(), now = () => NOW, manifest = 
     git,
     now,
     sleep: () => {},
+    cdkJsonPath: CDK_JSON,
     env: gate === undefined ? {} : { CBA_CLOUD_GATE: gate },
     lstatSync: (p) => {
       if (!files.has(p)) throw new Error('ENOENT');
@@ -477,8 +491,15 @@ test('abandon requires the inspect evidence and confronts every binding in it', 
     ['a different plan digest than the gate names', evidenceFor({ planDigest: 'b'.repeat(64) }), /EVIDENCE_MISMATCH/],
     ['a different manifest digest', evidenceFor({ manifestDigest: 'f'.repeat(64) }), /EVIDENCE_MISMATCH/],
     ['a different release', evidenceFor({ targetReleaseSha: EXECUTOR_SHA }), /EVIDENCE_MISMATCH/],
-    ['a different change-set name', evidenceFor({ changeSetName: 'cba-70-somethingels' }), /EVIDENCE_MISMATCH/],
-    ['a different group', evidenceFor({ stacks: ['ApiStack'] }), /EVIDENCE_MISMATCH/],
+    ['a different change-set name', evidenceFor({ changeSetName: 'cba-70-abcdefabcdef' }), /EVIDENCE_MISMATCH/],
+    // Inconsistent inside (one stack, two entries): malformed before any binding is consulted.
+    ['a group its own entries contradict', evidenceFor({ stacks: ['ApiStack'] }), /EVIDENCE_MALFORMED/],
+    // Consistent inside, but a DIFFERENT group than the gate names: the binding refuses it.
+    ['a different group, internally consistent', evidenceFor({
+      stacks: ['ApiStack'],
+      planDigest: rootOf(['a'.repeat(64)]),
+      entries: [{ stackId: 'ApiStack', stackName: 'cba-study-coach-dev-api', status: 'CREATE_COMPLETE', executionStatus: 'AVAILABLE', entryDigest: 'a'.repeat(64), deploymentConfigWithinExecutionPolicy: true }],
+    }), /EVIDENCE_MISMATCH/],
     ['a different region', evidenceFor({ region: 'eu-west-1' }), /EVIDENCE_MISMATCH/],
   ];
   for (const [label, evidenceIn, expected] of cases) {
@@ -630,8 +651,17 @@ test('a deployment configuration outside the execution policy is REPORTED, and s
   const bodies = { [STACK_NAMES[0]]: describeBody(STACK_NAMES[0], outside) };
   const digest = expectedPlanDigest(bodies);
   const run = cloud({ bodies });
-  const evidence = evidenceFor({ planDigest: digest });
-  evidence.entries[0].deploymentConfigWithinExecutionPolicy = false;
+  const evidence = evidenceFor({
+    planDigest: digest,
+    entries: STACK_NAMES.map((name) => ({
+      stackId: STACKS[STACK_NAMES.indexOf(name)],
+      stackName: name,
+      status: 'CREATE_COMPLETE',
+      executionStatus: 'AVAILABLE',
+      entryDigest: entryDigestFor(name, bodies[name]),
+      deploymentConfigWithinExecutionPolicy: name !== STACK_NAMES[0],
+    })),
+  });
   const r = runIt(ABANDON_ARGV, { run, gate: gateFor({ planDigest: digest }), evidenceIn: evidence });
   assert.equal(r.exit, 0, r.output);
   assert.deepEqual(r.deleted, STACK_NAMES);
@@ -744,4 +774,89 @@ test('a record that cannot be written refuses the success it would otherwise cla
   assert.equal(r.exit, 1, 'a kept record is part of the contract');
   assert.match(r.output, /THE DELETIONS ABOVE HAPPENED/, 'what already happened is never unsaid');
   assert.deepEqual(r.deleted, STACK_NAMES);
+});
+
+// -------------------------------------------------------------------------------------------------
+// Review r20 — the three findings, each with the reproduction Codex ran
+// -------------------------------------------------------------------------------------------------
+
+test('r20 F1: a manifest minted for account A dies in account B — coordinately, with zero effects', () => {
+  // The EXACT reproduction: the manifest's contextDigest was computed for account A; the world —
+  // identity, role, every ARN — answers coordinately as account B. Shape and bundle digest both
+  // pass (the bytes travelled intact); only the recompute with the RESOLVED account catches it.
+  const ACCOUNT_B = '9'.repeat(12);
+  const bArn = (stackName) => `arn:aws:cloudformation:us-east-1:${ACCOUNT_B}:changeSet/${CHANGE_SET_NAME}/${uuidFor(stackName)}`;
+  const bodies = Object.fromEntries(STACK_NAMES.map((n) => [n, describeBody(n, {
+    ChangeSetId: bArn(n),
+    StackId: `arn:aws:cloudformation:us-east-1:${ACCOUNT_B}:stack/${n}/aaaaaaaa-bbbb-cccc-dddd-${String(STACK_NAMES.indexOf(n) + 1).padStart(12, '0')}`,
+  })]));
+  for (const argv of [INSPECT_ARGV, ABANDON_ARGV]) {
+    const run = cloud({ account: ACCOUNT_B, bodies });
+    const r = runIt(argv, { run, gate: gateFor(), evidenceIn: evidenceFor() });
+    assert.equal(r.exit, 1, argv[1]);
+    assert.match(r.output, /MANIFEST_RECOMPUTE_MISMATCH/, argv[1]);
+    assert.equal(run.of('sts assume-role').length, 0, `${argv[1]}: no role is assumed in the wrong account`);
+    assert.equal(run.of('cloudformation describe-change-set').length, 0, `${argv[1]}: nothing is described`);
+    assert.equal(run.of('cloudformation delete-change-set').length, 0, `${argv[1]}: nothing is deleted`);
+  }
+  // The control: the SAME world in account A passes — the recompute is a binding, not a wall.
+  const ok = runIt(INSPECT_ARGV, { run: cloud() });
+  assert.equal(ok.exit, 0, ok.output);
+});
+
+test('r20 F2: forged NESTED evidence refuses before a single cloud call', () => {
+  const cases = [
+    ['accountVerified false', evidenceFor({ accountVerified: false })],
+    ['a forged entries string', evidenceFor({ entries: 'FORGED' })],
+    ['a forged source string', evidenceFor({ source: 'FORGED' })],
+    ['an invalid timestamp', evidenceFor({ observedAt: 'yesterday' })],
+    ['a non-UTC timestamp', evidenceFor({ observedAt: '2026-08-20T23:45:00+02:00' })],
+    ['an entry with an extra key', (() => { const e = evidenceFor(); e.entries[0].extra = 1; return e; })()],
+    ['an entry out of order', (() => { const e = evidenceFor(); e.entries.reverse(); return e; })()],
+    ['an entry digest edited', (() => { const e = evidenceFor(); e.entries[0].entryDigest = 'b'.repeat(64); return e; })()],
+    ['a source missing its run', (() => { const e = evidenceFor(); delete e.source.runId; return e; })()],
+  ];
+  for (const [label, evidenceIn] of cases) {
+    const run = cloud();
+    const r = runIt(ABANDON_ARGV, { run, gate: gateFor(), evidenceIn });
+    assert.equal(r.exit, 1, label);
+    assert.match(r.output, /EVIDENCE_MALFORMED|EVIDENCE_MISMATCH/, label);
+    assert.equal(run.calls.length, 0, `${label}: not one cloud call may happen`);
+  }
+});
+
+test('r20 F3: a refusal after progress SAYS so — the header and the facts can no longer disagree', () => {
+  // Account moves after the first deletion.
+  let identityCalls = 0;
+  const moving = cloud({ account: () => { identityCalls += 1; return identityCalls >= 3 ? '9'.repeat(12) : ACCOUNT; } });
+  const a = runIt(ABANDON_ARGV, { run: moving, gate: gateFor(), evidenceIn: evidenceFor() });
+  assert.equal(a.exit, 1);
+  assert.match(a.output, /REFUSED AFTER PARTIAL PROGRESS — 1 change set\(s\) had already been deleted \(cba-study-coach-dev-identity\)/);
+  assert.equal(a.output.includes('nothing was deleted'), false, 'the contradiction is gone');
+
+  // The window lapses after the first deletion.
+  let flipped = false;
+  const lapsing = cloud({ onCall: (args) => { if (args[1] === 'delete-change-set') flipped = true; return null; } });
+  const b = runIt(ABANDON_ARGV, { run: lapsing, gate: gateFor(), evidenceIn: evidenceFor(), now: () => (flipped ? Date.parse('2026-08-21T00:40:00Z') : NOW) });
+  assert.equal(b.exit, 1);
+  assert.match(b.output, /REFUSED AFTER PARTIAL PROGRESS — 1 change set\(s\)/);
+  assert.equal(b.output.includes('nothing was deleted'), false);
+
+  // The second delete fails with the set provably present.
+  let deletions = 0;
+  const failing = cloud({ onCall: (args) => {
+    if (args[1] !== 'delete-change-set') return null;
+    deletions += 1;
+    return deletions === 2 ? { status: 254, stdout: '', stderr: 'ValidationError: cannot delete' } : null;
+  } });
+  const c = runIt(ABANDON_ARGV, { run: failing, gate: gateFor(), evidenceIn: evidenceFor() });
+  assert.equal(c.exit, 1);
+  assert.match(c.output, /REFUSED AFTER PARTIAL PROGRESS — 1 change set\(s\)/);
+  assert.equal(c.output.includes('nothing was deleted'), false);
+
+  // And a refusal with NO progress keeps the plain header — the words track the facts.
+  const clean = cloud();
+  const d = runIt(ABANDON_ARGV, { run: clean, gate: gateFor({ planDigest: 'b'.repeat(64) }), evidenceIn: evidenceFor({ planDigest: 'b'.repeat(64) }) });
+  assert.equal(d.exit, 1);
+  assert.match(d.output, /REFUSED — nothing was deleted:/);
 });
