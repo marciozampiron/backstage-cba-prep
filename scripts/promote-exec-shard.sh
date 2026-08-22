@@ -225,21 +225,11 @@ check_topology "before CreatePolicyVersion"
 # re-read at the last possible boundary; the API's own gap between THIS read and the create is
 # the declared, unclosable TOCTOU — everything wider than the API is closed here.
 verify_predecessor() { # $1 = when
-  # r4-M1: a version's document is IMMUTABLE, so re-reading it proves nothing about the live
-  # state — a concurrent actor can add v9 and move the default while v1's bytes stay pristine.
-  # The reproof therefore demands the exact version SET first: one version, it is OLD_DEFAULT,
-  # and it IS the default. Only then do the bytes matter.
   local rc=0
-  aws_ iam list-policy-versions --policy-arn "$POLICY_ARN" || rc=$?
-  [ "$rc" -eq 0 ] || { echo "REFUSED ($1): the version set could not be re-observed — nothing was mutated at this step"; exit 1; }
-  printf '%s' "$RUN_OUT" > "$TMP/pre-versions.json"
-  python3 -I -c '
-import json, sys
-v = json.load(open(sys.argv[1]))["Versions"]
-old = sys.argv[2]
-if len(v) != 1 or v[0]["VersionId"] != old or not v[0].get("IsDefaultVersion"): sys.exit(1)
-' "$TMP/pre-versions.json" "$OLD_DEFAULT" \
-    || { echo "REFUSED ($1): the live version set is no longer exactly the authorized predecessor as default — a concurrent change happened; a surprised operation stops with zero mutation"; exit 1; }
+  # r5-F1: the IMMUTABLE bytes are validated FIRST; the version SET is the FINAL read before
+  # the mutation — so a concurrent version or a moved default during ANY earlier read is still
+  # caught by the last one. Only the gap between that final list and the IAM call remains, and
+  # that is the declared residual.
   rc=0
   aws_ iam get-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLD_DEFAULT" || rc=$?
   [ "$rc" -eq 0 ] || { echo "REFUSED ($1): the predecessor could not be re-observed — nothing was mutated at this step"; exit 1; }
@@ -253,6 +243,18 @@ json.dump(doc, open(sys.argv[2], "w"), sort_keys=True, separators=(",", ":"))
 ' "$TMP/pre-recheck.json" "$TMP/pre-recheck-doc.json"
   [ "$(canon_sha "$TMP/pre-recheck-doc.json")" = "$EXPECTED_OLD" ] \
     || { echo "REFUSED ($1): the live document MOVED after the first proof — a surprised operation stops; zero mutation at this step"; exit 1; }
+  rc=0
+  aws_ iam list-policy-versions --policy-arn "$POLICY_ARN" || rc=$?
+  [ "$rc" -eq 0 ] || { echo "REFUSED ($1): the version set could not be re-observed — nothing was mutated at this step"; exit 1; }
+  printf '%s' "$RUN_OUT" > "$TMP/pre-versions.json"
+  python3 -I -c '
+import json, sys
+v = json.load(open(sys.argv[1]))["Versions"]
+old = sys.argv[2]
+if len(v) != 1 or v[0]["VersionId"] != old or not v[0].get("IsDefaultVersion"): sys.exit(1)
+' "$TMP/pre-versions.json" "$OLD_DEFAULT" \
+    || { echo "REFUSED ($1): the live version set is no longer exactly the authorized predecessor as default — a concurrent change happened; a surprised operation stops with zero mutation"; exit 1; }
+
 }
 verify_predecessor "immediately before CreatePolicyVersion"
 rc=0
@@ -300,21 +302,9 @@ check_topology "after CreatePolicyVersion"
 #        re-proven at the LAST boundary before THIS mutation too (r3-M2) ═══
 check_account "before DeletePolicyVersion"
 check_topology "before DeletePolicyVersion"
-# r4-M1: the exact TWO-version split is re-proven at the last boundary — a concurrent version or
-# a moved default between the post-create proof and this instant leaves the old version alive.
-rc=0
-aws_ iam list-policy-versions --policy-arn "$POLICY_ARN" || rc=$?
-[ "$rc" -eq 0 ] || { echo "REFUSED (before DeletePolicyVersion): the version set could not be re-observed — nothing further was mutated"; exit 1; }
-printf '%s' "$RUN_OUT" > "$TMP/pre-delete-versions.json"
-python3 -I -c '
-import json, sys
-v = json.load(open(sys.argv[1]))["Versions"]
-old, new = sys.argv[2], sys.argv[3]
-by = {x["VersionId"]: bool(x.get("IsDefaultVersion")) for x in v}
-if len(v) != 2 or set(by) != {old, new}: sys.exit(1)
-if by[old] or not by[new]: sys.exit(1)
-' "$TMP/pre-delete-versions.json" "$OLD_DEFAULT" "$NEW_ID" \
-  || { echo "REFUSED (before DeletePolicyVersion): the live version set is not exactly {predecessor non-default, promoted default} — a concurrent change happened; the old version was NOT deleted; reconcile before any new decision"; exit 1; }
+# r5-F1: the promoted BYTES are validated first; the exact TWO-version split is the FINAL read
+# before the delete — a concurrent version or a moved default during any earlier read is caught
+# by the last one. Only the gap between that final list and the IAM call remains (declared).
 rc=0
 aws_ iam get-policy-version --policy-arn "$POLICY_ARN" --version-id "$NEW_ID" || rc=$?
 [ "$rc" -eq 0 ] || { echo "REFUSED (before DeletePolicyVersion): the promoted version could not be re-observed — nothing further was mutated"; exit 1; }
@@ -329,6 +319,19 @@ expected = json.load(open(sys.argv[2]))
 if doc != expected or not rb.get("IsDefaultVersion"): sys.exit(1)
 ' "$TMP/pre-delete.json" "$TMP/expected.json" \
   || { echo "REFUSED (before DeletePolicyVersion): the promoted default MOVED after its proof — the old version was NOT deleted; reconcile before any new decision"; exit 1; }
+rc=0
+aws_ iam list-policy-versions --policy-arn "$POLICY_ARN" || rc=$?
+[ "$rc" -eq 0 ] || { echo "REFUSED (before DeletePolicyVersion): the version set could not be re-observed — nothing further was mutated"; exit 1; }
+printf '%s' "$RUN_OUT" > "$TMP/pre-delete-versions.json"
+python3 -I -c '
+import json, sys
+v = json.load(open(sys.argv[1]))["Versions"]
+old, new = sys.argv[2], sys.argv[3]
+by = {x["VersionId"]: bool(x.get("IsDefaultVersion")) for x in v}
+if len(v) != 2 or set(by) != {old, new}: sys.exit(1)
+if by[old] or not by[new]: sys.exit(1)
+' "$TMP/pre-delete-versions.json" "$OLD_DEFAULT" "$NEW_ID" \
+  || { echo "REFUSED (before DeletePolicyVersion): the live version set is not exactly {predecessor non-default, promoted default} — a concurrent change happened; the old version was NOT deleted; reconcile before any new decision"; exit 1; }
 rc=0
 aws_ iam delete-policy-version --policy-arn "$POLICY_ARN" --version-id "$OLD_DEFAULT" || rc=$?
 [ "$rc" -eq 0 ] || {

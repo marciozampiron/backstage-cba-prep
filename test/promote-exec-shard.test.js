@@ -92,7 +92,7 @@ esac
     account: ACCOUNT,
     boundaryAfterCreate: null, rolesAfterCreate: null, accountAfterCreate: null,
     boundaryFromCheck: null, documentAfterReads: null, malformedCreateResponse: false,
-    injectVersionFromList: null, defaultFlipFromList: null,
+    injectVersionFromList: null, defaultFlipFromList: null, injectVersionAfterGetReads: null,
     failCreate: false, lostResponseOnCreate: false, failDelete: false, deleteWrongSurvivor: false,
     readbackDocument: null,
     created: null, createdDocument: null, deleted: [], calls: [],
@@ -139,6 +139,11 @@ if verb == 'iam list-policy-versions':
     flip = state['defaultFlipFromList']
     if flip is not None and state['listCalls'] >= flip['fromCall']:
         default = flip['to']
+    late = state['injectVersionAfterGetReads']
+    if late is not None and state.get('getVersionReads', 0) >= late['afterReads']:
+        versions = versions + [late['id']]
+        if late.get('default'):
+            default = late['id']
     out({'Versions': [{'VersionId': v, 'IsDefaultVersion': v == default} for v in versions]})
 if verb == 'iam get-policy-version':
     vid = arg('--version-id')
@@ -434,6 +439,29 @@ test('r4-M1: an EXTRA version appearing before the delete leaves the old version
   assert.equal(r.code, 1);
   assert.match(r.out, /not exactly \{predecessor non-default, promoted default\}/);
   assert.deepEqual(h.state().deleted, [], 'the old version survives the surprise');
+  assert.equal(h.state().created, 'v2', 'the honest record: the promotion had landed');
+});
+
+test('r5-F1: a version appearing DURING the pre-create document read is caught by the FINAL list', () => {
+  // Codex's reproduction against the r4 ordering: the list approved v1-only, then v9 appeared
+  // while the document was being read, and the create still ran. With the set as the FINAL
+  // read, the same interleaving now refuses with zero mutation. Get reads: observe(1),
+  // pre-create doc reproof(2) — the injection arms at 2, so ONLY the list that follows sees v9.
+  const h = harness({ injectVersionAfterGetReads: { afterReads: 2, id: 'v9', default: true } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no longer exactly the authorized predecessor as default/);
+  assert.equal(mutating(h.state()).length, 0, 'the create never ran');
+});
+
+test('r5-F1: a version appearing DURING the pre-delete document read is caught by the FINAL list', () => {
+  // Get reads: observe(1), pre-create(2), post-create readback(3), pre-delete promoted-doc(4).
+  // The injection arms at 4: the split list that follows sees v9 and the delete never runs.
+  const h = harness({ injectVersionAfterGetReads: { afterReads: 4, id: 'v9', default: false } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /not exactly \{predecessor non-default, promoted default\}/);
+  assert.deepEqual(h.state().deleted, [], 'the old version survives the late surprise');
   assert.equal(h.state().created, 'v2', 'the honest record: the promotion had landed');
 });
 
