@@ -103,3 +103,14 @@ The recovery PATHS, each a new decision by Zamp, each through plan → digest st
 - If the halted wave left prepared-but-unexecuted change sets that will never run, they are
   removed by the [abandon runbook](aws-dev-release-abandon.md) under its own authorization —
   they do not expire on their own (SPEC-RUN-008).
+- A CREATE that failed and rolled back leaves the stack in `ROLLBACK_COMPLETE`: every resource
+  of the failed creation was removed by the rollback, the change set was consumed by the
+  execution, and CloudFormation permits ONLY deletion of the record before the stack can be
+  created again. That deletion is the effect `delete-empty-rollback-complete-stack-record` in
+  `spec/authority-policy.json` — human-performed, out of band, and with NO executable procedure
+  and no command in any runbook until Zamp records the residual-risk decision in that contract.
+  The preconditions any eventual procedure must prove, per the reviewed direction: binding to
+  the immutable StackId; observed `ROLLBACK_COMPLETE`; zero remaining resources; zero change
+  sets; termination protection off; immediate re-observation before acting; one single standard
+  `DeleteStack` (never force, retain or a role override); read-only reconciliation afterwards.
+  A deletion once started cannot be interrupted.

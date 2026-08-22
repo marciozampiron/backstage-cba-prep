@@ -185,7 +185,11 @@ const EXPECTED_DOCUMENTS = {
     // status, and the instant — with a hard age limit below.
     boundTo: 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt',
     maxObservationAgeMinutes: 15,
-    authorizes: ['delete-review-in-progress-stack-record'],
+    // #111 wave-2 postmortem: a CREATE that fails and rolls back leaves a SECOND empty-record
+    // state, ROLLBACK_COMPLETE — resources all removed by the rollback, delete the only legal
+    // transition. Same instrument, same hazard, same human — but a DISTINCT effect, so a record
+    // naming one observed status can never be spent on a stack in the other.
+    authorizes: ['delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record'],
     // …and even a fresh, complete, re-verified observation cannot close the gap: DeleteStack has
     // no compare-and-delete, so the stack can acquire resources between the last read and the
     // call. That residual is Zamp's to accept or refuse — never Opus's — so until a risk
@@ -225,6 +229,7 @@ const EXPECTED_EFFECTS = {
   // resources meanwhile. It is modelled here so the matrix can express it, and performed by a
   // human under its own decision, never by a lane.
   'delete-review-in-progress-stack-record': { authorizedBy: 'stack-record-authorization', performedBy: 'zamp', note: 'human-performed only; no automated lane may perform it' },
+  'delete-empty-rollback-complete-stack-record': { authorizedBy: 'stack-record-authorization', performedBy: 'zamp', note: 'human-performed only; no automated lane may perform it' },
   'invoke-paid-model-audit': { authorizedBy: 'spend-authorization', performedBy: 'zamp' },
 };
 
@@ -239,11 +244,11 @@ const DOCUMENT_KEYS = {
 };
 
 /** Exact effect set and keys. */
-const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'invoke-paid-model-audit'];
+const EFFECTS = ['push-reviewed-commit-to-task-branch', 'create-or-reuse-one-pull-request', 'merge', 'deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record', 'invoke-paid-model-audit'];
 const EFFECT_KEYS = ['authorizedBy', 'performedBy'];
 /** Effects that change cloud state. Each is authorized by a CLOUD INSTRUMENT and performed by
  * Zamp — preparing a change set is here because it creates resources and publishes assets. */
-const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record'];
+const CLOUD_EFFECTS = ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record'];
 /**
  * The closed set of instruments that may authorize a cloud effect. Two, not one, and the split is
  * the point: the lane-readable instrument covers what a lane performs, and the out-of-band one

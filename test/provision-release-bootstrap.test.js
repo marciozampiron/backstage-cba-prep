@@ -1203,6 +1203,7 @@ const APPROVED_PARTITION = {
   app: ['ReadReleaseBootstrapVersionParameter', 'ReadReleaseAssetsFromBootstrapBucket',
     'LambdaLifecycleOnOwnFunctions', 'ApiGatewayV2CreateOnlyProjectTaggedApis',
     'ApiGatewayV2RootLifecycleOnlyOnProjectTaggedApis', 'ApiGatewayV2ChildLifecycleOnlyOnProjectTaggedApis',
+    'ApiGatewayV2StageTaggingOnlyWithFoundationTags',
     'ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources', 'DynamoLifecycleOnOwnTables',
     'CognitoCreateOnlyProjectTaggedPools', 'CognitoLifecycleOnlyOnProjectTaggedPools'],
   platform: ['CloudWatchAlarmsOnOwnNames', 'CloudWatchDashboardsOnOwnNames',

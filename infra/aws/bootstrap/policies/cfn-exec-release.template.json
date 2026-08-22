@@ -105,6 +105,30 @@
       }
     },
     {
+      "Sid": "ApiGatewayV2StageTaggingOnlyWithFoundationTags",
+      "Effect": "Allow",
+      "Action": "apigateway:TagResource",
+      "Resource": "arn:aws:apigateway:us-east-1::/apis/*/stages",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "CBAStudyCoach",
+          "aws:RequestTag/Environment": "ENVIRONMENT_PLACEHOLDER"
+        },
+        "StringEqualsIfExists": {
+          "aws:RequestTag/ManagedBy": "CDK",
+          "aws:RequestTag/CostCenter": "pilot"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment",
+            "ManagedBy",
+            "CostCenter"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "ApiGatewayV2TagReadAndWriteOnlyOnOwnedResources",
       "Effect": "Allow",
       "Action": [
@@ -248,7 +272,10 @@
       "Action": [
         "cloudwatch:DeleteDashboards",
         "cloudwatch:GetDashboard",
-        "cloudwatch:PutDashboard"
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:PutDashboard",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource"
       ],
       "Resource": "arn:aws:cloudwatch::ACCOUNT_ID_PLACEHOLDER:dashboard/cba-study-coach-ENVIRONMENT_PLACEHOLDER-*"
     },
@@ -293,7 +320,10 @@
     {
       "Sid": "KmsCreateOnlyProjectTaggedKeys",
       "Effect": "Allow",
-      "Action": "kms:CreateKey",
+      "Action": [
+        "kms:CreateKey",
+        "kms:TagResource"
+      ],
       "Resource": "*",
       "Condition": {
         "StringEquals": {

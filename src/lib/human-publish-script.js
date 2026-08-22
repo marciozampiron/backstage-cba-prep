@@ -374,6 +374,12 @@ actual_keys=$(gate_json -c 'keys_unsorted | sort')
 [ "$actual_keys" = "$expected_keys" ] \\
   || die "the execution gate schema is wrong: it must carry exactly type, gateId, issue, sourceBranch, targetBranch, approver, commits, artifactDigest, expiresAt"
 
+# Artifact review (#111 iamfix, LOW 1): \`jq -r\` COERCES — a numeric gateId arrives as text and
+# the charset regex below happily accepts it, so the string type must be proven BEFORE the value
+# is extracted or printed anywhere. The closed schema means string, not string-shaped.
+gate_json -e '.gateId | type == "string"' >/dev/null 2>&1 \\
+  || die "the execution gate id is malformed; the value is not echoed"
+
 gate_id=$(gate_field gateId)
 gate_digest=$(gate_field artifactDigest)
 gate_expires=$(gate_field expiresAt)

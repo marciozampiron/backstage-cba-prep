@@ -1552,6 +1552,9 @@ test('the execution gate must match issue, branch, approver, commits and be a HU
     [{ artifactDigest: '' }, /artifact digest must be 64 lowercase hex characters/],
     [{ artifactDigest: 'D'.repeat(64) }, /64 lowercase hex/],
     [{ gateId: 'has spaces' }, /gate id is malformed; the value is not echoed/],
+    // Artifact review (#111 iamfix, LOW 1): jq -r COERCES, so a numeric gateId used to arrive as
+    // text and satisfy the charset regex. The string type is now proven before extraction.
+    [{ gateId: 123 }, /gate id is malformed; the value is not echoed/],
     [{ expiresAt: 'tomorrow' }, /strict RFC3339/],
     // A fraction separated by anything other than a dot. GNU `date` parses it, so only the pattern
     // stands between a non-canonical gate and an accepted one.
@@ -1570,6 +1573,21 @@ test('the execution gate must match issue, branch, approver, commits and be a HU
       assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false, `${JSON.stringify(over)} must not reach a mutation`);
     });
   }
+});
+
+test('a NUMERIC gateId is refused as a type violation — before any mutation, without echoing it', async () => {
+  // The dedicated regression from the artifact review: "string-shaped is not string" applies to
+  // the runtime gate exactly as it did to the recovery evidence (r21). The refusal must happen
+  // before git push / gh pr create, and the coerced value must never appear in any output.
+  await withTempDir(async (dir) => {
+    const g = path.join(dir, 'gate.json');
+    fs.writeFileSync(g, JSON.stringify(EXEC_GATE({ gateId: 90125 })));
+    const stubDir = makeStubs(dir, { headSha: C2, baseSha: BASE, branch: 'task/93-human-publication-script', remoteBase: BASE, commits: [C1, C2] });
+    const r = runArtifact(runnableScript(), { gate: g, digest: 'd'.repeat(64), stubDir });
+    assert.match(r.stderr, /gate id is malformed; the value is not echoed/);
+    assert.equal(/FORBIDDEN_CALL/.test(r.stderr), false, 'no push or PR call may be reached');
+    assert.equal(`${r.stdout}${r.stderr}`.includes('90125'), false, 'the refused value never appears in any output');
+  });
 });
 
 test('a symlinked execution gate is refused rather than followed', async () => {

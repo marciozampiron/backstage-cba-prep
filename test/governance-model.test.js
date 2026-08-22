@@ -1607,16 +1607,22 @@ test('the authority policy states the invariants as data, not prose', () => {
   // Removing the empty stack RECORD is a DISTINCT effect, with its own instrument, and no lane
   // performs it. Round 6: it used to name the cloud instrument, which did not authorize it — the
   // effect read as authorized and no value could authorize it.
-  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].performedBy, 'zamp');
-  assert.equal(POLICY.effects['delete-review-in-progress-stack-record'].authorizedBy, 'stack-record-authorization');
-  assert.match(POLICY.effects['delete-review-in-progress-stack-record'].note, /human-performed only/);
+  // #111 wave-2 postmortem: ROLLBACK_COMPLETE is the SECOND empty-record state (a failed CREATE,
+  // resources removed by the rollback, delete the only legal transition). Same instrument, same
+  // human — a DISTINCT effect, so a record naming one observed status cannot spend on the other.
+  for (const effect of ['delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record']) {
+    assert.equal(POLICY.effects[effect].performedBy, 'zamp');
+    assert.equal(POLICY.effects[effect].authorizedBy, 'stack-record-authorization');
+    assert.match(POLICY.effects[effect].note, /human-performed only/);
+  }
   const cleanup = POLICY.documents['stack-record-authorization'];
-  assert.deepEqual(cleanup.authorizes, ['delete-review-in-progress-stack-record']);
+  assert.deepEqual(cleanup.authorizes, ['delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record']);
   assert.equal(cleanup.writtenBy, 'zamp');
   // Out of band, so no lane can consume a value permitting it.
   assert.equal(cleanup.suppliedAs, 'out-of-band record');
   // The cloud instrument must NOT carry it: that is what would make it lane-readable.
   assert.equal(POLICY.documents['cloud-authorization'].authorizes.includes('delete-review-in-progress-stack-record'), false);
+  assert.equal(POLICY.documents['cloud-authorization'].authorizes.includes('delete-empty-rollback-complete-stack-record'), false);
   // ROUND 7: the binding names the account, region, stack NAME and immutable ARN, the exact
   // status and the instant — recording WHEN someone looked constrained nothing on its own.
   assert.equal(cleanup.boundTo, 'issue+decisionId+environment+account+region+stackName+stackId+observedStatus+observedAt');
@@ -1823,7 +1829,7 @@ test('merge or a cloud effect recorded under the wrong instrument is rejected', 
   }, /must be authorized by MERGE_DECISION/);
   // The exact conflation design round 3 found: a cloud effect claiming the PUBLICATION gate.
   // Each cloud effect is checked, so widening one of them cannot ride on another's rule.
-  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record']) {
+  for (const effect of ['deploy', 'prepare-change-sets', 'execute-change-sets', 'abandon-change-sets', 'delete-review-in-progress-stack-record', 'delete-empty-rollback-complete-stack-record']) {
     expectRejected((p) => {
       p.effects[effect].authorizedBy = 'execution-gate';
     }, new RegExp(`${effect}[\\s\\S]*(cloud instrument|must be exactly)`));
