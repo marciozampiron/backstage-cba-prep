@@ -92,6 +92,7 @@ esac
     account: ACCOUNT,
     boundaryAfterCreate: null, rolesAfterCreate: null, accountAfterCreate: null,
     boundaryFromCheck: null, documentAfterReads: null, malformedCreateResponse: false,
+    injectVersionFromList: null, defaultFlipFromList: null,
     failCreate: false, lostResponseOnCreate: false, failDelete: false, deleteWrongSurvivor: false,
     readbackDocument: null,
     created: null, createdDocument: null, deleted: [], calls: [],
@@ -127,7 +128,18 @@ if verb == 'sts get-caller-identity':
 if verb == 'iam get-policy':
     out({'Policy': {'DefaultVersionId': state['defaultVersion']}})
 if verb == 'iam list-policy-versions':
-    out({'Versions': [{'VersionId': v, 'IsDefaultVersion': v == state['defaultVersion']} for v in state['versions']]})
+    state['listCalls'] = state.get('listCalls', 0) + 1
+    versions = list(state['versions'])
+    default = state['defaultVersion']
+    inj = state['injectVersionFromList']
+    if inj is not None and state['listCalls'] >= inj['fromCall']:
+        versions = versions + [inj['id']]
+        if inj.get('default'):
+            default = inj['id']
+    flip = state['defaultFlipFromList']
+    if flip is not None and state['listCalls'] >= flip['fromCall']:
+        default = flip['to']
+    out({'Versions': [{'VersionId': v, 'IsDefaultVersion': v == default} for v in versions]})
 if verb == 'iam get-policy-version':
     vid = arg('--version-id')
     state['getVersionReads'] = state.get('getVersionReads', 0) + 1
@@ -401,6 +413,38 @@ test('r3-M2: a boundary appearing between the post-create proof and the delete h
   assert.match(r.out, /permissions boundary/);
   assert.deepEqual(h.state().deleted, [], 'the late boundary stopped the delete');
   assert.equal(h.state().created, 'v2', 'the honest record: the promotion had landed');
+});
+
+test('r4-M1: a CONCURRENT default appearing before the create refuses with zero mutation', () => {
+  // Codex's reproduction: v1's immutable bytes still hash right, but another actor created v9
+  // and moved the default between the observation and the reproof. List calls: observe(1) sees
+  // only v1; the pre-create reproof(2) sees {v1, v9-default} — the create must never run.
+  const h = harness({ injectVersionFromList: { fromCall: 2, id: 'v9', default: true } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /no longer exactly the authorized predecessor as default/);
+  assert.equal(mutating(h.state()).length, 0, 'neither mutation ran against the moved state');
+});
+
+test('r4-M1: an EXTRA version appearing before the delete leaves the old version alive', () => {
+  // List calls: observe(1) and pre-create(2) clean; the pre-delete reproof(3) sees a third
+  // version — the split is no longer {old non-default, new default}, so the delete must not run.
+  const h = harness({ injectVersionFromList: { fromCall: 3, id: 'v9', default: false } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /not exactly \{predecessor non-default, promoted default\}/);
+  assert.deepEqual(h.state().deleted, [], 'the old version survives the surprise');
+  assert.equal(h.state().created, 'v2', 'the honest record: the promotion had landed');
+});
+
+test('r4-M1: the RIGHT two versions with the WRONG default split still refuse the delete', () => {
+  // Exactly {v1, v2} — but a concurrent SetDefaultPolicyVersion moved the default back to the
+  // predecessor. Deleting v1 would then delete the LIVE default; the split proof must refuse.
+  const h = harness({ defaultFlipFromList: { fromCall: 3, to: 'v1' } });
+  const r = runLauncher(h);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /not exactly \{predecessor non-default, promoted default\}/);
+  assert.deepEqual(h.state().deleted, [], 'the live default is never the deletion victim');
 });
 
 test('r3-M3: a MALFORMED success response halts with the ambiguous state named — no traceback, no delete', () => {
